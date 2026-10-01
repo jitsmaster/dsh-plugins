@@ -1,13 +1,16 @@
-# dsh-plugins
+﻿# dsh-plugins
 
-Plugins for DeepSeek Harness (DSH). Currently one plugin:
+Plugins for DeepSeek Harness (DSH):
+
+- [dsh-hooks-tts](#dsh-hooks-tts)
+- [dsh-remote-access](dsh-remote-access/README.md): reach DSH from outside the LAN without a public IP.
 
 ## dsh-hooks-tts
 
 A Claude-Code-style hook runner for DSH plus a few quality-of-life features:
 
 - **Spoken read-outs (TTS)** for finished replies, questions and permission requests, naming the project and session. Uses a local [Kokoro](https://github.com/hexgrad/kokoro) HTTP server (optional).
-- **Context cap and auto-resume.** Over a token limit the agent writes a handoff note, and a new session in the same workspace picks it up. The new session inherits the source's access level and gets a numbered title (`x` → `x - 2` → `x - 3`).
+- **Context cap and auto-resume.** Over a token limit the agent writes a handoff note, and a new session in the same workspace picks it up. The new session inherits the source's access level and gets a numbered title (`x` â†’ `x - 2` â†’ `x - 3`).
 - **Worktree continuity.** The plugin records the linked git worktree each session works in (from its tool calls), shows it in the status pill, and handoffs carry a `Worktree:` line so the continuation stays in the same worktree.
 - **Status widget** (bottom-right pill): context window, worktree, and a *Hooks and Usage* sidebar page with Claude plan limits, local token usage and live settings.
 - **Optional Obsidian session-start hook** that asks the agent to open today's daily note and surface related notes.
@@ -73,10 +76,10 @@ Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tt
 
 ### Verify
 
-- **Status pill:** select a session; the bottom-right pill shows `Context Window …` and `⎇ <worktree>`.
-- **Handoff and respawn:** temporarily set the context cap low (for example 30000) on the *Hooks and Usage* page. When a session passes it, a handoff note appears in `handoffDir` and a new session starts. Check `~/.dsh/tts/spawn.log` for `copied permission/preset`, `renamed "x" -> "x - 2"` and `spawned session-…`. Restore the cap afterwards.
+- **Status pill:** select a session; the bottom-right pill shows `Context Window â€¦` and `âŽ‡ <worktree>`.
+- **Handoff and respawn:** temporarily set the context cap low (for example 30000) on the *Hooks and Usage* page. When a session passes it, a handoff note appears in `handoffDir` and a new session starts. Check `~/.dsh/tts/spawn.log` for `copied permission/preset`, `renamed "x" -> "x - 2"` and `spawned session-â€¦`. Restore the cap afterwards.
 - **Worktrees:** `~/.dsh/tts/worktrees.json` lists the worktree recorded per session after its next tool call.
-- **TTS:** trigger a permission request; with Kokoro running you hear the message plus `Project : … ; Session : …`. Failures are logged to `~/.dsh/tts/tts-failures.log`.
+- **TTS:** trigger a permission request; with Kokoro running you hear the message plus `Project : â€¦ ; Session : â€¦`. Failures are logged to `~/.dsh/tts/tts-failures.log`.
 
 ### Files and state
 
@@ -98,3 +101,4 @@ State lives in `~/.dsh/tts/`: `settings.json`, `config.local.json`, `spawn.log`,
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
