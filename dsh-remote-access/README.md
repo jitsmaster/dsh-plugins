@@ -127,7 +127,7 @@ Append to `~/.dsh/profiles/web/cordis.patch.yml` (the profile's config override 
     enabled: true
     tailscale:
       funnel: true
-      httpsPort: 443
+      httpsPort: 8443
     hostnames: [awang-lpt2.taile1279d.ts.net]
 ```
 
@@ -135,7 +135,7 @@ Append to `~/.dsh/profiles/web/cordis.patch.yml` (the profile's config override 
 
 ### 7. Restart DSH, then verify
 
-Restarting drops active DSH sessions, so do it at a good moment (a DSH agent should ask the user first). On start the plugin runs `tailscale funnel --bg --https=443 https+insecure://127.0.0.1:8443`.
+Restarting drops active DSH sessions, so do it at a good moment (a DSH agent should ask the user first). On start the plugin runs `tailscale funnel --bg --https=8443 https+insecure://127.0.0.1:8443`.
 
 **Checks:**
 
@@ -146,13 +146,13 @@ Get-Content ~/.dsh/remote-access/remote-access.log -Tail 10   # "proxy listening
 
 From a device **not** on the LAN (phone on mobile data), open `https://<node>.<tailnet>.ts.net`, sign in with the password and the 6-digit code; DSH loads and the session lasts 12 hours. An unauthenticated request must return the login page (browsers) or `401` (API calls).
 
-> Testing from the same machine: connections to the node's own tailnet address are answered locally and may hit another service on port 443 (this machine had IIS there). To test the real path, resolve the public address (`Resolve-DnsName <name> -Server 8.8.8.8`) and use `curl --resolve <name>:443:<public ip> https://<name>/`.
+> Testing from the same machine: with Funnel on 8443 the plugin also listens on this machine's tailnet IP (`tailscale.listenOnTailnetIp`, default on) using the real Let's Encrypt certificate fetched with `tailscale cert` (renewed daily), so `https://<name>:8443/` works from this PC and from tailnet devices. Port 443 is avoided because other services (e.g. IIS/http.sys) may own it. Public URL: `https://<name>:8443/`.
 
 ## Operate
 
 | Task | How |
 | --- | --- |
-| Turn off | `enabled: false` in the profile config and restart, or `tailscale funnel --https=443 off` |
+| Turn off | `enabled: false` in the profile config and restart, or `tailscale funnel --https=8443 off` |
 | Stale Funnel entry | `tailscale funnel reset` |
 | Change password | re-run `setup.js` (live) |
 | Update the plugin | repeat step 5 (re-resolves the branch), restart DSH |
@@ -194,7 +194,7 @@ On the relay create a key-only user (`dshtunnel`, shell `/usr/sbin/nologin`) wit
 | `port` / `listenHost` | `8443` / `127.0.0.1` | Local proxy bind (keep loopback) |
 | `targetHost` / `targetPort` | `127.0.0.1` / `3080` | The only upstream |
 | `sessionHours` | `12` | Login session lifetime |
-| `tailscale.funnel` / `httpsPort` | off / `443` | Publish via Tailscale Funnel (443, 8443 or 10000) |
+| `tailscale.funnel` / `httpsPort` | off / `443` | Publish via Tailscale Funnel (443, 8443 or 10000); 8443 recommended |`n| `tailscale.listenOnTailnetIp` | on | Also bind this node's tailnet IP with the `tailscale cert` certificate |
 | `tailscale.bin` | `C:\Program Files\Tailscale\tailscale.exe` | CLI path |
 | `tunnel.*` | none | ssh -R variant (see above) |
 | `hostnames` | none | Names/IPs for the generated self-signed cert (ssh variant) |

@@ -47,7 +47,7 @@ function readForm(req, limit = 4096) {
  * @param {{cert:any,key:any}} o.tls
  * @param {() => object|undefined} o.getAuth - current auth record (re-read so a new password applies live)
  */
-export function startProxy({ tls, getAuth, getLaunchToken, port, listenHost, targetHost, targetPort, sessionHours, log }) {
+export function startProxy({ tls, getAuth, getLaunchToken, port, listenHost, listenHosts, targetHost, targetPort, sessionHours, log }) {
   const sessions = createSessions(sessionHours)
   const throttle = createThrottle()
   const targetOrigin = `http://${targetHost}:${targetPort}`
@@ -106,7 +106,7 @@ export function startProxy({ tls, getAuth, getLaunchToken, port, listenHost, tar
     return h
   }
 
-  const server = createTls({ ...tls, minVersion: 'TLSv1.2', maxHeaderSize: 16 * 1024 }, async (req, res) => {
+  const handler = async (req, res) => {
     let url
     try { url = new URL(req.url, 'https://x') } catch { return send(res, page('Bad request', 400)) }
     if (url.pathname.startsWith(PREFIX)) {
@@ -134,12 +134,10 @@ export function startProxy({ tls, getAuth, getLaunchToken, port, listenHost, tar
     up.on('error', () => { if (!res.headersSent) { res.writeHead(502); } res.end() })
     res.on('close', () => up.destroy())
     req.pipe(up)
-  })
-  server.requestTimeout = 0 // SSE / long uploads are legitimate; headers timeout still applies
-  server.headersTimeout = 20_000
+  }
 
   // WebSocket / upgrade passthrough, authenticated.
-  server.on('upgrade', (req, socket, head) => {
+  const onUpgrade = (req, socket, head) => {
     if (!authed(req)) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
     const up = connect(targetPort, targetHost, () => {
       const h = upstreamHeaders(req)
@@ -149,10 +147,24 @@ export function startProxy({ tls, getAuth, getLaunchToken, port, listenHost, tar
       socket.pipe(up).pipe(socket)
     })
     up.on('error', () => socket.destroy()); socket.on('error', () => up.destroy()); socket.on('close', () => up.destroy())
+  }
+
+  // One server per bind address (loopback for the tunnel, plus optionally this machine's own
+  // tailnet address so the Tailscale name also works from the machine itself).
+  const hosts = [...new Set([].concat(listenHosts ?? listenHost ?? '127.0.0.1'))]
+  const servers = hosts.map((host) => {
+    const server = createTls({ ...tls, minVersion: 'TLSv1.2', maxHeaderSize: 16 * 1024 }, handler)
+    server.requestTimeout = 0 // SSE / long uploads are legitimate; headers timeout still applies
+    server.headersTimeout = 20_000
+    server.on('upgrade', onUpgrade)
+    server.on('tlsClientError', () => {})
+    server.on('error', (e) => log(`proxy error on ${host}:${port}: ${e.message}`))
+    server.listen(port, host, () => log(`proxy listening on https://${host}:${port} -> ${targetOrigin}`))
+    return server
   })
-  server.on('tlsClientError', () => {})
   const sweep = setInterval(() => sessions.sweep(), 600e3); sweep.unref()
-  server.listen(port, listenHost, () => log(`proxy listening on https://${listenHost}:${port} -> ${targetOrigin}`))
-  server.on('error', (e) => log(`proxy error: ${e.message}`))
-  return () => { clearInterval(sweep); server.close(); server.closeAllConnections?.() }
+  const stop = () => { clearInterval(sweep); for (const s of servers) { s.close(); s.closeAllConnections?.() } }
+  /** Swap the certificate on all listeners without dropping connections (renewal). */
+  stop.setTls = (next) => { for (const s of servers) s.setSecureContext(next) }
+  return stop
 }

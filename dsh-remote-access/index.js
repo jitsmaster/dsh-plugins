@@ -6,8 +6,8 @@
  * TLS terminates in this plugin's proxy, so the relay only carries ciphertext. The tunnel
  * is Windows' built-in OpenSSH client (no install, no binary download). Opt-in and fail-closed.
  */
-import { spawn } from 'node:child_process'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { X509Certificate } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -29,7 +29,13 @@ export function apply(ctx, config = {}) {
     return
   }
   const port = config.port ?? 8443
-  const tls = loadOrCreateTls(join(dir, 'tls'), config)
+  const listenHosts = [config.listenHost ?? '127.0.0.1']
+  // Tailscale: use the real (Let's Encrypt) certificate for the node's ts.net name and also listen on
+  // this machine's own tailnet address, so the ts.net name works from this machine too (the OS answers
+  // connections to its own tailnet IP locally, so Funnel/serve never sees them).
+  const ts = config.tailscale?.funnel ? tailscaleIdentity(config.tailscale, join(dir, 'tls'), log) : undefined
+  if (ts?.ip && config.tailscale.listenOnTailnetIp !== false) listenHosts.push(ts.ip)
+  const tls = ts?.tls ?? loadOrCreateTls(join(dir, 'tls'), config)
   if (tls.generated) log(`self-signed cert SHA-256 fingerprint (compare in the browser's certificate viewer): ${new X509Certificate(tls.cert).fingerprint256}`)
   const stopProxy = startProxy({
     tls, getAuth: () => loadAuthRecord(dir), port,
@@ -39,7 +45,7 @@ export function apply(ctx, config = {}) {
         return new URL(ctx.get('connection').authenticatedUrl(base)).searchParams.get('token') ?? undefined
       } catch (e) { log(`cannot get DSH launch token: ${e.message}`); return undefined }
     },
-    listenHost: config.listenHost ?? '127.0.0.1', // loopback: only the tunnel reaches it
+    listenHosts, // loopback (the tunnel) and, with Tailscale, this machine's tailnet IP
     targetHost: config.targetHost ?? '127.0.0.1', targetPort: config.targetPort ?? 3080,
     sessionHours: config.sessionHours ?? 12, log,
   })
@@ -50,7 +56,36 @@ export function apply(ctx, config = {}) {
   else if (t?.host && t?.user) stopTunnel = startTunnel(t, port, dir, log)
   else log('no tunnel configured (tunnel.host / tunnel.user); proxy is reachable locally only')
 
-  ctx.effect(() => async () => { stopTunnel(); stopProxy() }, 'remote-access: stop proxy and tunnel')
+  // Let's Encrypt certs last ~90 days: re-issue daily (tailscale only renews when due) and hot-swap.
+  let renew
+  if (ts) {
+    renew = setInterval(() => {
+      const next = tailscaleIdentity(config.tailscale, join(dir, 'tls'), log, true)
+      if (next?.tls) { try { stopProxy.setTls(next.tls) } catch (e) { log(`cert swap failed: ${e.message}`) } }
+    }, 24 * 3600e3)
+    renew.unref()
+  }
+
+  ctx.effect(() => async () => { clearInterval(renew); stopTunnel(); stopProxy() }, 'remote-access: stop proxy and tunnel')
+}
+
+/** Tailscale node identity: tailnet IPv4 plus a real certificate for its ts.net name. Undefined on any failure. */
+function tailscaleIdentity(t, tlsDir, log, quiet = false) {
+  const bin = t.bin ?? 'C:\\Program Files\\Tailscale\\tailscale.exe'
+  try {
+    mkdirSync(tlsDir, { recursive: true })
+    const status = JSON.parse(execFileSync(bin, ['status', '--json'], { encoding: 'utf8', timeout: 20_000, windowsHide: true }))
+    const name = String(status.Self?.DNSName ?? '').replace(/\.$/, '')
+    if (!name) throw new Error('node has no DNS name (is HTTPS enabled for the tailnet?)')
+    const ip = execFileSync(bin, ['ip', '-4'], { encoding: 'utf8', timeout: 20_000, windowsHide: true }).trim().split(/\s+/)[0]
+    const c = join(tlsDir, 'ts.crt'); const k = join(tlsDir, 'ts.key')
+    execFileSync(bin, ['cert', '--cert-file', c, '--key-file', k, name], { timeout: 90_000, windowsHide: true, stdio: 'ignore' })
+    if (!quiet) log(`tailscale identity: ${name} (${ip}); using its Let's Encrypt certificate`)
+    return { name, ip, tls: { cert: readFileSync(c), key: readFileSync(k), generated: false } }
+  } catch (e) {
+    log(`tailscale certificate unavailable (${String(e.message).split('\n')[0]}); falling back to a self-signed certificate`)
+    return undefined
+  }
 }
 
 /**
