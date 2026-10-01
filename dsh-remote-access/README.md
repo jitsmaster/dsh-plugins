@@ -1,44 +1,175 @@
-﻿# dsh-remote-access
+# dsh-remote-access
 
-Reach the DSH web app from any browser, with no public IP, no extra software and nothing else on the machine exposed.
+Open the DSH web app from any browser outside your LAN, even when the machine has no public IP. Only DSH is published, behind a password (plus optional authenticator code). Dependency-free Node plugin; the tunnel is Tailscale Funnel (or, optionally, Windows' built-in OpenSSH).
 
 ```
-browser --HTTPS--> your relay host --ssh -R tunnel--> 127.0.0.1:8443 (this plugin: TLS + login) --> 127.0.0.1:3080 (DSH)
+browser --HTTPS (real certificate)--> Tailscale Funnel https://<node>.<tailnet>.ts.net
+   --> 127.0.0.1:8443  this plugin: TLS + password + TOTP
+   --> 127.0.0.1:3080  DSH web server
 ```
 
-## Why this should stay quiet under endpoint security (Sophos)
-- Node built-ins only: no dependencies, no downloaded or bundled binaries, no installer or driver.
-- The tunnel is Windows' own signed `ssh.exe`, making one outbound connection. No UPnP/SSDP, no port scanning, no firewall changes, no PowerShell or encoded commands.
-- The proxy listens on loopback only. Nothing on the machine accepts inbound connections from the network.
-- Caveat: a *network* Sophos Firewall may still classify outbound SSH to an unknown host. Use your own relay, and ask IT to allow that host/port if it is blocked. This cannot be verified without your Sophos policy.
+> **For a DSH agent deploying this:** follow [Deploy](#deploy) top to bottom. Steps marked **(human)** need a person (browser sign-in, admin console, choosing a password). Do not invent or store the password yourself; never print it back. Each step lists a check that must pass before you continue.
 
-## Security model
-- Disabled by default; refuses to start until a password exists (fail closed).
-- TLS ends on your machine, so the relay only sees ciphertext. Self-signed certificate is generated in pure Node (or supply `tlsCert`/`tlsKey`). Pin the fingerprint in your browser/device or use a real cert.
-- scrypt password, optional TOTP, per-IP exponential lockout plus a global failure budget, `__Host-` HttpOnly Secure SameSite=Strict session cookie.
-- Fixed upstream: only `127.0.0.1:3080`. Host/Origin are rewritten to loopback, so DSH's own DNS-rebinding fence still applies, and the session cookie is never forwarded to DSH.
-- DSH can run commands, so treat this login as remote code execution access: long passphrase plus `--totp`.
+## What it does and does not do
 
-## Setup
-1. Password: `node dsh-remote-access/setup.js --totp` (add the printed secret to an authenticator).
-2. Relay host (your VPS): create a user with a key-only login, e.g. `dshtunnel`, shell `/usr/sbin/nologin`. In `sshd_config`:
+- DSH itself stays on loopback. The plugin's proxy is the only thing Funnel publishes, and its upstream is fixed to `127.0.0.1:3080`.
+- Disabled by default and fails closed: nothing starts until a password exists.
+- scrypt password, optional TOTP, per-IP lockout with a global failure budget, `__Host-` `HttpOnly` `Secure` `SameSite=Strict` session cookie (12 h).
+- The proxy rewrites `Host`/`Origin` to loopback (so DSH's own trust check still applies), adds DSH's launch token to the index request itself (users never type it) and never forwards its session cookie to DSH.
+- Treat the login as remote-code-execution access to the machine: use a long passphrase (14+ characters enforced) and TOTP. The URL is public and visible in Certificate Transparency logs, so expect probing.
+
+## Requirements
+
+- Windows with DSH running as `dsh web`, Node 22+, `pnpm`. Profile name below is `web`; substitute yours.
+- A Tailscale account (free personal plan is enough) with admin rights on the tailnet.
+
+## Deploy
+
+### 1. Install Tailscale on the machine
+
+```powershell
+winget install --id Tailscale.Tailscale -e --accept-package-agreements --accept-source-agreements
+```
+
+(No winget: download the MSI from https://tailscale.com/download/windows and run it.) Installing needs admin rights (UAC). Endpoint security (e.g. Sophos Application Control) can be managed by policy, so if the install or service is blocked, ask IT to allow Tailscale.
+
+**Check:** `& "C:\Program Files\Tailscale\tailscale.exe" version` prints a version, and `Get-Service Tailscale` is `Running`.
+
+### 2. Add the machine to your tailnet **(human)**
+
+```powershell
+& "C:\Program Files\Tailscale\tailscale.exe" login
+```
+
+This prints a URL and opens the browser. Sign in with the account that owns the tailnet and approve the device. (Alternatively click the Tailscale tray icon, then *Log in*.) Optionally give the machine a clear name in the admin console under *Machines*; the machine name is part of the public URL.
+
+**Check:**
+
+```powershell
+& "C:\Program Files\Tailscale\tailscale.exe" status
+```
+
+lists this machine with a `100.x.y.z` address, and `tailscale status --json` has `Self.Online = true`. Record the public name for later: `(tailscale status --json | ConvertFrom-Json).Self.DNSName` (strip the trailing dot), e.g. `awang-lpt2.taile1279d.ts.net`.
+
+### 3. Enable HTTPS and Funnel in the admin console **(human)**
+
+Open https://login.tailscale.com/admin and:
+
+1. **DNS** page: turn on **HTTPS Certificates** (and acknowledge that machine names become public in Certificate Transparency logs).
+2. **Access controls** page (policy file): allow Funnel for your devices by adding a `nodeAttrs` block, or merging into an existing one:
+
+   ```json
+   "nodeAttrs": [
+     { "target": ["autogroup:member"], "attr": ["funnel"] }
+   ]
    ```
-   Match User dshtunnel
-       GatewayPorts yes
-       AllowTcpForwarding remote
-       PermitTTY no
-       ForceCommand /bin/false
-   ```
-   Open TCP 8443 in the VPS firewall. Use a dedicated key: `ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\dsh_tunnel_ed25519`, and append the `.pub` to the user's `authorized_keys`.
-3. Trust the relay once: `ssh -p 22 dshtunnel@relay.example.com` (accept the host key; the plugin uses `StrictHostKeyChecking=yes`).
-4. Install: `dsh plugin --profile web add "github:jitsmaster/dsh-plugins#path:/dsh-remote-access"`, then put the `enabled: true`, `hostnames` and `tunnel:` values from [cordis.patch.yml](cordis.patch.yml) into your profile config.
-5. Restart DSH, then open `https://relay.example.com:8443`.
 
-Log: `~/.dsh/remote-access/remote-access.log`.
+   Save. (This applies to every member's devices; narrow `target` to a tag or user if needed. A device is only public once Funnel is started on it.)
 
-## Using the private (self-signed) certificate
-The browser shows a warning the first time; click **Advanced, then Proceed** (Chrome/Edge: "Advanced" > "Continue to ...") and it works. The plugin deliberately sends **no HSTS header**, because HSTS would remove that "Proceed" option.
-- Verify you reached your own machine: compare the certificate's SHA-256 fingerprint with the one logged at startup in `~/.dsh/remote-access/remote-access.log`.
-- Put your relay's DNS name or IP in `hostnames` so the certificate matches. A mismatch is still bypassable but is a warning sign.
-- To remove the warning entirely, import `~/.dsh/remote-access/tls/selfsigned.crt` into each device's trusted root store, or supply a real certificate via `tlsCert`/`tlsKey`.
-- While the certificate is untrusted, browsers disable some secure-context features (service workers, possibly clipboard access). DSH should work, but a trusted certificate avoids this.
+**Check:** `tailscale status --json` now shows the node under `CertDomains` and `Self.CapMap` containing `funnel`, `https` and `https://tailscale.com/cap/funnel-ports?ports=443,8443,10000`. If not, wait a minute and re-run.
+
+### 4. Set the remote password **(human)**
+
+```powershell
+node <repo>\dsh-remote-access\setup.js --totp
+```
+
+It prompts for the password (minimum 14 characters), writes a scrypt hash and the TOTP secret to `~/.dsh/remote-access/auth.json`, and prints the secret/`otpauth://` link to add to an authenticator app. It must exist before the first start. Re-running changes the password live (no restart); without `--totp` it drops the TOTP requirement, with `--totp` it issues a new secret. Lost password or authenticator: delete `auth.json` and run it again.
+
+**Check:** `Test-Path ~/.dsh/remote-access/auth.json` is `True`.
+
+### 5. Install the plugin into the DSH profile
+
+From a DSH source checkout:
+
+```powershell
+pnpm dsh plugin --profile web add "github:jitsmaster/dsh-plugins#path:/dsh-remote-access"
+```
+
+(Or, from a local clone for development: `... add "link:D:/path/to/dsh-plugins/dsh-remote-access"`.) This installs the package and lists `dsh-remote-access` in the profile's `bundles`.
+
+**Check:** `~/.dsh/profiles/web/package.json` contains `dsh-remote-access` under both `dependencies` and `dsh.profile.bundles`.
+
+### 6. Enable it in the profile config
+
+Append to `~/.dsh/profiles/web/cordis.patch.yml` (the profile's config override file; keep existing entries), using the DNS name from step 2:
+
+```yaml
+# Remote access through Tailscale Funnel.
+- id: remote-access
+  config:
+    enabled: true
+    tailscale:
+      funnel: true
+      httpsPort: 443
+    hostnames: [awang-lpt2.taile1279d.ts.net]
+```
+
+**Check:** `pnpm dsh --profile web --dump-config` shows the `remote-access` row with `enabled: true`.
+
+### 7. Restart DSH, then verify
+
+Restarting drops active DSH sessions, so do it at a good moment (a DSH agent should ask the user first). On start the plugin runs `tailscale funnel --bg --https=443 https+insecure://127.0.0.1:8443`.
+
+**Checks:**
+
+```powershell
+& "C:\Program Files\Tailscale\tailscale.exe" funnel status    # "Funnel on", / proxy https+insecure://127.0.0.1:8443
+Get-Content ~/.dsh/remote-access/remote-access.log -Tail 10   # "proxy listening on https://127.0.0.1:8443"
+```
+
+From a device **not** on the LAN (phone on mobile data), open `https://<node>.<tailnet>.ts.net`, sign in with the password and the 6-digit code; DSH loads and the session lasts 12 hours. An unauthenticated request must return the login page (browsers) or `401` (API calls).
+
+> Testing from the same machine: connections to the node's own tailnet address are answered locally and may hit another service on port 443 (this machine had IIS there). To test the real path, resolve the public address (`Resolve-DnsName <name> -Server 8.8.8.8`) and use `curl --resolve <name>:443:<public ip> https://<name>/`.
+
+## Operate
+
+| Task | How |
+| --- | --- |
+| Turn off | `enabled: false` in the profile config and restart, or `tailscale funnel --https=443 off` |
+| Stale Funnel entry | `tailscale funnel reset` |
+| Change password | re-run `setup.js` (live) |
+| Update the plugin | repeat step 5 (re-resolves the branch), restart DSH |
+| Logs | `~/.dsh/remote-access/remote-access.log` |
+
+## Troubleshooting
+
+- **`401 dsh web authentication required`** after login: the DSH launch token was not injected; look for `cannot get DSH launch token` in the log.
+- **Plugin did not start**: log says `no password set`; run step 4. Or `enabled` is not `true` in the effective config.
+- **`funnel` command errors**: Funnel or HTTPS is not enabled for this device (step 3); re-check `CapMap`.
+- **Browser reports a certificate warning** on the Funnel URL: wait a minute after first enabling HTTPS certificates; the certificate is issued on demand.
+- Not yet verified in a real browser: the live event stream and terminal panel through the proxy.
+
+## Alternative tunnel: `ssh -R` to your own VPS (not needed with Tailscale)
+
+Uses Windows' signed `ssh.exe` and a host you control; TLS ends on this machine with a self-signed certificate generated in pure Node (so the relay only sees ciphertext). Config:
+
+```yaml
+- id: remote-access
+  config:
+    enabled: true
+    hostnames: [relay.example.com]
+    tunnel:
+      host: relay.example.com
+      user: dshtunnel
+      sshPort: 22
+      identityFile: C:\Users\you\.ssh\dsh_tunnel_ed25519
+      remotePort: 8443
+      bindAddress: 0.0.0.0
+```
+
+On the relay create a key-only user (`dshtunnel`, shell `/usr/sbin/nologin`) with `Match User dshtunnel` / `GatewayPorts yes` / `AllowTcpForwarding remote` / `PermitTTY no` / `ForceCommand /bin/false`, open TCP 8443, add the public key to its `authorized_keys`, and trust the host key once with a manual `ssh` (the plugin uses `StrictHostKeyChecking=yes`). Browsers must accept the self-signed certificate once (**Advanced, then Proceed**); the plugin sends no HSTS so that option stays available. The certificate's SHA-256 fingerprint is logged at startup so you can compare it; import `~/.dsh/remote-access/tls/selfsigned.crt` into a device's trusted roots to remove the warning, or supply `tlsCert`/`tlsKey`.
+
+## Configuration reference
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch |
+| `port` / `listenHost` | `8443` / `127.0.0.1` | Local proxy bind (keep loopback) |
+| `targetHost` / `targetPort` | `127.0.0.1` / `3080` | The only upstream |
+| `sessionHours` | `12` | Login session lifetime |
+| `tailscale.funnel` / `httpsPort` | off / `443` | Publish via Tailscale Funnel (443, 8443 or 10000) |
+| `tailscale.bin` | `C:\Program Files\Tailscale\tailscale.exe` | CLI path |
+| `tunnel.*` | none | ssh -R variant (see above) |
+| `hostnames` | none | Names/IPs for the generated self-signed cert (ssh variant) |
+| `tlsCert` / `tlsKey` | generated | Your own certificate files |
