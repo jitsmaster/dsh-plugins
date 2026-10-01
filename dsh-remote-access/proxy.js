@@ -24,7 +24,7 @@ function send(res, { status, body }, extra = {}) {
     'cache-control': 'no-store',
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     'x-content-type-options': 'nosniff',
-    'referrer-policy': 'no-referrer',
+    'referrer-policy': 'same-origin',
     ...extra,
   })
   res.end(body)
@@ -65,8 +65,16 @@ export function startProxy({ tls, getAuth, getLaunchToken, port, listenHost, tar
     if (req.method !== 'POST') return send(res, page('Method not allowed', 405))
     const ip = ipOf(req)
     // Origin must be this very host (login CSRF defence on top of SameSite).
+    // Browsers may send "Origin: null" on a same-origin form POST, so "null" is not an attack signal
+    // on its own: Sec-Fetch-Site (set by the browser, unforgeable by pages) decides, then Origin.
+    const site = req.headers['sec-fetch-site']
+    if (site && site !== 'same-origin' && site !== 'none') return send(res, page('Forbidden', 403))
     const origin = req.headers.origin
-    if (origin && new URL(origin).host !== req.headers.host) return send(res, page('Forbidden', 403))
+    if (origin && origin !== 'null') {
+      let originHost
+      try { originHost = new URL(origin).host } catch { return send(res, page('Forbidden', 403)) }
+      if (originHost !== req.headers.host) return send(res, page('Forbidden', 403))
+    }
     const waitMs = throttle.wait(ip)
     if (waitMs > 0) return send(res, page(`<p>Too many attempts. Try again in ${Math.ceil(waitMs / 1000)}s.</p>`, 429), { 'retry-after': String(Math.ceil(waitMs / 1000)) })
     let form
@@ -102,7 +110,7 @@ export function startProxy({ tls, getAuth, getLaunchToken, port, listenHost, tar
     let url
     try { url = new URL(req.url, 'https://x') } catch { return send(res, page('Bad request', 400)) }
     if (url.pathname.startsWith(PREFIX)) {
-      try { return await handleOwn(req, res, url) } catch { return send(res, page('Error', 500)) }
+      try { return await handleOwn(req, res, url) } catch (e) { log(`login handler error: ${e?.stack ?? e}`); return send(res, page('Error', 500)) }
     }
     if (!authed(req)) {
       const nav = (req.headers.accept ?? '').includes('text/html') && req.method === 'GET'
