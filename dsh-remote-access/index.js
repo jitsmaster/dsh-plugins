@@ -34,7 +34,7 @@ export function apply(ctx, config = {}) {
   // this machine's own tailnet address, so the ts.net name works from this machine too (the OS answers
   // connections to its own tailnet IP locally, so Funnel/serve never sees them).
   const ts = config.tailscale?.funnel ? tailscaleIdentity(config.tailscale, join(dir, 'tls'), log) : undefined
-  if (ts?.ip && config.tailscale.listenOnTailnetIp !== false) listenHosts.push(ts.ip)
+  if (ts?.ip && config.tailscale.listenOnTailnetIp === true) listenHosts.push(ts.ip)
   const tls = ts?.tls ?? loadOrCreateTls(join(dir, 'tls'), config)
   if (tls.generated) log(`self-signed cert SHA-256 fingerprint (compare in the browser's certificate viewer): ${new X509Certificate(tls.cert).fingerprint256}`)
   const stopProxy = startProxy({
