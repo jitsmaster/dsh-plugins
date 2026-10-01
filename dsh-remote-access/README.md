@@ -194,7 +194,8 @@ On the relay create a key-only user (`dshtunnel`, shell `/usr/sbin/nologin`) wit
 | `port` / `listenHost` | `8443` / `127.0.0.1` | Local proxy bind (keep loopback) |
 | `targetHost` / `targetPort` | `127.0.0.1` / `3080` | The only upstream |
 | `sessionHours` | `12` | Login session lifetime |
-| `tailscale.funnel` / `httpsPort` | off / `443` | Publish via Tailscale Funnel (443, 8443 or 10000); 8443 recommended |`n| `tailscale.listenOnTailnetIp` | on | Also bind this node's tailnet IP with the `tailscale cert` certificate |
+| `tailscale.funnel` / `httpsPort` | off / `443` | Publish via Tailscale Funnel (443, 8443 or 10000); 8443 recommended |
+| `tailscale.listenOnTailnetIp` | on | Also bind this node's tailnet IP with the `tailscale cert` certificate |
 | `tailscale.bin` | `C:\Program Files\Tailscale\tailscale.exe` | CLI path |
 | `tunnel.*` | none | ssh -R variant (see above) |
 | `hostnames` | none | Names/IPs for the generated self-signed cert (ssh variant) |
