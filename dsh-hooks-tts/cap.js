@@ -44,9 +44,19 @@ function instruction(tokens, cap, path) {
   ].join('\n')
 }
 
+function warning(tokens, cap, pct, autoResume) {
+  const k = n => `${Math.round(n / 1000)}k`
+  return [
+    `CONTEXT CAP WARNING: this session's context is ${k(tokens)} tokens, ${pct}% of the way to the ${k(cap)} handoff limit.`,
+    `In your next reply, tell the user plainly that the session is nearing the limit and that at ${k(cap)} you will stop, write a handoff note${autoResume ? ' and a new session will open automatically to continue it' : ' (no new session will open automatically)'}.`,
+    'Suggest they wrap up or redirect now if they want a clean stopping point. Finish the current step cleanly; do not start large new tasks. Do not write the handoff note yet.',
+  ].join('\n')
+}
+
 export function installContextCap(ctx, config, { skip, makeMessage, settings }) {
   const dir = config.handoffDir ?? DEFAULT_HANDOFF_DIR
   const instructed = new Set()
+  const warned = new Set()
   /** agent.id -> { path, cwd } for handoffs requested but not yet picked up by a new session. */
   const pending = new Map()
   let lastCap
@@ -56,17 +66,29 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
   }
 
   /** The instruction message for this agent when over the cap and not yet told; else undefined. */
-  const check = (agent) => {
+  const check = (agent, allowWarn = true) => {
     if (skip(agent)) return undefined
     // Read the live setting on every check, so a change applies from the very next step.
     const cap = settings.get().contextCapTokens
-    if (cap !== lastCap) { lastCap = cap; instructed.clear() } // a changed cap re-arms every session
+    if (cap !== lastCap) { lastCap = cap; instructed.clear(); warned.clear() } // a changed cap re-arms every session
     if (!cap) return undefined // 0 = disabled
     const tokens = contextTokens(ctx, agent)
     if (tokens === undefined) return undefined
     // Re-arm once context drops well below the cap (compaction, a new baseline).
-    if (tokens < cap * 0.9) { instructed.delete(agent.id); return undefined }
-    if (tokens < cap || instructed.has(agent.id)) return undefined
+    const warnPct = settings.get().warnPercent
+    const warnAt = warnPct ? cap * warnPct / 100 : undefined
+    if (tokens < cap * 0.9) instructed.delete(agent.id)
+    if (warnAt === undefined || tokens < warnAt * 0.9) warned.delete(agent.id)
+    if (tokens < cap) {
+      // Heads-up before the cap: once per session, only when entering a step (a steer would restart a finished turn).
+      if (allowWarn && warnAt !== undefined && tokens >= warnAt && !warned.has(agent.id)) {
+        warned.add(agent.id)
+        trace(`cap warning for ${agent.id} (${tokens}/${cap})`)
+        return makeMessage(warning(tokens, cap, Math.round(tokens / cap * 100), settings.get().autoResumeHandoff))
+      }
+      return undefined
+    }
+    if (instructed.has(agent.id)) return undefined
     instructed.add(agent.id)
     const path = handoffPath(dir, agent)
     pending.set(agent.id, { path, cwd: agent.session?.header?.cwd })
@@ -183,7 +205,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
 
   ctx.on('agent/turn-stopping', async ({ agent }) => {
     await spawnResume(agent)
-    const message = check(agent)
+    const message = check(agent, false)
     if (message) agent.steer(message)
   })
 }

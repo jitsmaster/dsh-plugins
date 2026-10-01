@@ -114,8 +114,15 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
       const ctxTokens = pressure.projectedTokens ?? pressure.pressureTokens ?? prev?.context.tokens
       const window = pressure.contextWindow ?? prev?.context.window
       const cwd = agent.session?.header?.cwd
+      const capTokens = settings?.get().contextCapTokens
+      const warnPct = settings?.get().warnPercent
       const entry = {
         cwd,
+        // Lifetime billed tokens (input + cache + output) for this session, same basis as DSH's "tok" figure.
+        sessionTokens: total,
+        cap: capTokens && ctxTokens !== undefined
+          ? { tokens: capTokens, warn: Boolean(warnPct) && ctxTokens >= capTokens * warnPct / 100, over: ctxTokens >= capTokens, autoResume: settings.get().autoResumeHandoff }
+          : undefined,
         // A worktree the session was seen working in outranks its launch directory.
         worktree: recordedWorktree(worktrees?.get(id)) ?? (await worktreeOf(cwd)) ?? prev?.worktree,
         context: {

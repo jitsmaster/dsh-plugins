@@ -19,6 +19,11 @@ function validate(partial) {
     if (!Number.isFinite(n) || n < 0 || n > MAX_CAP) throw new Error('contextCapTokens must be 0 (off) to 100,000,000')
     out.contextCapTokens = Math.round(n)
   }
+  if (partial.warnPercent !== undefined) {
+    const n = Number(partial.warnPercent)
+    if (!Number.isFinite(n) || n < 0 || n > 99) throw new Error('warnPercent must be 0 (off) to 99')
+    out.warnPercent = Math.round(n)
+  }
   for (const key of ['ttsEnabled', 'autoResumeHandoff', 'alwaysFullAccess']) {
     if (partial[key] !== undefined) {
       if (typeof partial[key] !== 'boolean') throw new Error(`${key} must be true or false`)
@@ -30,7 +35,7 @@ function validate(partial) {
 
 export function createSettings(stateDir, defaults) {
   const path = join(stateDir, 'settings.json')
-  const base = { contextCapTokens: 400_000, ttsEnabled: true, autoResumeHandoff: true, alwaysFullAccess: false, ...validate(defaults) }
+  const base = { contextCapTokens: 400_000, warnPercent: 85, ttsEnabled: true, autoResumeHandoff: true, alwaysFullAccess: false, ...validate(defaults) }
   let cached = { ...base }
   let mtime = -1
 

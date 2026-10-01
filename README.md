@@ -69,10 +69,11 @@ Defaults live in [`dsh-hooks-tts/cordis.patch.yml`](dsh-hooks-tts/cordis.patch.y
 | `obsidianVault` | Vault path for the session-start hook; the hook does nothing when unset | unset |
 | `handoffDir` | Where handoff notes are written | `~/.dsh/handoffs` |
 | `contextCapTokens` | Handoff threshold (0 disables) | 400000 |
+| `warnPercent` | Warn at this % of the cap: amber note in the status pill plus a one-time heads-up to the agent (0 disables) | 85 |
 | `skipSubagents` | Don't run hooks for subagents | `true` |
 | `refreshIntervalMs`, `sessionBudgetTokens`, `weeklyBudgetTokens` | Status widget sampling and budgets | 30 s / 30M / 200M |
 
-Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tts/settings.json`, re-read on every step): `contextCapTokens`, `ttsEnabled`, `autoResumeHandoff`, `alwaysFullAccess`. A saved value wins over the config default.
+Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tts/settings.json`, re-read on every step): `contextCapTokens`, `warnPercent`, `ttsEnabled`, `autoResumeHandoff`, `alwaysFullAccess`. A saved value wins over the config default.
 
 ### Verify
 

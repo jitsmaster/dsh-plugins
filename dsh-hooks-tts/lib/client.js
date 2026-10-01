@@ -203,11 +203,15 @@ window.__ModuleLoader__.load({
 			if (!bar || !group) { if (existing) existing.remove(); return; }
 			if (!s) return;
 			const w = s.worktree;
-			const text = `Context Window ${fmt(s.context.tokens)}/${fmt(s.context.window)} (${pc(s.context.pct)})`
+			const text = (s.sessionTokens !== undefined ? `Session total ${fmt(s.sessionTokens)} tok  ·  ` : "")
+				+ `Context Window ${fmt(s.context.tokens)}/${fmt(s.context.window)} (${pc(s.context.pct)})`
 				+ (w ? `  ·  ⎇ ${w.name}${w.linked ? " (linked worktree)" : ""}` : "");
+			const cap = s.cap && s.cap.warn ? s.cap : undefined;
+			const text2 = cap ? text + `  ·  ⚠ ${cap.over ? "handoff due" : "handoff at " + fmt(cap.tokens)}${cap.autoResume ? " → new session" : ""}` : text;
 			const title = `context: ${fmt(s.context.tokens)} of ${fmt(s.context.window)} tokens\nworktree: ${w ? w.root : "n/a"}${w ? `\n(checked-out branch: ${w.branch})` : ""}`;
 			if (existing && existing.parentElement === group && group.lastElementChild === existing) {
-				if (existing.lastChild.textContent !== text) existing.lastChild.textContent = text;
+				if (existing.lastChild.textContent !== text2) existing.lastChild.textContent = text2;
+				existing.lastChild.style.color = cap ? "#f5a524" : "";
 				existing.title = title;
 				return;
 			}
@@ -219,7 +223,8 @@ window.__ModuleLoader__.load({
 			const sepSrc = bar.querySelector("[aria-hidden]");
 			const sep = sepSrc ? sepSrc.cloneNode(true) : document.createTextNode("·");
 			const label = document.createElement("span");
-			label.textContent = text;
+			label.textContent = text2;
+			if (cap) label.style.color = "#f5a524";
 			wrap.append(sep, label);
 			group.appendChild(wrap);
 		}
