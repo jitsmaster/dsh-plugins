@@ -10,6 +10,32 @@ browser --HTTPS (real certificate)--> Tailscale Funnel https://<node>.<tailnet>.
 
 > **For a DSH agent deploying this:** follow [Deploy](#deploy) top to bottom. Steps marked **(human)** need a person (browser sign-in, admin console, choosing a password). Do not invent or store the password yourself; never print it back. Each step lists a check that must pass before you continue.
 
+## Deploy with DSH (copy-paste prompt)
+
+Paste this into a DSH session on the target machine. The agent follows the [Deploy](#deploy) steps below and stops for the parts only you can do.
+
+````text
+Deploy the dsh-remote-access plugin on this machine so I can open DSH from outside my LAN.
+
+Source of truth: the deployment guide at
+https://raw.githubusercontent.com/jitsmaster/dsh-plugins/main/dsh-remote-access/README.md
+Fetch it first and follow its "Deploy" section step by step (steps 1 to 7).
+
+Rules:
+- Do each step in order. After each step, run its "Check" and show me the real output. Do not continue until the check passes. If a check fails, use the guide's Troubleshooting section and tell me what you found.
+- Steps marked (human) need me: Tailscale sign-in/approval (step 2), the admin console changes (step 3) and choosing the password (step 4). For those, give me the exact action and wait. After I confirm, run the check.
+- Never choose, generate, store, print or log my password or authenticator secret. I run setup.js myself, and you only check that auth.json exists.
+- Read the public DNS name from `tailscale status --json` (Self.DNSName without the trailing dot) and use it for `hostnames` in the profile config. Do not guess it.
+- If Tailscale is already installed and signed in, skip step 1 and the sign-in in step 2. Check with `tailscale status` first.
+- If a `nodeAttrs` block already exists in my Tailscale policy, tell me to merge into it rather than replace it.
+- Install with the `github:jitsmaster/dsh-plugins#path:/dsh-remote-access` spec, not a link. Use profile `web` unless I name another. Append to ~/.dsh/profiles/web/cordis.patch.yml and keep its existing entries.
+- Before restarting DSH (step 7), tell me it will end active sessions and ask me to confirm. After the restart, run the step 7 checks.
+- Test with the `curl --resolve` method in the guide, not through this machine's own tailnet address. Say clearly what you could not verify. I will confirm the browser login from my phone on mobile data.
+- Do not change anything in the plugin's source code.
+
+When done, report a short summary: the public URL, each check's result, and anything left for me to do.
+````
+
 ## What it does and does not do
 
 - DSH itself stays on loopback. The plugin's proxy is the only thing Funnel publishes, and its upstream is fixed to `127.0.0.1:3080`.
