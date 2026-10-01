@@ -26,9 +26,9 @@ A Claude-Code-style hook runner for DSH plus a few quality-of-life features:
 dsh plugin --profile web add "github:jitsmaster/dsh-plugins#path:/dsh-hooks-tts"
 ```
 
-(From a DSH source checkout, run it as `pnpm dsh plugin --profile web add ...` in the checkout.) Then restart the DSH server and refresh the web page. A *Hooks and Usage* entry appears in the left sidebar. The installed copy lives in `~/.dsh/profiles/web/node_modules/dsh-hooks-tts`; this is a copy of the commit installed, not a live link.
+(From a DSH source checkout, run it as `pnpm dsh plugin --profile web add ...` in the checkout.) Then restart the DSH server and **refresh the browser page** (the web client only loads the new plugin UI on a page reload). A *Hooks and Usage* entry appears in the left sidebar. The installed copy lives in `~/.dsh/profiles/web/node_modules/dsh-hooks-tts`; this is a copy of the commit installed, not a live link.
 
-Update to the latest commit by running the same `add` command again (pnpm re-resolves the branch), then restart. Remove with:
+Update to the latest commit by running the same `add` command again (pnpm re-resolves the branch), then restart the server and **refresh the browser**. Remove with:
 
 ```powershell
 dsh plugin --profile web remove dsh-hooks-tts
@@ -41,7 +41,9 @@ git clone https://github.com/jitsmaster/dsh-plugins.git D:\dev\ai\dsh-plugins
 dsh plugin --profile web add "link:D:/dev/ai/dsh-plugins/dsh-hooks-tts"
 ```
 
-Server-side files (`cap.js`, `index.js`, `status.js`, `settings.js`, `worktrees.js`) need a **DSH server restart** after every edit. The client bundle (`lib/client.js`) only needs a page refresh.
+Server-side files (`cap.js`, `index.js`, `status.js`, `settings.js`, `worktrees.js`) need a **DSH server restart** after every edit. The client bundle (`lib/client.js`) only needs a browser refresh.
+> **After every install, update or removal: restart the DSH server, then refresh the browser tab.** Without the refresh the page keeps showing the old plugin UI (or none).
+
 ### Configure
 
 Defaults live in [`dsh-hooks-tts/cordis.patch.yml`](dsh-hooks-tts/cordis.patch.yml) and contain no personal paths. Put machine-specific values in `~/.dsh/tts/config.local.json`, which overrides the patch:
