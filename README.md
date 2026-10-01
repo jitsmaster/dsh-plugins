@@ -20,31 +20,28 @@ A Claude-Code-style hook runner for DSH plus a few quality-of-life features:
 
 ### Deploy
 
-1. Clone this repository:
+**Install from GitHub (recommended).** One command; DSH installs the package into the profile and adds it to the profile's bundle list:
 
-   ```powershell
-   git clone https://github.com/jitsmaster/dsh-plugins.git D:\dev\ai\dsh-plugins
-   ```
+```powershell
+dsh plugin --profile web add "github:jitsmaster/dsh-plugins#path:/dsh-hooks-tts"
+```
 
-2. Add the plugin to your DSH profile. Edit the profile's `package.json` (for the web profile: `~/.dsh/profiles/web/package.json`): add a `link:` dependency and list the plugin in the profile bundles.
+(From a DSH source checkout, run it as `pnpm dsh plugin --profile web add ...` in the checkout.) Then restart the DSH server and refresh the web page. A *Hooks and Usage* entry appears in the left sidebar. The installed copy lives in `~/.dsh/profiles/web/node_modules/dsh-hooks-tts`; this is a copy of the commit installed, not a live link.
 
-   ```json
-   {
-     "dependencies": {
-       "dsh-hooks-tts": "link:D:/dev/ai/dsh-plugins/dsh-hooks-tts"
-     },
-     "dsh": {
-       "profile": {
-         "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-hooks-tts"]
-       }
-     }
-   }
-   ```
+Update to the latest commit by running the same `add` command again (pnpm re-resolves the branch), then restart. Remove with:
 
-3. Install and restart DSH so the profile picks up the link (run the profile's package install if your DSH setup requires it), then refresh the web page. A *Hooks and Usage* entry appears in the left sidebar.
+```powershell
+dsh plugin --profile web remove dsh-hooks-tts
+```
 
-   Server-side files (`cap.js`, `index.js`, `status.js`, `settings.js`, `worktrees.js`) need a **DSH server restart** after every edit. The client bundle (`lib/client.js`) only needs a page refresh.
+**Develop from a local clone.** Use a `link:` dependency so edits apply without reinstalling:
 
+```powershell
+git clone https://github.com/jitsmaster/dsh-plugins.git D:\dev\ai\dsh-plugins
+dsh plugin --profile web add "link:D:/dev/ai/dsh-plugins/dsh-hooks-tts"
+```
+
+Server-side files (`cap.js`, `index.js`, `status.js`, `settings.js`, `worktrees.js`) need a **DSH server restart** after every edit. The client bundle (`lib/client.js`) only needs a page refresh.
 ### Configure
 
 Defaults live in [`dsh-hooks-tts/cordis.patch.yml`](dsh-hooks-tts/cordis.patch.yml) and contain no personal paths. Put machine-specific values in `~/.dsh/tts/config.local.json`, which overrides the patch:
