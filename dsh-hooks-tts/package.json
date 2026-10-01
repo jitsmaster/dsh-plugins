@@ -1,0 +1,26 @@
+{
+  "name": "dsh-hooks-tts",
+  "version": "0.1.0",
+  "description": "Claude-Code-style hook runner for DeepSeek Harness: Kokoro TTS read-outs, Obsidian vault session-start search, and a bottom-right worktree/context/usage status widget.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "status.js", "cap.js", "settings.js", "worktrees.js", "hooks.json", "scripts", "lib", "cordis.patch.yml"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ],
+      "platform": "web"
+    }
+  }
+}

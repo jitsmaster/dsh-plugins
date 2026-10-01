@@ -1,0 +1,25 @@
+- insert:
+    - id: hooks-tts
+      name: dsh-hooks-tts
+      config:
+        # --- TTS (optional; omit ttsUrl to leave the spoken read-outs without a server) ---
+        # ttsUrl: http://127.0.0.1:8880/tts
+        # Launched automatically (hidden) when nothing listens on ttsUrl.
+        # ttsServerScript: C:\path\to\start-hidden.ps1
+        # Directory holding tts-stop-hotkey.exe (stop flag and audio.pids). Default: ~/.claude
+        # hotkeyDir: C:\Users\you\.claude
+        skipSubagents: true
+        # --- Obsidian session-start note (optional; the hook does nothing unless set) ---
+        # obsidianVault: C:\path\to\your\vault
+        # --- Context cap / auto-resume ---
+        # DEFAULT only. Change it live from the sidebar "Hooks and Usage" page (or ~/.dsh/tts/settings.json);
+        # a saved value there wins over this one and is re-read on every agent step.
+        # Over this many context tokens the agent is told to stop and write a handoff note (0 disables).
+        contextCapTokens: 400000
+        # Where handoff notes are written. Default: ~/.dsh/handoffs
+        # handoffDir: C:\path\to\handoffs
+        # --- Status widget (bottom-right). Percentages are measured against these budgets. ---
+        refreshIntervalMs: 30000
+        # Counts input + cache + output tokens, same basis as the "tok" figure in the stats pill.
+        sessionBudgetTokens: 30000000
+        weeklyBudgetTokens: 200000000
