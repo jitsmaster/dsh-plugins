@@ -59,9 +59,31 @@ function instruction(tokens, cap, path, forward, previousNote) {
   ].join('\n')
 }
 
+const kTokens = n => `${Math.round(n / 1000)}k`
+
+/** Heads-up before the cap, with auto-handoff ON: the agent will stop and hand off at the cap. */
+function warning(tokens, cap, pct) {
+  return [
+    `CONTEXT CAP WARNING: this session's context is ${kTokens(tokens)} tokens, ${pct}% of the way to the ${kTokens(cap)} handoff limit.`,
+    `In your next reply, tell the user plainly that the session is nearing the limit and that at ${kTokens(cap)} you will stop, write a handoff note and a new session will open automatically to continue it.`,
+    'Suggest they wrap up or redirect now if they want a clean stopping point. Finish the current step cleanly; do not start large new tasks. Do not write the handoff note yet.',
+  ].join('\n')
+}
+
+/** Notice with auto-handoff OFF: nothing will stop or hand off on its own, so only inform the user. */
+function notice(tokens, cap, over) {
+  return [
+    over
+      ? `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, over the ${kTokens(cap)} cap. Automatic handoff is OFF, so you will NOT be stopped: the session continues past the cap and no new session opens.`
+      : `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, nearing the ${kTokens(cap)} cap. Automatic handoff is OFF, so you will NOT be stopped when it is reached: the session continues past the cap and no new session opens.`,
+    'In your next reply, tell the user briefly that you will keep working past the cap, and recommend handing off (compacting the conversation or starting a new session) as soon as it is convenient. Never say or imply that the session will stop at the cap. Do not write a handoff note unless the user asks, and continue the current work normally.',
+  ].join('\n')
+}
+
 export function installContextCap(ctx, config, { skip, makeMessage, settings }) {
   const dir = config.handoffDir ?? DEFAULT_HANDOFF_DIR
   const instructed = new Set()
+  const warned = new Set()
   /** agent.id -> { path, cwd } for handoffs requested but not yet picked up by a new session. */
   const pending = new Map()
   /** Resumed session id -> { startedAt, streak, note }: streak = consecutive short sessions before it; note = the handoff it resumed from. */
@@ -72,18 +94,42 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
     try { appendFileSync(join(dirname(settings.path), 'spawn.log'), `${new Date().toISOString()} ${line}\n`) } catch { /* best effort */ }
   }
 
-  /** The instruction message for this agent when over the cap and not yet told; else undefined. */
-  const check = (agent) => {
+  /**
+   * The message to add for this agent, or undefined. With auto-handoff on: a heads-up near the cap, then the
+   * stop-and-write-a-handoff instruction over it. With auto-handoff off: only informational notices, never an
+   * instruction to stop or write a note. `allowWarn` is false when a turn is stopping (a steer would restart it).
+   */
+  const check = (agent, allowWarn = true) => {
     if (skip(agent)) return undefined
     // Read the live setting on every check, so a change applies from the very next step.
     const cap = settings.get().contextCapTokens
-    if (cap !== lastCap) { lastCap = cap; instructed.clear() } // a changed cap re-arms every session
+    if (cap !== lastCap) { lastCap = cap; instructed.clear(); warned.clear() } // a changed cap re-arms every session
     if (!cap) return undefined // 0 = disabled
     const tokens = contextTokens(ctx, agent)
     if (tokens === undefined) return undefined
-    // Re-arm once context drops well below the cap (compaction, a new baseline).
-    if (tokens < cap * 0.9) { instructed.delete(agent.id); return undefined }
-    if (tokens < cap || instructed.has(agent.id)) return undefined
+    const autoResume = settings.get().autoResumeHandoff
+    const warnPct = settings.get().warnPercent
+    const warnAt = warnPct ? cap * warnPct / 100 : undefined
+    // Re-arm once context drops well below the cap or the warning point (compaction, a new baseline).
+    if (tokens < cap * 0.9) instructed.delete(agent.id)
+    if (warnAt === undefined || tokens < warnAt * 0.9) warned.delete(agent.id)
+    if (tokens < cap) {
+      // Once per session, only when entering a step.
+      if (allowWarn && warnAt !== undefined && tokens >= warnAt && !warned.has(agent.id)) {
+        warned.add(agent.id)
+        trace(`cap warning for ${agent.id} (${tokens}/${cap}, autoResume ${autoResume})`)
+        return makeMessage(autoResume ? warning(tokens, cap, Math.round(tokens / cap * 100)) : notice(tokens, cap, false))
+      }
+      return undefined
+    }
+    if (instructed.has(agent.id)) return undefined
+    if (!autoResume) {
+      // Auto-handoff is off: tell the user once that the cap is passed, but never stop the agent or request a note.
+      if (!allowWarn) return undefined
+      instructed.add(agent.id)
+      trace(`over cap, auto-handoff off: notice only for ${agent.id} (${tokens}/${cap})`)
+      return makeMessage(notice(tokens, cap, true))
+    }
     instructed.add(agent.id)
     const path = handoffPath(dir, agent)
     // Short-session streak: only a session that was itself spawned from a handoff can count; its
@@ -207,7 +253,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
 
   ctx.on('agent/turn-stopping', async ({ agent }) => {
     await spawnResume(agent)
-    const message = check(agent)
+    const message = check(agent, false)
     if (message) agent.steer(message)
   })
 }

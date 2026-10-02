@@ -9,7 +9,8 @@ window.__ModuleLoader__.load({
 
 		const STATUS_URL = `http://${location.hostname || "127.0.0.1"}:3081/status`;
 		const SETTINGS_URL = STATUS_URL.replace(/\/status$/, "/settings");
-		const POLL_MS = 30000;
+		// /status is a local JSON snapshot the host re-samples on every step, so polling it is cheap.
+		const POLL_MS = 3000;
 		const PANEL_ID = "usage";
 		const SESSION_RE = /session-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/i;
 
@@ -174,6 +175,7 @@ window.__ModuleLoader__.load({
 			React.useEffect(() => {
 				activeId = id;
 				renderInline();
+				poll(); // switched chats: fetch now instead of waiting for the next tick
 				return () => { if (activeId === id) activeId = undefined; };
 			}, [id]);
 			return null;
@@ -205,9 +207,16 @@ window.__ModuleLoader__.load({
 			const w = s.worktree;
 			const text = `Context Window ${fmt(s.context.tokens)}/${fmt(s.context.window)} (${pc(s.context.pct)})`
 				+ (w ? `  ·  ⎇ ${w.name}${w.linked ? " (linked worktree)" : ""}` : "");
+			// Near/over the cap. Auto-handoff ON: "will hand off"; OFF: an "auto-handoff off" notice only, nothing will happen on its own.
+			const cap = s.cap && s.cap.warn ? s.cap : undefined;
+			const pillText = !cap ? text : cap.autoResume
+				? text + `  ·  ⚠ ${cap.over ? "handoff due" : "handoff at " + fmt(cap.tokens)} → new session`
+				: text + `  ·  ℹ ${cap.over ? "over" : "nearing"} ${fmt(cap.tokens)} cap · auto-handoff off`;
+			const pillColor = cap ? "#f5a524" : "";
 			const title = `context: ${fmt(s.context.tokens)} of ${fmt(s.context.window)} tokens\nworktree: ${w ? w.root : "n/a"}${w ? `\n(checked-out branch: ${w.branch})` : ""}`;
 			if (existing && existing.parentElement === group && group.lastElementChild === existing) {
-				if (existing.lastChild.textContent !== text) existing.lastChild.textContent = text;
+				if (existing.lastChild.textContent !== pillText) existing.lastChild.textContent = pillText;
+				existing.lastChild.style.color = pillColor;
 				existing.title = title;
 				return;
 			}
@@ -219,7 +228,8 @@ window.__ModuleLoader__.load({
 			const sepSrc = bar.querySelector("[aria-hidden]");
 			const sep = sepSrc ? sepSrc.cloneNode(true) : document.createTextNode("·");
 			const label = document.createElement("span");
-			label.textContent = text;
+			label.textContent = pillText;
+			label.style.color = pillColor;
 			wrap.append(sep, label);
 			group.appendChild(wrap);
 		}

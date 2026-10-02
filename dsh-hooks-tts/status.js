@@ -33,6 +33,21 @@ async function worktreeOf(cwd) {
   }
 }
 
+// worktreeOf spawns four git processes; sampling can now run every couple of seconds, so cache per cwd.
+const WORKTREE_TTL_MS = 30_000
+const worktreeCache = new Map()
+async function cachedWorktreeOf(cwd) {
+  const hit = worktreeCache.get(cwd)
+  if (hit && Date.now() - hit.at < WORKTREE_TTL_MS) return hit.value
+  const value = await worktreeOf(cwd)
+  // Misses are cached too (a non-git cwd would otherwise spawn git on every sample).
+  // Drop expired entries on insert so the map cannot grow with every distinct cwd.
+  const now = Date.now()
+  for (const [key, entry] of worktreeCache) if (now - entry.at >= WORKTREE_TTL_MS) worktreeCache.delete(key)
+  worktreeCache.set(cwd, { at: now, value })
+  return value
+}
+
 const recordedWorktree = (r) => (r && existsSync(r.root) ? { name: r.name, root: r.root, branch: r.branch, linked: true } : undefined)
 
 const pct = (used, budget) => (budget > 0 ? Math.round((used / budget) * 1000) / 10 : undefined)
@@ -114,10 +129,16 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
       const ctxTokens = pressure.projectedTokens ?? pressure.pressureTokens ?? prev?.context.tokens
       const window = pressure.contextWindow ?? prev?.context.window
       const cwd = agent.session?.header?.cwd
+      const capTokens = settings?.get().contextCapTokens
+      const warnPct = settings?.get().warnPercent
+      const over = ctxTokens !== undefined && ctxTokens >= capTokens
       const entry = {
         cwd,
+        cap: capTokens && ctxTokens !== undefined
+          ? { tokens: capTokens, warn: over || (Boolean(warnPct) && ctxTokens >= capTokens * warnPct / 100), over, autoResume: settings.get().autoResumeHandoff }
+          : undefined,
         // A worktree the session was seen working in outranks its launch directory.
-        worktree: recordedWorktree(worktrees?.get(id)) ?? (await worktreeOf(cwd)) ?? prev?.worktree,
+        worktree: recordedWorktree(worktrees?.get(id)) ?? (await cachedWorktreeOf(cwd)) ?? prev?.worktree,
         context: {
           tokens: ctxTokens,
           window,
@@ -149,13 +170,47 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     try { writeFileSync(ledgerPath, JSON.stringify(ledger)) } catch { /* non-fatal */ }
   }
 
+  // One sample at a time: the 30s timer and the event-driven requests share this, so two samples can
+  // never be in flight and write an older reading over a newer one. A request that arrives mid-sample
+  // schedules exactly one follow-up run.
+  let inFlight
+  let again = false
+  const runSample = () => {
+    if (inFlight) { again = true; return inFlight }
+    inFlight = sample()
+      .catch(error => ctx.logger.warn(`hooks-tts: status sample failed: ${String(error)}`))
+      .finally(() => {
+        inFlight = undefined
+        if (again) { again = false; void runSample() }
+      })
+    return inFlight
+  }
+
   const run = () => {
     void refreshClaude()
-    return sample().catch(error => ctx.logger.warn(`hooks-tts: status sample failed: ${String(error)}`))
+    return runSample()
   }
   run()
   const timer = setInterval(run, intervalMs)
   timer.unref?.()
+
+  // Event-driven refresh: re-sample (at most once per MIN_GAP_MS) when a step starts, a tool finishes
+  // or a turn ends, so token and context figures follow the conversation instead of the 30s timer.
+  const MIN_GAP_MS = 2000
+  let sampleTimer
+  let lastSampleAt = 0
+  const requestSample = () => {
+    if (sampleTimer) return
+    sampleTimer = setTimeout(() => {
+      sampleTimer = undefined
+      lastSampleAt = Date.now()
+      void runSample()
+    }, Math.max(0, MIN_GAP_MS - (Date.now() - lastSampleAt)))
+    sampleTimer.unref?.()
+  }
+  ctx.on('agent/pre-step', (_payload, next) => { requestSample(); return next() })
+  ctx.on('tools/post-execute', (_exec, _result, next) => { requestSample(); return next() })
+  ctx.on('agent/turn-stopping', () => { requestSample() })
 
   // Settings writes are accepted only from the DSH web page itself (never from other sites).
   const webUrl = new URL(process.env.DSH_WEB_URL || 'http://127.0.0.1:3080')
@@ -201,6 +256,6 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
   server.on('error', error => ctx.logger.warn(`hooks-tts: status server failed: ${String(error)}`))
   server.listen(STATUS_PORT, '127.0.0.1')
 
-  const stop = () => { clearInterval(timer); server.close() }
+  const stop = () => { clearInterval(timer); clearTimeout(sampleTimer); server.close() }
   signal.addEventListener('abort', stop, { once: true })
 }
