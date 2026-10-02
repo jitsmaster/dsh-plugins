@@ -30,15 +30,30 @@ function handoffPath(dir, agent) {
   return join(dir, `${project}-${stamp}-handoff.md`)
 }
 
-function instruction(tokens, cap, path) {
+/** A resumed session that hits the cap within this long counts as a "short" session. */
+const SHORT_SESSION_MS = 20 * 60 * 1000
+/** This many consecutive short resumed sessions switch the next handoff to forward mode. */
+const SHORT_STREAK_FOR_FORWARD = 3
+
+function instruction(tokens, cap, path, forward, previousNote) {
   const k = n => `${Math.round(n / 1000)}k`
+  const sections = forward
+    ? [
+      'FORWARD MODE: the last several sessions each hit the cap within 20 minutes, so keep this handoff lean (the modes:sparc "Forward Mode" format). Do NOT write Previous Work, Key Decisions or a narrative Current State.',
+      'Use exactly these sections: "# <short title> Handoff", "## Context Carried Forward", "## What\'s Left" (numbered, concrete next actions), and "## Open Questions" only if something still blocks execution.',
+      `"## Context Carried Forward" starts with the line "Worktree: <absolute path> · branch <branch>" (the directory your commands and edits actually run in; verify with \`git rev-parse --show-toplevel\`, \`git branch --show-current\` and \`git worktree list\`; if no linked worktree is used write "Worktree: none (main checkout <path>, branch <branch>)"), then "Supersedes: ${previousNote ?? 'none'}" (history lives there and in git log, not repeated), then only facts the next session cannot re-derive from the code or git log (tokens, env quirks, transient blockers, anomalies in git status/log).`,
+      'Also tell the user in your final reply that sessions are hitting the cap quickly and the context cap may be too low or the resume too heavy.',
+    ]
+    : [
+      'Use exactly these sections: "# <short title> Handoff", "## Previous Work (summary only)", "## Key Decisions", "## Current State" (branch, repo/worktree, commits, uncommitted changes, running processes), "## What\'s Left" (numbered, concrete next actions), "## Open Questions".',
+      'In "## Current State" the FIRST line must be "Worktree: <absolute path> · branch <branch>": the directory your commands and edits actually run in (may differ from the session launch directory, e.g. a .claude/worktrees/<name> checkout). Verify with `git rev-parse --show-toplevel`, `git branch --show-current` and `git worktree list`; if no linked worktree is used write "Worktree: none (main checkout <path>, branch <branch>)". The resuming session continues in exactly that worktree.',
+    ]
   return [
     `CONTEXT CAP REACHED: this session's context is ${k(tokens)} tokens, over the ${k(cap)} limit.`,
     'Stop the current work immediately — do not start or continue any task, tool exploration, or edit beyond what the handoff needs.',
     `Write a handoff note NOW to: ${path}`,
     'Directly under the title put one line: "Mode: sparc" if this session is running under the modes:sparc / sparcr skill (SPARC mode), otherwise "Mode: plain". The resuming session uses this line to decide whether to continue in SPARC mode.',
-    'Use exactly these sections: "# <short title> Handoff", "## Previous Work (summary only)", "## Key Decisions", "## Current State" (branch, repo/worktree, commits, uncommitted changes, running processes), "## What\'s Left" (numbered, concrete next actions), "## Open Questions".',
-    'In "## Current State" the FIRST line must be "Worktree: <absolute path> · branch <branch>": the directory your commands and edits actually run in (may differ from the session launch directory, e.g. a .claude/worktrees/<name> checkout). Verify with `git rev-parse --show-toplevel`, `git branch --show-current` and `git worktree list`; if no linked worktree is used write "Worktree: none (main checkout <path>, branch <branch>)". The resuming session continues in exactly that worktree.',
+    ...sections,
     'Be specific (file paths, commands, ids) so a fresh session can resume without this conversation. Create the folder if it is missing.',
     'After the file is written, reply with the file path and a two-line summary, then stop. A new session should pick the work up from the note.',
   ].join('\n')
@@ -49,6 +64,8 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
   const instructed = new Set()
   /** agent.id -> { path, cwd } for handoffs requested but not yet picked up by a new session. */
   const pending = new Map()
+  /** Resumed session id -> { startedAt, streak, note }: streak = consecutive short sessions before it; note = the handoff it resumed from. */
+  const resumed = new Map()
   let lastCap
   /** Diagnostic trail for the auto-resume flow: <stateDir>/spawn.log. */
   const trace = (line) => {
@@ -69,10 +86,16 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
     if (tokens < cap || instructed.has(agent.id)) return undefined
     instructed.add(agent.id)
     const path = handoffPath(dir, agent)
-    pending.set(agent.id, { path, cwd: agent.session?.header?.cwd })
+    // Short-session streak: only a session that was itself spawned from a handoff can count; its
+    // age is time since the spawn. Under 20 min extends the streak, otherwise it resets.
+    const origin = resumed.get(agent.id)
+    const ageMs = origin ? Date.now() - origin.startedAt : undefined
+    const streak = origin && ageMs < SHORT_SESSION_MS ? origin.streak + 1 : 0
+    const forward = streak >= SHORT_STREAK_FOR_FORWARD
+    pending.set(agent.id, { path, cwd: agent.session?.header?.cwd, streak })
     ctx.logger.warn(`hooks-tts: context ${tokens} exceeds cap ${cap}; requesting handoff`)
-    trace(`handoff requested for ${agent.id} (${tokens}/${cap}) -> ${path}`)
-    return makeMessage(instruction(tokens, cap, path))
+    trace(`handoff requested for ${agent.id} (${tokens}/${cap}) -> ${path}; session age ${ageMs === undefined ? 'n/a (not a resumed session)' : `${Math.round(ageMs / 60000)}min`}, short streak ${streak}, mode ${forward ? 'FORWARD' : 'normal'}`)
+    return makeMessage(instruction(tokens, cap, path, forward, origin?.note))
   }
 
   /** "Always allow full access": force every session to full access / never ask, checked each step. */
@@ -107,7 +130,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
     try { note = readFileSync(path, 'utf8') } catch { /* fall through to plain */ }
     const sparc = /^\s*mode\s*:\s*sparc\b/im.test(note)
     if (!sparc) {
-      return { sparc: false, value: `Resume the work from this handoff note. Read it first, then continue with its "What's Left" items. First read the "Worktree:" line in "Current State" and run every command and edit in that absolute path (use it as workdir; do not create a new worktree). Keep the same worktree in any further handoff:\n${path}` }
+      return { sparc: false, value: `Resume the work from this handoff note. Read it first, then continue with its "What's Left" items. First read the "Worktree:" line (in "Current State", or "Context Carried Forward" in a forward-mode note) and run every command and edit in that absolute path (use it as workdir; do not create a new worktree). Keep the same worktree in any further handoff:\n${path}` }
     }
     const file = config.sparcCommandPath ?? join(homedir(), '.claude', 'commands', 'modes', 'sparc.md')
     let body = ''
@@ -173,6 +196,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
         mode: 'queue',
         content: [{ type: 'text', text: text.value }],
       }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
+      resumed.set(created.sessionId, { startedAt: Date.now(), streak: job.streak ?? 0, note: job.path })
       ctx.logger.info(`hooks-tts: spawned ${created.sessionId} from handoff ${job.path}`)
       trace(`spawned ${created.sessionId}`)
     } catch (error) {
