@@ -69,7 +69,7 @@ Defaults live in [`dsh-hooks-tts/cordis.patch.yml`](dsh-hooks-tts/cordis.patch.y
 | `obsidianVault` | Vault path for the session-start hook; the hook does nothing when unset | unset |
 | `handoffDir` | Where handoff notes are written | `~/.dsh/handoffs` |
 | `contextCapTokens` | Handoff threshold (0 disables) | 400000 |
-| `warnPercent` | Warn at this % of the cap, via the status pill and a one-time heads-up to the agent (0 disables). The pill is amber either way: with *Auto-resume after handoff* on it reads `⚠ handoff at 400k → new session`, with it off `ℹ nearing 400k cap · auto-handoff off`, and the agent is only informed — it is never told to stop or write a handoff note | 85 |
+| `warnPercent` | Warn at this % of the cap, via the status pill and a one-time heads-up to the agent (0 disables). With *Auto-resume after handoff* on it reads `⚠ handoff at 400k → new session`, with it off `ℹ nearing 400k cap · auto-handoff off`, and the agent is only informed — it is never told to stop or write a handoff note | 85 |
 | `skipSubagents` | Don't run hooks for subagents | `true` |
 | `refreshIntervalMs`, `sessionBudgetTokens`, `weeklyBudgetTokens` | Status widget sampling and budgets | 30 s / 30M / 200M |
 

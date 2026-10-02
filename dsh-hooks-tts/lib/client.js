@@ -207,7 +207,7 @@ window.__ModuleLoader__.load({
 			const w = s.worktree;
 			const text = `Context Window ${fmt(s.context.tokens)}/${fmt(s.context.window)} (${pc(s.context.pct)})`
 				+ (w ? `  ·  ⎇ ${w.name}${w.linked ? " (linked worktree)" : ""}` : "");
-			// Near/over the cap, always amber. Auto-handoff ON: "will hand off"; OFF: an "auto-handoff off" notice only, nothing will happen on its own.
+			// Near/over the cap. Auto-handoff ON: "will hand off"; OFF: an "auto-handoff off" notice only, nothing will happen on its own.
 			const cap = s.cap && s.cap.warn ? s.cap : undefined;
 			const pillText = !cap ? text : cap.autoResume
 				? text + `  ·  ⚠ ${cap.over ? "handoff due" : "handoff at " + fmt(cap.tokens)} → new session`
