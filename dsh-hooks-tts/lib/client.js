@@ -9,7 +9,8 @@ window.__ModuleLoader__.load({
 
 		const STATUS_URL = `http://${location.hostname || "127.0.0.1"}:3081/status`;
 		const SETTINGS_URL = STATUS_URL.replace(/\/status$/, "/settings");
-		const POLL_MS = 30000;
+		// /status is a local JSON snapshot the host re-samples on every step, so polling it is cheap.
+		const POLL_MS = 3000;
 		const PANEL_ID = "usage";
 		const SESSION_RE = /session-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/i;
 
@@ -174,6 +175,7 @@ window.__ModuleLoader__.load({
 			React.useEffect(() => {
 				activeId = id;
 				renderInline();
+				poll(); // switched chats: fetch now instead of waiting for the next tick
 				return () => { if (activeId === id) activeId = undefined; };
 			}, [id]);
 			return null;
