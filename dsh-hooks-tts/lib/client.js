@@ -240,10 +240,10 @@ window.__ModuleLoader__.load({
 			+ '<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1e3a8a"/><stop offset="1" stop-color="#4D6BFE"/></linearGradient>'
 			+ '<clipPath id="c"><rect width="64" height="64" rx="14"/></clipPath></defs>'
 			+ '<g clip-path="url(#c)"><rect width="64" height="64" fill="url(#bg)"/>'
-			+ '<path d="M0 34Q8 27 16 34T32 34T48 34T64 34V64H0Z" fill="#7aa2ff" fill-opacity=".45"/>'
-			+ '<path d="M0 42Q8 35 16 42T32 42T48 42T64 42V64H0Z" fill="#3b82f6" fill-opacity=".6"/>'
-			+ '<path d="M0 50Q8 43 16 50T32 50T48 50T64 50V64H0Z" fill="#1e40af" fill-opacity=".85"/>'
-			+ '<g transform="translate(10 8) scale(1.8)"><path fill="#fff" d="' + WHALE_PATH + '"/></g></g></svg>';
+			+ '<path d="M0 30Q8 21 16 30T32 30T48 30T64 30V64H0Z" fill="#8fb0ff" fill-opacity=".6"/>'
+			+ '<path d="M0 38Q8 29 16 38T32 38T48 38T64 38V64H0Z" fill="#3b82f6" fill-opacity=".8"/>'
+			+ '<path d="M0 47Q8 38 16 47T32 47T48 47T64 47V64H0Z" fill="#1e40af" fill-opacity=".95"/>'
+			+ '<g transform="translate(15 5) scale(1.5)"><path fill="#fff" d="' + WHALE_PATH + '"/></g></g></svg>';
 
 		function setAppIcon() {
 			const svgUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(APP_ICON_SVG);
