@@ -40,7 +40,11 @@ async function cachedWorktreeOf(cwd) {
   const hit = worktreeCache.get(cwd)
   if (hit && Date.now() - hit.at < WORKTREE_TTL_MS) return hit.value
   const value = await worktreeOf(cwd)
-  worktreeCache.set(cwd, { at: Date.now(), value })
+  // Misses are cached too (a non-git cwd would otherwise spawn git on every sample).
+  // Drop expired entries on insert so the map cannot grow with every distinct cwd.
+  const now = Date.now()
+  for (const [key, entry] of worktreeCache) if (now - entry.at >= WORKTREE_TTL_MS) worktreeCache.delete(key)
+  worktreeCache.set(cwd, { at: now, value })
   return value
 }
 
@@ -127,10 +131,11 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
       const cwd = agent.session?.header?.cwd
       const capTokens = settings?.get().contextCapTokens
       const warnPct = settings?.get().warnPercent
+      const over = ctxTokens !== undefined && ctxTokens >= capTokens
       const entry = {
         cwd,
         cap: capTokens && ctxTokens !== undefined
-          ? { tokens: capTokens, warn: Boolean(warnPct) && ctxTokens >= capTokens * warnPct / 100, over: ctxTokens >= capTokens, autoResume: settings.get().autoResumeHandoff }
+          ? { tokens: capTokens, warn: over || (Boolean(warnPct) && ctxTokens >= capTokens * warnPct / 100), over, autoResume: settings.get().autoResumeHandoff }
           : undefined,
         // A worktree the session was seen working in outranks its launch directory.
         worktree: recordedWorktree(worktrees?.get(id)) ?? (await cachedWorktreeOf(cwd)) ?? prev?.worktree,
@@ -165,9 +170,25 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     try { writeFileSync(ledgerPath, JSON.stringify(ledger)) } catch { /* non-fatal */ }
   }
 
+  // One sample at a time: the 30s timer and the event-driven requests share this, so two samples can
+  // never be in flight and write an older reading over a newer one. A request that arrives mid-sample
+  // schedules exactly one follow-up run.
+  let inFlight
+  let again = false
+  const runSample = () => {
+    if (inFlight) { again = true; return inFlight }
+    inFlight = sample()
+      .catch(error => ctx.logger.warn(`hooks-tts: status sample failed: ${String(error)}`))
+      .finally(() => {
+        inFlight = undefined
+        if (again) { again = false; void runSample() }
+      })
+    return inFlight
+  }
+
   const run = () => {
     void refreshClaude()
-    return sample().catch(error => ctx.logger.warn(`hooks-tts: status sample failed: ${String(error)}`))
+    return runSample()
   }
   run()
   const timer = setInterval(run, intervalMs)
@@ -183,7 +204,7 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     sampleTimer = setTimeout(() => {
       sampleTimer = undefined
       lastSampleAt = Date.now()
-      sample().catch(error => ctx.logger.warn(`hooks-tts: status sample failed: ${String(error)}`))
+      void runSample()
     }, Math.max(0, MIN_GAP_MS - (Date.now() - lastSampleAt)))
     sampleTimer.unref?.()
   }
