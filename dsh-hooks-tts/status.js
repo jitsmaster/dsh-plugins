@@ -9,6 +9,7 @@ import { createServer } from 'node:http'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { listSpawned } from './spawned.js'
 
 export const STATUS_PORT = 3081
 
@@ -247,7 +248,7 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     } else if (req.url?.startsWith('/status')) {
       res.setHeader('Content-Type', 'application/json')
       // Settings are read fresh on every request, so edits to settings.json show up immediately.
-      res.end(JSON.stringify({ ...snapshot, settings: settings.get() }))
+      res.end(JSON.stringify({ ...snapshot, settings: settings.get(), spawned: listSpawned() }))
     } else {
       res.statusCode = 404
       res.end()

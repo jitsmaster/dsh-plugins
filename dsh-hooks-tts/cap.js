@@ -10,6 +10,7 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { recordSpawn } from './spawned.js'
 const DEFAULT_HANDOFF_DIR = join(homedir(), '.dsh', 'handoffs')
 
 export function contextTokens(ctx, agent) {
@@ -256,6 +257,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
         content: [{ type: 'text', text: text.value }],
       }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
       resumed.set(created.sessionId, { startedAt: Date.now(), streak: job.streak ?? 0, note: job.path })
+      recordSpawn(agent.id, created.sessionId)
       ctx.logger.info(`hooks-tts: spawned ${created.sessionId} from handoff ${job.path}`)
       trace(`spawned ${created.sessionId}`)
     } catch (error) {

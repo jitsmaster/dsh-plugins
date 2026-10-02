@@ -22,11 +22,21 @@ window.__ModuleLoader__.load({
 		let failed = false;
 		const listeners = new Set();
 		const emit = () => listeners.forEach((l) => l());
+		// Continuations already acted on; spawns listed by the first poll predate this page and are never replayed.
+		const handledSpawns = new Set();
+		let spawnsSeeded = false;
+		let openContinuation = () => {};
 		async function poll() {
 			try {
 				const res = await fetch(STATUS_URL, { cache: "no-store" });
 				status = await res.json();
 				failed = false;
+				for (const s of status.spawned || []) {
+					if (handledSpawns.has(s.to)) continue;
+					handledSpawns.add(s.to);
+					if (spawnsSeeded && activeId === s.from) openContinuation(s.to);
+				}
+				spawnsSeeded = true;
 			} catch (_e) { failed = true; }
 			emit();
 		}
@@ -325,6 +335,10 @@ window.__ModuleLoader__.load({
 				}, ActiveProbe));
 			} catch (_e) { /* fall back to URL / last-shown session */ }
 
+			// Switch to the continuation session a handoff just created, when its source is the one on screen.
+			openContinuation = (sessionId) => {
+				try { ctx.get("uiWorkspace")?.openSession(sessionId); } catch (_e) { /* the sidebar still lists it */ }
+			};
 			poll();
 			const timer = setInterval(poll, POLL_MS);
 			listeners.add(renderInline);
@@ -338,6 +352,7 @@ window.__ModuleLoader__.load({
 			});
 			observer.observe(document.body, { childList: true, subtree: true });
 			ctx.effect(() => () => {
+				openContinuation = () => {};
 				clearInterval(timer); clearInterval(nav); observer.disconnect(); listeners.delete(renderInline);
 				document.querySelectorAll("[data-dsh-ctx]").forEach((n) => n.remove());
 			}, "hooks-tts: status");
