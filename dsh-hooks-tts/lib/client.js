@@ -205,8 +205,7 @@ window.__ModuleLoader__.load({
 			if (!bar || !group) { if (existing) existing.remove(); return; }
 			if (!s) return;
 			const w = s.worktree;
-			const text = (s.sessionTokens !== undefined ? `Session total ${fmt(s.sessionTokens)} tok  ·  ` : "")
-				+ `Context Window ${fmt(s.context.tokens)}/${fmt(s.context.window)} (${pc(s.context.pct)})`
+			const text = `Context Window ${fmt(s.context.tokens)}/${fmt(s.context.window)} (${pc(s.context.pct)})`
 				+ (w ? `  ·  ⎇ ${w.name}${w.linked ? " (linked worktree)" : ""}` : "");
 			const cap = s.cap && s.cap.warn ? s.cap : undefined;
 			const text2 = cap ? text + `  ·  ⚠ ${cap.over ? "handoff due" : "handoff at " + fmt(cap.tokens)}${cap.autoResume ? " → new session" : ""}` : text;

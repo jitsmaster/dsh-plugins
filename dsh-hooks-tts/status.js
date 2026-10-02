@@ -129,8 +129,6 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
       const warnPct = settings?.get().warnPercent
       const entry = {
         cwd,
-        // Lifetime billed tokens (input + cache + output) for this session, same basis as DSH's "tok" figure.
-        sessionTokens: total,
         cap: capTokens && ctxTokens !== undefined
           ? { tokens: capTokens, warn: Boolean(warnPct) && ctxTokens >= capTokens * warnPct / 100, over: ctxTokens >= capTokens, autoResume: settings.get().autoResumeHandoff }
           : undefined,
