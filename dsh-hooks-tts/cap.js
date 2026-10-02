@@ -59,9 +59,9 @@ function warning(tokens, cap, pct) {
 function notice(tokens, cap, over) {
   return [
     over
-      ? `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, over the ${kTokens(cap)} cap. Automatic handoff is OFF, so nothing will stop or start a new session.`
-      : `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, nearing the ${kTokens(cap)} cap. Automatic handoff is OFF, so nothing will stop or start a new session.`,
-    'In your next reply, mention this briefly and suggest the user compact the conversation or start a new session when convenient. Do not write a handoff note unless the user asks, and continue the current work normally.',
+      ? `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, over the ${kTokens(cap)} cap. Automatic handoff is OFF, so you will NOT be stopped: the session continues past the cap and no new session opens.`
+      : `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, nearing the ${kTokens(cap)} cap. Automatic handoff is OFF, so you will NOT be stopped when it is reached: the session continues past the cap and no new session opens.`,
+    'In your next reply, tell the user briefly that you will keep working past the cap, and recommend handing off (compacting the conversation or starting a new session) as soon as it is convenient. Never say or imply that the session will stop at the cap. Do not write a handoff note unless the user asks, and continue the current work normally.',
   ].join('\n')
 }
 

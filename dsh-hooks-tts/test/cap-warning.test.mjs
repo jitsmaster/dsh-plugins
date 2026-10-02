@@ -90,6 +90,8 @@ test('auto-handoff off: notice wording says nothing will stop or write a note', 
   const h = harness({ autoResumeHandoff: false })
   const out = await h.stepFull(450_000)
   assert.match(out[0].text, /Automatic handoff is OFF/)
+  assert.match(out[0].text, /will NOT be stopped/)
+  assert.match(out[0].text, /Never say or imply that the session will stop/)
   assert.doesNotMatch(out[0].text, /Stop the current work|Write a handoff note NOW/)
 })
 
