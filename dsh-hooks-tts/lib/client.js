@@ -207,12 +207,16 @@ window.__ModuleLoader__.load({
 			const w = s.worktree;
 			const text = `Context Window ${fmt(s.context.tokens)}/${fmt(s.context.window)} (${pc(s.context.pct)})`
 				+ (w ? `  ·  ⎇ ${w.name}${w.linked ? " (linked worktree)" : ""}` : "");
+			// Near/over the cap. Auto-handoff ON: amber "will hand off". OFF: blue notice only, nothing will happen on its own.
 			const cap = s.cap && s.cap.warn ? s.cap : undefined;
-			const text2 = cap ? text + `  ·  ⚠ ${cap.over ? "handoff due" : "handoff at " + fmt(cap.tokens)}${cap.autoResume ? " → new session" : ""}` : text;
+			const pillText = !cap ? text : cap.autoResume
+				? text + `  ·  ⚠ ${cap.over ? "handoff due" : "handoff at " + fmt(cap.tokens)} → new session`
+				: text + `  ·  ℹ ${cap.over ? "over" : "nearing"} ${fmt(cap.tokens)} cap · auto-handoff off`;
+			const pillColor = !cap ? "" : cap.autoResume ? "#f5a524" : "#4c9aff";
 			const title = `context: ${fmt(s.context.tokens)} of ${fmt(s.context.window)} tokens\nworktree: ${w ? w.root : "n/a"}${w ? `\n(checked-out branch: ${w.branch})` : ""}`;
 			if (existing && existing.parentElement === group && group.lastElementChild === existing) {
-				if (existing.lastChild.textContent !== text2) existing.lastChild.textContent = text2;
-				existing.lastChild.style.color = cap ? "#f5a524" : "";
+				if (existing.lastChild.textContent !== pillText) existing.lastChild.textContent = pillText;
+				existing.lastChild.style.color = pillColor;
 				existing.title = title;
 				return;
 			}
@@ -224,8 +228,8 @@ window.__ModuleLoader__.load({
 			const sepSrc = bar.querySelector("[aria-hidden]");
 			const sep = sepSrc ? sepSrc.cloneNode(true) : document.createTextNode("·");
 			const label = document.createElement("span");
-			label.textContent = text2;
-			if (cap) label.style.color = "#f5a524";
+			label.textContent = pillText;
+			label.style.color = pillColor;
 			wrap.append(sep, label);
 			group.appendChild(wrap);
 		}
