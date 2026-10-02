@@ -14,9 +14,26 @@ function Test-TtsPort {
     try { return $c.ConnectAsync($u.Host, $u.Port).Wait(1500) -and $c.Connected } catch { return $false } finally { $c.Dispose() }
 }
 
+# Keep the Ctrl+Alt+M stop-hotkey listener alive alongside the TTS server: start it if it is not running.
+# Prefers the TtsStopHotkey scheduled task, falls back to launching the exe directly.
+function Start-TtsHotkeyIfDown {
+    try {
+        $hotDir = if ($env:DSH_TTS_HOTKEY_DIR) { $env:DSH_TTS_HOTKEY_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+        $exe = Join-Path $hotDir 'tts-stop-hotkey.exe'
+        if (-not (Test-Path $exe)) { return }
+        if (Get-Process -Name 'tts-stop-hotkey' -ErrorAction SilentlyContinue) { return }
+        Add-TtsLog 'tts-client-errors.log' 'hotkey listener down; starting'
+        try { Start-ScheduledTask -TaskName 'TtsStopHotkey' -ErrorAction Stop }
+        catch { Start-Process -FilePath $exe -WindowStyle Hidden }
+    } catch {
+        Add-TtsLog 'tts-client-errors.log' "hotkey start failed: $($_.Exception.Message)"
+    }
+}
+
 # If the Kokoro server is not listening, launch it (DSH_TTS_SERVER_SCRIPT) and wait for the port.
 # A named mutex keeps concurrent hook runs from launching it twice.
 function Start-TtsServerIfDown {
+    Start-TtsHotkeyIfDown
     if (Test-TtsPort) { return }
     $script = $env:DSH_TTS_SERVER_SCRIPT
     if (-not $script -or -not (Test-Path $script)) { return }
