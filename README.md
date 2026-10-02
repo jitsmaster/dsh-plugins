@@ -16,7 +16,7 @@ A Claude-Code-style hook runner for DSH plus a few quality-of-life features:
 - **Custom app icon.** Replaces the DeepSeek mark with a DeepSeek whale over layered water waves: the browser favicon, the apple-touch icon and the in-app logos (sidebar header, new-session screen). Applied in the browser at load and undone when the plugin is removed. The installed-PWA manifest icon is not changed.
 - **Status widget** (bottom-right pill): context window, worktree, and a *Hooks and Usage* sidebar page with Claude plan limits, local token usage and live settings.
 - **Optional Obsidian session-start hook** that asks the agent to open today's daily note and surface related notes.
-- **Always allow full access** toggle (off by default) that forces every session to `danger-full-access` with approvals set to `never`. Understand what that means before enabling it.
+- **Always allow full access** toggle (off by default) that starts each new session at `danger-full-access` with approvals set to `never`. It applies once, before the session's first turn finishes, and never resets a mode chosen later or an existing session. Understand what that means before enabling it.
 
 ### Requirements
 
@@ -92,7 +92,7 @@ State lives in `~/.dsh/tts/`: `settings.json`, `config.local.json`, `spawn.log`,
 
 - The status service listens on `127.0.0.1:3081` only; settings writes are accepted only from the DSH web page origin.
 - Claude plan usage reads Claude Code's own OAuth token from `~/.claude/.credentials.json` (read-only, sent only to `api.anthropic.com`). Set `claudeUsage: false` to disable.
-- *Always allow full access* disables the sandbox and approval prompts for every session. Leave it off unless you trust everything you run.
+- *Always allow full access* disables the sandbox and approval prompts for every new session. Leave it off unless you trust everything you run.
 
 ### Troubleshooting
 

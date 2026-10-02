@@ -153,7 +153,7 @@ window.__ModuleLoader__.load({
 				h("div", { style: { marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(128,128,128,.25)" } },
 					h(Toggle, { label: "TTS hooks", hint: "Spoken read-outs for finished replies, questions and permission requests.", field: "ttsEnabled", current: s && s.settings && s.settings.ttsEnabled }),
 					h(Toggle, { label: "Auto-resume after handoff", hint: "When a handoff note is written, start a new session that picks it up.", field: "autoResumeHandoff", current: s && s.settings && s.settings.autoResumeHandoff }),
-					h(Toggle, { label: "Always allow full access", hint: "Force every session to full access with no approval prompts. Off by default.", field: "alwaysFullAccess", current: s && s.settings && s.settings.alwaysFullAccess })),
+					h(Toggle, { label: "Always allow full access", hint: "Start new sessions at full access with no approval prompts. Existing sessions and later mode changes are never overridden. Off by default.", field: "alwaysFullAccess", current: s && s.settings && s.settings.alwaysFullAccess })),
 				h(CapSetting, { current: s && s.settings && s.settings.contextCapTokens })));
 		}
 		function UsageIcon({ size }) {

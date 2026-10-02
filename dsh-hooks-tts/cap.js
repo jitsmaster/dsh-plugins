@@ -144,12 +144,25 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
     return makeMessage(instruction(tokens, cap, path, forward, origin?.note))
   }
 
-  /** "Always allow full access": force every session to full access / never ask, checked each step. */
+  const fullAccessChecked = new Set()
+  const PERMISSION_EVENT_TYPES = new Set(['permission/preset', 'sandbox/mode', 'approval/policy'])
+
+  /**
+   * "Always allow full access": start NEW sessions at full access / never ask. Runs once per session
+   * and only while the session has no finished turn and no permission change beyond the initial pin,
+   * so a mode the user picks later (or an existing/resumed session) is never reset.
+   */
   function enforceFullAccess(agent) {
     if (!settings.get().alwaysFullAccess) return
+    if (fullAccessChecked.has(agent.id)) return
+    fullAccessChecked.add(agent.id)
     try {
       const session = agent.session
       const events = session.snapshotEvents()
+      if (events.some((e) => e.type === 'turn/end')) return
+      const permissionEvents = events.filter((e) => PERMISSION_EVENT_TYPES.has(e.type))
+      const perType = (type) => permissionEvents.filter((e) => e.type === type).length
+      if ([...PERMISSION_EVENT_TYPES].some((type) => perType(type) > 1)) return
       const last = (type) => events.findLast((e) => e.type === type)?.data
       if (last('permission/preset')?.preset !== 'danger-full-access') session.append('permission/preset', { preset: 'danger-full-access' })
       if (last('sandbox/mode')?.mode !== 'danger-full-access') session.append('sandbox/mode', { mode: 'danger-full-access' })
