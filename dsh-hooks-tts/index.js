@@ -25,7 +25,7 @@ import { createSettings } from './settings.js'
 export const name = 'hooks-tts'
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
-const SOURCE = { kind: 'plugin', plugin: name }
+const SOURCE = { kind: `plugin:${name}` } // producer-owned kind (format v4 rejects the retired kind: 'plugin')
 
 /** Claude tool-name aliases so existing matchers (e.g. AskUserQuestion) keep working. */
 const ALIASES = {
