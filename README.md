@@ -4,7 +4,9 @@ Plugins for DeepSeek Harness (DSH):
 
 - [dsh-hooks-tts](#dsh-hooks-tts)
 - [dsh-git-view](dsh-git-view/README.md): read-only Git tab (branch/worktree, changes, diffs) in the right sidebar; local only, port 3082.
-- [dsh-remote-access](dsh-remote-access/README.md): reach DSH from outside the LAN without a public IP.
+- dsh-remote-access: moved to its own private repo, `jitsmaster/dsh-remote-access`.
+
+Branches: `main` holds stable, release-ready code only; day-to-day work happens on `develop`.
 
 ## dsh-hooks-tts
 
