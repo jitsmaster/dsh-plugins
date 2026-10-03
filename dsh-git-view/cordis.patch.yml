@@ -1,0 +1,6 @@
+
+- insert:
+    - id: git-view
+      name: dsh-git-view
+      # Read-only: shows the branch / worktree each session works in. No settings.
+      config: {}

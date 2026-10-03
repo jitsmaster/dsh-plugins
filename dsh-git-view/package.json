@@ -1,0 +1,25 @@
+{
+  "name": "dsh-git-view",
+  "version": "0.1.0",
+  "description": "Git view for DeepSeek Harness sessions: the branch or linked worktree a session works in, staged / unstaged / untracked changes, commits on the branch, and a diff viewer, in a right-sidebar tab.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "git.js", "sessions.js", "server.js", "gitpath.js", "limiter.js", "lib", "cordis.patch.yml"],
+  "scripts": {
+    "test": "node --test test/git.test.mjs test/git-hardening.test.mjs test/sessions.test.mjs test/server.test.mjs test/server-hardening.test.mjs test/client.test.mjs test/security-hardening2.test.mjs test/perf-review.test.mjs"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ],
+      "platform": "web"
+    }
+  }
+}
