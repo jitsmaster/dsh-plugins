@@ -37,7 +37,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, ..
     state.headers.push(init?.headers)
     if (state.gate) await state.gate
     if (state.fetchError) throw new Error(`boom with ${init?.headers?.Authorization}`)
-    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus }
+    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined }
     return { ok: true, status: 200, json: async () => body }
   }
   const resumes = []
@@ -108,6 +108,36 @@ test('detectNewThreads: a system comment after a human one does not count as the
 test('detectNewThreads: a bare resumed id is adopted silently, not notified', () => {
   const out = detectNewThreads([thread(1, 3)], new Map([['1', null]]))
   assert.deepEqual(out.map((t) => t.notify), [false])
+})
+
+const byAuthor = (id, lastId, authorId) => ({
+  id, status: 'active',
+  comments: [{ id: 1, commentType: 'text', author: { id: 'rev' } }, { id: lastId, commentType: 'text', author: { id: authorId } }],
+})
+
+test('detectNewThreads: the PR author\'s own last comment is adopted silently, not notified', () => {
+  const out = detectNewThreads([byAuthor(1, 3, 'me'), byAuthor(2, 3, 'rev')], new Map(), 'me')
+  assert.deepEqual(out.map((t) => [t.threadId, t.notify]), [['1', false], ['2', true]])
+})
+
+test('detectNewThreads: without a known author id every comment still counts', () => {
+  assert.deepEqual(detectNewThreads([byAuthor(1, 3, 'me')], new Map()).map((t) => t.notify), [true])
+})
+
+test('poll: the author\'s own reply queues nothing; a later reviewer reply does', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.createdBy = 'me'
+  h.state.threads = [byAuthor(1, 2, 'rev')]
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  h.state.threads = [byAuthor(1, 3, 'me')]
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  h.state.threads = [byAuthor(1, 4, 'rev')]
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 2)
+  h.poller.stopAll()
 })
 
 // ---- creation -> rename + register ----

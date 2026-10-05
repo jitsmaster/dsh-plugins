@@ -61,18 +61,21 @@ export const parseResumeApproved = (output) => RESUME_MARKER.exec(output ?? '')?
 /**
  * Threads that need attention: not deleted/resolved, with at least one human comment, and unseen or with a
  * different last comment than recorded. `notify: false` marks a resumed bare id whose last comment was not
- * recorded: it is adopted silently instead of re-announced.
+ * recorded, or a last comment written by the PR author (`selfId`): adopted silently instead of announced.
  */
-export function detectNewThreads(threads, seen) {
+export function detectNewThreads(threads, seen, selfId) {
   const found = []
   for (const t of threads ?? []) {
     if (t.isDeleted || RESOLVED.has(t.status)) continue
     const human = (t.comments ?? []).filter((c) => !c.isDeleted && c.commentType !== 'system')
     if (!human.length) continue
-    const lastCommentId = String(Math.max(...human.map((c) => Number(c.id) || 0)))
+    const last = human.reduce((a, c) => ((Number(c.id) || 0) >= (Number(a.id) || 0) ? c : a))
+    const lastCommentId = String(Number(last.id) || 0)
     const threadId = String(t.id)
     if (seen.has(threadId) && seen.get(threadId) === lastCommentId) continue
-    found.push({ threadId, lastCommentId, notify: seen.get(threadId) !== null })
+    // The PR author's own last comment (e.g. a reply posted by ado-pr-implement) is not a review request.
+    const own = selfId != null && last.author?.id != null && String(last.author.id) === String(selfId)
+    found.push({ threadId, lastCommentId, notify: !own && seen.get(threadId) !== null })
   }
   return found
 }
@@ -196,7 +199,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       if (pr?.status === 'completed') { await suggestResume(entry); stop(id, 'PR completed'); return }
       if (pr?.status === 'abandoned') { stop(id, 'PR abandoned'); return }
       const data = await getJson(`${base}/threads?api-version=7.1`, pat)
-      const found = detectNewThreads(data?.value, entry.seen)
+      const found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
       for (const t of found.filter((f) => !f.notify)) entry.seen.set(t.threadId, t.lastCommentId)
       const fresh = found.filter((f) => f.notify)
       if (!fresh.length) return
