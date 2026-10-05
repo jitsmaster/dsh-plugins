@@ -30,7 +30,7 @@ const isExec = (p) => { try { if (!isFile(p)) return false; if (!win) accessSync
 
 /**
  * @param {{ path?: string, cwd?: string, platform?: string }} [env] overridable for tests
- * @returns {string} absolute git path, or `git` only when nothing was found
+ * @returns {string | undefined} absolute git path, or undefined when nothing was found
  */
 export function findGit({ path = process.env.PATH ?? process.env.Path ?? '', cwd = process.cwd(), isWin = win } = {}) {
   const here = resolve(cwd).toLowerCase()
@@ -45,10 +45,10 @@ export function findGit({ path = process.env.PATH ?? process.env.Path ?? '', cwd
       if (isExec(full)) return full
     }
   }
-  return 'git'
+  return undefined // fail closed: callers must not fall back to a bare `git` (cwd-relative lookup on Windows)
 }
 
-/** The git executable to run: override, else lazily resolved from PATH once. */
+/** The git executable to run: override, else lazily resolved from PATH once. `undefined` when none was found. */
 export function gitExecutable() {
   return override ?? (cached ??= findGit())
 }

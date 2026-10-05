@@ -65,13 +65,28 @@ test('touching a different repository never changes the target', async () => {
   assert.equal((await reg.resolve('s2')).source, 'cwd')
 })
 
-test('an explicit worktree choice must be one of the repository worktrees', async () => {
-  const reg = createSessionRegistry({ stateDir: join(tmp, 'state4') })
-  reg.seen('s3', repo)
-  assert.equal((await reg.resolve('s3', { worktree: wt })).root, wt)
-  const bad = await reg.resolve('s3', { worktree: other })
-  assert.equal(bad.root, repo, 'foreign directory ignored')
-  assert.equal(bad.source, 'cwd')
+test('the no-worktree-list path validates the recorded worktree like the snapshot does', async () => {
+  const dir = join(tmp, 'state4')
+  mkdirSync(dir, { recursive: true })
+  const rec = (root) => ({ cwd: repo, worktree: { root, at: 'x' } })
+  writeFileSync(join(dir, 'sessions.json'), JSON.stringify({ good: rec(wt), foreign: rec(other), plain: rec(tmp) }))
+  const reg = createSessionRegistry({ stateDir: dir })
+  for (const opts of [{ worktrees: true }, { worktrees: false }]) {
+    assert.equal((await reg.resolve('good', opts)).root, wt, JSON.stringify(opts))
+    for (const id of ['foreign', 'plain']) {
+      const r = await reg.resolve(id, opts)
+      assert.deepEqual([r.root, r.source], [repo, 'cwd'], `${id} ${JSON.stringify(opts)}`)
+    }
+  }
+})
+
+test('a busy git answer is reported as busy, not as "not a git repository"', async () => {
+  const dir = join(tmp, 'state4b')
+  const reg = createSessionRegistry({ stateDir: dir, deps: { repoInfo: async () => ({ busy: true }) } })
+  reg.seen('b1', repo)
+  const r = await reg.resolve('b1')
+  assert.deepEqual([r.ok, r.busy], [false, true])
+  assert.doesNotMatch(r.error, /not a git repository/)
 })
 
 test('recorded worktrees survive a host restart', async () => {

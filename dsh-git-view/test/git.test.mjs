@@ -152,7 +152,7 @@ test('branch compare lists commits and files that are only on the feature branch
   assert.equal(c.baseRef, 'main')
   assert.equal(c.ahead, 2)
   assert.equal(c.behind, 0)
-  assert.deepEqual(c.commits.map(x => x.subject), ['feat: edit a', 'feat: add feat'])
+  assert.equal('commits' in c, false, 'the unused commit log is not part of the compare payload')
   assert.deepEqual(c.files.map(f => [f.path, f.status]).sort(), [['a.txt', 'M'], ['feat.txt', 'A']])
   const diff = await readDiff(wt, { scope: 'branch', base: 'main', path: 'a.txt' })
   assert.match(diff.patch, /^\+TWO$/m)

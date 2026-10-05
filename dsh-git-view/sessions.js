@@ -12,7 +12,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
-import { gitStats, listWorktrees, repoInfo } from './git.js'
+import { escapesRoot, gitStats, listWorktrees, repoInfo } from './git.js'
 import { isUncOrDevicePath } from './gitpath.js'
 
 /** Session ids are client-influenced: bounded length and a conservative charset. */
@@ -27,36 +27,45 @@ const sameDir = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.t
 /** Whether `child` is `parent` or lies inside it. */
 const isInside = (child, parent) => {
   const rel = relative(resolve(parent), resolve(child))
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (!escapesRoot(rel) && !isAbsolute(rel))
 }
 
 /** Hard cap on paths collected from one tool call. */
-const MAX_COLLECTED = 16
+export const MAX_COLLECTED = 16
 /** observe() is best effort and yields to UI reads: it is skipped while more than this many git jobs wait. */
 const OBSERVE_MAX_QUEUE = 8
 /** How long one session's repo identity + allowed worktree roots are reused by observe(). */
 const OBSERVE_CACHE_MS = 3000
+/** Directories outside every known worktree root are probed with git at most once per this long, in a small cache. */
+const PROBE_CACHE_MS = 30_000
+const PROBE_CACHE_MAX = 64
+/** A recorded worktree's validity is re-checked (git rev-parse) at most this often when no worktree list is read. */
+const RECORDED_CACHE_MS = 5000
+const BUSY = { ok: false, busy: true, error: 'busy: too many concurrent git requests' }
 
 /**
  * Collect the paths a call names. Security: UNC / device paths are dropped lexically, both as written and
  * after resolving against the base, so no fs call is ever made on them.
  */
-function collect(args, baseCwd, keys, withMentions) {
+export function collect(args, baseCwd, keys, withMentions) {
   const out = new Set()
+  // Returns false once the cap is reached so every scan below stops (a huge command costs no further regex work).
   const add = (p) => {
     // Performance: a command with many paths must not make observe() probe (and spawn git for) all of them.
-    if (out.size >= MAX_COLLECTED) return
-    if (typeof p !== 'string' || !p.trim()) return
+    if (out.size >= MAX_COLLECTED) return false
+    if (typeof p !== 'string' || !p.trim()) return true
     const clean = p.trim().replace(/^["']|["']$/g, '')
-    if (isUncOrDevicePath(clean)) return
+    if (isUncOrDevicePath(clean)) return true
     const full = isAbsolute(clean) ? clean : baseCwd ? resolve(baseCwd, clean) : clean
     if (!isUncOrDevicePath(full)) out.add(full)
+    return out.size < MAX_COLLECTED
   }
-  for (const k of keys) add(args?.[k])
   const cmd = typeof args?.command === 'string' ? args.command : ''
-  for (const m of cmd.matchAll(/(?:\bcd|Set-Location|\bpushd)\s+(?:-[A-Za-z]+\s+)?["']?([^\s"';|&]+)/gi)) add(m[1])
-  for (const m of cmd.matchAll(/\bgit\s+-C\s+["']?([^\s"';|&]+)/gi)) add(m[1])
-  if (withMentions) for (const m of cmd.matchAll(/[A-Za-z]:[\\/][^\s"'`;|&)]*/g)) add(m[0])
+  const scan = (re, group) => { for (const m of cmd.matchAll(re)) if (!add(m[group])) return false; return true }
+  for (const k of keys) if (!add(args?.[k])) return out
+  if (!scan(/(?:\bcd|Set-Location|\bpushd)\s+(?:-[A-Za-z]+\s+)?["']?([^\s"';|&]+)/gi, 1)) return out
+  if (!scan(/\bgit\s+-C\s+["']?([^\s"';|&]+)/gi, 1)) return out
+  if (withMentions) scan(/[A-Za-z]:[\\/][^\s"'`;|&)]*/g, 0)
   return out
 }
 
@@ -78,7 +87,7 @@ export function workingDirectories(args, baseCwd) {
  */
 export function createSessionRegistry({ stateDir, workspacePaths = () => [], deps = {} }) {
   const { repoInfo: repoInfoFn = repoInfo, listWorktrees: listWorktreesFn = listWorktrees, busy = () => gitStats().queued > OBSERVE_MAX_QUEUE } = deps
-  mkdirSync(stateDir, { recursive: true })
+  try { mkdirSync(stateDir, { recursive: true }) } catch { /* unusable stateDir: sessions stay in memory (save() is non-fatal too) */ }
   const file = join(stateDir, 'sessions.json')
   /**
    * session id -> { cwd, worktree?: { root, at } } — survives a host restart. Insertion order = recency.
@@ -114,13 +123,16 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
     save()
   }
 
-  /** Directories observe() may probe: workspaces, the session's repo + its worktrees, and its cwd. */
-  const allowedRoots = async (cwd, home) => {
+  /**
+   * Worktrees of the session's repository as `{ path, linked }`. Without a usable list, the home tree alone.
+   * Performance: observe() classifies a candidate path lexically against these, so no git runs per path.
+   */
+  const knownTrees = async (home) => {
     const wts = await listWorktreesFn(home.root)
-    return [...workspacePaths().filter(validCwd), cwd, home.root, ...wts.map(w => w.path)]
+    return wts?.length ? wts.map(w => ({ path: w.path, linked: !w.main })) : [{ path: home.root, linked: home.linked }]
   }
 
-  /** session id -> { cwd, at, home, roots } reused for OBSERVE_CACHE_MS so a burst of tool calls costs one probe. */
+  /** session id -> { cwd, at, home, roots, trees } reused for OBSERVE_CACHE_MS so a burst of tool calls costs one probe. */
   const ctxCache = new Map()
   /** session id -> { pending } while an observe() for that session runs. */
   const inflight = new Map()
@@ -128,10 +140,43 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
     const hit = ctxCache.get(id)
     if (hit && hit.cwd === cwd && Date.now() - hit.at < OBSERVE_CACHE_MS) return hit
     const home = await repoInfoFn(cwd)
-    const entry = { cwd, at: Date.now(), home, roots: home ? await allowedRoots(cwd, home) : [] }
+    if (!home || home.busy) return { home: undefined, roots: [], trees: [] } // not cached: a busy answer must not stick
+    const trees = await knownTrees(home)
+    // Directories observe() may look at: workspaces, the session's cwd, and every tree of its repository.
+    const entry = { cwd, at: Date.now(), home, trees, roots: [...workspacePaths().filter(validCwd), cwd, ...trees.map(t => t.path)] }
     if (ctxCache.size >= MAX_STORED_SESSIONS) ctxCache.delete(ctxCache.keys().next().value)
     ctxCache.set(id, entry)
     return entry
+  }
+
+  /** Longest known worktree root containing `p` (nested worktrees win over their parent), lexically. */
+  const treeOf = (p, trees) => trees.reduce((best, t) => (isInside(p, t.path) && (!best || resolve(t.path).length > resolve(best.path).length) ? t : best), undefined)
+
+  /** recorded worktree root -> { at, home commonDir, root } so the no-list path costs one rev-parse per few seconds. */
+  const recordedCache = new Map()
+  /** The recorded worktree as `{ root }` if it is still a tree of `home`'s repository, `{ busy: true }`, or undefined. */
+  async function recordedValid(recordedRoot, home) {
+    const key = `${home.commonDir}\0${recordedRoot}`
+    const hit = recordedCache.get(key)
+    if (hit && Date.now() - hit.at < RECORDED_CACHE_MS) return hit.v
+    const info = await repoInfoFn(recordedRoot)
+    if (info?.busy) return { busy: true } // never cached
+    const v = info && sameDir(info.commonDir, home.commonDir) ? { root: info.root } : undefined
+    if (recordedCache.size >= PROBE_CACHE_MAX) recordedCache.delete(recordedCache.keys().next().value)
+    recordedCache.set(key, { at: Date.now(), v })
+    return v
+  }
+
+  /** dir -> { at, info } for directories no known worktree contains; bounded, 30 s, never holds busy answers. */
+  const probeCache = new Map()
+  async function probe(dir) {
+    const hit = probeCache.get(dir)
+    if (hit && Date.now() - hit.at < PROBE_CACHE_MS) return hit.info
+    const info = await repoInfoFn(dir)
+    if (info?.busy) return undefined
+    if (probeCache.size >= PROBE_CACHE_MAX) probeCache.delete(probeCache.keys().next().value)
+    probeCache.set(dir, { at: Date.now(), info })
+    return info
   }
 
   async function observeOnce(id, args) {
@@ -143,14 +188,16 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
       if (paths.length === 0) return
       // Low priority: UI reads must not queue behind a best-effort observation.
       if (busy()) return
-      const { home, roots } = await observeContext(id, cwd)
+      const { home, roots, trees } = await observeContext(id, cwd)
       if (!home) return
       const dirs = workingDirectories(args, cwd)
       for (const p of paths) {
-        // Security: lexical checks first, then only probe paths inside a known root (no fs/git call on arbitrary dirs).
+        // Security: lexical checks first, then only look at paths inside a known root (no fs/git call on arbitrary dirs).
         if (isUncOrDevicePath(p) || !roots.some(r => isInside(p, r))) continue
         if (!existsSync(p)) continue
-        const info = await repoInfoFn(p)
+        // Performance: a path inside a known worktree is classified without git; only unmatched dirs are probed (cached).
+        const tree = treeOf(p, trees)
+        const info = tree ? { root: resolve(tree.path), linked: tree.linked, commonDir: home.commonDir } : await probe(p)
         if (!info || !sameDir(info.commonDir, home.commonDir)) continue
         if (!info.linked) {
           // The call works in the repository's own main tree: the agent has left the linked worktree.
@@ -193,10 +240,10 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
     /**
      * Decide which working tree to show for a session.
      * @param {string} id session id
-     * @param {{ cwdHint?: string, worktree?: string, worktrees?: boolean }} [opts] `cwdHint` is only honoured when it is a known workspace.
-     *   `worktrees: false` skips `git worktree list` (the result then has `worktrees: []`); a recorded worktree is trusted
-     *   if its folder still exists, an explicit `worktree` choice needs the list and is ignored.
-     * @returns {Promise<{ ok: true, cwd: string, home: object, root: string, source: string, worktrees: object[], recorded?: string } | { ok: false, error: string }>}
+     * @param {{ cwdHint?: string, worktrees?: boolean }} [opts] `cwdHint` is only honoured when it is a known workspace.
+     *   `worktrees: false` skips `git worktree list` (the result then has `worktrees: []`); the recorded worktree is then
+     *   validated with rev-parse instead (same repository as the session's home, cached a few seconds).
+     * @returns {Promise<{ ok: true, cwd: string, home: object, root: string, source: string, worktrees: object[] } | { ok: false, error: string, busy?: true }>}
      */
     async resolve(id, opts = {}) {
       if (!validSessionId(id)) return { ok: false, error: 'missing session' }
@@ -211,23 +258,24 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
       if (!cwd) return { ok: false, error: 'unknown session — send a message in it once so the plugin can see its folder' }
       if (!validCwd(cwd)) return { ok: false, error: 'invalid session folder' }
       if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return { ok: false, error: `session folder no longer exists: ${cwd}` }
-      const home = await repoInfo(cwd)
+      const home = await repoInfoFn(cwd)
+      // Busy / aborted git is not "not a repository": surface it so the server answers 429 and never caches it.
+      if (home?.busy) return BUSY
       if (!home) return { ok: false, error: 'not a git repository', cwd }
       const withList = opts.worktrees !== false
-      const worktrees = withList ? await listWorktrees(home.root) : []
-      const paths = worktrees.map(w => w.path)
-      const find = (p) => p ? paths.find(x => sameDir(x, resolve(p))) : undefined
-
+      const worktrees = withList ? await listWorktreesFn(home.root) : []
+      if (!worktrees) return BUSY
       const recordedRoot = known.get(id)?.worktree?.root
-      // Without the list the recorded folder is checked on disk only (it was validated when it was recorded).
-      const recorded = withList ? find(recordedRoot)
-        : (recordedRoot && !isUncOrDevicePath(recordedRoot) && existsSync(recordedRoot) && statSync(recordedRoot).isDirectory() ? resolve(recordedRoot) : undefined)
-      const selected = find(opts.worktree)
-      let root, source
-      if (selected) { root = selected; source = 'selected' }
-      else if (recorded) { root = recorded; source = 'recorded' }
-      else { root = home.root; source = 'cwd' }
-      return { ok: true, cwd, home, root, source, worktrees, recorded, cwdRoot: home.root }
+      let recorded
+      if (!recordedRoot || isUncOrDevicePath(recordedRoot)) recorded = undefined
+      else if (withList) recorded = worktrees.map(w => w.path).find(x => sameDir(x, resolve(recordedRoot)))
+      else {
+        // No list: still validate (not just "exists on disk") so every route agrees with the snapshot, which does use the list.
+        const v = await recordedValid(recordedRoot, home)
+        if (v?.busy) return BUSY
+        recorded = v?.root
+      }
+      return { ok: true, cwd, home, root: recorded ?? home.root, source: recorded ? 'recorded' : 'cwd', worktrees }
     },
   }
 }

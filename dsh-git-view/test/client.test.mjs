@@ -64,7 +64,6 @@ test('parseUnifiedDiff reads files, statuses, hunks, counts and line numbers', (
   assert.deepEqual([a.added, a.deleted], [2, 1])
   assert.equal(a.hunks[0].section, 'function x()')
   assert.deepEqual(a.hunks[0].lines.map(l => [l.t, l.o, l.n]), [['ctx', 1, 1], ['del', 2, undefined], ['add', undefined, 2], ['add', undefined, 3], ['ctx', 3, 4], ['ctx', 4, 5]])
-  assert.equal(files[1].hunks[0].lines[1].noNewline, true)
   assert.equal(files[3].oldPath, 'old.txt')
   assert.deepEqual(T.parseUnifiedDiff(''), [])
 })

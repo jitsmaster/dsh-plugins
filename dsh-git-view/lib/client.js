@@ -85,7 +85,7 @@ window.__ModuleLoader__.load({
 						continue;
 					}
 					if (!hunk) continue;
-					if (l.startsWith("\\")) { const last = hunk.lines[hunk.lines.length - 1]; if (last) last.noNewline = true; continue; }
+					if (l.startsWith("\\")) continue; // "\ No newline at end of file" marker
 					const prefix = l.slice(0, cols);
 					const text = l.slice(cols);
 					if (prefix.includes("+")) { hunk.lines.push({ t: "add", text, n: n++ }); f.added++; }
@@ -217,15 +217,16 @@ window.__ModuleLoader__.load({
 		// Transport
 		// =====================================================================================
 
-		async function getJson(path, params, signal) {
+		async function getJson(path, params, signal, retryBusy) {
 			const qs = new URLSearchParams();
 			for (const k in params) if (params[k] !== undefined && params[k] !== null && params[k] !== "") qs.set(k, String(params[k]));
 			const res = await fetch(`${API}${path}?${qs}`, { signal, cache: "no-store" });
 			if (!res.ok) {
 				// 429 = the git service is shedding load: callers back off (honoring Retry-After) instead of reporting it as down.
-				const err = new Error(res.status === 429 ? "Git service busy, retrying shortly" : `HTTP ${res.status}`);
-				err.status = res.status;
+				const err = Object.assign(new Error(res.status === 429 ? "busy, try again" : `HTTP ${res.status}`), { status: res.status });
 				if (res.status === 429) err.retryAfterMs = Math.min(60000, Math.max(1000, (Number(res.headers.get("Retry-After")) || 1) * 1000));
+				// retryBusy (diff loads): wait out Retry-After once, then ask again; a second 429 surfaces as "busy, try again".
+				if (res.status === 429 && retryBusy && !(signal && signal.aborted)) { await new Promise((r) => setTimeout(r, err.retryAfterMs)); return getJson(path, params, signal); }
 				throw err;
 			}
 			return res.json();
@@ -294,7 +295,7 @@ display:flex;flex-direction:column;height:100%;min-height:0;color:var(--gv-fg);f
 .gv-sec-h .c{font-size:11px;color:var(--gv-mute);background:var(--gv-layer2);border-radius:9px;padding:0 6px}
 .gv-sec-h .acts{margin-left:auto;display:flex;gap:2px}
 .gv-file{display:flex;align-items:center;gap:6px;padding:2px 8px 2px 14px;cursor:pointer;position:relative;min-height:24px}
-.gv-file:hover,.gv-file.sel{background:var(--gv-hover)}
+.gv-file:hover{background:var(--gv-hover)}
 .gv-file .nm{color:var(--gv-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gv-file .dir{color:var(--gv-mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;min-width:0;flex:0 1 auto}
 .gv-file .stat{margin-left:auto;display:flex;gap:6px;align-items:center;flex:none;font-size:11.5px}
@@ -492,20 +493,22 @@ tr.fold:hover td{background:var(--gv-layer2)}
 		// ---- image diff ----
 		function useBlobUrl(params, q) {
 			const [state, setState] = useState({ loading: true });
-			const key = JSON.stringify([params.session, params.worktree, q]);
+			const key = JSON.stringify([params.session, q]);
 			useEffect(() => {
-				let alive = true, url;
-				const qs = new URLSearchParams();
-				for (const k in { ...params, ...q }) { const v = { ...params, ...q }[k]; if (v !== undefined && v !== "" && v !== null) qs.set(k, v); }
-				fetch(`${API}/v1/blob?${qs}`, { cache: "no-store" }).then(async (res) => {
+				let alive = true, url, timer;
+				const qs = new URLSearchParams(), all = { ...params, ...q };
+				for (const k in all) if (all[k] !== undefined && all[k] !== "" && all[k] !== null) qs.set(k, all[k]);
+				const load = (again) => fetch(`${API}/v1/blob?${qs}`, { cache: "no-store" }).then(async (res) => {
 					if (!alive) return;
 					if (res.status === 204) return setState({ missing: true });
-					const type = res.headers.get("content-type") || "";
-					if (!type.startsWith("image/")) { const j = await res.json().catch(() => ({})); return setState({ error: j.error || "unavailable" }); }
+					// 429 = git service busy: retry once after Retry-After, then say so (never shown as a missing image).
+					if (res.status === 429) return again ? void (timer = setTimeout(() => load(false), Math.min(10000, (Number(res.headers.get("Retry-After")) || 1) * 1000))) : setState({ error: "busy, try again" });
+					if (!(res.headers.get("content-type") || "").startsWith("image/")) { const j = await res.json().catch(() => ({})); return setState({ error: j.error || "unavailable" }); }
 					url = URL.createObjectURL(await res.blob());
 					if (alive) setState({ url }); else URL.revokeObjectURL(url);
 				}).catch((e) => alive && setState({ error: String(e && e.message || e) }));
-				return () => { alive = false; if (url) URL.revokeObjectURL(url); };
+				load(true);
+				return () => { alive = false; clearTimeout(timer); if (url) URL.revokeObjectURL(url); };
 			}, [key]);
 			return state;
 		}
@@ -564,7 +567,7 @@ tr.fold:hover td{background:var(--gv-layer2)}
 			const q = { scope: spec.scope, sha: spec.sha };
 			// Key from primitives only: stringifying spec would serialize every file entry of a View-all on each render.
 			const sf = spec.file;
-			const key = [spec.scope, spec.sha, sf && sf.path, sf && sf.origPath, spec.mode, spec.title, spec.files && spec.files.length, params.session, params.worktree, prefs.full, prefs.ws].join("\0");
+			const key = [spec.scope, spec.sha, sf && sf.path, sf && sf.origPath, spec.mode, spec.title, spec.files && spec.files.length, params.session, prefs.full, prefs.ws].join("\0");
 
 			useEffect(() => {
 				let alive = true;
@@ -580,7 +583,7 @@ tr.fold:hover td{background:var(--gv-layer2)}
 							const list = multi ? spec.files : [spec.file];
 							const capped = list.slice(0, 60);
 							// At most 4 requests in flight so View all cannot flood the git service (it sheds load with 429).
-							const out = await mapLimit(capped, 4, (f) => getJson("/v1/diff", { ...common, path: f.path }, ctrl.signal).then((r) => ({ f, r })), ctrl.signal);
+							const out = await mapLimit(capped, 4, (f) => getJson("/v1/diff", { ...common, path: f.path }, ctrl.signal, true).then((r) => ({ f, r })), ctrl.signal);
 							for (const { f, r } of out.filter(Boolean)) {
 								const parsed = r.ok ? parseUnifiedDiff(r.patch) : [];
 								if (parsed[0]) files.push({ ...parsed[0], status: "A" });
@@ -588,7 +591,7 @@ tr.fold:hover td{background:var(--gv-layer2)}
 							}
 							if (list.length > capped.length) note = `Showing the first ${capped.length} of ${list.length} untracked files.`;
 						} else {
-							const r = await getJson("/v1/diff", { ...common, path: multi ? undefined : spec.file.path, origPath: multi ? undefined : spec.file.origPath }, ctrl.signal);
+							const r = await getJson("/v1/diff", { ...common, path: multi ? undefined : spec.file.path, origPath: multi ? undefined : spec.file.origPath }, ctrl.signal, true);
 							if (!r.ok) throw new Error(r.error || "diff failed");
 							if (r.truncated) note = "This diff is larger than the 4 MB limit and was not loaded.";
 							files = parseUnifiedDiff(r.patch);
@@ -664,9 +667,9 @@ tr.fold:hover td{background:var(--gv-layer2)}
 				stats.deleted ? h("span", { className: "gv-del" }, "−" + stats.deleted) : null);
 		}
 
-		function FileRow({ f, area, depth, treeMode, onOpen, selected }) {
+		function FileRow({ f, area, depth, treeMode, onOpen }) {
 			const status = area === "untracked" ? "U" : f.status;
-			return h("div", { className: "gv-file" + (selected ? " sel" : ""), style: treeMode ? { paddingLeft: 14 + depth * 12 } : undefined, onClick: () => onOpen(f), title: f.path + (f.origPath ? `\n← ${f.origPath}` : ""), tabIndex: 0, onKeyDown: (e) => { if (e.key === "Enter") onOpen(f); } },
+			return h("div", { className: "gv-file", style: treeMode ? { paddingLeft: 14 + depth * 12 } : undefined, onClick: () => onOpen(f), title: f.path + (f.origPath ? `\n← ${f.origPath}` : ""), tabIndex: 0, onKeyDown: (e) => { if (e.key === "Enter") onOpen(f); } },
 				h("span", { className: "gv-s-" + (status === "?" ? "U" : status), style: { display: "inline-flex" } }, h(Icon, { name: "file", size: 14 })),
 				h("span", { className: "nm" }, baseName(f.path)),
 				!treeMode ? h("span", { className: "dir" }, dirName(f.path)) : null,
@@ -703,7 +706,6 @@ tr.fold:hover td{background:var(--gv-layer2)}
 				collapsed ? null : children);
 		}
 
-
 		// ---- history ----
 		function History({ params, branchOid, onOpenCommitFile, collapsed, onToggle }) {
 			const [data, setData] = useState(null);
@@ -715,10 +717,10 @@ tr.fold:hover td{background:var(--gv-layer2)}
 				let alive = true;
 				getJson("/v1/history", { ...params, limit }).then((r) => alive && setData(r)).catch((e) => { if (alive && e.name !== "AbortError") setData({ ok: false, error: "Could not load history: " + String(e && e.message || e) }); });
 				return () => { alive = false; };
-			}, [collapsed, branchOid, params.session, params.worktree, limit]);
+			}, [collapsed, branchOid, params.session, limit]);
 			const expand = (c) => {
 				setOpen((o) => (o === c.sha ? null : c.sha));
-				if (!files[c.sha]) getJson("/v1/commit", { ...params, sha: c.sha }).then((r) => setFiles((f) => ({ ...f, [c.sha]: r }))).catch((e) => setFiles((f) => ({ ...f, [c.sha]: { ok: false, error: "Could not load commit: " + String(e && e.message || e) } })));
+				if (!(files[c.sha] && files[c.sha].ok)) getJson("/v1/commit", { ...params, sha: c.sha }).then((r) => setFiles((f) => ({ ...f, [c.sha]: r }))).catch((e) => setFiles((f) => ({ ...f, [c.sha]: { ok: false, error: "Could not load commit: " + String(e && e.message || e) } })));
 			};
 			return h(Section, { id: "history", title: "History", count: data && data.ok ? data.commits.length + (data.hasMore ? "+" : "") : "", collapsed, onToggle }, collapsed ? null :
 				!data ? h("div", { className: "gv-empty" }, h("span", { className: "gv-spin" }))
@@ -736,7 +738,7 @@ tr.fold:hover td{background:var(--gv-layer2)}
 									: !files[c.sha].ok ? h("div", { className: "gv-empty" }, files[c.sha].error)
 										: [files[c.sha].message && files[c.sha].message.includes("\n") ? h("div", { key: "m", className: "gv-sub", style: { padding: "2px 12px", whiteSpace: "pre-wrap" } }, files[c.sha].message.split("\n").slice(1).join("\n").trim()) : null,
 											...files[c.sha].files.map((f) => h(FileRow, { key: f.path, f, area: "branch", treeMode: false, onOpen: () => onOpenCommitFile(c, f, files[c.sha].files) }))]) : null)),
-							data.hasMore ? h("div", { className: "gv-empty" }, h("button", { className: "gv-link", onClick: () => setLimit((n) => Math.min(n + 50, 200)) }, "Load more")) : null));
+							data.hasMore ? h("div", { className: "gv-empty" }, limit >= 200 ? "latest 200 shown" : h("button", { className: "gv-link", onClick: () => setLimit((n) => Math.min(n + 50, 200)) }, "Load more")) : null));
 		}
 
 		// =====================================================================================
@@ -770,14 +772,13 @@ tr.fold:hover td{background:var(--gv-layer2)}
 					} catch (e) {
 						// 429 = busy, not unreachable: keep the last snapshot and back off for Retry-After.
 						if (e && e.status === 429) busyMs = e.retryAfterMs || 1000;
-						else if (!stop && e.name !== "AbortError") setState((s) => ({ ...s, error: "Git service unreachable (" + API + "). Is dsh-git-view loaded? Restart DSH after installing it.", loading: false }));
+						else if (!stop && e.name !== "AbortError") setState((s) => ({ ...s, error: e instanceof TypeError ? "Git service unreachable (" + API + "). Is dsh-git-view loaded? Restart DSH after installing it." : "Git service error: " + (e.status ? "HTTP " + e.status : String(e && e.message || e)), loading: false }));
 					}
 					delay = Date.now() - t0 > 1500 ? Math.min(delay * 2, 60000) : POLL_MS;
 					if (busyMs) delay = Math.max(delay, busyMs);
 					if (!stop) timer = setTimeout(tick, delay);
 				};
-				refresh.current = tick;
-				raw.current = "";
+				refresh.current = tick; raw.current = "";
 				setState((s) => ({ ...s, loading: true }));
 				tick();
 				return () => { stop = true; clearTimeout(timer); ctrl && ctrl.abort(); };
@@ -823,7 +824,6 @@ tr.fold:hover td{background:var(--gv-layer2)}
 			const toggleSection = (id) => setPrefs((p) => ({ collapsed: { ...p.collapsed, [id]: !p.collapsed[id] } }));
 			const toggleDir = (k) => setCollapsedDirs((c) => ({ ...c, [k]: !c[k] }));
 
-
 			const openFile = (scope) => (f) => setView({ mode: "file", scope, file: f, siblings: lists ? lists[scope === "unstaged" ? "unstaged" : scope === "staged" ? "staged" : scope === "untracked" ? "untracked" : scope === "conflict" ? "conflict" : "branch"] : [] });
 			const openAll = (scope, files, title) => setView({ mode: "multi", scope, files, title });
 
@@ -833,7 +833,7 @@ tr.fold:hover td{background:var(--gv-layer2)}
 				return h("div", { className: "gv " + (dark ? "dark" : "light") }, h("style", null, CSS),
 					h(DiffView, {
 						spec: { ...view, scope }, params, prefs, setPrefs,
-						onBack: () => { setView(null); refresh(); },
+						onBack: () => setView(null), // the snapshot poll resumes (and ticks at once) when the diff view closes
 						onNavigate: (f) => setView((v) => ({ ...v, file: f })),
 					}));
 			}

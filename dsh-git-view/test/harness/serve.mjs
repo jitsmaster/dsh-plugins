@@ -9,7 +9,7 @@
 import http from 'node:http'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,10 +18,18 @@ import { startServer } from '../../server.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const arg = (name, fallback) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : fallback }
+// Defaults: whatever require.resolve finds from this checkout (esbuild), else the DSH checkout's pnpm store. The versions in
+// those paths are what DSH shipped when this was written and may have moved; a missing path fails here, naming the flag to pass.
 const pnpm = 'D:/dev/DSH/node_modules/.pnpm'
-const esbuild = createRequire(import.meta.url)(arg('--esbuild', `${pnpm}/esbuild@0.28.1/node_modules/esbuild/lib/main.js`))
-const reactDir = arg('--react', `${pnpm}/react@18.3.1/node_modules`)
-const reactDomDir = arg('--react-dom', `${pnpm}/react-dom@18.3.1_react@18.3.1/node_modules`)
+const req = createRequire(import.meta.url)
+const found = (spec, fallback) => { try { return req.resolve(spec) } catch { return fallback } }
+const must = (flag, path) => {
+  if (!existsSync(path)) { console.error(`harness: ${flag} path not found: ${path}\nInstall it here or pass ${flag} <path> (a DSH checkout is expected at ${pnpm}).`); process.exit(1) }
+  return path
+}
+const esbuild = req(must('--esbuild', arg('--esbuild', found('esbuild', `${pnpm}/esbuild@0.28.1/node_modules/esbuild/lib/main.js`))))
+const reactDir = must('--react', arg('--react', `${pnpm}/react@18.3.1/node_modules`))
+const reactDomDir = must('--react-dom', arg('--react-dom', `${pnpm}/react-dom@18.3.1_react@18.3.1/node_modules`))
 
 const sh = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const PNG_A = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP4z8Dwn4GBgYEBRAAAKw4D/YVSKd8AAAAASUVORK5CYII=', 'base64')

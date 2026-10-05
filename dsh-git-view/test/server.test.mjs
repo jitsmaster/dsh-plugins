@@ -63,7 +63,7 @@ test('snapshot returns status, worktrees and branch compare for the session', as
   assert.equal(r.json.status.branch.name, 'main')
   assert.equal(r.json.status.changes[0].path, 'a.txt')
   assert.equal(r.json.status.untracked[0].path, 'n.txt')
-  assert.equal(r.json.worktrees.length, 1)
+  assert.equal('worktrees' in r.json, false, 'the worktree list stays server-side')
   assert.equal(r.json.source, 'cwd')
 })
 

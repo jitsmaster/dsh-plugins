@@ -22,7 +22,19 @@ dsh plugin --profile web add "link:D:/dev/ai/dsh-plugins/dsh-git-view"
 
 Restart the DSH server, then refresh the browser. Open the right sidebar and pick **Git** from the guide page. The session's folder is known after its first message.
 
-Server-side files (`index.js`, `git.js`, `sessions.js`, `server.js`) need a server restart after edits; `lib/client.js` only needs a browser refresh.
+Server-side files (`index.js`, `git.js`, `gitpath.js`, `limiter.js`, `sessions.js`, `server.js`) need a server restart after edits; `lib/client.js` only needs a browser refresh.
+
+## Configuration
+
+Optional plugin config keys:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `stateDir` | `$DSH_HOME/git-view` (`~/.dsh/git-view`) | Where `sessions.json` (session -> folder / worktree) is kept. An unusable directory is logged and sessions are simply not persisted; the plugin still loads. |
+| `gitPath` | found on `PATH` | Absolute path of the git executable. Git is never resolved against a repository's folder, and if no absolute git is found the Git tab reports "git executable not found" instead of running a bare `git`. |
+| `port` | `3082` | Loopback API port. The shipped client always calls `3082` unless the page sets `window.__GIT_VIEW_PORT__`, which the plugin cannot do, so leave this alone unless you also change that. |
+
+Git child processes receive only an allow-listed environment (`PATH`, `SystemRoot`, `HOME`/`USERPROFILE`, `APPDATA`, `TEMP`, `LANG`/`LC_*`, `ProgramData`, `ProgramFiles*`, plus the plugin's own `GIT_*` flags); other variables, such as tokens, are not forwarded.
 
 ## How it works
 
@@ -33,7 +45,7 @@ Routes: `/v1/snapshot`, `/v1/commit`, `/v1/diff`, `/v1/history`, `/v1/blob`. The
 ## Limits
 
 - No syntax highlighting in diffs.
-- Port 3082 is fixed; if it is taken (or the plugin is not loaded) the tab shows "Git service unreachable (...). Is dsh-git-view loaded? Restart DSH after installing it."
+- Port 3082 is fixed for the shipped client (see `port` above); when git is overloaded the API answers HTTP 429 and the tab retries or says "busy, try again". If the port is taken (or the plugin is not loaded) the tab shows "Git service unreachable (...). Is dsh-git-view loaded? Restart DSH after installing it."
 - Lists are capped at 1,000 changed files.
 
 ## Development
@@ -44,4 +56,4 @@ npm test                      # node --test, no dependencies
 node test/harness/serve.mjs   # UI harness on http://127.0.0.1:3090 with a demo repo (API on :3083)
 ```
 
-The harness needs a DSH checkout at `D:/dev/DSH` for React and esbuild (override with `--react`, `--react-dom`, `--esbuild`).
+The harness (dev only, not shipped) takes esbuild from `require.resolve('esbuild')` if installed, otherwise from the DSH checkout's pnpm store; React and react-dom always default to hardcoded `D:/dev/DSH/node_modules/.pnpm/react@18.3.1…` paths, whose versions may have moved. Override with `--esbuild`, `--react`, `--react-dom`; a missing path stops with an error naming the flag.

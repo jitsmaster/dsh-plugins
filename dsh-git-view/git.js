@@ -39,7 +39,17 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
 // path can never widen a query. log.showSignature=false: never spawn gpg from a repo-influenced log/show.
 const BASE_ARGS = ['--no-optional-locks', '--literal-pathspecs', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false', '-c', 'color.ui=never', '-c', 'log.showSignature=false']
 // NoDefaultCurrentDirectoryInExePath: Windows must not search the cwd for helper executables git spawns.
-const ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat', NoDefaultCurrentDirectoryInExePath: '1' }
+// Security: git children get an allow-listed environment, not the host's: secrets in process.env (tokens, API keys)
+// are never forwarded, and no inherited GIT_* variable (GIT_DIR, GIT_EXTERNAL_DIFF, ...) can redirect or hook git.
+const ENV_ALLOW = /^(PATH|SystemRoot|windir|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|LANG|LC_.*|ProgramData|ProgramFiles.*)$/i
+export function buildGitEnv(source = process.env) {
+  const env = {}
+  for (const [k, v] of Object.entries(source)) if (ENV_ALLOW.test(k) && typeof v === 'string') env[k] = v
+  return { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat', NoDefaultCurrentDirectoryInExePath: '1' }
+}
+const ENV = buildGitEnv()
+/** Whether a relative path (from path.relative) leaves its base: `..` or `..<sep>x`, but not a name like `..foo`. */
+export const escapesRoot = (rel) => rel === '..' || rel.startsWith('..' + sep)
 /** At most 4 git processes at once; 64 more may queue, the rest are refused (DoS guard). */
 const limiter = createLimiter(4, 64)
 export const gitSaturated = () => limiter.saturated()
@@ -59,8 +69,11 @@ export const withGitSignal = (signal, fn) => signalStore.run({ signal }, fn)
  */
 export async function git(cwd, args, opts = {}) {
   const signal = opts.signal ?? signalStore.getStore()?.signal
+  // Security: fail closed. With no absolute git found, never spawn a bare `git` (Windows would search the cwd first).
+  const exe = gitExecutable()
+  if (!exe) return { code: -1, stdout: opts.buffer ? Buffer.alloc(0) : '', stderr: 'git executable not found', overflow: false }
   try {
-    return await limiter.run(() => runGit(cwd, args, opts, signal), signal)
+    return await limiter.run(() => runGit(exe, cwd, args, opts, signal), signal)
   } catch (error) {
     const empty = { code: -1, stdout: opts.buffer ? Buffer.alloc(0) : '', stderr: error?.message ?? '', overflow: false }
     if (error instanceof BusyError) return { ...empty, busy: true }
@@ -69,10 +82,10 @@ export async function git(cwd, args, opts = {}) {
   }
 }
 
-function runGit(cwd, args, opts, signal) {
+function runGit(exe, cwd, args, opts, signal) {
   return new Promise((done) => {
     // Security: absolute git path, never a bare name that Windows would resolve against `cwd` first.
-    execFile(gitExecutable(), [...BASE_ARGS, ...args], {
+    execFile(exe, [...BASE_ARGS, ...args], {
       cwd,
       env: ENV,
       timeout: opts.timeout ?? GIT_TIMEOUT_MS,
@@ -98,21 +111,25 @@ const text = async (cwd, args) => {
 
 /**
  * Locate the repository for a directory.
- * @returns {Promise<{ root: string, gitDir: string, commonDir: string, linked: boolean, bare: boolean } | undefined>}
+ * A busy / aborted git run is NOT "not a repository": it yields `{ busy: true }` so callers can shed load
+ * (HTTP 429) instead of reporting a false negative, and must never cache it.
+ * @returns {Promise<{ root: string, gitDir: string, commonDir: string, linked: boolean, bare: boolean } | { busy: true } | undefined>}
  */
 export async function repoInfo(dir) {
   if (!dir || typeof dir !== 'string' || isUncOrDevicePath(dir) || !existsSync(dir)) return undefined
   const cwd = statSync(dir).isDirectory() ? dir : resolve(dir, '..')
   const r = await git(cwd, ['rev-parse', '--show-toplevel', '--path-format=absolute', '--git-dir', '--git-common-dir', '--is-bare-repository'])
+  if (r.busy || r.aborted) return { busy: true }
   if (r.code !== 0) return undefined
   const [top, gitDir, commonDir, bare] = r.stdout.split('\n').map(s => s.trim())
   if (!top || !gitDir || !commonDir) return undefined
   return { root: resolve(top), gitDir: resolve(gitDir), commonDir: resolve(commonDir), linked: resolve(gitDir) !== resolve(commonDir), bare: bare === 'true' }
 }
 
-/** `git worktree list --porcelain`, newest git format. The first entry is the main working tree. */
+/** `git worktree list --porcelain`, newest git format. The first entry is the main working tree. `undefined` when busy / aborted. */
 export async function listWorktrees(root) {
   const r = await git(root, ['worktree', 'list', '--porcelain'])
+  if (r.busy || r.aborted) return undefined
   if (r.code !== 0) return []
   const out = []
   for (const block of r.stdout.split(/\r?\n\r?\n/)) {
@@ -263,11 +280,14 @@ const CONFLICT_LABEL = {
 /**
  * Current uncommitted state of one working tree.
  * @param {string} root
- * @param {{ maxBuffer?: number }} [opts] `maxBuffer` overrides the status output limit (tests).
- * @returns {Promise<object>} `{ ok:false, error }` or the full status snapshot.
+ * @param {{ maxBuffer?: number, home?: { root: string } }} [opts] `maxBuffer` overrides the status output limit (tests);
+ *   `home` is the session's already-resolved repo info, reused (no second rev-parse) when `root` is that repo's root.
+ * @returns {Promise<object>} `{ ok:false, error }` (plus `busy` when git was shed / aborted) or the full status snapshot.
  */
 export async function readStatus(root, opts = {}) {
-  const info = await repoInfo(root)
+  const sameRoot = opts.home && opts.home.root && (process.platform === 'win32' ? resolve(root).toLowerCase() === opts.home.root.toLowerCase() : resolve(root) === opts.home.root)
+  const info = sameRoot ? opts.home : await repoInfo(root)
+  if (info?.busy) return { ok: false, busy: true, error: 'busy: too many concurrent git requests' }
   if (!info) return { ok: false, error: 'not a git repository' }
   const [st, staged, unstaged, stashes] = await Promise.all([
     git(root, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all', '--find-renames'], { maxBuffer: opts.maxBuffer ?? STATUS_MAX_BUFFER }),
@@ -275,6 +295,7 @@ export async function readStatus(root, opts = {}) {
     git(root, ['diff', ...NO_DRIVERS, '--numstat', '-z', '--find-renames']),
     git(root, ['stash', 'list', '--format=%gd']),
   ])
+  if (st.busy || st.aborted) return { ok: false, busy: true, error: 'busy: too many concurrent git requests' }
   if (st.overflow) return { ok: false, error: 'too many changes to list (git status output is too large)' }
   if (st.code !== 0) return { ok: false, error: st.stderr.trim() || 'git status failed' }
   const { branch, entries } = parseStatusV2(st.stdout)
@@ -360,8 +381,13 @@ export function safeRef(ref) {
   return typeof ref === 'string' && ref.length > 0 && ref.length < 256 && !ref.startsWith('-') && !/[\s\0~^:?*[\\]|\.\./.test(ref)
 }
 
+/** The default base ref for the branch currently checked out in `root` (undefined: unborn / detached with no candidate). */
+export async function resolveBaseRef(root) {
+  return defaultBaseRef(root, await text(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']))
+}
+
 /**
- * Commits and files that are on HEAD but not on the detected default base branch.
+ * Files on HEAD that are not on the detected default base branch, plus ahead / behind counts.
  * @param {string} root
  */
 export async function readBranchCompare(root, currentBranch) {
@@ -369,10 +395,9 @@ export async function readBranchCompare(root, currentBranch) {
   if (!baseRef) return { ok: false, error: 'no base branch found' }
   const mergeBase = await text(root, ['merge-base', baseRef, 'HEAD'])
   if (!mergeBase) return { ok: false, baseRef, error: `no common ancestor with ${baseRef}` }
-  const [names, nums, log, counts] = await Promise.all([
+  const [names, nums, counts] = await Promise.all([
     git(root, ['diff', ...NO_DRIVERS, '--name-status', '-z', '--find-renames', mergeBase, 'HEAD']),
     git(root, ['diff', ...NO_DRIVERS, '--numstat', '-z', '--find-renames', mergeBase, 'HEAD']),
-    git(root, ['log', `--max-count=${MAX_COMMITS}`, '--format=%H%x1f%h%x1f%an%x1f%at%x1f%s', `${mergeBase}..HEAD`]),
     git(root, ['rev-list', '--left-right', '--count', `${baseRef}...HEAD`]),
   ])
   // A diff too large for the buffer is reported, not shown as an empty (clean-looking) branch.
@@ -381,12 +406,8 @@ export async function readBranchCompare(root, currentBranch) {
   const allFiles = names.code === 0 ? parseNameStatus(names.stdout) : []
   const truncated = allFiles.length > MAX_STATUS_ENTRIES
   const files = allFiles.slice(0, MAX_STATUS_ENTRIES).map(f => ({ ...f, stats: stats.get(f.path) }))
-  const commits = log.code === 0 ? log.stdout.split('\n').filter(Boolean).map((l) => {
-    const [sha, short, author, at, subject] = l.split('\x1f')
-    return { sha, short, author, at: Number(at) * 1000, subject }
-  }) : []
   const [behind, ahead] = counts.code === 0 ? counts.stdout.trim().split(/\s+/).map(Number) : [0, 0]
-  return { ok: true, baseRef, mergeBase, ahead, behind, files, truncated, commits }
+  return { ok: true, baseRef, mergeBase, ahead, behind, files, truncated }
 }
 
 /**
@@ -473,7 +494,7 @@ export function safeRelPath(root, p) {
   if (typeof p !== 'string' || !p || p.includes('\0') || isAbsolute(p)) return undefined
   const full = resolve(root, p)
   const rel = relative(root, full)
-  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return undefined
+  if (!rel || escapesRoot(rel) || isAbsolute(rel)) return undefined
   const norm = rel.split(sep).join('/')
   // Repository metadata is never a diff target (a segment named .git, on any filesystem casing).
   if (norm.split('/').some(s => s.toLowerCase() === '.git')) return undefined
@@ -500,7 +521,7 @@ async function parentInsideRoot(root, path, knownRealRoot) {
   try {
     const [realRoot, realParent] = await Promise.all([knownRealRoot ?? realpath(root), realpath(dirname(join(root, path)))])
     const rel = relative(realRoot, realParent)
-    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    return rel === '' || (!escapesRoot(rel) && !isAbsolute(rel))
   } catch { return false }
 }
 
@@ -580,7 +601,7 @@ export async function readDiff(root, q) {
   }
   const r = await git(root, args)
   if (r.overflow) return { ok: true, patch: '', binary: false, truncated: true }
-  if (r.busy) return { ok: false, busy: true, error: r.stderr }
+  if (r.busy || r.aborted) return { ok: false, busy: true, error: r.stderr }
   if (r.code !== 0) return { ok: false, error: r.stderr.trim() || 'git diff failed' }
   return { ok: true, patch: r.stdout, binary: false }
 }
@@ -593,7 +614,8 @@ export const IMAGE_MIME = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
   bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif', svg: 'image/svg+xml',
 }
-export const mimeFor = (p) => IMAGE_MIME[p.split('.').pop()?.toLowerCase() ?? '']
+// Object.hasOwn: a file named `x.constructor` / `x.toString` must not resolve to an inherited Object.prototype member.
+export const mimeFor = (p) => { const ext = p.split('.').pop()?.toLowerCase() ?? ''; return Object.hasOwn(IMAGE_MIME, ext) ? IMAGE_MIME[ext] : undefined }
 
 /**
  * One side of a file diff as raw bytes: old side for `side=old`, new side for `side=new`.
@@ -643,6 +665,8 @@ export async function readSide(root, q) {
   }
   const r = await git(root, ['cat-file', 'blob', spec], { buffer: true, maxBuffer: MAX_BLOB_BYTES })
   if (r.overflow) return { ok: false, error: 'too large to preview' }
+  // Busy / aborted is a retryable load-shedding signal, not "the file does not exist on this side" (204).
+  if (r.busy || r.aborted) return { ok: false, busy: true, error: r.stderr }
   if (r.code !== 0) return { ok: true, missing: true, mime }
   return { ok: true, data: r.stdout, mime }
 }

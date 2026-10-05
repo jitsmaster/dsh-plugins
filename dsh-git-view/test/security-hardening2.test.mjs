@@ -37,12 +37,30 @@ test('a git.exe planted in the repo directory is never executed', { skip: proces
 })
 
 test('findGit ignores relative and empty PATH entries; gitPath override wins', () => {
-  assert.equal(findGit({ path: '.;bin;;rel', cwd: tmp, isWin: true }), 'git')
+  assert.equal(findGit({ path: '.;bin;;rel', cwd: tmp, isWin: true }), undefined, 'fail closed: never a bare git')
   setGitPath('relative/git')
   assert.notEqual(gitExecutable(), 'relative/git', 'relative override is ignored')
   setGitPath(process.execPath)
   assert.equal(gitExecutable(), process.execPath)
   setGitPath(undefined)
+})
+
+test('with no absolute git found, git() fails closed and spawns nothing', async () => {
+  const saved = { PATH: process.env.PATH, Path: process.env.Path }
+  setGitPath(undefined)
+  process.env.PATH = ''
+  try {
+    assert.equal(gitExecutable(), undefined)
+    const r = await git(repo, ['rev-parse', '--git-dir'])
+    assert.deepEqual([r.code, r.stderr], [-1, 'git executable not found'])
+    const b = await git(repo, ['rev-parse', '--git-dir'], { buffer: true })
+    assert.equal(b.code, -1)
+    assert.equal(Buffer.isBuffer(b.stdout), true)
+  } finally {
+    if (saved.PATH === undefined) delete process.env.PATH; else process.env.PATH = saved.PATH
+    setGitPath(undefined)
+  }
+  assert.equal((await git(repo, ['rev-parse', '--git-dir'])).code, 0, 'works again once git is findable')
 })
 
 test('UNC / device paths are rejected lexically', async () => {

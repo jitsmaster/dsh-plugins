@@ -11,7 +11,7 @@
  */
 import { createServer } from 'node:http'
 import {
-  gitSaturated, readBranchCompare, readCommit, readDiff, readHistory, readSide, readStatus, withGitSignal,
+  gitSaturated, readBranchCompare, readCommit, readDiff, readHistory, readSide, readStatus, resolveBaseRef, withGitSignal,
 } from './git.js'
 
 export const GIT_VIEW_PORT = 3082
@@ -32,12 +32,14 @@ export function memo(fn) {
     const evict = () => { if (cache.get(key) === entry) cache.delete(key) }
     // then(a, b) with both handlers: no derived promise is left to reject unhandled (finally() would leave one
     // that crashes the host). A failure is evicted at once so the next poll retries; a success lingers for the TTL.
-    promise.then(() => { entry.at = Date.now(); setTimeout(evict, STATUS_TTL_MS + 50).unref?.() }, evict)
+    // A busy / aborted answer is load shedding, not a result: it is never kept, so the next request asks git again.
+    promise.then((value) => { if (value?.busy) return evict(); entry.at = Date.now(); setTimeout(evict, STATUS_TTL_MS + 50).unref?.() }, evict)
     return promise
   }
   return call
 }
 
+const BUSY_ERROR = 'busy: too many concurrent git requests'
 const json = (res, code, body) => {
   if (res.destroyed) return // the client went away; nothing to answer
   const data = JSON.stringify(body)
@@ -56,7 +58,7 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
 
   // Memoised reads are shared between requests, so they must never be bound to one client's abort signal.
   const shared = (fn) => (...a) => withGitSignal(undefined, () => fn(...a))
-  const statusOf = memo(shared((root) => readStatus(root)))
+  const statusOf = memo(shared((root, home) => readStatus(root, { home })))
   const compareOf = memo(shared((root, branch) => readBranchCompare(root, branch)))
 
   // Every route resolves the session (rev-parse, and a worktree list for snapshots): share that across the
@@ -68,44 +70,47 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
   const compareFor = (target, status) =>
     compareOf(`c:${target.root}:${status.branch.name ?? ''}`, target.root, status.branch.name)
 
-  /** The base ref diffs are taken against: always the server's own compare, never a client-supplied ref. */
+  /** Last base ref the snapshot's compare found, per root (bounded). */
+  const baseRefs = new Map()
+  const baseOf = memo(shared((root) => resolveBaseRef(root)))
+  /** The base ref diffs are taken against: always the server's own choice, never a client-supplied ref. */
   async function serverBase(target) {
-    const status = await statusOf(`s:${target.root}`, target.root)
-    if (!status.ok || status.branch.unborn) return undefined
-    const cmp = await compareFor(target, status)
-    return cmp.ok ? cmp.baseRef : undefined
+    return baseRefs.get(target.root) ?? baseOf(`b:${target.root}`, target.root)
   }
 
   /** Everything the Source Control tab shows, in one round trip. */
   async function snapshot(target) {
-    const status = await statusOf(`s:${target.root}`, target.root)
-    const view = {
-      ok: status.ok,
-      sessionCwd: target.cwd,
-      repoRoot: target.cwdRoot,
-      source: target.source,
-      recorded: target.recorded,
-      worktrees: target.worktrees.map(w => ({ ...w, current: w.path === target.root, sessionCwd: w.path === target.cwdRoot })),
-      status,
-    }
+    const status = await statusOf(`s:${target.root}`, target.root, target.home)
+    if (status.busy) return { busy: true }
+    // The worktree list is only used server-side (to validate the recorded worktree), so it is not sent.
+    const view = { ok: status.ok, error: status.error, sessionCwd: target.cwd, source: target.source, status }
     if (status.ok && !status.branch.unborn) {
       view.compare = await compareFor(target, status)
+      if (view.compare.ok) {
+        if (baseRefs.size >= 100) baseRefs.delete(baseRefs.keys().next().value)
+        baseRefs.set(target.root, view.compare.baseRef)
+      } else baseRefs.delete(target.root)
     }
     return view
   }
 
+  const busy429 = (res) => { res.setHeader('Retry-After', '1'); return json(res, 429, { ok: false, busy: true, error: BUSY_ERROR }) }
+
   async function handle(req, res, url) {
     const q = url.searchParams
     // DoS guard: the git process queue is full, so shed load instead of piling up more work.
-    if (gitSaturated()) { res.setHeader('Retry-After', '1'); return json(res, 429, { ok: false, error: 'busy: too many concurrent git requests' }) }
+    if (gitSaturated()) return busy429(res)
     // View-only: the tree shown is decided by the session alone (recorded worktree, else its folder).
     const target = await resolveCached(q.get('session'), q.get('cwd') ?? undefined, url.pathname === '/v1/snapshot')
+    if (target.busy) return busy429(res)
     if (!target.ok) return json(res, 200, { ok: false, error: target.error, sessionCwd: target.cwd })
     const root = target.root
 
     switch (url.pathname) {
-      case '/v1/snapshot':
-        return json(res, 200, await snapshot(target))
+      case '/v1/snapshot': {
+        const view = await snapshot(target)
+        return view.busy ? busy429(res) : json(res, 200, view)
+      }
 
       case '/v1/commit':
         return json(res, 200, await readCommit(root, q.get('sha') ?? ''))
@@ -119,7 +124,7 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
           ignoreWs: q.get('ws') === '1',
         })
         // Busy is a load-shedding signal for the client to retry, not a content error.
-        if (out.busy || (!out.ok && gitSaturated())) { res.setHeader('Retry-After', '1'); return json(res, 429, { ok: false, error: 'busy: too many concurrent git requests' }) }
+        if (out.busy || (!out.ok && gitSaturated())) return busy429(res)
         return json(res, 200, out)
       }
 
@@ -131,6 +136,7 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
         const out = await readSide(root, {
           scope, path: q.get('path') ?? '', side: q.get('side') === 'old' ? 'old' : 'new', base: scope === 'branch' ? await serverBase(target) : undefined, sha: q.get('sha') ?? undefined,
         })
+        if (out.busy) return busy429(res) // retryable; never a 204 "no such side"
         if (!out.ok) return json(res, 200, out)
         if (out.missing) { res.writeHead(204, { 'Cache-Control': 'no-store' }); return res.end() }
         res.writeHead(200, { 'Content-Type': out.mime, 'Cache-Control': 'no-store', 'Content-Length': out.data.length, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" })
