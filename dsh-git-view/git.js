@@ -41,7 +41,7 @@ const BASE_ARGS = ['--no-optional-locks', '--literal-pathspecs', '-c', 'core.quo
 // NoDefaultCurrentDirectoryInExePath: Windows must not search the cwd for helper executables git spawns.
 // Security: git children get an allow-listed environment, not the host's: secrets in process.env (tokens, API keys)
 // are never forwarded, and no inherited GIT_* variable (GIT_DIR, GIT_EXTERNAL_DIFF, ...) can redirect or hook git.
-const ENV_ALLOW = /^(PATH|SystemRoot|windir|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|LANG|LC_.*|ProgramData|ProgramFiles.*)$/i
+const ENV_ALLOW = /^(PATH|SystemRoot|windir|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|TEMP|TMP|LANG|LC_.*|ProgramData|ProgramFiles.*|XDG_CONFIG_HOME|PATHEXT|ComSpec)$/i
 export function buildGitEnv(source = process.env) {
   const env = {}
   for (const [k, v] of Object.entries(source)) if (ENV_ALLOW.test(k) && typeof v === 'string') env[k] = v
@@ -55,6 +55,8 @@ const limiter = createLimiter(4, 64)
 export const gitSaturated = () => limiter.saturated()
 export const gitStats = () => limiter.stats()
 export { BusyError, setGitPath }
+/** Error shown when no git executable can be located (distinct from "not a git repository"). */
+export const GIT_MISSING = 'git executable not found'
 
 /** Request-scoped abort signal: every git() call made inside `withGitSignal` is cancelled with it. */
 const signalStore = new AsyncLocalStorage()
@@ -95,14 +97,27 @@ function runGit(exe, cwd, args, opts, signal) {
       signal, // the child is killed when the client disconnects
     }, (error, stdout, stderr) => {
       const code = error ? (typeof error.code === 'number' ? error.code : -1) : 0
+      // A child killed by the request's abort signal is a cancellation, not a git failure.
+      if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') return done({ code: -1, stdout: opts.buffer ? Buffer.alloc(0) : '', stderr: error.message ?? '', overflow: false, aborted: true })
       done({ code, stdout: stdout ?? (opts.buffer ? Buffer.alloc(0) : ''), stderr: String(stderr ?? ''), overflow: error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' })
     })
   })
 }
 
-const text = async (cwd, args) => {
+/** Marker for a git run that was shed (limiter full) or cancelled: neither is an answer about the repository. */
+const BUSY = Symbol('busy')
+const isShed = (r) => Boolean(r.busy || r.aborted)
+const busyResult = () => ({ ok: false, busy: true, error: 'busy: too many concurrent git requests' })
+
+/** Trimmed stdout, `undefined` when git failed, or BUSY when the run was shed / aborted (never a false "no answer"). */
+const textOrBusy = async (cwd, args) => {
   const r = await git(cwd, args)
+  if (isShed(r)) return BUSY
   return r.code === 0 ? r.stdout.trim() : undefined
+}
+const text = async (cwd, args) => {
+  const v = await textOrBusy(cwd, args)
+  return v === BUSY ? undefined : v
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -113,10 +128,12 @@ const text = async (cwd, args) => {
  * Locate the repository for a directory.
  * A busy / aborted git run is NOT "not a repository": it yields `{ busy: true }` so callers can shed load
  * (HTTP 429) instead of reporting a false negative, and must never cache it.
- * @returns {Promise<{ root: string, gitDir: string, commonDir: string, linked: boolean, bare: boolean } | { busy: true } | undefined>}
+ * A missing git executable is also distinct: `{ missing: true }`, never "not a repository".
+ * @returns {Promise<{ root: string, gitDir: string, commonDir: string, linked: boolean, bare: boolean } | { busy: true } | { missing: true } | undefined>}
  */
 export async function repoInfo(dir) {
   if (!dir || typeof dir !== 'string' || isUncOrDevicePath(dir) || !existsSync(dir)) return undefined
+  if (!gitExecutable()) return { missing: true }
   const cwd = statSync(dir).isDirectory() ? dir : resolve(dir, '..')
   const r = await git(cwd, ['rev-parse', '--show-toplevel', '--path-format=absolute', '--git-dir', '--git-common-dir', '--is-bare-repository'])
   if (r.busy || r.aborted) return { busy: true }
@@ -287,7 +304,8 @@ const CONFLICT_LABEL = {
 export async function readStatus(root, opts = {}) {
   const sameRoot = opts.home && opts.home.root && (process.platform === 'win32' ? resolve(root).toLowerCase() === opts.home.root.toLowerCase() : resolve(root) === opts.home.root)
   const info = sameRoot ? opts.home : await repoInfo(root)
-  if (info?.busy) return { ok: false, busy: true, error: 'busy: too many concurrent git requests' }
+  if (info?.busy) return busyResult()
+  if (info?.missing) return { ok: false, error: GIT_MISSING }
   if (!info) return { ok: false, error: 'not a git repository' }
   const [st, staged, unstaged, stashes] = await Promise.all([
     git(root, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all', '--find-renames'], { maxBuffer: opts.maxBuffer ?? STATUS_MAX_BUFFER }),
@@ -295,7 +313,8 @@ export async function readStatus(root, opts = {}) {
     git(root, ['diff', ...NO_DRIVERS, '--numstat', '-z', '--find-renames']),
     git(root, ['stash', 'list', '--format=%gd']),
   ])
-  if (st.busy || st.aborted) return { ok: false, busy: true, error: 'busy: too many concurrent git requests' }
+  // A shed numstat / stash run would otherwise silently show missing stats or a zero stash count.
+  if ([st, staged, unstaged, stashes].some(isShed)) return busyResult()
   if (st.overflow) return { ok: false, error: 'too many changes to list (git status output is too large)' }
   if (st.code !== 0) return { ok: false, error: st.stderr.trim() || 'git status failed' }
   const { branch, entries } = parseStatusV2(st.stdout)
@@ -363,17 +382,30 @@ export async function readStatus(root, opts = {}) {
 // Branch compare ("committed on this branch")
 // ---------------------------------------------------------------------------------------------
 
-const verify = async (root, ref) => (await text(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])) !== undefined
+/** True / false, or BUSY when the verification run was shed or aborted. */
+const verify = async (root, ref) => {
+  const v = await textOrBusy(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])
+  return v === BUSY ? BUSY : v !== undefined
+}
 
-/** Best guess at the branch this work will be merged into. */
-export async function defaultBaseRef(root, currentBranch) {
-  const origin = await text(root, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
+/** The base ref, `undefined` when no candidate exists, or BUSY when any git run was shed / aborted. */
+async function findBaseRef(root, currentBranch) {
+  const origin = await textOrBusy(root, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
+  if (origin === BUSY) return BUSY
   const candidates = [origin, 'origin/main', 'origin/master', 'main', 'master', 'develop'].filter(Boolean)
   for (const ref of candidates) {
     if (ref === currentBranch) continue
-    if (await verify(root, ref)) return ref
+    const ok = await verify(root, ref)
+    if (ok === BUSY) return BUSY
+    if (ok) return ref
   }
   return undefined
+}
+
+/** Best guess at the branch this work will be merged into. */
+export async function defaultBaseRef(root, currentBranch) {
+  const ref = await findBaseRef(root, currentBranch)
+  return ref === BUSY ? undefined : ref
 }
 
 /** Reject anything that could be read as an option or a revision range. */
@@ -382,8 +414,15 @@ export function safeRef(ref) {
 }
 
 /** The default base ref for the branch currently checked out in `root` (undefined: unborn / detached with no candidate). */
-export async function resolveBaseRef(root) {
-  return defaultBaseRef(root, await text(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']))
+export async function resolveBaseRef(root, opts = {}) {
+  const branch = 'branch' in opts ? opts.branch : await text(root, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
+  return defaultBaseRef(root, branch)
+}
+
+/** Checked-out branch name (`name` undefined when detached / unborn), or `{ busy: true }` when git was shed / aborted. */
+export async function readBranchName(root) {
+  const name = await textOrBusy(root, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
+  return name === BUSY ? { busy: true } : { name }
 }
 
 /**
@@ -391,15 +430,20 @@ export async function resolveBaseRef(root) {
  * @param {string} root
  */
 export async function readBranchCompare(root, currentBranch) {
-  const baseRef = await defaultBaseRef(root, currentBranch)
+  // Any shed / aborted git run below is reported as busy: it must not turn into a false "clean branch" or a
+  // "no base branch" / "no common ancestor" answer that the server would then cache.
+  const baseRef = await findBaseRef(root, currentBranch)
+  if (baseRef === BUSY) return busyResult()
   if (!baseRef) return { ok: false, error: 'no base branch found' }
-  const mergeBase = await text(root, ['merge-base', baseRef, 'HEAD'])
+  const mergeBase = await textOrBusy(root, ['merge-base', baseRef, 'HEAD'])
+  if (mergeBase === BUSY) return busyResult()
   if (!mergeBase) return { ok: false, baseRef, error: `no common ancestor with ${baseRef}` }
   const [names, nums, counts] = await Promise.all([
     git(root, ['diff', ...NO_DRIVERS, '--name-status', '-z', '--find-renames', mergeBase, 'HEAD']),
     git(root, ['diff', ...NO_DRIVERS, '--numstat', '-z', '--find-renames', mergeBase, 'HEAD']),
     git(root, ['rev-list', '--left-right', '--count', `${baseRef}...HEAD`]),
   ])
+  if ([names, nums, counts].some(isShed)) return busyResult()
   // A diff too large for the buffer is reported, not shown as an empty (clean-looking) branch.
   if (names.overflow || nums.overflow) return { ok: false, baseRef, mergeBase, error: 'too many changed files to list on this branch' }
   const stats = nums.code === 0 ? parseNumstat(nums.stdout) : new Map()

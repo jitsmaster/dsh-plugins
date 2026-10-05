@@ -11,6 +11,8 @@ import { delimiter, isAbsolute, join, resolve } from 'node:path'
 const win = process.platform === 'win32'
 let override
 let cached
+/** When the last lookup found nothing (undefined: no miss recorded). */
+let missedAt
 
 /**
  * Security: lexically true for UNC / device paths (`\\host\share`, `\\?\C:\`, `\\.\pipe`, `//host/x`).
@@ -23,6 +25,7 @@ export const isUncOrDevicePath = (p) => typeof p === 'string' && /^\s*[\\/]{2}/.
 export function setGitPath(p) {
   override = typeof p === 'string' && p && isAbsolute(p) ? resolve(p) : undefined
   cached = undefined
+  missedAt = undefined
 }
 
 const isFile = (p) => { try { return statSync(p).isFile() } catch { return false } }
@@ -48,7 +51,19 @@ export function findGit({ path = process.env.PATH ?? process.env.Path ?? '', cwd
   return undefined // fail closed: callers must not fall back to a bare `git` (cwd-relative lookup on Windows)
 }
 
-/** The git executable to run: override, else lazily resolved from PATH once. `undefined` when none was found. */
-export function gitExecutable() {
-  return override ?? (cached ??= findGit())
+/** A failed lookup is remembered this long, so a machine without git does not rescan PATH on every call. */
+export const MISSING_RETRY_MS = 30_000
+
+/**
+ * The git executable to run: override, else lazily resolved from PATH once. `undefined` when none was found
+ * (that miss is cached for MISSING_RETRY_MS, then PATH is scanned again in case git was installed meanwhile).
+ * @param {{ find?: () => string | undefined, now?: () => number }} [deps] overridable for tests
+ */
+export function gitExecutable({ find = findGit, now = Date.now } = {}) {
+  if (override) return override
+  if (cached) return cached
+  if (missedAt !== undefined && now() - missedAt < MISSING_RETRY_MS) return undefined
+  cached = find()
+  missedAt = cached ? undefined : now()
+  return cached
 }

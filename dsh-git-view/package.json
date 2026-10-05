@@ -11,7 +11,7 @@
   },
   "files": ["index.js", "git.js", "sessions.js", "server.js", "gitpath.js", "limiter.js", "lib", "cordis.patch.yml"],
   "scripts": {
-    "test": "node --test test/git.test.mjs test/git-hardening.test.mjs test/sessions.test.mjs test/server.test.mjs test/server-hardening.test.mjs test/client.test.mjs test/security-hardening2.test.mjs test/perf-review.test.mjs"
+    "test": "node --test test/git.test.mjs test/git-hardening.test.mjs test/sessions.test.mjs test/server.test.mjs test/server-hardening.test.mjs test/client.test.mjs test/security-hardening2.test.mjs test/perf-review.test.mjs test/review-fixes2.test.mjs"
   },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

@@ -11,7 +11,7 @@
  */
 import { createServer } from 'node:http'
 import {
-  gitSaturated, readBranchCompare, readCommit, readDiff, readHistory, readSide, readStatus, resolveBaseRef, withGitSignal,
+  gitSaturated, readBranchCompare, readBranchName, readCommit, readDiff, readHistory, readSide, readStatus, resolveBaseRef, withGitSignal,
 } from './git.js'
 
 export const GIT_VIEW_PORT = 3082
@@ -51,7 +51,8 @@ const json = (res, code, body) => {
  * @param {{ registry: ReturnType<import('./sessions.js').createSessionRegistry>, logger: { warn: Function }, signal?: AbortSignal,
  *   port?: number, webUrl?: string }} opts
  */
-export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, webUrl = process.env.DSH_WEB_URL || 'http://127.0.0.1:3080' }) {
+export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, webUrl = process.env.DSH_WEB_URL || 'http://127.0.0.1:3080', deps = {} }) {
+  const { readBranchCompare: compareFn = readBranchCompare } = deps // injectable for tests
   const web = new URL(webUrl)
   const allowedOrigins = new Set([...['127.0.0.1', 'localhost'].map(h => `${web.protocol}//${h}:${web.port}`), web.origin])
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`])
@@ -59,7 +60,7 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
   // Memoised reads are shared between requests, so they must never be bound to one client's abort signal.
   const shared = (fn) => (...a) => withGitSignal(undefined, () => fn(...a))
   const statusOf = memo(shared((root, home) => readStatus(root, { home })))
-  const compareOf = memo(shared((root, branch) => readBranchCompare(root, branch)))
+  const compareOf = memo(shared((root, branch) => compareFn(root, branch)))
 
   // Every route resolves the session (rev-parse, and a worktree list for snapshots): share that across the
   // burst of requests one UI refresh makes. Separate entries because only the snapshot needs the list.
@@ -70,12 +71,16 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
   const compareFor = (target, status) =>
     compareOf(`c:${target.root}:${status.branch.name ?? ''}`, target.root, status.branch.name)
 
-  /** Last base ref the snapshot's compare found, per root (bounded). */
+  /** Last base ref the snapshot's compare found, per root AND branch (bounded): a checkout must not reuse the old branch's base. */
   const baseRefs = new Map()
-  const baseOf = memo(shared((root) => resolveBaseRef(root)))
+  const baseKey = (root, branch) => `${root}\0${branch ?? ''}`
+  const branchOf = memo(shared((root) => readBranchName(root)))
+  const baseOf = memo(shared((root, branch) => resolveBaseRef(root, { branch })))
   /** The base ref diffs are taken against: always the server's own choice, never a client-supplied ref. */
   async function serverBase(target) {
-    return baseRefs.get(target.root) ?? baseOf(`b:${target.root}`, target.root)
+    const head = await branchOf(`h:${target.root}`, target.root)
+    if (head.busy) return undefined
+    return baseRefs.get(baseKey(target.root, head.name)) ?? baseOf(`b:${target.root}\0${head.name ?? ''}`, target.root, head.name)
   }
 
   /** Everything the Source Control tab shows, in one round trip. */
@@ -86,10 +91,13 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
     const view = { ok: status.ok, error: status.error, sessionCwd: target.cwd, source: target.source, status }
     if (status.ok && !status.branch.unborn) {
       view.compare = await compareFor(target, status)
+      // A busy / aborted compare is load shedding: answer "retry later" and leave the remembered base untouched.
+      if (view.compare.busy) return { busy: true }
+      const key = baseKey(target.root, status.branch.name)
       if (view.compare.ok) {
         if (baseRefs.size >= 100) baseRefs.delete(baseRefs.keys().next().value)
-        baseRefs.set(target.root, view.compare.baseRef)
-      } else baseRefs.delete(target.root)
+        baseRefs.set(key, view.compare.baseRef)
+      } else baseRefs.delete(key)
     }
     return view
   }

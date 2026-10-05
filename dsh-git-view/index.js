@@ -30,12 +30,12 @@ export function apply(ctx, config = {}) {
   try {
     stateDir = resolve(config.stateDir ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'git-view'))
     mkdirSync(stateDir, { recursive: true })
-  } catch (error) { ctx.logger?.warn?.(`git-view: state directory unusable (${String(error)}); sessions are not persisted`) }
-  stateDir ??= join(process.cwd(), '.git-view-state-unavailable')
+  } catch (error) { ctx.logger?.warn?.(`git-view: state directory unusable (${String(error)}); sessions are not persisted`); stateDir = undefined }
   // Optional absolute git executable override; otherwise git is resolved from PATH (never the cwd).
   if (config.gitPath) setGitPath(config.gitPath)
 
-  const registry = createSessionRegistry({ stateDir, workspacePaths: () => workspacePathsOf(ctx) })
+  // No usable state directory: stay in memory rather than writing sessions.json into the host's cwd.
+  const registry = createSessionRegistry({ stateDir, persist: stateDir !== undefined, workspacePaths: () => workspacePathsOf(ctx) })
 
   ctx.on('agent/created', ({ agent } = {}) => {
     try { registry.seen(agent?.id, agent?.session?.header?.cwd) } catch (error) { ctx.logger?.warn?.(`git-view: agent/created failed: ${String(error)}`) }

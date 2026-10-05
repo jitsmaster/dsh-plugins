@@ -83,18 +83,19 @@ export function workingDirectories(args, baseCwd) {
 }
 
 /**
- * @param {{ stateDir: string, workspacePaths?: () => string[] }} opts
+ * @param {{ stateDir?: string, workspacePaths?: () => string[], persist?: boolean }} opts
+ *   `persist: false` keeps sessions in memory only: nothing is read from or written to disk.
  */
-export function createSessionRegistry({ stateDir, workspacePaths = () => [], deps = {} }) {
+export function createSessionRegistry({ stateDir, workspacePaths = () => [], deps = {}, persist = true }) {
   const { repoInfo: repoInfoFn = repoInfo, listWorktrees: listWorktreesFn = listWorktrees, busy = () => gitStats().queued > OBSERVE_MAX_QUEUE } = deps
-  try { mkdirSync(stateDir, { recursive: true }) } catch { /* unusable stateDir: sessions stay in memory (save() is non-fatal too) */ }
-  const file = join(stateDir, 'sessions.json')
+  const file = persist && typeof stateDir === 'string' ? join(stateDir, 'sessions.json') : undefined
+  if (file) try { mkdirSync(stateDir, { recursive: true }) } catch { /* unusable stateDir: sessions stay in memory (save() is non-fatal too) */ }
   /**
    * session id -> { cwd, worktree?: { root, at } } — survives a host restart. Insertion order = recency.
    * A Map, not an object: ids are client-influenced strings, and `__proto__` / `constructor` must stay plain keys.
    */
   const known = new Map()
-  try {
+  if (file) try {
     const parsed = JSON.parse(readFileSync(file, 'utf8'))
     // Tolerate a hand-edited or corrupt file: only an object of objects is accepted.
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -108,6 +109,7 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
   const live = new Map() // session id -> live cwd from the running agent
   let saveTimer
   const save = () => {
+    if (!file) return // in-memory registry
     clearTimeout(saveTimer)
     // Object.fromEntries defines own properties, so a `__proto__` id round-trips as data.
     saveTimer = setTimeout(() => { try { writeFileSync(file, JSON.stringify(Object.fromEntries(known), null, 2)) } catch { /* non-fatal */ } }, 200)
@@ -140,7 +142,7 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
     const hit = ctxCache.get(id)
     if (hit && hit.cwd === cwd && Date.now() - hit.at < OBSERVE_CACHE_MS) return hit
     const home = await repoInfoFn(cwd)
-    if (!home || home.busy) return { home: undefined, roots: [], trees: [] } // not cached: a busy answer must not stick
+    if (!home || home.busy || home.missing) return { home: undefined, roots: [], trees: [] } // not cached: a busy answer must not stick
     const trees = await knownTrees(home)
     // Directories observe() may look at: workspaces, the session's cwd, and every tree of its repository.
     const entry = { cwd, at: Date.now(), home, trees, roots: [...workspacePaths().filter(validCwd), cwd, ...trees.map(t => t.path)] }
@@ -161,7 +163,7 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
     if (hit && Date.now() - hit.at < RECORDED_CACHE_MS) return hit.v
     const info = await repoInfoFn(recordedRoot)
     if (info?.busy) return { busy: true } // never cached
-    const v = info && sameDir(info.commonDir, home.commonDir) ? { root: info.root } : undefined
+    const v = info?.commonDir && sameDir(info.commonDir, home.commonDir) ? { root: info.root } : undefined
     if (recordedCache.size >= PROBE_CACHE_MAX) recordedCache.delete(recordedCache.keys().next().value)
     recordedCache.set(key, { at: Date.now(), v })
     return v
@@ -173,7 +175,7 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
     const hit = probeCache.get(dir)
     if (hit && Date.now() - hit.at < PROBE_CACHE_MS) return hit.info
     const info = await repoInfoFn(dir)
-    if (info?.busy) return undefined
+    if (info?.busy || info?.missing) return undefined
     if (probeCache.size >= PROBE_CACHE_MAX) probeCache.delete(probeCache.keys().next().value)
     probeCache.set(dir, { at: Date.now(), info })
     return info
@@ -196,9 +198,13 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
         if (isUncOrDevicePath(p) || !roots.some(r => isInside(p, r))) continue
         if (!existsSync(p)) continue
         // Performance: a path inside a known worktree is classified without git; only unmatched dirs are probed (cached).
+        // The lexical shortcut is only trusted for linked trees. A path under the main tree may sit in a
+        // submodule / nested repository, so it is verified with the (cached) probe before it can clear the recording.
         const tree = treeOf(p, trees)
-        const info = tree ? { root: resolve(tree.path), linked: tree.linked, commonDir: home.commonDir } : await probe(p)
-        if (!info || !sameDir(info.commonDir, home.commonDir)) continue
+        // The home root itself is already known (observeContext's rev-parse), so it needs no probe.
+        const info = tree?.linked ? { root: resolve(tree.path), linked: true, commonDir: home.commonDir }
+          : sameDir(resolve(p), resolve(home.root)) ? home : await probe(p)
+        if (!info?.commonDir || !sameDir(info.commonDir, home.commonDir)) continue
         if (!info.linked) {
           // The call works in the repository's own main tree: the agent has left the linked worktree.
           if (dirs.has(p) && known.get(id)?.worktree) remember(id, { worktree: undefined })
@@ -261,6 +267,8 @@ export function createSessionRegistry({ stateDir, workspacePaths = () => [], dep
       const home = await repoInfoFn(cwd)
       // Busy / aborted git is not "not a repository": surface it so the server answers 429 and never caches it.
       if (home?.busy) return BUSY
+      // A missing git executable is its own error, not "not a git repository".
+      if (home?.missing) return { ok: false, error: 'git executable not found', cwd }
       if (!home) return { ok: false, error: 'not a git repository', cwd }
       const withList = opts.worktrees !== false
       const worktrees = withList ? await listWorktreesFn(home.root) : []
