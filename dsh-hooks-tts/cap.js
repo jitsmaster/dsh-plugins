@@ -6,10 +6,11 @@
  * so the agent never keeps working past the cap.
  */
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { isPrSession, PR_TITLE } from './pr.js'
 import { recordSpawn } from './spawned.js'
 const DEFAULT_HANDOFF_DIR = join(homedir(), '.dsh', 'handoffs')
 
@@ -31,12 +32,24 @@ function handoffPath(dir, agent) {
   return join(dir, `${project}-${stamp}-handoff.md`)
 }
 
+/** Newest `<project>-*-handoff.md` in `dir` for the session's project (cwd folder name), or undefined. */
+function newestHandoff(dir, agent) {
+  const cwd = agent.session?.header?.cwd ?? ''
+  const project = cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? 'session'
+  let names = []
+  try { names = readdirSync(dir) } catch { return undefined }
+  const files = names
+    .filter((n) => n.startsWith(`${project}-`) && n.endsWith('-handoff.md'))
+    .map((n) => ({ path: join(dir, n), mtime: statSync(join(dir, n)).mtimeMs }))
+  return files.sort((a, b) => b.mtime - a.mtime)[0]?.path
+}
+
 /** A resumed session that hits the cap within this long counts as a "short" session. */
 const SHORT_SESSION_MS = 20 * 60 * 1000
 /** This many consecutive short resumed sessions switch the next handoff to forward mode. */
 const SHORT_STREAK_FOR_FORWARD = 3
 
-function instruction(tokens, cap, path, forward, previousNote) {
+function instruction(tokens, cap, path, forward, previousNote, prLines = []) {
   const k = n => `${Math.round(n / 1000)}k`
   const sections = forward
     ? [
@@ -55,6 +68,7 @@ function instruction(tokens, cap, path, forward, previousNote) {
     `Write a handoff note NOW to: ${path}`,
     'Directly under the title put one line: "Mode: sparc" if this session is running under the modes:sparc / sparcr skill (SPARC mode), otherwise "Mode: plain". The resuming session uses this line to decide whether to continue in SPARC mode.',
     ...sections,
+    ...(prLines.length ? ['In "## Current State" include these lines verbatim (each on its own line) so a resuming session can re-register the PR comment poll:', ...prLines] : []),
     'Be specific (file paths, commands, ids) so a fresh session can resume without this conversation. Create the folder if it is missing.',
     'After the file is written, reply with the file path and a two-line summary, then stop. A new session should pick the work up from the note.',
   ].join('\n')
@@ -72,16 +86,19 @@ function warning(tokens, cap, pct) {
 }
 
 /** Notice with auto-handoff OFF: nothing will stop or hand off on its own, so only inform the user. */
-function notice(tokens, cap, over) {
+function notice(tokens, cap, over, prState = false, prLines = []) {
+  // A session in PR state is never handed off, whatever the global setting says.
+  const why = prState ? 'This session is in PR state (titled "PR <n>"), so it is never handed off automatically' : 'Automatic handoff is OFF'
   return [
     over
-      ? `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, over the ${kTokens(cap)} cap. Automatic handoff is OFF, so you will NOT be stopped: the session continues past the cap and no new session opens.`
-      : `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, nearing the ${kTokens(cap)} cap. Automatic handoff is OFF, so you will NOT be stopped when it is reached: the session continues past the cap and no new session opens.`,
+      ? `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, over the ${kTokens(cap)} cap. ${why}, so you will NOT be stopped: the session continues past the cap and no new session opens.`
+      : `CONTEXT NOTICE: this session's context is ${kTokens(tokens)} tokens, nearing the ${kTokens(cap)} cap. ${why}, so you will NOT be stopped when it is reached: the session continues past the cap and no new session opens.`,
     'In your next reply, tell the user briefly that you will keep working past the cap, and recommend handing off (compacting the conversation or starting a new session) as soon as it is convenient. Never say or imply that the session will stop at the cap. Do not write a handoff note unless the user asks, and continue the current work normally.',
+    ...(prLines.length ? ['If you do write a handoff note yourself, include these lines verbatim so a resuming session can re-register the PR comment poll:', ...prLines] : []),
   ].join('\n')
 }
 
-export function installContextCap(ctx, config, { skip, makeMessage, settings }) {
+export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff }) {
   const dir = config.handoffDir ?? DEFAULT_HANDOFF_DIR
   const instructed = new Set()
   const warned = new Set()
@@ -108,7 +125,10 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
     if (!cap) return undefined // 0 = disabled
     const tokens = contextTokens(ctx, agent)
     if (tokens === undefined) return undefined
-    const autoResume = settings.get().autoResumeHandoff
+    // A session titled "PR <n>" is never handed off or respawned; the global setting itself is left alone.
+    const prState = isPrSession(ctx, agent)
+    const prLines = prHandoff?.(agent) ?? []
+    const autoResume = settings.get().autoResumeHandoff && !prState
     const warnPct = settings.get().warnPercent
     const warnAt = warnPct ? cap * warnPct / 100 : undefined
     // Re-arm once context drops well below the cap or the warning point (compaction, a new baseline).
@@ -119,7 +139,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
       if (allowWarn && warnAt !== undefined && tokens >= warnAt && !warned.has(agent.id)) {
         warned.add(agent.id)
         trace(`cap warning for ${agent.id} (${tokens}/${cap}, autoResume ${autoResume})`)
-        return makeMessage(autoResume ? warning(tokens, cap, Math.round(tokens / cap * 100)) : notice(tokens, cap, false))
+        return makeMessage(autoResume ? warning(tokens, cap, Math.round(tokens / cap * 100)) : notice(tokens, cap, false, prState, prLines))
       }
       return undefined
     }
@@ -129,7 +149,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
       if (!allowWarn) return undefined
       instructed.add(agent.id)
       trace(`over cap, auto-handoff off: notice only for ${agent.id} (${tokens}/${cap})`)
-      return makeMessage(notice(tokens, cap, true))
+      return makeMessage(notice(tokens, cap, true, prState, prLines))
     }
     instructed.add(agent.id)
     const path = handoffPath(dir, agent)
@@ -142,7 +162,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
     pending.set(agent.id, { path, cwd: agent.session?.header?.cwd, streak })
     ctx.logger.warn(`hooks-tts: context ${tokens} exceeds cap ${cap}; requesting handoff`)
     trace(`handoff requested for ${agent.id} (${tokens}/${cap}) -> ${path}; session age ${ageMs === undefined ? 'n/a (not a resumed session)' : `${Math.round(ageMs / 60000)}min`}, short streak ${streak}, mode ${forward ? 'FORWARD' : 'normal'}`)
-    return makeMessage(instruction(tokens, cap, path, forward, origin?.note))
+    return makeMessage(instruction(tokens, cap, path, forward, origin?.note, prLines))
   }
 
   const fullAccessChecked = new Set()
@@ -185,12 +205,16 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
    * modes:sparc "Resuming from a Handoff"), with the modes:sparc command text inlined because
    * DSH exposes no Skill for it; plain -> a simple resume instruction.
    */
-  function resumePrompt(path) {
+  function resumePrompt(path, fromPr = false) {
     let note = ''
     try { note = readFileSync(path, 'utf8') } catch { /* fall through to plain */ }
     const sparc = /^\s*mode\s*:\s*sparc\b/im.test(note)
+    // The note's PR-POLL line is repeated on its own line; the PR poller re-registers from it (pr.js).
+    // Not for a spawn out of a merged PR: that session must not re-enter PR state.
+    const prMarker = fromPr ? undefined : /^PR-POLL:.*$/m.exec(note)?.[0]
+    const withMarker = (value) => (prMarker ? `${value}\n${prMarker.trim()}` : value)
     if (!sparc) {
-      return { sparc: false, value: `Resume the work from this handoff note. Read it first, then continue with its "What's Left" items. First read the "Worktree:" line (in "Current State", or "Context Carried Forward" in a forward-mode note) and run every command and edit in that absolute path (use it as workdir; do not create a new worktree). Keep the same worktree in any further handoff:\n${path}` }
+      return { sparc: false, value: withMarker(`Resume the work from this handoff note. Read it first, then continue with its "What's Left" items. First read the "Worktree:" line (in "Current State", or "Context Carried Forward" in a forward-mode note) and run every command and edit in that absolute path (use it as workdir; do not create a new worktree). Keep the same worktree in any further handoff:\n${path}`) }
     }
     const file = config.sparcCommandPath ?? join(homedir(), '.claude', 'commands', 'modes', 'sparc.md')
     let body = ''
@@ -200,16 +224,34 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
       'This is the /sparcr flow: the user already selected this handoff, so treat it as the answer to Step -1 and go directly to the "Resuming from a Handoff" steps of modes:sparc below (skip the handoff listing; do not run Step 0 onward until the handoff says so).',
       'Remain in SPARC mode for the whole session, including writing the next handoff in the sparc format when needed.',
     ].join('\n')
-    return { sparc: true, value: body ? `${head}\n\n--- modes:sparc skill content ---\n${body}` : `${head}\nInvoke Skill(modes:sparc) if available.` }
+    return { sparc: true, value: withMarker(body ? `${head}\n\n--- modes:sparc skill content ---\n${body}` : `${head}\nInvoke Skill(modes:sparc) if available.`) }
   }
 
   /** Once the handoff note exists, open a fresh session in the same folder that resumes from it. */
   async function spawnResume(agent) {
     const job = pending.get(agent.id)
     if (!job) return
+    // Checked live: a rename to "PR <n>" after the handoff was requested still cancels the respawn.
+    if (isPrSession(ctx, agent)) { pending.delete(agent.id); trace(`PR-state session ${agent.id}: no auto-respawn`); return }
     if (!existsSync(job.path)) { trace(`turn ended for ${agent.id}; note not found yet: ${job.path}`); return }
     pending.delete(agent.id)
     if (!settings.get().autoResumeHandoff) { trace('autoResumeHandoff is off'); return }
+    await spawnSession(agent, job, false)
+  }
+
+  /**
+   * Explicit, user-approved one-shot spawn for a merged PR (called by pr.js after a valid approval marker).
+   * Bypasses the PR-state exemption and never reads or writes autoResumeHandoff. Returns true when spawned.
+   */
+  async function spawnApproved(agent) {
+    const path = newestHandoff(dir, agent)
+    if (!path) { trace(`PR-approved spawn for ${agent.id}: no handoff file found in ${dir}`); return false }
+    trace(`PR-approved spawn for ${agent.id} from newest handoff ${path}`)
+    return spawnSession(agent, { path, cwd: agent.session?.header?.cwd, streak: 0 }, true)
+  }
+
+  /** Create the continuation session for a handoff note. `fromPr`: source is a PR-state session. */
+  async function spawnSession(agent, job, fromPr) {
     try {
       const sc = ctx.get('sessionController') ?? ctx.sessionController
       trace(`spawning from ${job.path}; controller=${sc ? 'found' : 'MISSING'}`)
@@ -243,12 +285,13 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
         const old = titles?.get(agent.session)?.title
         if (old) {
           const m = /^(.*?)\s*-\s*(\d+)$/.exec(old)
-          const next = m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
+          // A numbered "PR 12 - 2" would itself be PR-titled (never respawned, polled), so prefix instead.
+          const next = PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
           await sc.rename({ sessionId: created.sessionId, title: next })
           trace(`renamed "${old}" -> "${next}"`)
         } else trace('source has no title; not renaming')
       } catch (error) { trace(`rename failed: ${error?.stack ?? error}`) }
-      const text = resumePrompt(job.path)
+      const text = resumePrompt(job.path, fromPr)
       trace(`prompt kind: ${text.sparc ? 'sparc' : 'plain'}`)
       await sc.prompt({
         requestId: `handoff-${randomUUID()}`,
@@ -260,9 +303,11 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
       recordSpawn(agent.id, created.sessionId)
       ctx.logger.info(`hooks-tts: spawned ${created.sessionId} from handoff ${job.path}`)
       trace(`spawned ${created.sessionId}`)
+      return true
     } catch (error) {
       trace(`FAILED: ${error?.stack ?? error}`)
       ctx.logger.warn(`hooks-tts: could not spawn resume session: ${String(error)}`)
+      return false
     }
   }
 
@@ -271,4 +316,6 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings }) 
     const message = check(agent, false)
     if (message) agent.steer(message)
   })
+
+  return { spawnApproved }
 }

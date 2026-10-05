@@ -19,6 +19,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startStatusService } from './status.js'
 import { installContextCap } from './cap.js'
+import { installPrPoller } from './pr.js'
 import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 
@@ -237,7 +238,11 @@ export function apply(ctx, baseConfig = {}) {
   const toolQueries = toolName => [toolName, ALIASES[toolName]].filter(Boolean)
   const contextMessage = folded => folded.context.length ? makeMessage(folded.context.join('\n\n')) : undefined
 
-  installContextCap(ctx, config, { skip, makeMessage, settings })
+  // PR comment poller (and PR rename); the cap reads its handoff lines so a resumed session can re-register the poll.
+  // A merged PR's user-approved resume goes through the cap's spawn machinery (installed right after, hence lazy).
+  let contextCap
+  const prPoller = installPrPoller(ctx, config, { settings, skip, signal: controller.signal, onResumeApproved: (agent) => contextCap?.spawnApproved(agent) })
+  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id) })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {
     if (skip(agent)) return
