@@ -214,6 +214,8 @@ window.__ModuleLoader__.load({
 			// reading keeps whatever is already shown.
 			if (!bar || !group) { if (existing) existing.remove(); return; }
 			if (!s) return;
+			// DSH paints this group rgba(67,69,74,.45); make it opaque (same look over the dark frame).
+			group.style.background = "rgb(42,43,46)";
 			const w = s.worktree;
 			const text = `Context Window ${fmt(s.context.tokens)}/${fmt(s.context.window)} (${pc(s.context.pct)})`
 				+ (w ? `  ·  ⎇ ${w.name}${w.linked ? " (linked worktree)" : ""}` : "");
