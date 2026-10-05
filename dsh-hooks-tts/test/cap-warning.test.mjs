@@ -42,7 +42,7 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
     return (await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] }))).messages
   }
   const stop = async (tokens) => { state.tokens = tokens; await handlers['agent/turn-stopping']({ agent }) }
-  return { agentRef: agent, dir, spawnApproved: cap_.spawnApproved, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
+  return { agentRef: agent, dir, spawnApproved: cap_.spawnApproved, prCreated: cap_.prCreated, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
 }
 
 test('warns once at warnPercent, then hands off at the cap', async () => {
@@ -173,6 +173,49 @@ test('resume prompt re-emits the PR-POLL marker found in the note', async () => 
   await h.stop(450_000)
   assert.match(prompts[0].content[0].text, /^PR-POLL: 42 seen=5:9$/m)
 })
+// ---- PR created: hand over to a new "PR <id>" session ----
+
+test('prCreated: asks for a handoff, then spawns "PR <id>" with the poll marker (even with auto-resume off)', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  h.state.title = 'feature'
+  await h.prCreated(h.agentRef, '42')
+  assert.equal(h.steered.length, 0) // the skill's remaining steps run first
+  await h.stop(10_000) // turn ends: now the handoff note is requested
+  assert.equal(h.steered.length, 1)
+  const path = /Write a handoff note NOW to: (.+)/.exec(h.steered[0].text)[1]
+  assert.match(h.steered[0].text, /PR 42/)
+  await h.stop(10_000) // note not written yet: no spawn
+  assert.equal(h.calls.create, 0)
+  writeFileSync(path, '# note\nMode: plain\n')
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(10_000)
+  assert.equal(h.calls.create, 1)
+  assert.deepEqual(h.calls.rename, [{ sessionId: 's2', title: 'PR 42' }])
+  assert.match(prompts[0].content[0].text, /^PR-POLL: 42$/m)
+  await h.stop(10_000) // only once
+  assert.equal(h.calls.create, 1)
+})
+
+test('prCreated: repeated or from a session already titled PR <n> does nothing', async () => {
+  const h = harness()
+  h.state.title = 'PR 42'
+  await h.prCreated(h.agentRef, '42')
+  await h.stop(10_000)
+  assert.equal(h.steered.length, 0)
+  h.state.title = 'feature'
+  await h.prCreated(h.agentRef, '42')
+  await h.prCreated(h.agentRef, '42')
+  await h.stop(10_000)
+  assert.equal(h.steered.length, 1)
+})
+
+test('the spawned PR session is not respawned at the cap', async () => {
+  const h = harness()
+  h.state.title = 'PR 42'
+  assert.deepEqual(await h.step(450_000), ['CONTEXT NOTICE'])
+})
+
 // ---- user-approved one-shot spawn from a PR-state session ----
 
 const note = (h, name, body, ageSec) => {

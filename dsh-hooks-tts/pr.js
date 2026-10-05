@@ -106,7 +106,7 @@ function queuedMessage(prId, threadIds) {
  * @param {{ get(): object, path: string }} deps.settings - runtime settings (pollPrComments is re-read per poll).
  * @param {typeof fetch} [deps.fetchImpl] - injectable for tests.
  */
-export function installPrPoller(ctx, _config, { settings, skip = () => false, fetchImpl = globalThis.fetch, intervalMs = POLL_INTERVAL_MS, env = process.env, signal, onResumeApproved } = {}) {
+export function installPrPoller(ctx, _config, { settings, skip = () => false, fetchImpl = globalThis.fetch, intervalMs = POLL_INTERVAL_MS, env = process.env, signal, onResumeApproved, onPrCreated } = {}) {
   /** agent.id -> { agent, prId, seen: Map<threadId, lastCommentId|null>, timer, inFlight }. */
   const entries = new Map()
   /** agent.id -> { prId, seen, suggested, spawned }: survives stop(), so a merged PR's suggestion is never re-sent. */
@@ -284,8 +284,13 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       const id = parsePrCreated(JSON.stringify(exec.arguments ?? {}), textOf(result?.content))
       // Idempotent: a session already titled "PR <n>" is never renamed or re-pointed.
       if (id && !isPrSession(ctx, agent)) {
-        await renameToPr(agent, id) // a failed rename is traced; the poll still starts
-        register(agent, id)
+        if (onPrCreated) {
+          // The PR continues in a NEW session titled "PR <id>" (spawned by cap.js); this one is neither renamed nor polled.
+          try { await onPrCreated(agent, id) } catch (error) { trace(`hand-over to a PR session failed: ${scrub(error)}`) }
+        } else {
+          await renameToPr(agent, id) // a failed rename is traced; the poll still starts
+          register(agent, id)
+        }
       }
       const approvedId = parseResumeApproved(textOf(result?.content))
       if (approvedId) await handleResumeApproved(agent, approvedId)

@@ -13,7 +13,7 @@ const thread = (id, lastId, extra = {}) => ({
   ...extra,
 })
 
-function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, ...settingsExtra } = {}) {
+function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, withCreated = false, ...settingsExtra } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pr-'))
   const settings = createSettings(dir, settingsExtra)
   const state = { title: 'work', threads: [], prStatus: 'active', urls: [], headers: [], fetchError: false, gate: undefined }
@@ -41,7 +41,8 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, ..
     return { ok: true, status: 200, json: async () => body }
   }
   const resumes = []
-  const poller = installPrPoller(ctx, {}, { settings, fetchImpl, intervalMs, env, onResumeApproved: async (a, id) => { resumes.push([a.id, id]) } })
+  const created = []
+  const poller = installPrPoller(ctx, {}, { settings, fetchImpl, intervalMs, env, onResumeApproved: async (a, id) => { resumes.push([a.id, id]) }, ...(withCreated ? { onPrCreated: async (a, id) => { created.push([a.id, id]) } } : {}) })
   const agent = { id: 'a1', session: { header: { cwd: 'C:/proj' } } }
   const fire = async (event, ...args) => {
     let out
@@ -50,7 +51,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, ..
   }
   const shell = (command, output, name = 'pwsh') => fire('tools/post-execute', { name, agent, arguments: { command } }, { content: [{ type: 'text', text: output }] })
   const log = () => { const p = join(dir, 'spawn.log'); return existsSync(p) ? readFileSync(p, 'utf8') : '' }
-  return { poller, agent, state, calls, settings, shell, fire, log, ctx, resumes }
+  return { poller, agent, state, calls, settings, shell, fire, log, ctx, resumes, created }
 }
 
 // ---- parsing ----
@@ -148,6 +149,18 @@ test('az repos pr create output renames the session to "PR <id>" and registers t
   assert.deepEqual(h.calls.rename, [{ sessionId: 'a1', title: 'PR 4321' }])
   assert.equal(h.poller.has('a1'), true)
   h.poller.stopAll()
+})
+
+test('with onPrCreated: creation hands over to it; this session is neither renamed nor polled', async () => {
+  const h = harness({ withCreated: true })
+  await h.shell('az repos pr create --title t', '{"pullRequestId": 4321}')
+  assert.deepEqual(h.created, [['a1', '4321']])
+  assert.equal(h.calls.rename.length, 0)
+  assert.equal(h.poller.has('a1'), false)
+  const h2 = harness({ withCreated: true })
+  h2.state.title = 'PR 9'
+  await h2.shell('az repos pr create', '{"pullRequestId": 10}')
+  assert.equal(h2.created.length, 0)
 })
 
 test('PR-CREATED marker also renames', async () => {

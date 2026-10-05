@@ -241,7 +241,7 @@ export function apply(ctx, baseConfig = {}) {
   // PR comment poller (and PR rename); the cap reads its handoff lines so a resumed session can re-register the poll.
   // A merged PR's user-approved resume goes through the cap's spawn machinery (installed right after, hence lazy).
   let contextCap
-  const prPoller = installPrPoller(ctx, config, { settings, skip, signal: controller.signal, onResumeApproved: (agent) => contextCap?.spawnApproved(agent) })
+  const prPoller = installPrPoller(ctx, config, { settings, skip, signal: controller.signal, onResumeApproved: (agent) => contextCap?.spawnApproved(agent), onPrCreated: (agent, id) => contextCap?.prCreated(agent, id) })
   contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id) })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {

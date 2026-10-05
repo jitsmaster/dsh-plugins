@@ -49,7 +49,7 @@ const SHORT_SESSION_MS = 20 * 60 * 1000
 /** This many consecutive short resumed sessions switch the next handoff to forward mode. */
 const SHORT_STREAK_FOR_FORWARD = 3
 
-function instruction(tokens, cap, path, forward, previousNote, prLines = []) {
+function instruction(tokens, cap, path, forward, previousNote, prLines = [], headline) {
   const k = n => `${Math.round(n / 1000)}k`
   const sections = forward
     ? [
@@ -63,7 +63,7 @@ function instruction(tokens, cap, path, forward, previousNote, prLines = []) {
       'In "## Current State" the FIRST line must be "Worktree: <absolute path> · branch <branch>": the directory your commands and edits actually run in (may differ from the session launch directory, e.g. a .claude/worktrees/<name> checkout). Verify with `git rev-parse --show-toplevel`, `git branch --show-current` and `git worktree list`; if no linked worktree is used write "Worktree: none (main checkout <path>, branch <branch>)". The resuming session continues in exactly that worktree.',
     ]
   return [
-    `CONTEXT CAP REACHED: this session's context is ${k(tokens)} tokens, over the ${k(cap)} limit.`,
+    headline ?? `CONTEXT CAP REACHED: this session's context is ${k(tokens)} tokens, over the ${k(cap)} limit.`,
     'Stop the current work immediately — do not start or continue any task, tool exploration, or edit beyond what the handoff needs.',
     `Write a handoff note NOW to: ${path}`,
     'Directly under the title put one line: "Mode: sparc" if this session is running under the modes:sparc / sparcr skill (SPARC mode), otherwise "Mode: plain". The resuming session uses this line to decide whether to continue in SPARC mode.',
@@ -205,13 +205,14 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
    * modes:sparc "Resuming from a Handoff"), with the modes:sparc command text inlined because
    * DSH exposes no Skill for it; plain -> a simple resume instruction.
    */
-  function resumePrompt(path, fromPr = false) {
+  function resumePrompt(path, fromPr = false, prId) {
     let note = ''
     try { note = readFileSync(path, 'utf8') } catch { /* fall through to plain */ }
     const sparc = /^\s*mode\s*:\s*sparc\b/im.test(note)
     // The note's PR-POLL line is repeated on its own line; the PR poller re-registers from it (pr.js).
     // Not for a spawn out of a merged PR: that session must not re-enter PR state.
-    const prMarker = fromPr ? undefined : /^PR-POLL:.*$/m.exec(note)?.[0]
+    // A hand-over after PR creation always starts the poll in the new session.
+    const prMarker = prId ? `PR-POLL: ${prId}` : fromPr ? undefined : /^PR-POLL:.*$/m.exec(note)?.[0]
     const withMarker = (value) => (prMarker ? `${value}\n${prMarker.trim()}` : value)
     if (!sparc) {
       return { sparc: false, value: withMarker(`Resume the work from this handoff note. Read it first, then continue with its "What's Left" items. First read the "Worktree:" line (in "Current State", or "Context Carried Forward" in a forward-mode note) and run every command and edit in that absolute path (use it as workdir; do not create a new worktree). Keep the same worktree in any further handoff:\n${path}`) }
@@ -232,11 +233,35 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const job = pending.get(agent.id)
     if (!job) return
     // Checked live: a rename to "PR <n>" after the handoff was requested still cancels the respawn.
-    if (isPrSession(ctx, agent)) { pending.delete(agent.id); trace(`PR-state session ${agent.id}: no auto-respawn`); return }
+    if (!job.prId && isPrSession(ctx, agent)) { pending.delete(agent.id); trace(`PR-state session ${agent.id}: no auto-respawn`); return }
+    if (job.prId && !job.asked && !existsSync(job.path)) {
+      job.asked = true
+      agent.steer(makeMessage(instruction(0, 0, job.path, false, undefined, [],
+        `PR ${job.prId} WAS JUST CREATED: this work continues in a new session titled "PR ${job.prId}" that handles its review comments.`)))
+      trace(`requested hand-over note for PR ${job.prId} from ${agent.id}`)
+      return
+    }
     if (!existsSync(job.path)) { trace(`turn ended for ${agent.id}; note not found yet: ${job.path}`); return }
     pending.delete(agent.id)
-    if (!settings.get().autoResumeHandoff) { trace('autoResumeHandoff is off'); return }
+    // A PR hand-over is not a cap handoff: it spawns whatever the global auto-resume setting says.
+    if (!job.prId && !settings.get().autoResumeHandoff) { trace('autoResumeHandoff is off'); return }
     await spawnSession(agent, job, false)
+  }
+
+  const prHandovers = new Set()
+
+  /**
+   * A session just created PR `id`: it writes a handoff note, then a NEW session titled "PR <id>" continues from it
+   * with the comment poll started there. That session is never respawned at the cap (see check/spawnResume).
+   */
+  async function prCreated(agent, id) {
+    if (skip(agent) || isPrSession(ctx, agent) || prHandovers.has(agent.id)) return
+    prHandovers.add(agent.id)
+    const path = handoffPath(dir, agent)
+    // The note is requested when the turn ends (spawnResume), so the rest of the PR skill (reviewer, auto-complete,
+    // work item, notification) still runs in this session first.
+    pending.set(agent.id, { path, cwd: agent.session?.header?.cwd, streak: 0, prId: id, asked: false })
+    trace(`PR ${id} created in ${agent.id}: hand-over note ${path} is requested at the end of the turn`)
   }
 
   /**
@@ -286,12 +311,12 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         if (old) {
           const m = /^(.*?)\s*-\s*(\d+)$/.exec(old)
           // A numbered "PR 12 - 2" would itself be PR-titled (never respawned, polled), so prefix instead.
-          const next = PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
+          const next = job.prId ? `PR ${job.prId}` : PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
           await sc.rename({ sessionId: created.sessionId, title: next })
           trace(`renamed "${old}" -> "${next}"`)
         } else trace('source has no title; not renaming')
       } catch (error) { trace(`rename failed: ${error?.stack ?? error}`) }
-      const text = resumePrompt(job.path, fromPr)
+      const text = resumePrompt(job.path, fromPr, job.prId)
       trace(`prompt kind: ${text.sparc ? 'sparc' : 'plain'}`)
       await sc.prompt({
         requestId: `handoff-${randomUUID()}`,
@@ -317,5 +342,5 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     if (message) agent.steer(message)
   })
 
-  return { spawnApproved }
+  return { spawnApproved, prCreated }
 }
