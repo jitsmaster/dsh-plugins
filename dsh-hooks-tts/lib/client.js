@@ -350,14 +350,41 @@ window.__ModuleLoader__.load({
 			let raf = 0;
 			const observer = new MutationObserver(() => {
 				if (raf) return;
-				raf = requestAnimationFrame(() => { raf = 0; renderInline(); });
+				raf = requestAnimationFrame(() => { raf = 0; renderInline(); syncThink(); });
 			});
 			observer.observe(document.body, { childList: true, subtree: true });
+			// Remember the last Think expand/collapse choice and apply it to every later Think section.
+			const onThinkClick = (e) => {
+				if (!e.isTrusted) return;
+				const row = e.target && e.target.closest && e.target.closest("[data-disclosure-row]");
+				if (!isThinkRow(row)) return;
+				setTimeout(() => { try { localStorage.setItem(THINK_KEY, row.getAttribute("aria-expanded") === "true" ? "1" : "0"); } catch (_e) { /* private mode */ } }, 0);
+			};
+			document.addEventListener("click", onThinkClick, true);
 			ctx.effect(() => () => {
+				document.removeEventListener("click", onThinkClick, true);
 				openContinuation = () => {};
 				clearInterval(timer); clearInterval(nav); observer.disconnect(); listeners.delete(renderInline);
 				document.querySelectorAll("[data-dsh-ctx]").forEach((n) => n.remove());
 			}, "hooks-tts: status");
+		}
+
+		// ---- sticky Think sections ----
+		const THINK_KEY = "dsh-hooks-tts:thinkOpen";
+		const seenThink = new WeakSet();
+		function isThinkRow(row) {
+			return !!row && !!row.closest("[data-variant='think']");
+		}
+		// Each Think row is adjusted once, when first seen; later user clicks are respected.
+		function syncThink() {
+			let want;
+			try { want = localStorage.getItem(THINK_KEY); } catch (_e) { return; }
+			if (want !== "1" && want !== "0") return;
+			for (const row of document.querySelectorAll("[data-disclosure-row][data-expandable='true']")) {
+				if (seenThink.has(row) || !isThinkRow(row)) continue;
+				seenThink.add(row);
+				if ((row.getAttribute("aria-expanded") === "true") !== (want === "1")) row.click();
+			}
 		}
 
 		exports.inject = inject;
