@@ -185,6 +185,18 @@ test('restore: a restored session whose PR is already merged stops silently (no 
   assert.equal(h.calls.prompt.length, 0)
 })
 
+test('restore: a session that already finished (merged) is not re-registered or re-polled by a later restore', async () => {
+  const h = harness()
+  h.state.known = { s1: 'PR 5' }
+  h.state.prStatus = 'completed'
+  await h.poller.restore()
+  await new Promise((r) => setTimeout(r, 20))
+  const fetches = h.state.urls.length
+  assert.equal(await h.poller.restore(), 0)
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(h.state.urls.length, fetches)
+})
+
 test('restore: without the registry or query services it does nothing and does not throw', async () => {
   const h = harness()
   assert.equal(await h.poller.restore(), 0)

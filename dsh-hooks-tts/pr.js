@@ -345,6 +345,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
    * straight away (open comments are queued into the session, which is resumed by the prompt). Returns how many
    * sessions were registered; 0 when the host services are not available yet.
    */
+  const restoredIds = new Set()
   async function restore() {
     let ids
     let query
@@ -362,7 +363,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       results.forEach((r, j) => {
         const prId = r?.status === 'fulfilled' ? /\d+/.exec(PR_TITLE.exec(r.value?.title?.title ?? '')?.[0] ?? '')?.[0] : undefined
         const id = batch[j]
-        if (!prId || entries.has(id)) return
+        if (!prId || entries.has(id) || restoredIds.has(id)) return
+        restoredIds.add(id) // one restore per session: the retries only pick up sessions that were not ready before
         register({ id }, prId, [], undefined, true)
         void poll(id)
         restored++
