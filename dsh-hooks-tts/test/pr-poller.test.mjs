@@ -28,6 +28,12 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
     get: (name) => {
       if (name === 'sessionTitle') return { get: () => (state.title === undefined ? undefined : { title: state.title }) }
       if (name === 'sessionController') return controller
+      if (name === 'workspaceRegistry' && state.known) return { list: () => [{ sessionIds: Object.keys(state.known) }] }
+      if (name === 'sessionQuery' && state.known) {
+        return { readTitleSnapshots: async (ids) => ids.map((id) => (state.known[id] === 'REJECT'
+          ? { status: 'rejected', reason: new Error('x') }
+          : { status: 'fulfilled', value: state.known[id] === undefined ? {} : { title: { title: state.known[id] } } })) }
+      }
       return undefined
     },
     on: (event, fn) => { (handlers[event] ??= []).push(fn) },
@@ -143,6 +149,45 @@ test('poll: the author\'s own reply queues nothing; a later reviewer reply does'
   await h.poller.poll('a1')
   assert.equal(h.calls.prompt.length, 2)
   h.poller.stopAll()
+})
+
+// ---- restore after a server restart ----
+
+test('restore: re-registers every session titled "PR <n>" (and only those), once', async () => {
+  const h = harness()
+  h.state.known = { s1: 'PR 5', s2: 'work', s3: 'PR 7 - 2', s4: 'REJECT', s5: undefined }
+  assert.equal(await h.poller.restore(), 2)
+  assert.equal(h.poller.has('s1'), true)
+  assert.equal(h.poller.has('s3'), true)
+  assert.equal(h.poller.has('s2'), false)
+  assert.equal(await h.poller.restore(), 0) // already registered
+  h.poller.stopAll()
+})
+
+test('restore: polls straight away and queues the open review comments into the restored session', async () => {
+  const h = harness()
+  h.state.known = { s1: 'PR 5' }
+  h.state.threads = [thread(11, 2)]
+  await h.poller.restore()
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(h.calls.prompt.length, 1)
+  assert.equal(h.calls.prompt[0].sessionId, 's1')
+  h.poller.stopAll()
+})
+
+test('restore: a restored session whose PR is already merged stops silently (no resume suggestion)', async () => {
+  const h = harness()
+  h.state.known = { s1: 'PR 5' }
+  h.state.prStatus = 'completed'
+  await h.poller.restore()
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(h.poller.has('s1'), false)
+  assert.equal(h.calls.prompt.length, 0)
+})
+
+test('restore: without the registry or query services it does nothing and does not throw', async () => {
+  const h = harness()
+  assert.equal(await h.poller.restore(), 0)
 })
 
 // ---- CI "no issues found" stop rule ----

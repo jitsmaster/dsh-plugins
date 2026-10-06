@@ -154,14 +154,14 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   signal?.addEventListener('abort', stopAll, { once: true })
 
   /** Register (or extend) the poll for a session. Re-registering the same PR only merges seen entries. */
-  function register(agent, prId, seenEntries = [], resume) {
+  function register(agent, prId, seenEntries = [], resume, restored = false) {
     const existing = entries.get(agent.id)
     if (existing && existing.prId === String(prId)) {
       for (const [t, c] of seenEntries) if (!existing.seen.has(t)) existing.seen.set(t, c)
       return
     }
     if (existing) stop(agent.id, 'replaced by another PR')
-    const entry = { agent, prId: String(prId), seen: new Map(seenEntries), timer: undefined, inFlight: undefined }
+    const entry = { agent, prId: String(prId), seen: new Map(seenEntries), timer: undefined, inFlight: undefined, restored }
     // A resumed marker carrying resume=suggested/spawned means the merged-PR suggestion was already made.
     // An existing state for the same PR (poll stopped after the merge, then re-registered) is kept, never reset.
     const prior = states.get(agent.id)?.prId === entry.prId ? states.get(agent.id) : undefined
@@ -197,6 +197,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
 
   async function queueMessage(entry, text) {
     const sc = ctx.get('sessionController') ?? ctx.sessionController
+    // A restored session is not live after a restart: activate it first (best effort; the prompt itself may also do it).
+    try { await sc.resolveAgent?.(entry.agent.id) } catch (error) { trace(`could not activate ${entry.agent.id}: ${scrub(error)}`) }
     await sc.prompt({
       requestId: `pr-poll-${randomUUID()}`,
       sessionId: entry.agent.id,
@@ -222,7 +224,15 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     try {
       const base = `${ADO_REPO}/pullRequests/${entry.prId}`
       const pr = await getJson(`${base}?api-version=7.1`, pat)
-      if (pr?.status === 'completed') { await suggestResume(entry); stop(id, 'PR completed'); return }
+      // A session restored after a restart whose PR is already merged is stopped quietly: its suggestion (if any) was
+      // made before the restart, and old PR sessions must not be asked again.
+      const quiet = entry.restored
+      entry.restored = false
+      if (pr?.status === 'completed') {
+        if (quiet) { const state = states.get(id); if (state) state.suggested = true } else await suggestResume(entry)
+        stop(id, 'PR completed')
+        return
+      }
       if (pr?.status === 'abandoned') { stop(id, 'PR abandoned'); return }
       const data = await getJson(`${base}/threads?api-version=7.1`, pat)
       const found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
@@ -330,8 +340,41 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     return next()
   })
 
+  /**
+   * After a server restart the in-memory polls are gone: re-register every session titled "PR <n>" and poll once
+   * straight away (open comments are queued into the session, which is resumed by the prompt). Returns how many
+   * sessions were registered; 0 when the host services are not available yet.
+   */
+  async function restore() {
+    let ids
+    let query
+    try {
+      const registry = ctx.get('workspaceRegistry')
+      query = ctx.get('sessionQuery')
+      if (!registry?.list || !query?.readTitleSnapshots) return 0
+      ids = [...new Set(registry.list().flatMap((w) => w.sessionIds ?? []))]
+    } catch (error) { trace(`restore unavailable: ${scrub(error)}`); return 0 }
+    let restored = 0
+    for (let i = 0; i < ids.length; i += 50) { // batches keep a large session list from stalling the host
+      const batch = ids.slice(i, i + 50)
+      let results
+      try { results = await query.readTitleSnapshots(batch) } catch (error) { trace(`restore title read failed: ${scrub(error)}`); continue }
+      results.forEach((r, j) => {
+        const prId = r?.status === 'fulfilled' ? /\d+/.exec(PR_TITLE.exec(r.value?.title?.title ?? '')?.[0] ?? '')?.[0] : undefined
+        const id = batch[j]
+        if (!prId || entries.has(id)) return
+        register({ id }, prId, [], undefined, true)
+        void poll(id)
+        restored++
+      })
+    }
+    if (restored) trace(`restored ${restored} PR session poll(s) after restart`)
+    return restored
+  }
+
   return {
     register,
+    restore,
     poll,
     stopAll,
     has: (id) => entries.has(id),

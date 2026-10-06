@@ -242,6 +242,13 @@ export function apply(ctx, baseConfig = {}) {
   // A merged PR's user-approved resume goes through the cap's spawn machinery (installed right after, hence lazy).
   let contextCap
   const prPoller = installPrPoller(ctx, config, { settings, skip, signal: controller.signal, onResumeApproved: (agent) => contextCap?.spawnApproved(agent), onPrCreated: (agent, id) => contextCap?.prCreated(agent, id) })
+  // A restart drops the in-memory polls: re-register every "PR <n>" session. The host services may not be ready at
+  // once, so retry a few times (restore is idempotent).
+  for (const ms of [5_000, 20_000, 60_000]) {
+    const timer = setTimeout(() => { void prPoller.restore().catch(() => {}) }, ms)
+    timer.unref?.()
+    controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
+  }
   contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id) })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {
