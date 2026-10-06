@@ -32,6 +32,8 @@ const isInside = (child, parent) => {
 
 /** Hard cap on paths collected from one tool call. */
 export const MAX_COLLECTED = 16
+/** Only this many leading characters of a `run_code` script are scanned for paths. */
+export const MAX_CODE_SCAN = 65_536
 /** observe() is best effort and yields to UI reads: it is skipped while more than this many git jobs wait. */
 const OBSERVE_MAX_QUEUE = 8
 /** How long one session's repo identity + allowed worktree roots are reused by observe(). */
@@ -65,7 +67,13 @@ export function collect(args, baseCwd, keys, withMentions) {
   for (const k of keys) if (!add(args?.[k])) return out
   if (!scan(/(?:\bcd|Set-Location|\bpushd)\s+(?:-[A-Za-z]+\s+)?["']?([^\s"';|&]+)/gi, 1)) return out
   if (!scan(/\bgit\s+-C\s+["']?([^\s"';|&]+)/gi, 1)) return out
-  if (withMentions) scan(/[A-Za-z]:[\\/][^\s"'`;|&)]*/g, 0)
+  if (withMentions) {
+    const mention = /[A-Za-z]:[\\/][^\s"'`;|&)]*/g
+    if (!scan(mention, 0)) return out
+    // A `run_code` call has only a `code` argument that names its worktree inside the script (`cwd: 'D:/...'`).
+    // Scanned like a command, as mentions only; capped so a huge script costs a bounded amount of regex work.
+    if (typeof args?.code === 'string') for (const m of args.code.slice(0, MAX_CODE_SCAN).matchAll(mention)) if (!add(m[0])) return out
+  }
   return out
 }
 

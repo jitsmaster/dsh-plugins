@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createSessionRegistry, candidatePaths } from '../sessions.js'
+import { createSessionRegistry, candidatePaths, workingDirectories, collect, MAX_COLLECTED, MAX_CODE_SCAN } from '../sessions.js'
 
 const sh = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 let tmp, repo, wt, other, state
@@ -28,6 +28,31 @@ test('candidatePaths finds workdir, cd targets, git -C and absolute paths', () =
   assert.ok(c.includes('D:\\x\\wt'))
   assert.ok(c.includes('D:/y/z'))
   assert.ok(c.some(p => p.startsWith('C:\\a')))
+})
+
+const WT = 'D:/dev/CTnP-Final/.claude/worktrees/25642-sonarqube-in-ci-review'
+const RUN_CODE = { code: `const { execSync } = require('node:child_process'); execSync('git status', { cwd: '${WT}' })` }
+
+test('a run_code call names its worktree only in `code`: candidatePaths finds it, workingDirectories does not', () => {
+  assert.ok(candidatePaths(RUN_CODE, 'D:\\base').includes(WT))
+  // A path in a script is only a mention: it must never be able to clear a recorded worktree.
+  assert.equal(workingDirectories(RUN_CODE, 'D:\\base').size, 0)
+})
+
+test('UNC and device paths inside `code` are dropped', () => {
+  assert.deepEqual(candidatePaths({ code: "readFileSync('\\\\\\\\host\\\\share\\\\x')" }, 'D:\\base'), [])
+  assert.deepEqual(candidatePaths({ code: "open('//?/C:/x') // \\\\?\\C:\\y" }, 'D:\\base').filter(p => /^[\\/]{2}/.test(p)), [])
+})
+
+test('paths in `code` respect MAX_COLLECTED and the scan cap', () => {
+  const code = Array.from({ length: 40 }, (_, i) => `'D:/w/p${i}'`).join(',')
+  assert.equal(collect({ code }, 'C:\\base', [], true).size, MAX_COLLECTED)
+  assert.equal(candidatePaths({ code }, 'C:\\base').length, 8)
+  // Beyond MAX_CODE_SCAN characters nothing is scanned, and a huge script finishes quickly.
+  const t = Date.now()
+  const big = `${'x'.repeat(MAX_CODE_SCAN)}'D:/late/path' ${'D:'.repeat(200_000)}`
+  assert.equal(collect({ code: big }, 'C:\\base', [], true).size, 0)
+  assert.ok(Date.now() - t < 1000)
 })
 
 test('an unknown session without a registered workspace is refused', async () => {
