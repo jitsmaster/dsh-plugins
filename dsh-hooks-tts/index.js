@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import { startStatusService } from './status.js'
 import { installContextCap } from './cap.js'
 import { installPrPoller } from './pr.js'
+import { installAskUserTuning } from './ask.js'
 import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 
@@ -250,6 +251,7 @@ export function apply(ctx, baseConfig = {}) {
     controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
   }
   contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id) })
+  installAskUserTuning(ctx, { skip, makeMessage })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {
     if (skip(agent)) return
