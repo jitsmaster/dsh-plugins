@@ -44,6 +44,11 @@ function newestHandoff(dir, agent) {
   return files.sort((a, b) => b.mtime - a.mtime)[0]?.path
 }
 
+/** True when the session loaded the modes:sparc skill text (its content block carries this marker). */
+function ranSparc(agent) {
+  try { return /Boomerang Commander Mode|modes:sparc skill content/.test(JSON.stringify(agent.session.snapshotEvents())) } catch { return false }
+}
+
 /** A resumed session that hits the cap within this long counts as a "short" session. */
 const SHORT_SESSION_MS = 20 * 60 * 1000
 /** This many consecutive short resumed sessions switch the next handoff to forward mode. */
@@ -205,10 +210,12 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
    * modes:sparc "Resuming from a Handoff"), with the modes:sparc command text inlined because
    * DSH exposes no Skill for it; plain -> a simple resume instruction.
    */
-  function resumePrompt(path, fromPr = false, prId) {
+  function resumePrompt(path, fromPr = false, prId, sourceSparc = false) {
     let note = ''
     try { note = readFileSync(path, 'utf8') } catch { /* fall through to plain */ }
-    const sparc = /^\s*mode\s*:\s*sparc\b/im.test(note)
+    // An explicit "Mode:" line in the note decides; without one, follow the source session (SPARC in, SPARC out).
+    const modeLine = /^\s*mode\s*:\s*(sparc|plain)\b/im.exec(note)?.[1]?.toLowerCase()
+    const sparc = modeLine ? modeLine === 'sparc' : sourceSparc
     // The note's PR-POLL line is repeated on its own line; the PR poller re-registers from it (pr.js).
     // Not for a spawn out of a merged PR: that session must not re-enter PR state.
     // A hand-over after PR creation always starts the poll in the new session.
@@ -316,7 +323,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
           trace(`renamed "${old}" -> "${next}"`)
         } else trace('source has no title; not renaming')
       } catch (error) { trace(`rename failed: ${error?.stack ?? error}`) }
-      const text = resumePrompt(job.path, fromPr, job.prId)
+      const text = resumePrompt(job.path, fromPr, job.prId, ranSparc(agent))
       trace(`prompt kind: ${text.sparc ? 'sparc' : 'plain'}`)
       await sc.prompt({
         requestId: `handoff-${randomUUID()}`,

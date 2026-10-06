@@ -9,7 +9,7 @@ import { createSettings } from '../settings.js'
 function harness({ cap = 400_000, prLines, ...extra } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cap-'))
   const settings = createSettings(dir, { contextCapTokens: cap, ...extra })
-  const state = { tokens: 0, title: undefined }
+  const state = { tokens: 0, title: undefined, events: [] }
   let sink
   const calls = { create: 0, prompt: 0, rename: [] }
   const controller = {
@@ -29,9 +29,9 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
     },
     on: (event, fn) => { handlers[event] = fn },
   }
-  const cap_ = installContextCap(ctx, { handoffDir: dir }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined })
+  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md') }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined })
   const steered = []
-  const agent = { id: 'a', session: { header: { cwd: 'C:/proj' }, snapshotEvents: () => [] }, steer: (m) => steered.push(m) }
+  const agent = { id: 'a', session: { header: { cwd: 'C:/proj' }, snapshotEvents: () => state.events }, steer: (m) => steered.push(m) }
   const step = async (tokens) => {
     state.tokens = tokens
     const out = await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] }))
@@ -173,6 +173,56 @@ test('resume prompt re-emits the PR-POLL marker found in the note', async () => 
   await h.stop(450_000)
   assert.match(prompts[0].content[0].text, /^PR-POLL: 42 seen=5:9$/m)
 })
+// ---- SPARC mode on resume ----
+
+const SPARC_EVENT = { type: 'message', data: { content: '--- modes:sparc skill content ---\n# Boomerang Commander Mode: Multi-Phase Workflow Orchestration' } }
+
+async function resumeWith(h, noteBody) {
+  const [msg] = await h.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], noteBody)
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(450_000)
+  return prompts[0]?.content[0].text
+}
+
+test('resume: note without a Mode line resumes in SPARC when the source session ran SPARC', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  h.state.events = [SPARC_EVENT]
+  assert.match(await resumeWith(h, '# note\n'), /Remain in SPARC mode/)
+})
+
+test('resume: note without a Mode line and a non-SPARC source stays plain', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  assert.doesNotMatch(await resumeWith(h, '# note\n'), /SPARC/)
+})
+
+test('resume: an explicit "Mode: plain" wins over a SPARC source; "Mode: sparc" wins over a plain source', async () => {
+  const a = harness()
+  a.state.title = 'feature'
+  a.state.events = [SPARC_EVENT]
+  assert.doesNotMatch(await resumeWith(a, '# note\nMode: plain\n'), /SPARC/)
+  const b = harness()
+  b.state.title = 'feature'
+  assert.match(await resumeWith(b, '# note\nMode: sparc\n'), /Remain in SPARC mode/)
+})
+
+test('resume: the PR hand-over note resumes in SPARC when the source session ran SPARC', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  h.state.events = [SPARC_EVENT]
+  await h.prCreated(h.agentRef, '42')
+  await h.stop(10_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(h.steered[0].text)[1], '# note\n')
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(10_000)
+  assert.match(prompts[0].content[0].text, /Remain in SPARC mode/)
+  assert.match(prompts[0].content[0].text, /^PR-POLL: 42$/m)
+})
+
 // ---- PR created: hand over to a new "PR <id>" session ----
 
 test('prCreated: asks for a handoff, then spawns "PR <id>" with the poll marker (even with auto-resume off)', async () => {
