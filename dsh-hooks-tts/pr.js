@@ -84,6 +84,10 @@ export function detectNewThreads(threads, seen, selfId) {
 
 /** The CI AI-review bot's all-clear comment, e.g. "AI review complete — no issues found across all 10 passes". */
 const CI_CLEAN = /AI review complete\W+no issues found/i
+/** Display name of the CI reviewer (the pipeline's build identity); only its comments count as a CI verdict. */
+const CI_AUTHOR = /^Project Collection Build Service \(ingeniuxdev\)$/i
+
+const isCiClean = (c) => !c.isDeleted && CI_AUTHOR.test(c.author?.displayName ?? '') && CI_CLEAN.test(c.content ?? '')
 
 /** Time (ms) of the newest CI "no issues found" comment in the threads, or undefined when there is none. */
 export function ciReviewCleanAt(threads) {
@@ -91,12 +95,31 @@ export function ciReviewCleanAt(threads) {
   for (const t of threads ?? []) {
     if (t.isDeleted) continue
     for (const c of t.comments ?? []) {
-      if (c.isDeleted || !CI_CLEAN.test(c.content ?? '')) continue
+      if (!isCiClean(c)) continue
       const at = Date.parse(c.publishedDate)
       if (Number.isFinite(at) && (latest === undefined || at > latest)) latest = at
     }
   }
   return latest
+}
+
+/**
+ * True when the CI all-clear (at `cleanAt`) still stands: no non-system, non-deleted comment other than a clean
+ * result is newer than it (a later human comment or a later non-clean CI comment reopens the PR), and no thread
+ * other than a system thread is active. A comment whose date cannot be read counts as newer (fail safe).
+ */
+export function ciReviewStands(threads, cleanAt) {
+  for (const t of threads ?? []) {
+    if (t.isDeleted) continue
+    const real = (t.comments ?? []).filter((c) => !c.isDeleted && c.commentType !== 'system')
+    if (t.status === 'active' && real.length) return false
+    for (const c of real) {
+      if (isCiClean(c)) continue
+      const at = Date.parse(c.publishedDate)
+      if (!Number.isFinite(at) || at > cleanAt) return false
+    }
+  }
+  return true
 }
 
 const formatSeen = (seen) => [...seen].map(([t, c]) => (c ? `${t}:${c}` : t)).join(',')
@@ -109,6 +132,10 @@ function suggestionMessage(prId) {
     `If the user answers Yes, run this shell command and nothing else: \`echo PR-RESUME-APPROVED: ${prId}\`.`,
     'If the user answers No, do nothing.',
   ].join('\n')
+}
+
+function cleanStopMessage(prId) {
+  return `PR ${prId} review poller stopped: the CI review found no issues and no human review is open. No further comment messages will be sent for this PR.`
 }
 
 function queuedMessage(prId, threadIds) {
@@ -191,7 +218,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   /** True when the CI result is not older than the PR's last source commit. A failed lookup throws (the poll just continues). */
   async function ciResultIsCurrent(cleanAt, pr, pat) {
     const sha = pr?.lastMergeSourceCommit?.commitId
-    if (!sha) return true
+    if (!sha) return false // the head commit is unknown, so the result cannot be shown current: keep polling
     const commit = await getJson(`${ADO_REPO}/commits/${sha}?api-version=7.1`, pat)
     const committedAt = Date.parse(commit?.committer?.date)
     return Number.isFinite(committedAt) && cleanAt >= committedAt
@@ -239,9 +266,14 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       const fresh = found.filter((f) => f.notify)
       trace(`polled PR ${entry.prId}: ${data?.value?.length ?? 0} threads, ${fresh.length} new`)
       if (!fresh.length) {
-        // Stop once the CI review reports no issues for the current head commit; a newer push means a new review is pending.
+        // Stop once the CI review reports no issues, nothing newer or still open contradicts it, and it is not older than
+        // the head commit (a newer push means a new review is pending). The final message is queued BEFORE stopping, so a
+        // failed hand-over keeps the poll alive and is retried; after stop() nothing more is sent for this PR.
         const cleanAt = ciReviewCleanAt(data?.value)
-        if (cleanAt !== undefined && await ciResultIsCurrent(cleanAt, pr, pat)) { stop(id, 'CI review reports no issues found'); return }
+        if (cleanAt !== undefined && ciReviewStands(data?.value, cleanAt) && await ciResultIsCurrent(cleanAt, pr, pat)) {
+          await queueMessage(entry, cleanStopMessage(entry.prId))
+          stop(id, 'CI review reports no issues found')
+        }
         return
       }
       await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId)))

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installPrPoller, parsePrCreated, parsePollMarker, detectNewThreads, isPrSession, ciReviewCleanAt } from '../pr.js'
+import { installPrPoller, parsePrCreated, parsePollMarker, detectNewThreads, isPrSession, ciReviewCleanAt, ciReviewStands } from '../pr.js'
 import { createSettings } from '../settings.js'
 
 const PAT = 'sup3r-secret-pat'
@@ -48,7 +48,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
       return { ok: true, status: 200, json: async () => ({ committer: { date: state.commitDate } }) }
     }
     const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, lastMergeSourceCommit: { commitId: 'c1' } }
-    return { ok: true, status: 200, json: async () => body }
+    return { ok: true, status: 200, json: async () => { if (state.badJson) throw new SyntaxError('Unexpected token < in JSON'); return body } }
   }
   const created = []
   const poller = installPrPoller(ctx, {}, { settings, fetchImpl, intervalMs, env, ...(withCreated ? { onPrCreated: async (a, id) => { created.push([a.id, id]) } } : {}) })
@@ -256,9 +256,119 @@ test('poll keeps going when the commit lookup fails, and when new comments were 
   h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z'), thread(11, 2)]
   await h.poller.poll('a1')
   assert.equal(h.calls.prompt.length, 1)
-  assert.equal(h.poller.has('a1'), true) // stops on the next poll, once nothing is pending
+  assert.equal(h.poller.has('a1'), true) // its thread is still active, so it keeps going
+  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z'), humanThread(11, '2026-10-05T10:00:00Z')] // once resolved, nothing is pending
   await h.poller.poll('a1')
   assert.equal(h.poller.has('a1'), false)
+})
+
+// Auto-stop: CI all-clear + nothing newer or still open + not older than the head commit.
+const CLEAN_AT = '2026-10-05T12:00:00Z'
+const humanThread = (id, date, status = 'closed', commentType = 'text') => ({
+  id, status, comments: [{ id: 1, commentType, content: 'please look', publishedDate: date, author: { id: 'rev', displayName: 'Reviewer' } }],
+})
+
+async function cleanHarness(threads, commitDate = '2026-10-05T11:00:00Z') {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.commitDate = commitDate
+  h.state.threads = threads
+  await h.poller.poll('a1')
+  return h
+}
+
+test('auto-stop: a clean CI comment alone stops the poll and queues one final message', async () => {
+  const h = await cleanHarness([ciThread(9, CLEAN_AT)])
+  assert.equal(h.poller.has('a1'), false)
+  assert.equal(h.calls.prompt.length, 1)
+  assert.match(h.calls.prompt[0].content[0].text, /PR 5 review poller stopped: the CI review found no issues/)
+  await h.poller.poll('a1') // the poll is gone: nothing more is fetched or sent
+  assert.equal(h.calls.prompt.length, 1)
+})
+
+test('auto-stop: system threads do not keep the poller running', async () => {
+  const sys = { id: 20, status: 'active', comments: [{ id: 1, commentType: 'system', content: 'Policy status', publishedDate: '2026-10-05T13:00:00Z' }] }
+  const h = await cleanHarness([ciThread(9, CLEAN_AT), sys])
+  assert.equal(h.poller.has('a1'), false)
+})
+
+test('auto-stop: a clean CI comment plus an active human thread does not stop', async () => {
+  const h = await cleanHarness([ciThread(9, CLEAN_AT), humanThread(10, '2026-10-05T10:00:00Z', 'active')])
+  assert.equal(h.poller.has('a1'), true)
+  assert.equal(h.calls.prompt.filter((c) => /poller stopped/.test(c.content[0].text)).length, 0)
+  h.poller.stopAll()
+})
+
+test('auto-stop: a human comment after the clean one does not stop, even in a resolved thread', async () => {
+  const h = await cleanHarness([ciThread(9, CLEAN_AT), humanThread(10, '2026-10-05T12:30:00Z')])
+  assert.equal(h.poller.has('a1'), true)
+  assert.equal(h.calls.prompt.length, 0)
+  h.poller.stopAll()
+})
+
+test('auto-stop: a later non-clean CI comment does not stop', async () => {
+  const later = ciThread(10, '2026-10-05T13:00:00Z', 'AI review complete — 2 issues found')
+  const h = await cleanHarness([ciThread(9, CLEAN_AT), later])
+  assert.equal(h.poller.has('a1'), true)
+  h.poller.stopAll()
+})
+
+test('auto-stop: a stale clean comment (older than the head commit) does not stop', async () => {
+  const h = await cleanHarness([ciThread(9, CLEAN_AT)], '2026-10-05T13:00:00Z')
+  assert.equal(h.poller.has('a1'), true)
+  assert.equal(h.calls.prompt.length, 0)
+  h.poller.stopAll()
+})
+
+test('auto-stop: a "no issues" comment from another author does not count', async () => {
+  const fake = ciThread(9, CLEAN_AT)
+  fake.comments[0].author = { displayName: 'Some Human' }
+  assert.equal(ciReviewCleanAt([fake]), undefined)
+  const h = await cleanHarness([fake])
+  assert.equal(h.poller.has('a1'), true)
+  h.poller.stopAll()
+})
+
+test('auto-stop: a fetch error keeps the poller running and logs the original message', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.fetchError = true
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), true)
+  assert.match(h.log(), /poll of PR 5 failed: boom with /)
+  assert.doesNotMatch(h.log(), new RegExp(PAT))
+  h.poller.stopAll()
+})
+
+test('auto-stop: a parse error in the response keeps the poller running and is logged', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.badJson = true
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), true)
+  assert.match(h.log(), /poll of PR 5 failed: Unexpected token < in JSON/)
+  h.poller.stopAll()
+})
+
+test('auto-stop: a failed final message keeps the poll alive so it is retried', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.commitDate = '2026-10-05T11:00:00Z'
+  h.state.threads = [ciThread(9, CLEAN_AT)]
+  const sc = h.ctx.get('sessionController')
+  const prompt = sc.prompt
+  sc.prompt = async () => { throw new Error('queue refused') }
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), true)
+  assert.match(h.log(), /queue refused/)
+  sc.prompt = prompt
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), false)
+})
+
+test('ciReviewStands: unreadable comment dates count as newer (fail safe)', () => {
+  assert.equal(ciReviewStands([humanThread(1, 'garbage')], Date.parse(CLEAN_AT)), false)
+  assert.equal(ciReviewStands([humanThread(1, '2026-10-05T10:00:00Z')], Date.parse(CLEAN_AT)), true)
 })
 
 // ---- creation -> rename + register ----
