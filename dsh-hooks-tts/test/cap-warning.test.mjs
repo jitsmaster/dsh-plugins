@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, utimesSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installContextCap } from '../cap.js'
@@ -13,7 +13,7 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
   let sink
   const calls = { create: 0, prompt: 0, rename: [] }
   const controller = {
-    create: async () => { calls.create++; return { sessionId: 's2' } },
+    create: async () => { calls.create++; return { sessionId: `s${calls.create + 1}` } },
     resolveAgent: async () => ({ agent: { session: { append() {} } } }),
     rename: async (r) => { calls.rename.push(r) },
     prompt: async (req) => { calls.prompt++; sink?.push(req) },
@@ -42,7 +42,7 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
     return (await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] }))).messages
   }
   const stop = async (tokens) => { state.tokens = tokens; await handlers['agent/turn-stopping']({ agent }) }
-  return { agentRef: agent, dir, spawnApproved: cap_.spawnApproved, prCreated: cap_.prCreated, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
+  return { agentRef: agent, dir, prCreated: cap_.prCreated, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
 }
 
 test('warns once at warnPercent, then hands off at the cap', async () => {
@@ -209,42 +209,79 @@ test('resume: an explicit "Mode: plain" wins over a SPARC source; "Mode: sparc" 
   assert.match(await resumeWith(b, '# note\nMode: sparc\n'), /Remain in SPARC mode/)
 })
 
-test('resume: the PR hand-over note resumes in SPARC when the source session ran SPARC', async () => {
-  const h = harness()
-  h.state.title = 'feature'
-  h.state.events = [SPARC_EVENT]
-  await h.prCreated(h.agentRef, '42')
-  await h.stop(10_000)
-  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(h.steered[0].text)[1], '# note\n')
-  const prompts = []
-  h.setPromptSink(prompts)
-  await h.stop(10_000)
-  assert.match(prompts[0].content[0].text, /Remain in SPARC mode/)
-  assert.match(prompts[0].content[0].text, /^PR-POLL: 42$/m)
-})
 
-// ---- PR created: hand over to a new "PR <id>" session ----
+// ---- PR created: two hand-overs, two sessions ----
 
-test('prCreated: asks for a handoff, then spawns "PR <id>" with the poll marker (even with auto-resume off)', async () => {
-  const h = harness({ autoResumeHandoff: false })
-  h.state.title = 'feature'
+const pathsOf = (msg) => ({ pr: /PR handoff note path: (.+)/.exec(msg.text)[1], rest: /Remaining-work handoff note path: (.+)/.exec(msg.text)[1] })
+
+async function startHandover(h, title = 'feature') {
+  h.state.title = title
   await h.prCreated(h.agentRef, '42')
   assert.equal(h.steered.length, 0) // the skill's remaining steps run first
-  await h.stop(10_000) // turn ends: now the handoff note is requested
+  await h.stop(10_000) // turn ends: both notes are requested
   assert.equal(h.steered.length, 1)
-  const path = /Write a handoff note NOW to: (.+)/.exec(h.steered[0].text)[1]
+  return pathsOf(h.steered[0])
+}
+
+test('prCreated: spawns "PR 42" (plain, poll marker) and a gated SPARC "<title> - after PR 42", even with auto-resume off', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  const p = await startHandover(h)
   assert.match(h.steered[0].text, /PR 42/)
-  await h.stop(10_000) // note not written yet: no spawn
-  assert.equal(h.calls.create, 0)
-  writeFileSync(path, '# note\nMode: plain\n')
+  writeFileSync(p.pr, '# pr\nMode: plain\n')
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
   const prompts = []
   h.setPromptSink(prompts)
   await h.stop(10_000)
-  assert.equal(h.calls.create, 1)
-  assert.deepEqual(h.calls.rename, [{ sessionId: 's2', title: 'PR 42' }])
-  assert.match(prompts[0].content[0].text, /^PR-POLL: 42$/m)
+  assert.equal(h.calls.create, 2)
+  assert.deepEqual(h.calls.rename, [{ sessionId: 's2', title: 'PR 42' }, { sessionId: 's3', title: 'feature - after PR 42' }])
+  const [a, b] = prompts.map((r) => r.content[0].text)
+  assert.match(a, /^PR-POLL: 42$/m)
+  assert.doesNotMatch(a, /SPARC/)
+  assert.doesNotMatch(b, /PR-POLL/)
+  assert.match(b, /ask_user_question/)
+  assert.match(b, /Start now/)
+  assert.match(b, /Wait for PR approval/)
+  assert.match(b, /echo PR-WAIT: 42/)
+  assert.match(b, /origin\/develop/)
+  assert.match(b, /Remain in SPARC mode/)
   await h.stop(10_000) // only once
+  assert.equal(h.calls.create, 2)
+})
+
+test('prCreated: a remaining-work note saying NO-REMAINING-WORK spawns only the PR session', async () => {
+  const h = harness()
+  const p = await startHandover(h)
+  writeFileSync(p.pr, '# pr\n')
+  writeFileSync(p.rest, 'NO-REMAINING-WORK\n')
+  await h.stop(10_000)
   assert.equal(h.calls.create, 1)
+  assert.equal(h.calls.rename[0].title, 'PR 42')
+})
+
+test('prCreated: missing notes get one reminder, then the PR session is spawned alone from a fallback note', async () => {
+  const h = harness()
+  const p = await startHandover(h)
+  await h.stop(10_000) // nothing written: one reminder
+  assert.equal(h.steered.length, 2)
+  assert.equal(h.calls.create, 0)
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(10_000) // still nothing: fall back
+  assert.equal(h.calls.create, 1)
+  assert.equal(existsSync(p.pr), true)
+  assert.equal(h.calls.rename[0].title, 'PR 42')
+  assert.match(prompts[0].content[0].text, /^PR-POLL: 42$/m)
+  assert.match(prompts[0].content[0].text, /remaining-work handoff was not written/i)
+})
+
+test('prCreated: PR note written but remaining-work note missing -> PR session alone, with a note to tell the user', async () => {
+  const h = harness()
+  const p = await startHandover(h)
+  writeFileSync(p.pr, '# pr\n')
+  await h.stop(10_000)
+  await h.stop(10_000)
+  assert.equal(h.calls.create, 1)
+  assert.match(h.steered[1].text, /Remaining-work/)
 })
 
 test('prCreated: repeated or from a session already titled PR <n> does nothing', async () => {
@@ -264,50 +301,4 @@ test('the spawned PR session is not respawned at the cap', async () => {
   const h = harness()
   h.state.title = 'PR 42'
   assert.deepEqual(await h.step(450_000), ['CONTEXT NOTICE'])
-})
-
-// ---- user-approved one-shot spawn from a PR-state session ----
-
-const note = (h, name, body, ageSec) => {
-  const p = join(h.dir, name)
-  writeFileSync(p, body)
-  const when = new Date(Date.now() - ageSec * 1000)
-  utimesSync(p, when, when)
-  return p
-}
-
-test('spawnApproved: PR-state session spawns from the NEWEST handoff of its project, with a non-PR numbered title', async () => {
-  const h = harness({ autoResumeHandoff: false })
-  h.state.title = 'PR 7'
-  note(h, 'proj-20260101-0900-handoff.md', '# old\nMode: plain\n', 300)
-  note(h, 'proj-20260102-0900-handoff.md', '# new\nMode: plain\nPR-POLL: 7 seen=1:2 resume=suggested\n', 100)
-  note(h, 'other-20260103-0900-handoff.md', '# unrelated project, newest\nMode: plain\n', 1)
-  const prompts = []
-  h.setPromptSink(prompts)
-  assert.equal(await h.spawnApproved(h.agentRef), true)
-  assert.equal(h.calls.create, 1)
-  assert.equal(h.calls.prompt, 1)
-  assert.match(prompts[0].content[0].text, /proj-20260102-0900-handoff\.md/)
-  assert.doesNotMatch(prompts[0].content[0].text, /PR-POLL/) // the new session must not re-enter PR state
-  assert.equal(h.calls.rename.length, 1)
-  assert.doesNotMatch(h.calls.rename[0].title, /^PR \d+/)
-  assert.equal(h.calls.rename[0].sessionId, 's2')
-  assert.equal(h.settings.get().autoResumeHandoff, false) // global setting neither read for writing nor changed
-})
-
-test('spawnApproved: no handoff file for the project means no spawn', async () => {
-  const h = harness()
-  h.state.title = 'PR 7'
-  note(h, 'other-20260103-0900-handoff.md', '# x\n', 1)
-  assert.equal(await h.spawnApproved(h.agentRef), false)
-  assert.equal(h.calls.create, 0)
-})
-
-test('spawnApproved leaves normal (non-PR) respawn behaviour untouched', async () => {
-  const h = harness({ autoResumeHandoff: false })
-  h.state.title = 'feature'
-  const [msg] = await h.stepFull(450_000)
-  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)?.[1] ?? join(h.dir, 'x'), '# n\n')
-  await h.stop(450_000)
-  assert.equal(h.calls.create, 0) // auto-resume off: still no automatic spawn
 })

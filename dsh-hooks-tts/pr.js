@@ -10,7 +10,7 @@
  * the poll in the resumed session.
  */
 import { randomUUID } from 'node:crypto'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export const PR_TITLE = /^PR \d+/
@@ -23,6 +23,8 @@ const SHELL_TOOLS = /^(bash|pwsh|powershell|shell)$/i
 const POLL_MARKER = /^PR-POLL:[ \t]*(\d+)(?:[ \t]+seen=([\w:,]*))?(?:[ \t]+resume=(suggested|spawned))?[ \t]*$/m
 /** Printed by the agent (`echo PR-RESUME-APPROVED: <id>`) after the user answered Yes to the merged-PR suggestion. */
 const RESUME_MARKER = /^PR-RESUME-APPROVED:[ \t]*(\d+)[ \t\r]*$/m
+/** Printed by the remaining-work session (`echo PR-WAIT: <id>`) after the user chose to wait for the PR. */
+const RESUME_WAIT = /^PR-WAIT:[ \t]*(\d+)[ \t\r]*$/m
 
 const textOf = (content) => (typeof content === 'string' ? content : (content ?? []).filter((b) => b?.type === 'text').map((b) => b.text).join(''))
 
@@ -228,11 +230,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       // made before the restart, and old PR sessions must not be asked again.
       const quiet = entry.restored
       entry.restored = false
-      if (pr?.status === 'completed') {
-        if (quiet) { const state = states.get(id); if (state) state.suggested = true } else await suggestResume(entry)
-        stop(id, 'PR completed')
-        return
-      }
+      void quiet
+      if (pr?.status === 'completed') { stop(id, 'PR completed'); return } // the "... - after PR n" session handles the merge (checkWaits)
       if (pr?.status === 'abandoned') { stop(id, 'PR abandoned'); return }
       const data = await getJson(`${base}/threads?api-version=7.1`, pat)
       const found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
@@ -334,8 +333,10 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
           register(agent, id)
         }
       }
-      const approvedId = parseResumeApproved(textOf(result?.content))
-      if (approvedId) await handleResumeApproved(agent, approvedId)
+      // `echo PR-WAIT: <id>` from a session titled "... - after PR <id>": wait for that PR to be merged/abandoned.
+      const waitId = RESUME_WAIT.exec(textOf(result?.content))?.[1]
+      const afterId = /- after PR (\d+)$/.exec(titleOf(ctx, agent) ?? '')?.[1]
+      if (waitId && afterId === waitId) addWait(agent.id, waitId)
     }
     return next()
   })
@@ -374,9 +375,57 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     return restored
   }
 
+  // ---- remaining-work sessions waiting for their PR (persisted, so a restart re-arms them) ----
+  const waitFile = join(dirname(settings.path), 'pr-waits.json')
+  /** sessionId -> prId. */
+  const waitMap = new Map()
+  try { for (const [id, pr] of Object.entries(JSON.parse(readFileSync(waitFile, 'utf8')))) waitMap.set(id, String(pr)) } catch { /* none yet */ }
+  const saveWaits = () => { try { writeFileSync(waitFile, JSON.stringify(Object.fromEntries(waitMap))) } catch (error) { trace(`could not save waits: ${scrub(error)}`) } }
+  let waitTimer
+  const armWaits = () => {
+    if (waitTimer || !waitMap.size) return
+    waitTimer = setInterval(() => { void checkWaits() }, intervalMs)
+    waitTimer.unref?.()
+  }
+  function addWait(sessionId, prId) {
+    waitMap.set(sessionId, String(prId))
+    saveWaits()
+    armWaits()
+    trace(`session ${sessionId} waits for PR ${prId} to finish`)
+  }
+
+  /** Re-ask the waiting session once its PR is merged or abandoned; kept (and retried) when the hand-over fails. */
+  async function checkWaits() {
+    const pat = env.AZURE_DEVOPS_EXT_PAT
+    if (!pat) return
+    for (const [sessionId, prId] of [...waitMap]) {
+      try {
+        const pr = await getJson(`${ADO_REPO}/pullRequests/${prId}?api-version=7.1`, pat)
+        const merged = pr?.status === 'completed'
+        if (!merged && pr?.status !== 'abandoned') continue
+        const text = [
+          merged ? `PR ${prId} was merged.` : `PR ${prId} was abandoned.`,
+          `Use the \`ask_user_question\` tool now to ask the user: "${merged ? `PR ${prId} is merged. Start the remaining work now?` : `PR ${prId} was abandoned. Continue anyway?`}" with exactly two options: Yes / No.`,
+          `If the user answers Yes, start the remaining work as described in your first message: create your own worktree from the latest origin/develop and work only there; ${merged ? 'rebase onto origin/develop for the tasks marked "(after merge)"' : 'treat tasks marked "(after merge)" as needing the user\'s decision'}. Continue in SPARC mode.`,
+          'If the user answers No, do nothing.',
+        ].join('\n')
+        await queueMessage({ agent: { id: sessionId } }, text)
+        waitMap.delete(sessionId)
+        saveWaits()
+        trace(`PR ${prId} ${merged ? 'merged' : 'abandoned'}: re-asked ${sessionId}`)
+      } catch (error) { trace(`wait check for PR ${prId} failed: ${scrub(error)}`) }
+    }
+    if (!waitMap.size && waitTimer) { clearInterval(waitTimer); waitTimer = undefined }
+  }
+  armWaits()
+  signal?.addEventListener('abort', () => { if (waitTimer) clearInterval(waitTimer) }, { once: true })
+
   return {
     register,
     restore,
+    addWait,
+    checkWaits,
+    waits: () => [...waitMap],
     poll,
     stopAll,
     has: (id) => entries.has(id),

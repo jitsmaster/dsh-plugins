@@ -50,9 +50,8 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
     const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, lastMergeSourceCommit: { commitId: 'c1' } }
     return { ok: true, status: 200, json: async () => body }
   }
-  const resumes = []
   const created = []
-  const poller = installPrPoller(ctx, {}, { settings, fetchImpl, intervalMs, env, onResumeApproved: async (a, id) => { resumes.push([a.id, id]) }, ...(withCreated ? { onPrCreated: async (a, id) => { created.push([a.id, id]) } } : {}) })
+  const poller = installPrPoller(ctx, {}, { settings, fetchImpl, intervalMs, env, ...(withCreated ? { onPrCreated: async (a, id) => { created.push([a.id, id]) } } : {}) })
   const agent = { id: 'a1', session: { header: { cwd: 'C:/proj' } } }
   const fire = async (event, ...args) => {
     let out
@@ -61,7 +60,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
   }
   const shell = (command, output, name = 'pwsh') => fire('tools/post-execute', { name, agent, arguments: { command } }, { content: [{ type: 'text', text: output }] })
   const log = () => { const p = join(dir, 'spawn.log'); return existsSync(p) ? readFileSync(p, 'utf8') : '' }
-  return { poller, agent, state, calls, settings, shell, fire, log, ctx, resumes, created }
+  return { poller, agent, state, calls, settings, shell, fire, log, ctx, created, dir, fetchImpl }
 }
 
 // ---- parsing ----
@@ -204,13 +203,13 @@ test('restore: without the registry or query services it does nothing and does n
 
 // ---- CI "no issues found" stop rule ----
 
-const ciThread = (id, date, text = 'AI review complete — no issues found across all 10 passes (AI pitfall review, ...)') => ({
+const ciThread = (id, date, text = 'AI review complete â€” no issues found across all 10 passes (AI pitfall review, ...)') => ({
   id, status: 'closed', comments: [{ id: 1, commentType: 'text', content: text, publishedDate: date, author: { displayName: 'Project Collection Build Service (ingeniuxdev)' } }],
 })
 
 test('ciReviewCleanAt: date of the latest "no issues found" CI comment, else undefined', () => {
   assert.equal(ciReviewCleanAt([thread(1, 2)]), undefined)
-  assert.equal(ciReviewCleanAt([ciThread(5, '2026-10-05T10:00:00Z', 'AI review complete — 3 issues found')]), undefined)
+  assert.equal(ciReviewCleanAt([ciThread(5, '2026-10-05T10:00:00Z', 'AI review complete â€” 3 issues found')]), undefined)
   assert.equal(ciReviewCleanAt([ciThread(5, '2026-10-05T10:00:00Z'), ciThread(6, '2026-10-05T12:00:00Z')]), Date.parse('2026-10-05T12:00:00Z'))
   assert.equal(ciReviewCleanAt([{ ...ciThread(7, '2026-10-05T10:00:00Z'), isDeleted: true }]), undefined)
 })
@@ -384,7 +383,7 @@ test('poll stops when the PR is completed or abandoned; abandoned queues nothing
     h.state.threads = [thread(1, 2)]
     await h.poller.poll('a1')
     assert.equal(h.poller.has('a1'), false)
-    assert.equal(h.calls.prompt.length, status === 'completed' ? 1 : 0)
+    assert.equal(h.calls.prompt.length, 0) // no merged-PR question any more: the remaining-work session handles that
   }
 })
 
@@ -483,115 +482,78 @@ test('a session already titled PR <n> is picked up on its next step without a re
   h.poller.stopAll()
 })
 
-// ---- merged PR: suggest a resume, then act only on the approved marker ----
 
-const approved = (id) => `PR-RESUME-APPROVED: ${id}\r\n`
-const completedHarness = async (opts) => {
-  const h = harness(opts)
-  h.state.title = 'PR 5'
-  h.poller.register(h.agent, '5')
+// ---- waiting for the PR to finish (the remaining-work session) ----
+
+const waitMarker = (id) => `PR-WAIT: ${id}\r\n`
+
+test('PR-WAIT from a "... - after PR n" session registers a wait; a merged PR queues ONE re-ask into it', async () => {
+  const h = harness()
+  h.state.title = 'feature - after PR 5'
+  await h.shell('echo PR-WAIT: 5', waitMarker(5))
+  assert.deepEqual(h.poller.waits(), [['a1', '5']])
+  await h.poller.checkWaits() // PR still active
+  assert.equal(h.calls.prompt.length, 0)
   h.state.prStatus = 'completed'
-  await h.poller.poll('a1')
-  return h
-}
-
-test('completed PR queues ONE ask_user_question suggestion into the same session, once per PR', async () => {
-  const h = await completedHarness()
+  await h.poller.checkWaits()
   assert.equal(h.calls.prompt.length, 1)
-  const req = h.calls.prompt[0]
-  assert.equal(req.sessionId, 'a1')
-  assert.equal(req.mode, 'queue')
-  const text = req.content[0].text
+  assert.equal(h.calls.prompt[0].sessionId, 'a1')
+  const text = h.calls.prompt[0].content[0].text
+  assert.match(text, /PR 5 (is|was) merged/)
   assert.match(text, /ask_user_question/)
-  assert.match(text, /PR 5 is merged\. Spawn a new session to continue from the last handoff\?/)
-  assert.match(text, /Yes/)
-  assert.match(text, /No/)
-  assert.match(text, /echo PR-RESUME-APPROVED: 5/)
-  // Polled again (e.g. re-registered on the next step): never re-sent.
-  await h.fire('agent/pre-step', { agent: h.agent, messages: [] })
-  h.state.prStatus = 'completed'
-  await h.poller.poll('a1')
+  assert.match(text, /origin\/develop/)
+  assert.deepEqual(h.poller.waits(), [])
+  await h.poller.checkWaits()
   assert.equal(h.calls.prompt.length, 1)
-  assert.equal(h.resumes.length, 0) // a suggestion alone never spawns
   h.poller.stopAll()
 })
 
-test('a failed suggestion hand-over is retried on the next poll', async () => {
+test('an abandoned PR re-asks with abandon wording', async () => {
   const h = harness()
-  h.poller.register(h.agent, '5')
+  h.state.title = 'feature - after PR 5'
+  await h.shell('echo', waitMarker(5))
+  h.state.prStatus = 'abandoned'
+  await h.poller.checkWaits()
+  assert.match(h.calls.prompt[0].content[0].text, /abandoned/)
+  assert.match(h.calls.prompt[0].content[0].text, /continue anyway/i)
+  h.poller.stopAll()
+})
+
+test('PR-WAIT is ignored for a different id, a non-after-PR title, non-shell tools, or text that merely quotes it', async () => {
+  const wrongId = harness()
+  wrongId.state.title = 'feature - after PR 6'
+  await wrongId.shell('echo', waitMarker(5))
+  assert.deepEqual(wrongId.poller.waits(), [])
+  const plain = harness()
+  plain.state.title = 'PR 5'
+  await plain.shell('echo', waitMarker(5))
+  assert.deepEqual(plain.poller.waits(), [])
+  const tool = harness()
+  tool.state.title = 'feature - after PR 5'
+  await tool.shell('echo', waitMarker(5), 'read')
+  assert.deepEqual(tool.poller.waits(), [])
+  const quoted = harness()
+  quoted.state.title = 'feature - after PR 5'
+  await quoted.shell('cat', 'to wait run PR-WAIT: 5 later')
+  assert.deepEqual(quoted.poller.waits(), [])
+})
+
+test('waits are persisted and re-armed by a new poller (server restart); a failed hand-over is retried', async () => {
+  const h = harness()
+  h.state.title = 'feature - after PR 5'
+  await h.shell('echo', waitMarker(5))
+  h.poller.stopAll()
+  const again = installPrPoller(h.ctx, {}, { settings: h.settings, fetchImpl: h.fetchImpl, env: { AZURE_DEVOPS_EXT_PAT: PAT } })
+  assert.deepEqual(again.waits(), [['a1', '5']])
   h.state.prStatus = 'completed'
   const sc = h.ctx.get('sessionController')
   const original = sc.prompt
   sc.prompt = async () => { throw new Error('queue down') }
-  await h.poller.poll('a1')
-  assert.equal(h.poller.has('a1'), true)
+  await again.checkWaits()
+  assert.deepEqual(again.waits(), [['a1', '5']]) // kept for the next check
   sc.prompt = original
-  await h.poller.poll('a1')
+  await again.checkWaits()
   assert.equal(h.calls.prompt.length, 1)
-  assert.equal(h.poller.has('a1'), false)
-})
-
-test('valid approved marker calls the resume hook exactly once', async () => {
-  const h = await completedHarness()
-  await h.shell('echo PR-RESUME-APPROVED: 5', approved(5))
-  await h.shell('echo PR-RESUME-APPROVED: 5', approved(5))
-  assert.deepEqual(h.resumes, [['a1', '5']])
-  assert.match(h.log(), /resume approved/)
-})
-
-test('approved marker is ignored for a different id, a non-PR session, an uncompleted PR, non-shell tools', async () => {
-  const wrongId = await completedHarness()
-  await wrongId.shell('echo', approved(6))
-  assert.equal(wrongId.resumes.length, 0)
-
-  const nonPr = await completedHarness()
-  nonPr.state.title = 'work' // renamed away from PR state
-  await nonPr.shell('echo', approved(5))
-  assert.equal(nonPr.resumes.length, 0)
-
-  const active = harness()
-  active.state.title = 'PR 5'
-  active.poller.register(active.agent, '5') // PR still active: never completed
-  await active.poller.poll('a1')
-  await active.shell('echo', approved(5))
-  assert.equal(active.resumes.length, 0)
-  active.poller.stopAll()
-
-  const wrongTool = await completedHarness()
-  await wrongTool.shell('echo', approved(5), 'read')
-  assert.equal(wrongTool.resumes.length, 0)
-
-  const noSuggestion = harness() // completed was never observed
-  noSuggestion.state.title = 'PR 5'
-  await noSuggestion.shell('echo', approved(5))
-  assert.equal(noSuggestion.resumes.length, 0)
-})
-
-test('the marker must stand on its own line (text merely quoting it is ignored)', async () => {
-  const h = await completedHarness()
-  await h.shell('cat notes', 'to approve run PR-RESUME-APPROVED: 5 later')
-  assert.equal(h.resumes.length, 0)
-})
-
-test('handoffLines keep the suggested state after the poll stopped, and the marker restores it', async () => {
-  const h = await completedHarness()
-  assert.deepEqual(h.poller.handoffLines('a1'), ['PR: 5', 'PR-POLL: 5 seen= resume=suggested'])
-  assert.deepEqual(parsePollMarker('PR-POLL: 5 seen=1:2 resume=suggested'), { id: '5', seen: [['1', '2']], resume: 'suggested' })
-  const h2 = harness()
-  await h2.fire('agent/pre-step', { agent: h2.agent, messages: [{ content: 'PR-POLL: 5 seen= resume=suggested' }] })
-  h2.state.prStatus = 'completed'
-  await h2.poller.poll('a1')
-  assert.equal(h2.calls.prompt.length, 0) // already suggested before the handoff
-  h2.poller.stopAll()
-})
-
-test('resume hook failure is traced without the PAT and is not retried', async () => {
-  const h = harness()
-  const failing = installPrPoller(h.ctx, {}, { settings: h.settings, env: { AZURE_DEVOPS_EXT_PAT: PAT }, fetchImpl: async (u) => ({ ok: true, json: async () => (u.includes('/threads') ? { value: [] } : { status: 'completed' }) }), onResumeApproved: async () => { throw new Error(`spawn failed ${PAT}`) } })
-  h.state.title = 'PR 5'
-  failing.register(h.agent, '5')
-  await failing.poll('a1')
-  await h.shell('echo', approved(5))
-  assert.ok(!h.log().includes(PAT))
-  assert.match(h.log(), /resume failed/)
+  assert.deepEqual(again.waits(), [])
+  again.stopAll()
 })
