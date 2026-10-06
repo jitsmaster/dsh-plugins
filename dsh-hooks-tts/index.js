@@ -239,9 +239,9 @@ export function apply(ctx, baseConfig = {}) {
   const contextMessage = folded => folded.context.length ? makeMessage(folded.context.join('\n\n')) : undefined
 
   // PR comment poller (and PR rename); the cap reads its handoff lines so a resumed session can re-register the poll.
-  // A merged PR's user-approved resume goes through the cap's spawn machinery (installed right after, hence lazy).
+  // PR creation hands over to two new sessions through the cap's spawn machinery (installed right after, hence lazy).
   let contextCap
-  const prPoller = installPrPoller(ctx, config, { settings, skip, signal: controller.signal, onResumeApproved: (agent) => contextCap?.spawnApproved(agent), onPrCreated: (agent, id) => contextCap?.prCreated(agent, id) })
+  const prPoller = installPrPoller(ctx, config, { settings, skip, signal: controller.signal, onPrCreated: (agent, id) => contextCap?.prCreated(agent, id) })
   // A restart drops the in-memory polls: re-register every "PR <n>" session. The host services may not be ready at
   // once, so retry a few times (restore is idempotent).
   for (const ms of [5_000, 20_000, 60_000]) {
