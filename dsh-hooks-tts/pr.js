@@ -80,6 +80,23 @@ export function detectNewThreads(threads, seen, selfId) {
   return found
 }
 
+/** The CI AI-review bot's all-clear comment, e.g. "AI review complete — no issues found across all 10 passes". */
+const CI_CLEAN = /AI review complete\W+no issues found/i
+
+/** Time (ms) of the newest CI "no issues found" comment in the threads, or undefined when there is none. */
+export function ciReviewCleanAt(threads) {
+  let latest
+  for (const t of threads ?? []) {
+    if (t.isDeleted) continue
+    for (const c of t.comments ?? []) {
+      if (c.isDeleted || !CI_CLEAN.test(c.content ?? '')) continue
+      const at = Date.parse(c.publishedDate)
+      if (Number.isFinite(at) && (latest === undefined || at > latest)) latest = at
+    }
+  }
+  return latest
+}
+
 const formatSeen = (seen) => [...seen].map(([t, c]) => (c ? `${t}:${c}` : t)).join(',')
 
 /** Asks the agent to put the spawn decision to the user; only the user's Yes leads to the marker. */
@@ -169,6 +186,15 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     return res.json()
   }
 
+  /** True when the CI result is not older than the PR's last source commit. A failed lookup throws (the poll just continues). */
+  async function ciResultIsCurrent(cleanAt, pr, pat) {
+    const sha = pr?.lastMergeSourceCommit?.commitId
+    if (!sha) return true
+    const commit = await getJson(`${ADO_REPO}/commits/${sha}?api-version=7.1`, pat)
+    const committedAt = Date.parse(commit?.committer?.date)
+    return Number.isFinite(committedAt) && cleanAt >= committedAt
+  }
+
   async function queueMessage(entry, text) {
     const sc = ctx.get('sessionController') ?? ctx.sessionController
     await sc.prompt({
@@ -202,7 +228,13 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       const found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
       for (const t of found.filter((f) => !f.notify)) entry.seen.set(t.threadId, t.lastCommentId)
       const fresh = found.filter((f) => f.notify)
-      if (!fresh.length) return
+      trace(`polled PR ${entry.prId}: ${data?.value?.length ?? 0} threads, ${fresh.length} new`)
+      if (!fresh.length) {
+        // Stop once the CI review reports no issues for the current head commit; a newer push means a new review is pending.
+        const cleanAt = ciReviewCleanAt(data?.value)
+        if (cleanAt !== undefined && await ciResultIsCurrent(cleanAt, pr, pat)) { stop(id, 'CI review reports no issues found'); return }
+        return
+      }
       await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId)))
       // Recorded only after the message was queued, so a failed hand-over is retried next poll.
       for (const t of fresh) entry.seen.set(t.threadId, t.lastCommentId)

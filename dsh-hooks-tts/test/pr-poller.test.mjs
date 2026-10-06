@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installPrPoller, parsePrCreated, parsePollMarker, detectNewThreads, isPrSession } from '../pr.js'
+import { installPrPoller, parsePrCreated, parsePollMarker, detectNewThreads, isPrSession, ciReviewCleanAt } from '../pr.js'
 import { createSettings } from '../settings.js'
 
 const PAT = 'sup3r-secret-pat'
@@ -37,7 +37,11 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
     state.headers.push(init?.headers)
     if (state.gate) await state.gate
     if (state.fetchError) throw new Error(`boom with ${init?.headers?.Authorization}`)
-    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined }
+    if (url.includes('/commits/')) {
+      if (state.commitFail) throw new Error('commit lookup failed')
+      return { ok: true, status: 200, json: async () => ({ committer: { date: state.commitDate } }) }
+    }
+    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, lastMergeSourceCommit: { commitId: 'c1' } }
     return { ok: true, status: 200, json: async () => body }
   }
   const resumes = []
@@ -139,6 +143,66 @@ test('poll: the author\'s own reply queues nothing; a later reviewer reply does'
   await h.poller.poll('a1')
   assert.equal(h.calls.prompt.length, 2)
   h.poller.stopAll()
+})
+
+// ---- CI "no issues found" stop rule ----
+
+const ciThread = (id, date, text = 'AI review complete — no issues found across all 10 passes (AI pitfall review, ...)') => ({
+  id, status: 'closed', comments: [{ id: 1, commentType: 'text', content: text, publishedDate: date, author: { displayName: 'Project Collection Build Service (ingeniuxdev)' } }],
+})
+
+test('ciReviewCleanAt: date of the latest "no issues found" CI comment, else undefined', () => {
+  assert.equal(ciReviewCleanAt([thread(1, 2)]), undefined)
+  assert.equal(ciReviewCleanAt([ciThread(5, '2026-10-05T10:00:00Z', 'AI review complete — 3 issues found')]), undefined)
+  assert.equal(ciReviewCleanAt([ciThread(5, '2026-10-05T10:00:00Z'), ciThread(6, '2026-10-05T12:00:00Z')]), Date.parse('2026-10-05T12:00:00Z'))
+  assert.equal(ciReviewCleanAt([{ ...ciThread(7, '2026-10-05T10:00:00Z'), isDeleted: true }]), undefined)
+})
+
+test('poll keeps going after a quiet poll and traces every poll', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  await h.poller.poll('a1')
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), true)
+  assert.equal((h.log().match(/polled PR 5/g) ?? []).length, 2)
+  h.poller.stopAll()
+})
+
+test('poll stops once CI reports no issues found after the last commit', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.commitDate = '2026-10-05T11:00:00Z'
+  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z')]
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), false)
+  assert.match(h.log(), /no issues found/)
+})
+
+test('poll keeps going when the CI "no issues" result is older than the last commit (a new review is pending)', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.commitDate = '2026-10-05T13:00:00Z'
+  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z')]
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), true)
+  h.poller.stopAll()
+})
+
+test('poll keeps going when the commit lookup fails, and when new comments were just queued', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.commitFail = true
+  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z')]
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), true)
+  h.state.commitFail = false
+  h.state.commitDate = '2026-10-05T11:00:00Z'
+  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z'), thread(11, 2)]
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  assert.equal(h.poller.has('a1'), true) // stops on the next poll, once nothing is pending
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), false)
 })
 
 // ---- creation -> rename + register ----
