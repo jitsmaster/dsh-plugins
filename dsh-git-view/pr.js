@@ -52,6 +52,12 @@ export function parseRemote(url) {
   // https://[user@]dev.azure.com/<org>/<project>/_git/<repo>
   m = /^https?:\/\/(?:[^@/]+@)?dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/?#]+)\/?$/.exec(u)
   if (m) return ado(m[1], m[2], m[3])
+  // https://[user@]<org>.visualstudio.com/[DefaultCollection/]<project>/_git/<repo>
+  m = /^https?:\/\/(?:[^@/]+@)?([A-Za-z0-9-]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/]+)\/_git\/([^/?#]+)\/?$/.exec(u)
+  if (m) return ado(m[1], m[2], m[3])
+  // <org>@vs-ssh.visualstudio.com:v3/<org>/<project>/<repo>
+  m = /^[^@]+@vs-ssh\.visualstudio\.com:v3\/([^/]+)\/([^/]+)\/([^/]+)\/?$/.exec(u)
+  if (m) return ado(m[1], m[2], m[3])
   // git@ssh.dev.azure.com:v3/<org>/<project>/<repo>
   m = /^git@ssh\.dev\.azure\.com:v3\/([^/]+)\/([^/]+)\/([^/]+)\/?$/.exec(u)
   if (m) return ado(m[1], m[2], m[3])
@@ -100,11 +106,11 @@ const childEnv = () => {
   return { ...env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0', NoDefaultCurrentDirectoryInExePath: '1' }
 }
 
-/** Run a CLI; resolves stdout, or undefined on any failure. .cmd wrappers go through cmd.exe (args are pre-validated). */
+/** Run a CLI; resolves stdout, or undefined on any failure. .cmd wrappers go through cmd.exe (args are pre-validated: no spaces or metacharacters; the extra outer quotes are what /s strips, so a path with spaces survives). */
 function run(exe, args, cwd) {
   return new Promise((done) => {
     const viaCmd = /\.cmd$/i.test(exe)
-    const [file, argv] = viaCmd ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"' + exe + '"', ...args]] : [exe, args]
+    const [file, argv] = viaCmd ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '""' + exe + '" ' + args.join(' ') + '"']] : [exe, args]
     execFile(file, argv, { cwd, env: childEnv(), timeout: PR_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, windowsHide: true, windowsVerbatimArguments: viaCmd, encoding: 'utf8' },
       (error, stdout) => done(error ? undefined : String(stdout)))
   })
@@ -117,7 +123,7 @@ function run(exe, args, cwd) {
 export async function readPr(root, branch, deps = {}) {
   const none = { ok: true, pr: null }
   if (!branch || !safeRef(branch)) return none
-  const { gitFn = git, find = findCli, exec = run } = deps
+  const { gitFn = git, find = findCli, exec = run, fetchFn = globalThis.fetch, env = process.env } = deps
   const r = await gitFn(root, ['remote', 'get-url', 'origin'])
   if (r.busy || r.aborted) return { busy: true }
   if (r.code !== 0) return none
@@ -128,6 +134,16 @@ export async function readPr(root, branch, deps = {}) {
     if (!gh) return none
     const out = await exec(gh, ['pr', 'list', '--repo', remote.slug, '--head', branch, '--state', 'all', '--limit', '10', '--json', 'number,url,state,title'], root)
     return { ok: true, pr: (out && normalizeGithub(out)) || null }
+  }
+  // Same credential the PR poller uses: a PAT in the host environment. No cmd.exe, no az login needed.
+  const pat = env.AZURE_DEVOPS_EXT_PAT
+  if (pat) {
+    const url = 'https://dev.azure.com/' + encodeURIComponent(remote.org) + '/' + encodeURIComponent(remote.project) + '/_apis/git/repositories/' + encodeURIComponent(remote.repo)
+      + '/pullrequests?searchCriteria.sourceRefName=' + encodeURIComponent('refs/heads/' + branch) + '&searchCriteria.status=all&$top=10&api-version=7.1'
+    try {
+      const res = await fetchFn(url, { headers: { Authorization: 'Basic ' + Buffer.from(':' + pat).toString('base64'), Accept: 'application/json' }, signal: AbortSignal.timeout(PR_TIMEOUT_MS) })
+      if (res.ok) { const body = await res.json(); return { ok: true, pr: normalizeAdo(JSON.stringify(body?.value ?? []), remote) || null } }
+    } catch { /* fall through to az, then to "no PR" */ }
   }
   if (!SAFE_SHELL_BRANCH.test(branch)) return none
   const az = find('az')
