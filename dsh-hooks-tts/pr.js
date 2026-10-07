@@ -15,6 +15,8 @@ import { dirname, join } from 'node:path'
 
 export const PR_TITLE = /^PR \d+/
 const ADO_REPO = 'https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc'
+/** Definition id of the CI AI-review pipeline ("AI review pipeline 80"). */
+const CI_PIPELINE_ID = 80
 const POLL_INTERVAL_MS = 10 * 60 * 1000
 const FETCH_TIMEOUT_MS = 30_000
 /** Thread statuses that mean the reviewer's point is settled. */
@@ -138,8 +140,15 @@ function cleanStopMessage(prId) {
   return `PR ${prId} review poller stopped: the CI review found no issues and no human review is open. No further comment messages will be sent for this PR.`
 }
 
-function queuedMessage(prId, threadIds) {
+/** One line naming the active CI review runs. */
+export function ciRunningLine(prId, builds) {
+  const list = builds.map((b) => `build ${b.buildNumber ?? b.id}, ${b.status}`).join('; ')
+  return `CI review pipeline is running on PR ${prId} (${list}); its findings will arrive as new comment threads.`
+}
+
+function queuedMessage(prId, threadIds, ciBuilds = []) {
   return [
+    ...(ciBuilds.length ? [ciRunningLine(prId, ciBuilds)] : []),
     `New review comments on PR ${prId} (thread${threadIds.length > 1 ? 's' : ''} ${threadIds.join(', ')}).`,
     `Run the \`ado-pr-implement\` skill on PR ${prId} now, in this session, and take it only up to its user-approval gate: evaluate each comment, then implement fixes and update tests locally.`,
     'Do NOT commit, push, post replies or resolve threads until the user has approved at that gate.',
@@ -190,7 +199,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       return
     }
     if (existing) stop(agent.id, 'replaced by another PR')
-    const entry = { agent, prId: String(prId), seen: new Map(seenEntries), timer: undefined, inFlight: undefined, restored }
+    const entry = { agent, prId: String(prId), seen: new Map(seenEntries), ciReported: new Set(), timer: undefined, inFlight: undefined, restored }
     // A resumed marker carrying resume=suggested/spawned means the merged-PR suggestion was already made.
     // An existing state for the same PR (poll stopped after the merge, then re-registered) is kept, never reset.
     const prior = states.get(agent.id)?.prId === entry.prId ? states.get(agent.id) : undefined
@@ -222,6 +231,18 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     const commit = await getJson(`${ADO_REPO}/commits/${sha}?api-version=7.1`, pat)
     const committedAt = Date.parse(commit?.committer?.date)
     return Number.isFinite(committedAt) && cleanAt >= committedAt
+  }
+
+  /** Active (queued or running) CI review builds for the PR; undefined when the lookup failed (traced). */
+  async function activeCiBuilds(entry, pat) {
+    try {
+      const url = `https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/build/builds?definitions=${CI_PIPELINE_ID}&branchName=${encodeURIComponent(`refs/pull/${entry.prId}/merge`)}&statusFilter=inProgress,notStarted&api-version=7.1`
+      const data = await getJson(url, pat)
+      return (data?.value ?? []).filter((b) => b?.id != null && (b.status === 'inProgress' || b.status === 'notStarted'))
+    } catch (error) {
+      trace(`CI build lookup for PR ${entry.prId} failed: ${scrub(error)}`)
+      return undefined
+    }
   }
 
   async function queueMessage(entry, text) {
@@ -265,7 +286,16 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       for (const t of found.filter((f) => !f.notify)) entry.seen.set(t.threadId, t.lastCommentId)
       const fresh = found.filter((f) => f.notify)
       trace(`polled PR ${entry.prId}: ${data?.value?.length ?? 0} threads, ${fresh.length} new`)
+      const builds = await activeCiBuilds(entry, pat)
+      const newBuilds = (builds ?? []).filter((b) => !entry.ciReported.has(String(b.id)))
       if (!fresh.length) {
+        if (newBuilds.length) {
+          await queueMessage(entry, ciRunningLine(entry.prId, newBuilds))
+          for (const b of newBuilds) entry.ciReported.add(String(b.id)) // recorded only after the queue accepted it
+          trace(`reported active CI review build(s) ${newBuilds.map((b) => b.id).join(',')} on PR ${entry.prId}`)
+        }
+        // A running (or unknown) pipeline means the CI verdict is about to change: never auto-stop on a stale all-clear.
+        if (builds === undefined || builds.length) return
         // Stop once the CI review reports no issues, nothing newer or still open contradicts it, and it is not older than
         // the head commit (a newer push means a new review is pending). The final message is queued BEFORE stopping, so a
         // failed hand-over keeps the poll alive and is retried; after stop() nothing more is sent for this PR.
@@ -276,7 +306,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         }
         return
       }
-      await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId)))
+      await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId), newBuilds))
+      for (const b of newBuilds) entry.ciReported.add(String(b.id))
       // Recorded only after the message was queued, so a failed hand-over is retried next poll.
       for (const t of fresh) entry.seen.set(t.threadId, t.lastCommentId)
       trace(`queued PR ${entry.prId} comments (threads ${fresh.map((t) => t.threadId).join(',')}) into ${id}`)

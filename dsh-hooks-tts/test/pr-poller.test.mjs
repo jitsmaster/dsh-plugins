@@ -43,6 +43,10 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
     state.headers.push(init?.headers)
     if (state.gate) await state.gate
     if (state.fetchError) throw new Error(`boom with ${init?.headers?.Authorization}`)
+    if (url.includes('/build/builds')) {
+      if (state.buildFail) throw new Error('build lookup failed')
+      return { ok: true, status: 200, json: async () => ({ value: state.builds ?? [] }) }
+    }
     if (url.includes('/commits/')) {
       if (state.commitFail) throw new Error('commit lookup failed')
       return { ok: true, status: 200, json: async () => ({ committer: { date: state.commitDate } }) }
@@ -667,3 +671,57 @@ test('waits are persisted and re-armed by a new poller (server restart); a faile
   assert.deepEqual(again.waits(), [])
   again.stopAll()
 })
+
+// ---- active CI review pipeline ----
+
+test('CI pipeline: an active build is reported once, per build id', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.builds = [{ id: 900, buildNumber: '20261007.1', status: 'inProgress' }]
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  assert.match(h.calls.prompt[0].content[0].text, /CI review pipeline is running on PR 5 \(build 20261007.1, inProgress\)/)
+  assert.match(h.state.urls.find((u) => u.includes('/build/builds')), /definitions=80&branchName=refs%2Fpull%2F5%2Fmerge&statusFilter=inProgress,notStarted/)
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1) // same build: not repeated
+  h.state.builds = [{ id: 901, buildNumber: '20261007.2', status: 'notStarted' }]
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 2) // a new run (e.g. after a push)
+  h.poller.stopAll()
+})
+
+test('CI pipeline: new threads and a running pipeline share one message', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.builds = [{ id: 900, status: 'inProgress' }]
+  h.state.threads = [thread(7, 2)]
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  assert.match(h.calls.prompt[0].content[0].text, /CI review pipeline is running[\s\S]*New review comments on PR 5/)
+  h.poller.stopAll()
+})
+
+test('CI pipeline: a running pipeline blocks the clean auto-stop; a failed lookup does too', async () => {
+  const h = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { builds: [{ id: 900, status: 'inProgress' }] })
+  assert.equal(h.poller.has('a1'), true)
+  assert.equal(h.calls.prompt.filter((c) => /poller stopped/.test(c.content[0].text)).length, 0)
+  h.poller.stopAll()
+  const f = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { buildFail: true })
+  assert.equal(f.poller.has('a1'), true)
+  f.poller.stopAll()
+})
+
+test('CI pipeline: once it has finished the clean auto-stop applies', async () => {
+  const h = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { builds: [] })
+  assert.equal(h.poller.has('a1'), false)
+})
+
+async function cleanHarnessWith(threads, extra) {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.commitDate = '2026-10-05T11:00:00Z'
+  h.state.threads = threads
+  Object.assign(h.state, extra)
+  await h.poller.poll('a1')
+  return h
+}
