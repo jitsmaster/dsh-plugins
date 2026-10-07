@@ -23,7 +23,7 @@ const T = Object.fromEntries(Object.entries(mod.__test).map(([k, v]) => [k, type
 
 test('the bundle registers under the plugin id and exports the DSH client contract', () => {
   assert.equal(registered.id, 'dsh-git-view')
-  assert.deepEqual(Array.from(mod.inject), ['slots', 'sidebarRightTabs'])
+  assert.deepEqual(Array.from(mod.inject), ['slots', 'sidebarRightTabs', 'uiWorkspace'])
   assert.equal(typeof mod.apply, 'function')
   assert.equal(typeof mod.GitTab, 'function')
 })

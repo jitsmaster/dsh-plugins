@@ -786,6 +786,37 @@ tr.fold:hover td{background:var(--gv-layer2)}
 			return [state, () => refresh.current()];
 		}
 
+		/** The pull request of the checked-out branch ({ number, url, state } or null), refreshed every minute while the tab is visible. */
+		function usePr(params, branch, active) {
+			const [pr, setPr] = useState(null);
+			const session = params.session, cwd = params.cwd;
+			useEffect(() => {
+				setPr(null);
+				if (!active || !branch) return undefined;
+				let stop = false, timer;
+				const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+				const tick = async () => {
+					let delay = 60000;
+					try {
+						const r = await getJson("/v1/pr", { session, cwd }, ctrl && ctrl.signal);
+						if (!stop && r && r.ok) setPr(r.pr && /^https:\/\//.test(r.pr.url) ? r.pr : null);
+					} catch (e) { if (e && e.retryAfterMs) delay = e.retryAfterMs; }
+					if (!stop) timer = setTimeout(tick, delay);
+				};
+				tick();
+				return () => { stop = true; clearTimeout(timer); ctrl && ctrl.abort(); };
+			}, [session, cwd, branch, active]);
+			return pr;
+		}
+
+		/** Id of the DSH session titled "PR <number>" (the PR session the hooks plugin creates), or undefined. */
+		function findPrSessionId(byId, number, selfId) {
+			if (!byId || !Number.isInteger(number)) return undefined;
+			const re = new RegExp("^PR\\s*" + number + "(?!\\d)", "i");
+			for (const id of Object.keys(byId)) if (id !== selfId && re.test(String((byId[id] && byId[id].title) || "").trim())) return id;
+			return undefined;
+		}
+
 		function isDarkTheme() {
 			try {
 				const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(getComputedStyle(document.body).backgroundColor);
@@ -813,6 +844,10 @@ tr.fold:hover td{background:var(--gv-layer2)}
 			const dark = useMemo(isDarkTheme, [active, !!view]);
 
 			const st = snap && snap.ok ? snap.status : null;
+			const branchName = st && st.ok && st.branch && !st.branch.detached ? st.branch.name : undefined;
+			const pr = usePr(params, branchName, active && !view);
+			const prSessionId = props.useSessions ? props.useSessions((s) => (pr ? findPrSessionId(s && s.byId, pr.number, sessionId) : undefined)) : undefined;
+			const openSession = hostApi.openSession;
 			const cmp = snap && snap.compare;
 			const q = filter.trim().toLowerCase().slice(0, 2048);
 			const match = (f) => !q || f.path.toLowerCase().includes(q);
@@ -855,6 +890,11 @@ tr.fold:hover td{background:var(--gv-layer2)}
 						st.linked ? h("span", { className: "gv-chip accent", title: "This is a linked git worktree: " + st.root }, "worktree") : null,
 						b.upstream ? h("span", { className: "gv-chip", title: b.gone ? "Upstream branch no longer exists: " + b.upstream : "Upstream: " + b.upstream }, b.gone ? "upstream gone" : [b.ahead ? "↑" + b.ahead : null, b.behind ? "↓" + b.behind : null].filter(Boolean).join(" ") || "in sync") : null,
 						st.stashCount ? h("span", { className: "gv-chip", title: "Stashes" }, "stash " + st.stashCount) : null) : null,
+					pr ? h("div", { className: "gv-row", style: { flexWrap: "wrap" } },
+						h("span", { className: "gv-sub" }, "PR:"),
+						h("a", { className: "gv-link gv-mono gv-ell", href: pr.url, target: "_blank", rel: "noopener noreferrer", title: pr.title || pr.url }, pr.url),
+						pr.state !== "open" ? h("span", { className: "gv-chip", title: "Pull request state" }, pr.state) : null,
+						prSessionId && openSession ? h("button", { className: "gv-btn", title: "Open the PR session (PR " + pr.number + ") in DSH", onClick: () => openSession(prSessionId) }, h(Icon, { name: "branch" }), "PR session") : null) : null,
 					!b || b.unborn ? null : h("div", { className: "gv-row gv-sub" },
 						h("span", null, "→"),
 						h("span", { className: "gv-mono gv-ell", title: "Compared against this ref" }, baseRef || (cmp && cmp.error) || "no base ref"),
@@ -923,9 +963,13 @@ tr.fold:hover td{background:var(--gv-layer2)}
 			return h(Icon, { name: "branch", size: size || 16 });
 		}
 
-		const inject = ["slots", "sidebarRightTabs"];
+		const inject = ["slots", "sidebarRightTabs", "uiWorkspace"];
+
+		// Host capabilities captured in apply(); absent (undefined) on a DSH without the workspace API, which just hides the button.
+		const hostApi = { openSession: undefined };
 
 		function apply(ctx) {
+			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
 			ctx.effect(() => ctx.sidebarRightTabs.register({
 				id: TAB_ID,
 				kind: TAB_KIND,
@@ -949,7 +993,7 @@ tr.fold:hover td{background:var(--gv-layer2)}
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.GitTab = GitTab;
-		exports.__test = { parseUnifiedDiff, intraline, segmentHunk, pairRows, buildTree, relTime, cleanRef, filePlaceholder, CSS };
+		exports.__test = { findPrSessionId, parseUnifiedDiff, intraline, segmentHunk, pairRows, buildTree, relTime, cleanRef, filePlaceholder, CSS };
 		return module.exports;
 	}
 });

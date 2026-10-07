@@ -13,6 +13,7 @@ import { createServer } from 'node:http'
 import {
   gitSaturated, readBranchCompare, readBranchName, readCommit, readDiff, readHistory, readSide, readStatus, resolveBaseRef, withGitSignal,
 } from './git.js'
+import { createPrLookup } from './pr.js'
 
 export const GIT_VIEW_PORT = 3082
 const STATUS_TTL_MS = 700
@@ -52,7 +53,7 @@ const json = (res, code, body) => {
  *   port?: number, webUrl?: string }} opts
  */
 export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, webUrl = process.env.DSH_WEB_URL || 'http://127.0.0.1:3080', deps = {} }) {
-  const { readBranchCompare: compareFn = readBranchCompare } = deps // injectable for tests
+  const { readBranchCompare: compareFn = readBranchCompare, prDeps } = deps // injectable for tests
   const web = new URL(webUrl)
   const allowedOrigins = new Set([...['127.0.0.1', 'localhost'].map(h => `${web.protocol}//${h}:${web.port}`), web.origin])
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`])
@@ -75,6 +76,8 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
   const baseRefs = new Map()
   const baseKey = (root, branch) => `${root}\0${branch ?? ''}`
   const branchOf = memo(shared((root) => readBranchName(root)))
+  const prLookup = createPrLookup(prDeps)
+  const prOf = shared((root, branch) => prLookup(root, branch))
   const baseOf = memo(shared((root, branch) => resolveBaseRef(root, { branch })))
   /** The base ref diffs are taken against: always the server's own choice, never a client-supplied ref. */
   async function serverBase(target) {
@@ -118,6 +121,14 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
       case '/v1/snapshot': {
         const view = await snapshot(target)
         return view.busy ? busy429(res) : json(res, 200, view)
+      }
+
+      case '/v1/pr': {
+        // The PR (if any) of the checked-out branch; any lookup failure is just "no PR" (see pr.js).
+        const head = await branchOf(`h:${root}`, root)
+        if (head.busy) return busy429(res)
+        const out = await prOf(root, head.name)
+        return out.busy ? busy429(res) : json(res, 200, out)
       }
 
       case '/v1/commit':

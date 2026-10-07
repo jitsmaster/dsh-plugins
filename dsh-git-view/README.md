@@ -57,3 +57,7 @@ node test/harness/serve.mjs   # UI harness on http://127.0.0.1:3090 with a demo 
 ```
 
 The harness (dev only, not shipped) takes esbuild from `require.resolve('esbuild')` if installed, otherwise from the DSH checkout's pnpm store; React and react-dom always default to hardcoded `D:/dev/DSH/node_modules/.pnpm/react@18.3.1…` paths, whose versions may have moved. Override with `--esbuild`, `--react`, `--react-dom`; a missing path stops with an error naming the flag.
+
+## Pull request
+
+The header shows `PR: <url>` for the checked-out branch when a pull request exists (open preferred, else the latest merged/closed one, with its state). It is looked up read-only through `gh pr list` (GitHub `origin`) or `az repos pr list` (Azure DevOps `origin`, simple org/project/repo names only), cached for a minute; no CLI, no login or no PR means nothing is shown. If a DSH session is titled `PR <number>`, a **PR session** button opens it (needs a DSH that provides `uiWorkspace`).
