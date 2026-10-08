@@ -515,7 +515,8 @@ window.__ModuleLoader__.load({
 			const rows = {};
 			const present = new Set(sessionKeys);
 			((view && view.groups) || []).filter((g) => g && g.workspaceId === wsId).forEach((g) => {
-				const members = (g.members || []).map((m) => "session:" + m.id).filter((k) => present.has(k) && !(k in rows));
+				const ids = new Set((g.members || []).map((m) => "session:" + m.id));
+				const members = sessionKeys.filter((k) => ids.has(k) && !(k in rows)); // DSH's own row order, so its drag-reorder stays visible
 				if (!members.length && !g.manual) return;
 				const base = (groups.length + 1) * GT_STEP;
 				const isCollapsed = !!(collapsed && collapsed[g.id]);
@@ -586,8 +587,10 @@ window.__ModuleLoader__.load({
 				if (h) return { id: h.getAttribute(GT_HEADER), ws: h.getAttribute("data-ws"), el: h };
 				const m = e.target.closest("[data-hooks-gt-group]");
 				if (!m) return null;
-				const row = gtRow(m);
-				return { id: m.getAttribute("data-hooks-gt-group"), ws: null, el: row };
+				const gid = m.getAttribute("data-hooks-gt-group");
+				const g = ((groupsView && groupsView.groups) || []).find((x) => x.id === gid);
+				if (g && (g.members || []).some((x) => x.id === dragged)) return null; // same group: leave it to DSH's reorder
+				return { id: gid, ws: null, el: gtRow(m) };
 			};
 			const sameWs = (t) => {
 				const me = ((groupsView && groupsView.sessions) || []).find((x) => x.id === dragged);
