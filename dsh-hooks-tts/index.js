@@ -23,6 +23,7 @@ import { installPrPoller } from './pr.js'
 import { installAskUserTuning } from './ask.js'
 import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
+import { createGroups } from './groups.js'
 
 export const name = 'hooks-tts'
 
@@ -170,7 +171,8 @@ export function apply(ctx, baseConfig = {}) {
 
   const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens })
   const worktrees = createWorktreeTracker(stateDir)
-  startStatusService(ctx, config, stateDir, controller.signal, settings, worktrees)
+  const groups = createGroups(stateDir, { trace: (line) => ctx.logger.warn(`hooks-tts: ${line}`) })
+  startStatusService(ctx, config, stateDir, controller.signal, settings, worktrees, groups)
 
   // Record the worktree each session actually works in (its cwd stays at the launch directory).
   ctx.on('tools/post-execute', async (exec, result, next) => {
@@ -250,7 +252,7 @@ export function apply(ctx, baseConfig = {}) {
     timer.unref?.()
     controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
   }
-  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id) })
+  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups })
   installAskUserTuning(ctx, { skip, makeMessage })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {

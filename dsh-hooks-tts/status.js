@@ -9,6 +9,7 @@ import { createServer } from 'node:http'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { applyMove, buildGroupsView } from './groups.js'
 import { listSpawned } from './spawned.js'
 
 export const STATUS_PORT = 3081
@@ -53,7 +54,7 @@ const recordedWorktree = (r) => (r && existsSync(r.root) ? { name: r.name, root:
 
 const pct = (used, budget) => (budget > 0 ? Math.round((used / budget) * 1000) / 10 : undefined)
 
-export function startStatusService(ctx, config, stateDir, signal, settings, worktrees) {
+export function startStatusService(ctx, config, stateDir, signal, settings, worktrees, groups) {
   const intervalMs = config.refreshIntervalMs ?? 30_000
   const sessionBudget = config.sessionBudgetTokens ?? 30_000_000
   const weeklyBudget = config.weeklyBudgetTokens ?? 200_000_000
@@ -213,6 +214,15 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
   ctx.on('tools/post-execute', (_exec, _result, next) => { requestSample(); return next() })
   ctx.on('agent/turn-stopping', () => { requestSample() })
 
+  const workspaceIdOf = (id) => {
+    try { return (ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry)?.list().find((w) => w.sessionIds?.includes(id))?.id } catch { return undefined }
+  }
+  const liveSessions = () => [...agents].map(([id, agent]) => {
+    let title
+    try { title = ctx.get('sessionTitle')?.get(agent.session)?.title } catch { /* untitled */ }
+    return { id, title, workspaceId: workspaceIdOf(id) }
+  })
+
   // Settings writes are accepted only from the DSH web page itself (never from other sites).
   const webUrl = new URL(process.env.DSH_WEB_URL || 'http://127.0.0.1:3080')
   const allowedOrigins = new Set(['127.0.0.1', 'localhost'].map(h => `${webUrl.protocol}//${h}:${webUrl.port}`).concat(webUrl.origin))
@@ -220,7 +230,33 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
   const server = createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Cache-Control', 'no-store')
-    if (req.url?.startsWith('/settings')) {
+    // Plain string split: URL parsing throws on a malformed request target, which must never reach the host process.
+    if ((req.url ?? '').split('?')[0] === '/groups') {
+      // Group names can quote the user's first request: other web pages are refused (like /settings). The loopback
+      // bind is the real boundary; a local process can still send an Origin header.
+      const origin = req.headers.origin
+      if (!origin || !allowedOrigins.has(origin) || !['GET', 'POST', 'OPTIONS'].includes(req.method)) { res.statusCode = 403; res.end(); return }
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+      res.setHeader('Vary', 'Origin')
+      if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return }
+      res.setHeader('Content-Type', 'application/json')
+      if (req.method === 'POST') {
+        // Manual move of a session into / out of / between groups.
+        let body = ''
+        req.on('data', (d) => { body += d; if (body.length > 4096) req.destroy() })
+        req.on('end', () => {
+          let parsed
+          try { parsed = JSON.parse(body || '{}') } catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'invalid JSON' })); return }
+          const result = groups ? applyMove(groups, parsed, workspaceIdOf, (id) => agents.has(id)) : { status: 503, error: 'groups unavailable' }
+          res.statusCode = result.status
+          res.end(JSON.stringify(result.error ? { error: result.error } : buildGroupsView(groups.list(), liveSessions())))
+        })
+        return
+      }
+      res.end(JSON.stringify(buildGroupsView(groups?.list() ?? [], liveSessions())))
+    } else if (req.url?.startsWith('/settings')) {
       const origin = req.headers.origin
       if (!origin || !allowedOrigins.has(origin)) { res.statusCode = 403; res.end(); return }
       res.setHeader('Access-Control-Allow-Origin', origin)

@@ -11,6 +11,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { isPrSession, PR_TITLE } from './pr.js'
+import { firstRequest } from './groups.js'
 import { recordSpawn } from './spawned.js'
 const DEFAULT_HANDOFF_DIR = join(homedir(), '.dsh', 'handoffs')
 
@@ -91,7 +92,7 @@ function notice(tokens, cap, over, prState = false, prLines = []) {
   ].join('\n')
 }
 
-export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff }) {
+export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups }) {
   const dir = config.handoffDir ?? DEFAULT_HANDOFF_DIR
   const instructed = new Set()
   const warned = new Set()
@@ -223,6 +224,29 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     return { sparc: true, value: withMarker(body ? `${head}\n\n--- modes:sparc skill content ---\n${body}` : `${head}\nInvoke Skill(modes:sparc) if available.`) }
   }
 
+  /** The workspace the session belongs to, if the registry knows it. */
+  function workspaceOf(agent) {
+    try {
+      const registry = ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry
+      return registry?.list().find((w) => w.sessionIds?.includes(agent.id))?.id
+    } catch (error) { trace(`workspace lookup failed: ${error}`); return undefined }
+  }
+
+  /**
+   * The session's group, created when it has none (PR creation and handoff both start one). Named after the
+   * session: its title if it names the work, else a summary of its first request.
+   */
+  function groupFor(agent) {
+    if (!groups) return undefined
+    try {
+      // Naming scans the whole conversation, so it is built only when a group is actually created.
+      const naming = () => ({ title: ctx.get('sessionTitle')?.get(agent.session)?.title, request: () => firstRequest(agent), cwd: agent.session?.header?.cwd })
+      const group = groups.ensureGroup(agent.id, workspaceOf(agent), naming)
+      trace(`group for ${agent.id}: ${group.id}, ${group.sessionIds.length} member(s)`)
+      return group
+    } catch (error) { trace(`group failed: ${error?.stack ?? error}`); return undefined }
+  }
+
   /** Once the handoff note exists, open a fresh session in the same folder that resumes from it. */
   async function spawnResume(agent) {
     const job = pending.get(agent.id)
@@ -247,6 +271,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
   async function prCreated(agent, id) {
     if (skip(agent) || isPrSession(ctx, agent) || prHandovers.has(agent.id)) return
     prHandovers.add(agent.id)
+    groupFor(agent) // the PR starts the group; the spawned PR and follow-up sessions join it
     const base = handoffPath(dir, agent).replace(/-\d{8}-\d{4}-handoff\.md$/, '')
     const stamp = /(-\d{8}-\d{4})-handoff\.md$/.exec(handoffPath(dir, agent))?.[1] ?? ''
     // The notes are requested when the turn ends (handleHandover), so the rest of the PR skill (reviewer,
@@ -315,13 +340,12 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       const sc = ctx.get('sessionController') ?? ctx.sessionController
       trace(`spawning from ${job.path}; controller=${sc ? 'found' : 'MISSING'}`)
       // Prefer the source session's workspace so the new session is grouped with it (not "Ungrouped").
-      let workspaceId
-      try {
-        const registry = ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry
-        workspaceId = registry?.list().find((w) => w.sessionIds?.includes(agent.id))?.id
-      } catch (error) { trace(`workspace lookup failed: ${error}`) }
+      const workspaceId = workspaceOf(agent)
       trace(`workspace: ${workspaceId ?? 'none (using cwd)'}`)
       const created = await sc.create(workspaceId ? { workspaceId } : job.cwd ? { cwd: job.cwd } : {})
+      // Handoff and PR continuations all live in the group of the session they come from (created if it has none).
+      const group = groupFor(agent)
+      if (group) groups.addToGroup(group.id, created.sessionId)
       // Same access level as the source: copy its last permission/preset, sandbox/mode and approval/policy.
       // Session.append writes the log only, so no other side effects are triggered.
       try {

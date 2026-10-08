@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installContextCap } from '../cap.js'
 import { createSettings } from '../settings.js'
+import { createGroups, deriveGroupName } from '../groups.js'
 
 function harness({ cap = 400_000, prLines, ...extra } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cap-'))
   const settings = createSettings(dir, { contextCapTokens: cap, ...extra })
-  const state = { tokens: 0, title: undefined, events: [] }
+  const state = { tokens: 0, title: undefined, events: [], workspace: undefined, messages: [] }
   let sink
   const calls = { create: 0, prompt: 0, rename: [] }
   const controller = {
@@ -25,13 +26,15 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
       if (name === 'sessionProjections') return { snapshot: () => ({ values: { contextPressure: { projectedTokens: state.tokens } } }) }
       if (name === 'sessionTitle') return { get: () => (state.title === undefined ? undefined : { title: state.title }) }
       if (name === 'sessionController') return controller
+      if (name === 'workspaceRegistry') return { list: () => (state.workspace ? [{ id: state.workspace, sessionIds: ['a'] }] : []) }
       return undefined
     },
     on: (event, fn) => { handlers[event] = fn },
   }
-  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md') }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined })
+  const groups = createGroups(dir)
+  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md') }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined, groups })
   const steered = []
-  const agent = { id: 'a', session: { header: { cwd: 'C:/proj' }, snapshotEvents: () => state.events }, steer: (m) => steered.push(m) }
+  const agent = { id: 'a', session: { header: { cwd: 'C:/proj' }, snapshotEvents: () => state.events, deriveMessages: () => state.messages }, steer: (m) => steered.push(m) }
   const step = async (tokens) => {
     state.tokens = tokens
     const out = await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] }))
@@ -42,7 +45,7 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
     return (await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] }))).messages
   }
   const stop = async (tokens) => { state.tokens = tokens; await handlers['agent/turn-stopping']({ agent }) }
-  return { agentRef: agent, dir, prCreated: cap_.prCreated, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
+  return { agentRef: agent, groups, dir, prCreated: cap_.prCreated, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
 }
 
 test('warns once at warnPercent, then hands off at the cap', async () => {
@@ -301,4 +304,115 @@ test('the spawned PR session is not respawned at the cap', async () => {
   const h = harness()
   h.state.title = 'PR 42'
   assert.deepEqual(await h.step(450_000), ['CONTEXT NOTICE'])
+})
+
+// ---- session groups ----
+
+test('groups: PR creation creates a group named after the session title; PR and follow-up sessions join it', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  const p = await startHandover(h, 'Add dark mode to settings')
+  writeFileSync(p.pr, '# pr\nMode: plain\n')
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
+  await h.stop(10_000)
+  const groups = h.groups.list()
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].name, 'Add dark mode to settings')
+  assert.deepEqual(groups[0].sessionIds, ['a', 's2', 's3'])
+})
+
+test('groups: a handoff-spawned session creates the group when the source has none, and a later handoff reuses it', async () => {
+  const h = harness()
+  h.state.title = 'Refactor the billing module'
+  assert.match(await resumeWith(h, '# note\nMode: plain\n'), /Resume the work from this handoff/)
+  let [g] = h.groups.list()
+  assert.equal(g.name, 'Refactor the billing module')
+  assert.deepEqual(g.sessionIds, ['a', 's2'])
+  assert.equal(h.groups.groupOf('s2').id, g.id)
+})
+
+test('groups: a title that does not name the work falls back to the first request, then the project folder', async () => {
+  const { deriveGroupName } = await import('../groups.js')
+  assert.equal(deriveGroupName({ title: 'PR 42', request: 'Fix flaky login test', cwd: 'C:/proj' }), 'Fix flaky login test')
+  assert.equal(deriveGroupName({ title: 'New session', cwd: 'C:/proj' }), 'proj work')
+  assert.equal(deriveGroupName({ title: 'ab - after PR 5', request: 'Use the request' }), 'Use the request')
+  assert.equal(deriveGroupName({ title: 'Upgrade deps - 2024' }), 'Upgrade deps - 2024')
+  assert.equal(deriveGroupName({ title: 'Billing cleanup - 3' }), 'Billing cleanup')
+  assert.equal(deriveGroupName({ title: 'Billing cleanup - after PR 5' }), 'Billing cleanup')
+})
+
+test('groups: persisted across restarts and one group per session', async () => {
+  const h = harness()
+  const g = h.groups.ensureGroup('x', 'ws1', { title: 'Alpha work' })
+  h.groups.addToGroup(g.id, 'y')
+  const again = createGroups(h.dir)
+  assert.deepEqual(again.groupOf('y').sessionIds, ['x', 'y'])
+  assert.equal(again.list('ws1').length, 1)
+  assert.equal(again.list('other').length, 0)
+  const g2 = again.ensureGroup('z', 'ws1', { title: 'Beta work' })
+  again.addToGroup(g2.id, 'y')
+  assert.deepEqual(again.groupOf('x').sessionIds, ['x'])
+})
+
+test('groups: the group records the session workspace, and backfills it when it was unknown at creation', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  h.state.workspace = 'ws-7'
+  const p = await startHandover(h, 'Add dark mode to settings')
+  writeFileSync(p.pr, '# pr\nMode: plain\n')
+  writeFileSync(p.rest, 'NO-REMAINING-WORK\n')
+  await h.stop(10_000)
+  assert.equal(h.groups.list('ws-7').length, 1)
+  const g = h.groups.ensureGroup('late', undefined, { title: 'Late work' })
+  assert.equal(g.workspaceId, undefined)
+  assert.equal(h.groups.ensureGroup('late', 'ws-9').workspaceId, 'ws-9')
+})
+
+test('groups: a follow-up PR created from the "after PR" session reuses the original group', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  const first = await startHandover(h, 'Add dark mode to settings')
+  writeFileSync(first.pr, '# pr\nMode: plain\n')
+  writeFileSync(first.rest, '# rest\nMode: sparc\n')
+  await h.stop(10_000)
+  const [group] = h.groups.list()
+  assert.ok(group.sessionIds.includes('s3'))
+  assert.equal(h.groups.ensureGroup('s3').id, group.id)
+  assert.equal(h.groups.list().length, 1)
+})
+
+test('groups: naming skips boilerplate opening lines and the name is only computed when a group is created', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  h.state.title = 'New session'
+  h.state.messages = [{ role: 'user', content: '/modes:sparc\nSession start: do vault things\nAdd retry to the upload client' }]
+  let calls = 0
+  const origDerive = h.agentRef.session.deriveMessages
+  h.agentRef.session.deriveMessages = () => { calls++; return origDerive() }
+  await h.prCreated(h.agentRef, '42')
+  assert.equal(h.groups.list()[0].name, 'Add retry to the upload client')
+  assert.equal(calls, 1)
+  // A meaningful title never scans the conversation.
+  let scanned = 0
+  assert.equal(deriveGroupName({ title: 'Real title', request: () => { scanned++; return 'x' } }), 'Real title')
+  assert.equal(scanned, 0)
+  let again = 0
+  h.groups.ensureGroup('a', undefined, () => { again++; return {} }) // group exists: naming is not evaluated
+  assert.equal(again, 0)
+})
+
+test('groups: an unreadable groups.json is kept aside instead of being overwritten', async () => {
+  const h = harness()
+  writeFileSync(h.groups.path, '{not json')
+  const traced = []
+  const again = createGroups(h.dir, { trace: (l) => traced.push(l) })
+  assert.equal(again.list().length, 0)
+  assert.equal(existsSync(h.groups.path + '.corrupt'), true)
+  assert.match(traced[0], /unreadable/)
+  again.ensureGroup('x', 'ws', { title: 'Fresh start' })
+  assert.equal(createGroups(h.dir).list().length, 1)
+})
+
+test('groups: malformed entries in groups.json are dropped and extra keys are never served', async () => {
+  const h = harness()
+  writeFileSync(h.groups.path, JSON.stringify({ groups: [{ id: 'g1', name: 'Ok', createdAt: 1, sessionIds: ['a'], secret: 'x' }, { id: 'g2', name: 'Bad' }, { id: 'g3', name: 'Bad2', createdAt: 1, sessionIds: [1] }] }))
+  const again = createGroups(h.dir)
+  assert.deepEqual(again.list(), [{ id: 'g1', workspaceId: undefined, name: 'Ok', createdAt: 1, sessionIds: ['a'] }])
+  assert.equal(again.groupOf('zzz'), undefined)
 })
