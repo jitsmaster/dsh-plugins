@@ -110,12 +110,12 @@ test('createGroup without a session makes an empty manual group that survives mo
   assert.equal(createGroups(groups.path.replace(/groups\.json$/, '')).list().some((x) => x.id === g.id), true)
 })
 
-test('a manual group stays when its last member leaves; an auto group still vanishes', () => {
+test('a group created around a session vanishes when emptied; one created empty stays', () => {
   const groups = fresh()
-  const g = groups.createGroup('Planning', 's1', 'ws1')
+  groups.createGroup('Around', 's1', 'ws1')
+  const empty = groups.createGroup('Planning', undefined, 'ws1')
   groups.moveSession('s1', null)
-  assert.equal(groups.list().length, 1)
-  assert.deepEqual(groups.list()[0].sessionIds, [])
+  assert.deepEqual(groups.list().map((x) => x.id), [empty.id])
 })
 
 test('deleteGroup removes only an empty group', () => {

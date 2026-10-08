@@ -172,13 +172,13 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
 
   /**
    * A new group with a user-chosen name. With a `sessionId` it holds that session (moved out of any other group);
-   * without one it starts empty. Either way it is the user's group: it stays when emptied until deleted.
+   * without one it starts empty. Only an empty-created group is kept when emptied (until deleted); one created around a session vanishes once empty like an automatic group.
    */
   function createGroup(name, sessionId, workspaceId) {
     const clean = clip(String(name ?? ''))
     if (!clean) throw new Error('a group needs a name')
     if (sessionId !== undefined) for (const other of data.groups) other.sessionIds = other.sessionIds.filter((id) => id !== sessionId)
-    const group = { id: randomUUID(), workspaceId, name: clean, createdAt: now(), manual: true, sessionIds: sessionId === undefined ? [] : [sessionId] }
+    const group = { id: randomUUID(), workspaceId, name: clean, createdAt: now(), ...(sessionId === undefined ? { manual: true } : {}), sessionIds: sessionId === undefined ? [] : [sessionId] }
     data.groups.push(group)
     dropEmpty()
     save()
