@@ -391,15 +391,17 @@ window.__ModuleLoader__.load({
 			};
 			poll();
 			syncFullWs();
+			syncGroupTree();
 			const timer = setInterval(poll, POLL_MS);
 			listeners.add(renderInline);
+			listeners.add(syncGroupTree);
 			// Re-attach after React re-renders and re-pick the session on URL changes.
 			const nav = setInterval(renderInline, 1000);
 			// React re-renders the pill while streaming and drops our node; re-attach on the next frame.
 			let raf = 0;
 			const observer = new MutationObserver(() => {
 				if (raf) return;
-				raf = requestAnimationFrame(() => { raf = 0; renderInline(); syncThink(); syncFullWs(); });
+				raf = requestAnimationFrame(() => { raf = 0; renderInline(); syncThink(); syncFullWs(); syncGroupTree(); });
 			});
 			observer.observe(document.body, { childList: true, subtree: true });
 			// Remember the last Think expand/collapse choice and apply it to every later Think section.
@@ -413,9 +415,10 @@ window.__ModuleLoader__.load({
 			ctx.effect(() => () => {
 				document.removeEventListener("click", onThinkClick, true);
 				openContinuation = () => {};
-				clearInterval(timer); clearInterval(nav); observer.disconnect(); listeners.delete(renderInline);
+				clearInterval(timer); clearInterval(nav); observer.disconnect(); listeners.delete(renderInline); listeners.delete(syncGroupTree);
 				document.querySelectorAll("[data-dsh-ctx]").forEach((n) => n.remove());
 				removeFullWs();
+				removeGroupTree();
 			}, "hooks-tts: status");
 		}
 
@@ -486,6 +489,98 @@ window.__ModuleLoader__.load({
 			document.querySelectorAll("[" + FULLWS_ATTR + "]").forEach((n) => n.removeAttribute(FULLWS_ATTR));
 			document.querySelectorAll("[" + FULLWS_BTN + "]").forEach((n) => n.remove());
 			const st = document.getElementById("hooks-fullws-style"); if (st) st.remove();
+		}
+
+		// ---- Workspaces: session groups in the tree ----
+		// Group headers are inserted as extra rows and members are re-ordered/indented with CSS `order` inside the
+		// workspace's flex column, so React's own row nodes are never moved or removed. Everything is a no-op when a
+		// row/section is not found, and fully undone by removeGroupTree().
+		const GT_HEADER = "data-hooks-group-header";
+		const GT_MARK = "data-hooks-gt";
+		const GT_KEY = "dsh-hooks-tts:groupsCollapsed";
+		const GT_STEP = 10000;
+		const GT_REST = 1e7;
+		const gtCollapsed = () => { try { const o = JSON.parse(localStorage.getItem(GT_KEY) || "{}"); return o && typeof o === "object" ? o : {}; } catch (_e) { return {}; } };
+		function gtToggle(id) {
+			const o = gtCollapsed();
+			if (o[id]) delete o[id]; else o[id] = 1;
+			try { localStorage.setItem(GT_KEY, JSON.stringify(o)); } catch (_e) { /* private mode */ }
+			syncGroupTree();
+		}
+		// Pure: the nesting plan for one workspace's rendered session keys ("session:<id>").
+		function planGroupTree(view, wsId, sessionKeys, collapsed) {
+			const groups = [];
+			const rows = {};
+			const present = new Set(sessionKeys);
+			((view && view.groups) || []).filter((g) => g && g.workspaceId === wsId).forEach((g) => {
+				const members = (g.members || []).map((m) => "session:" + m.id).filter((k) => present.has(k) && !(k in rows));
+				if (!members.length && !g.manual) return;
+				const base = (groups.length + 1) * GT_STEP;
+				const isCollapsed = !!(collapsed && collapsed[g.id]);
+				groups.push({ id: g.id, name: g.name || "Group", count: members.length, collapsed: isCollapsed, order: base });
+				members.forEach((k, i) => { rows[k] = { order: base + 1 + i, hidden: isCollapsed, indent: true }; });
+			});
+			sessionKeys.forEach((k, i) => { if (!(k in rows)) rows[k] = { order: GT_REST + i, hidden: false, indent: false }; });
+			return { groups, rows };
+		}
+		// The row a direct child of a section wraps (the child itself, or its first element); nested rows do not count.
+		function gtRow(c) { if (!c || !c.hasAttribute) return null; if (c.hasAttribute("data-row-key")) return c; const f = c.firstElementChild; return f && f.hasAttribute("data-row-key") ? f : null; }
+		function gtSet(el, prop, val) { if (el.style[prop] !== val) el.style[prop] = val; }
+		function gtSection(sec, wsRow, wsId, children) {
+			const keyOf = (c) => { const r = gtRow(c); return r ? r.getAttribute("data-row-key") || "" : ""; };
+			const sessions = children.filter((c) => keyOf(c).startsWith("session:"));
+			const plan = planGroupTree(groupsView, wsId, sessions.map(keyOf), gtCollapsed());
+			const active = plan.groups.length > 0;
+			if (active) { gtSet(sec, "display", "flex"); gtSet(sec, "flexDirection", "column"); sec.setAttribute(GT_MARK, ""); }
+			// headers
+			const have = new Map([...sec.children].filter((c) => c.hasAttribute(GT_HEADER) && c.getAttribute("data-ws") === wsId).map((c) => [c.getAttribute(GT_HEADER), c]));
+			for (const [id, el] of have) if (!plan.groups.some((g) => g.id === id)) el.remove();
+			for (const g of plan.groups) {
+				let el = have.get(g.id);
+				if (!el) {
+					el = document.createElement("div");
+					el.setAttribute(GT_HEADER, g.id);
+					el.setAttribute("data-ws", wsId);
+					el.setAttribute("role", "treeitem");
+					el.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); gtToggle(g.id); });
+					sec.appendChild(el);
+				}
+				if (el.className !== wsRow.className) el.className = wsRow.className;
+				const label = (g.collapsed ? "\u25B8 " : "\u25BE ") + g.name + " (" + g.count + ")";
+				if (el.textContent !== label) el.textContent = label;
+				gtSet(el, "order", String(g.order)); gtSet(el, "cursor", "pointer"); gtSet(el, "marginLeft", "10px");
+				el.setAttribute("aria-expanded", g.collapsed ? "false" : "true");
+			}
+			for (const c of children) {
+				const k = keyOf(c);
+				if (k.startsWith("workspace:")) { gtSet(c, "order", "0"); continue; }
+				const r = plan.rows[k];
+				if (!r) { if (!c.hasAttribute(GT_HEADER)) gtSet(c, "order", String(GT_REST * 2)); continue; } // overflow button last
+				if (active || c.hasAttribute(GT_MARK)) { c.setAttribute(GT_MARK, ""); gtSet(c, "order", String(r.order)); gtSet(c, "display", r.hidden ? "none" : ""); gtSet(c, "marginLeft", r.indent ? "22px" : ""); }
+			}
+		}
+		function syncGroupTree() {
+			try {
+				const secs = new Set();
+				document.querySelectorAll("[data-row-key^='workspace:']").forEach((r) => { const w = r.parentElement; if (w && w.parentElement) secs.add(w.parentElement); });
+				for (const sec of secs) {
+					const children = [...sec.children].filter((c) => !c.hasAttribute(GT_HEADER));
+					let wsRow = null, wsId = "", chunk = [];
+					const flush = () => { if (wsRow) gtSection(sec, wsRow, wsId, chunk); };
+					for (const c of children) {
+						const r = gtRow(c);
+						if (r && (r.getAttribute("data-row-key") || "").startsWith("workspace:")) { flush(); wsRow = r; wsId = r.getAttribute("data-row-key").slice(10); chunk = [c]; } else chunk.push(c);
+					}
+					flush();
+				}
+			} catch (_e) { /* a DOM mismatch must never break the sidebar */ }
+		}
+		function removeGroupTree() {
+			try {
+				document.querySelectorAll("[" + GT_HEADER + "]").forEach((n) => n.remove());
+				document.querySelectorAll("[" + GT_MARK + "]").forEach((n) => { ["order", "display", "marginLeft", "flexDirection"].forEach((p) => { n.style[p] = ""; }); n.removeAttribute(GT_MARK); });
+				document.querySelectorAll("[data-row-key^='workspace:']").forEach((r) => { if (r.parentElement) r.parentElement.style.order = ""; });
+			} catch (_e) { /* ignore */ }
 		}
 
 		// ---- sticky Think sections ----
