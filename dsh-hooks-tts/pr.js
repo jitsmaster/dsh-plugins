@@ -146,8 +146,19 @@ export function ciRunningLine(prId, builds) {
   return `CI review pipeline is running on PR ${prId} (${list}); its findings will arrive as new comment threads.`
 }
 
-function queuedMessage(prId, threadIds, ciBuilds = []) {
+/** One line telling the session the PR cannot merge (and the CI review cannot run) until the conflicts are resolved. */
+export function conflictLine(prId, pr) {
+  const target = String(pr?.targetRefName ?? '').replace(/^refs\/heads\//, '') || 'the target branch'
   return [
+    `PR ${prId} has MERGE CONFLICTS with ${target}: it cannot be merged and the CI review pipeline cannot run until they are resolved.`,
+    `Resolve them locally in this session: merge or rebase origin/${target} into the PR branch, fix the conflicts, run the relevant tests, and commit.`,
+    'Do NOT push until the user has approved.',
+  ].join('\n')
+}
+
+function queuedMessage(prId, threadIds, ciBuilds = [], conflict = '') {
+  return [
+    ...(conflict ? [conflict] : []),
     ...(ciBuilds.length ? [ciRunningLine(prId, ciBuilds)] : []),
     `New review comments on PR ${prId} (thread${threadIds.length > 1 ? 's' : ''} ${threadIds.join(', ')}).`,
     `Run the \`ado-pr-implement\` skill on PR ${prId} now, in this session, and take it only up to its user-approval gate: evaluate each comment, then implement fixes and update tests locally.`,
@@ -199,7 +210,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       return
     }
     if (existing) stop(agent.id, 'replaced by another PR')
-    const entry = { agent, prId: String(prId), seen: new Map(seenEntries), ciReported: new Set(), timer: undefined, inFlight: undefined, restored }
+    const entry = { agent, prId: String(prId), seen: new Map(seenEntries), ciReported: new Set(), conflictFor: undefined, timer: undefined, inFlight: undefined, restored }
     // A resumed marker carrying resume=suggested/spawned means the merged-PR suggestion was already made.
     // An existing state for the same PR (poll stopped after the merge, then re-registered) is kept, never reset.
     const prior = states.get(agent.id)?.prId === entry.prId ? states.get(agent.id) : undefined
@@ -286,14 +297,24 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       for (const t of found.filter((f) => !f.notify)) entry.seen.set(t.threadId, t.lastCommentId)
       const fresh = found.filter((f) => f.notify)
       trace(`polled PR ${entry.prId}: ${data?.value?.length ?? 0} threads, ${fresh.length} new`)
+      // Merge conflicts block both the merge and the CI review, so they are reported like a comment: once per head commit
+      // (a new push that still conflicts is reported again; a resolved conflict resets it so a later one is reported).
+      const conflicted = pr?.mergeStatus === 'conflicts'
+      const head = String(pr?.lastMergeSourceCommit?.commitId ?? 'unknown')
+      if (!conflicted) entry.conflictFor = undefined
+      const conflictText = conflicted && entry.conflictFor !== head ? conflictLine(entry.prId, pr) : ''
       const builds = await activeCiBuilds(entry, pat)
       const newBuilds = (builds ?? []).filter((b) => !entry.ciReported.has(String(b.id)))
       if (!fresh.length) {
-        if (newBuilds.length) {
-          await queueMessage(entry, ciRunningLine(entry.prId, newBuilds))
-          for (const b of newBuilds) entry.ciReported.add(String(b.id)) // recorded only after the queue accepted it
-          trace(`reported active CI review build(s) ${newBuilds.map((b) => b.id).join(',')} on PR ${entry.prId}`)
+        if (newBuilds.length || conflictText) {
+          await queueMessage(entry, [conflictText, newBuilds.length ? ciRunningLine(entry.prId, newBuilds) : ''].filter(Boolean).join('\n'))
+          // recorded only after the queue accepted it
+          for (const b of newBuilds) entry.ciReported.add(String(b.id))
+          if (conflictText) entry.conflictFor = head
+          trace(`reported ${conflictText ? 'merge conflicts' : ''}${conflictText && newBuilds.length ? ' and ' : ''}${newBuilds.length ? `active CI review build(s) ${newBuilds.map((b) => b.id).join(',')}` : ''} on PR ${entry.prId}`)
         }
+        // Conflicts mean the CI review cannot run, so an old all-clear is not a reason to stop polling.
+        if (conflicted) return
         // A running (or unknown) pipeline means the CI verdict is about to change: never auto-stop on a stale all-clear.
         if (builds === undefined || builds.length) return
         // Stop once the CI review reports no issues, nothing newer or still open contradicts it, and it is not older than
@@ -306,8 +327,9 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         }
         return
       }
-      await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId), newBuilds))
+      await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId), newBuilds, conflictText))
       for (const b of newBuilds) entry.ciReported.add(String(b.id))
+      if (conflictText) entry.conflictFor = head
       // Recorded only after the message was queued, so a failed hand-over is retried next poll.
       for (const t of fresh) entry.seen.set(t.threadId, t.lastCommentId)
       trace(`queued PR ${entry.prId} comments (threads ${fresh.map((t) => t.threadId).join(',')}) into ${id}`)

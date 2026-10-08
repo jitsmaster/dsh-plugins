@@ -51,7 +51,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
       if (state.commitFail) throw new Error('commit lookup failed')
       return { ok: true, status: 200, json: async () => ({ committer: { date: state.commitDate } }) }
     }
-    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, lastMergeSourceCommit: { commitId: 'c1' } }
+    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, lastMergeSourceCommit: { commitId: state.headCommit ?? 'c1' }, mergeStatus: state.mergeStatus, targetRefName: 'refs/heads/develop' }
     return { ok: true, status: 200, json: async () => { if (state.badJson) throw new SyntaxError('Unexpected token < in JSON'); return body } }
   }
   const created = []
@@ -714,6 +714,66 @@ test('CI pipeline: a running pipeline blocks the clean auto-stop; a failed looku
 test('CI pipeline: once it has finished the clean auto-stop applies', async () => {
   const h = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { builds: [] })
   assert.equal(h.poller.has('a1'), false)
+})
+
+// ---- merge conflicts ----
+
+test('merge conflicts: reported once per head commit, again after a new conflicting push, and after a resolve-then-reconflict', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.mergeStatus = 'conflicts'
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  const text = h.calls.prompt[0].content[0].text
+  assert.match(text, /PR 5 has MERGE CONFLICTS with develop/)
+  assert.match(text, /origin\/develop/)
+  assert.match(text, /Do NOT push/)
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1) // same head: not repeated
+  h.state.headCommit = 'c2'
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 2) // pushed, still conflicting
+  h.state.mergeStatus = 'succeeded'
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 2)
+  h.state.mergeStatus = 'conflicts'
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 3) // a new conflict after a clean state
+  h.poller.stopAll()
+})
+
+test('merge conflicts: no conflict, no message; a failed hand-over is retried', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.mergeStatus = 'succeeded'
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 0)
+  h.state.mergeStatus = 'conflicts'
+  const sc = h.ctx.get('sessionController')
+  const original = sc.prompt
+  sc.prompt = async () => { throw new Error('queue down') }
+  await h.poller.poll('a1')
+  sc.prompt = original
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  h.poller.stopAll()
+})
+
+test('merge conflicts: share one message with new threads and a running build, and block the clean auto-stop', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.mergeStatus = 'conflicts'
+  h.state.builds = [{ id: 900, status: 'inProgress' }]
+  h.state.threads = [thread(7, 2)]
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  assert.match(h.calls.prompt[0].content[0].text, /MERGE CONFLICTS[\s\S]*CI review pipeline is running[\s\S]*New review comments on PR 5/)
+  h.poller.stopAll()
+  const c = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { builds: [], mergeStatus: 'conflicts' })
+  assert.equal(c.poller.has('a1'), true)
+  assert.equal(c.calls.prompt.filter((p) => /poller stopped/.test(p.content[0].text)).length, 0)
+  assert.equal(c.calls.prompt.filter((p) => /MERGE CONFLICTS/.test(p.content[0].text)).length, 1)
+  c.poller.stopAll()
 })
 
 async function cleanHarnessWith(threads, extra) {
