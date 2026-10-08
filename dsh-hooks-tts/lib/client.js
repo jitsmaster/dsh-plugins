@@ -163,26 +163,38 @@ window.__ModuleLoader__.load({
 			const sessionId = props.sessionId;
 			const setMenuOpen = props.useMenuOpenState()[1];
 			useStatus();
+			const [, bump] = React.useState(0);
+			const findSample = () => [...document.querySelectorAll("[role='menuitem']")].find((n) => n.children.length >= 2 && n.children[0].tagName === "SPAN" && n.children[1].tagName === "SPAN" && !n.hasAttribute("data-hooks-menu"));
+			// The shipped rows are not in the DOM yet during the first render: look again once the menu is mounted.
+			React.useEffect(() => { if (findSample()) bump(1); }, []);
 			if (!groupsView) return null; // older plugin host: no /groups
 			const gs = groupsView.groups || [];
 			const me = (groupsView.sessions || []).find((s) => s.id === sessionId);
 			const current = gs.find((g) => g.members.some((m) => m.id === sessionId));
 			const targets = gs.filter((g) => (!current || g.id !== current.id) && (g.workspaceId === undefined || !me || me.workspaceId === undefined || g.workspaceId === me.workspaceId));
 			// Reuse a shipped menu row's classes so the entries look like their neighbours.
-			const sample = document.querySelector("[role='menuitem']");
+			const sample = findSample();
 			const cls = sample ? sample.className : undefined;
+			const iconCls = sample ? sample.children[0].className : undefined; // DSH's icon + label spans, so ours align like theirs
+			const labelCls = sample ? sample.children[1].className : undefined;
+			const FOLDER = "M1.5 3.1c0-.55.45-1 1-1h2.93c.24 0 .48.09.66.25l1.62 1.43c.18.16.42.25.66.25h5.12c.55 0 1 .45 1 1v7.85c0 .55-.45 1-1 1H2.5c-.55 0-1-.45-1-1V3.1Z";
+			const icon = (extra) => h("svg", { width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", "aria-hidden": "true", strokeWidth: 1, strokeLinecap: "round", strokeLinejoin: "round" },
+				h("path", { d: FOLDER, stroke: "currentColor" }), h("path", { d: extra, stroke: "currentColor" }));
+			const ICONS = { out: "M5.5 8.9h5", move: "M5.5 8.9h4.6M8.4 7l1.9 1.9L8.4 10.8", add: "M8 6.8v4.2M5.9 8.9h4.2" };
 			const run = (fn) => async () => {
 				setMenuOpen(false);
 				try { await fn(); } catch (err) { window.alert("Group change failed: " + (err && err.message || String(err))); }
 			};
-			const item = (key, label, fn) => h("button", { key, type: "button", role: "menuitem", className: cls, onClick: run(fn) }, label);
+			const item = (key, label, fn, ico) => h("button", { key, type: "button", role: "menuitem", className: cls, "data-hooks-menu": "", onClick: run(fn) },
+				sample ? h("span", { className: iconCls }, icon(ICONS[ico])) : null,
+				sample ? h("span", { className: labelCls }, label) : label);
 			return h(React.Fragment, null,
-				current ? item("out", "Remove from group \u201c" + current.name + "\u201d", () => sendMove({ sessionId, groupId: null })) : null,
-				targets.map((g) => item(g.id, (current ? "Move to group \u201c" : "Add to group \u201c") + g.name + "\u201d", () => sendMove({ sessionId, groupId: g.id }))),
-				item("new", "New group\u2026", async () => {
+				current ? item("out", "Remove from group \u201c" + current.name + "\u201d", () => sendMove({ sessionId, groupId: null }), "out") : null,
+				targets.map((g) => item(g.id, (current ? "Move to group \u201c" : "Add to group \u201c") + g.name + "\u201d", () => sendMove({ sessionId, groupId: g.id }), current ? "move" : "add")),
+				item("new", current ? "Move to new group\u2026" : "New group\u2026", async () => {
 					const name = window.prompt("Name for the new group");
 					if (name && name.trim()) await sendMove({ sessionId, newGroupName: name });
-				}));
+				}, "add"));
 		}
 
 		function UsagePage() {
