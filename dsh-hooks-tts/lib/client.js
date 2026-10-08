@@ -392,6 +392,7 @@ window.__ModuleLoader__.load({
 			poll();
 			syncFullWs();
 			syncGroupTree();
+			const removeDnd = installGroupDnd();
 			const timer = setInterval(poll, POLL_MS);
 			listeners.add(renderInline);
 			listeners.add(syncGroupTree);
@@ -419,6 +420,7 @@ window.__ModuleLoader__.load({
 				document.querySelectorAll("[data-dsh-ctx]").forEach((n) => n.remove());
 				removeFullWs();
 				removeGroupTree();
+				removeDnd();
 			}, "hooks-tts: status");
 		}
 
@@ -518,7 +520,7 @@ window.__ModuleLoader__.load({
 				const base = (groups.length + 1) * GT_STEP;
 				const isCollapsed = !!(collapsed && collapsed[g.id]);
 				groups.push({ id: g.id, name: g.name || "Group", count: members.length, collapsed: isCollapsed, order: base });
-				members.forEach((k, i) => { rows[k] = { order: base + 1 + i, hidden: isCollapsed, indent: true }; });
+				members.forEach((k, i) => { rows[k] = { order: base + 1 + i, hidden: isCollapsed, indent: true, group: g.id }; });
 			});
 			sessionKeys.forEach((k, i) => { if (!(k in rows)) rows[k] = { order: GT_REST + i, hidden: false, indent: false }; });
 			return { groups, rows };
@@ -556,7 +558,7 @@ window.__ModuleLoader__.load({
 				if (k.startsWith("workspace:")) { gtSet(c, "order", "0"); continue; }
 				const r = plan.rows[k];
 				if (!r) { if (!c.hasAttribute(GT_HEADER)) gtSet(c, "order", String(GT_REST * 2)); continue; } // overflow button last
-				if (active || c.hasAttribute(GT_MARK)) { c.setAttribute(GT_MARK, ""); gtSet(c, "order", String(r.order)); gtSet(c, "display", r.hidden ? "none" : ""); gtSet(c, "marginLeft", r.indent ? "22px" : ""); }
+				if (active || c.hasAttribute(GT_MARK)) { c.setAttribute(GT_MARK, ""); if (r.group) c.setAttribute("data-hooks-gt-group", r.group); else c.removeAttribute("data-hooks-gt-group"); gtSet(c, "order", String(r.order)); gtSet(c, "display", r.hidden ? "none" : ""); gtSet(c, "marginLeft", r.indent ? "22px" : ""); }
 			}
 		}
 		function syncGroupTree() {
@@ -574,6 +576,46 @@ window.__ModuleLoader__.load({
 					flush();
 				}
 			} catch (_e) { /* a DOM mismatch must never break the sidebar */ }
+		}
+		// Drag a session row onto a group header (or onto one of the group's members) to move it into that group.
+		function installGroupDnd() {
+			let dragged = "";
+			const targetGroup = (e) => {
+				if (!dragged || !e.target || !e.target.closest) return null;
+				const h = e.target.closest("[" + GT_HEADER + "]");
+				if (h) return { id: h.getAttribute(GT_HEADER), ws: h.getAttribute("data-ws"), el: h };
+				const m = e.target.closest("[data-hooks-gt-group]");
+				if (!m) return null;
+				const row = gtRow(m);
+				return { id: m.getAttribute("data-hooks-gt-group"), ws: null, el: row };
+			};
+			const sameWs = (t) => {
+				const me = ((groupsView && groupsView.sessions) || []).find((x) => x.id === dragged);
+				if (!me) return false;
+				if (t.ws) return me.workspaceId === t.ws;
+				const g = ((groupsView && groupsView.groups) || []).find((x) => x.id === t.id);
+				return !!g && g.workspaceId === me.workspaceId;
+			};
+			const onStart = (e) => { const r = e.target && e.target.closest && e.target.closest("[data-row-key^='session:']"); dragged = r ? r.getAttribute("data-row-key").slice(8) : ""; };
+			const onEnd = () => { dragged = ""; document.querySelectorAll("[data-hooks-drop]").forEach((n) => { n.style.outline = ""; n.removeAttribute("data-hooks-drop"); }); };
+			const onOver = (e) => {
+				const t = targetGroup(e);
+				if (!t || !sameWs(t)) return;
+				e.preventDefault(); e.stopPropagation();
+				if (t.el && !t.el.hasAttribute("data-hooks-drop")) { t.el.setAttribute("data-hooks-drop", ""); t.el.style.outline = "1px dashed currentColor"; }
+			};
+			const onLeave = (e) => { const el = e.target && e.target.closest && e.target.closest("[data-hooks-drop]"); if (el && !el.contains(e.relatedTarget)) { el.style.outline = ""; el.removeAttribute("data-hooks-drop"); } };
+			const onDrop = (e) => {
+				const t = targetGroup(e);
+				if (!t || !sameWs(t)) return;
+				e.preventDefault(); e.stopPropagation();
+				const sessionId = dragged;
+				onEnd();
+				sendMove({ sessionId, groupId: t.id }).catch((err) => { try { console.warn("hooks-tts: move failed", err); } catch (_e) { /* ignore */ } });
+			};
+			const evs = [["dragstart", onStart], ["dragend", onEnd], ["dragover", onOver], ["dragleave", onLeave], ["drop", onDrop]];
+			evs.forEach(([n, f]) => document.addEventListener(n, f, true));
+			return () => evs.forEach(([n, f]) => document.removeEventListener(n, f, true));
 		}
 		function removeGroupTree() {
 			try {
