@@ -252,7 +252,7 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
         req.on('end', () => {
           let parsed
           try { parsed = JSON.parse(body || '{}') } catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'invalid JSON' })); return }
-          const result = groups ? applyMove(groups, parsed, workspaceIdOf, (id) => agents.has(id), workspaceList) : { status: 503, error: 'groups unavailable' }
+          const result = groups ? applyMove(groups, parsed, workspaceIdOf, (id) => agents.has(id) || workspaceIdOf(id) !== undefined, workspaceList) : { status: 503, error: 'groups unavailable' }
           res.statusCode = result.status
           res.end(JSON.stringify(result.error ? { error: result.error } : buildGroupsView(groups.list(), liveSessions(), workspaceList())))
         })
