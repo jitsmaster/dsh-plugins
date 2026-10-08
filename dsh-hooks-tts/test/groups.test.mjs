@@ -95,3 +95,65 @@ test('applyMove: joining or creating a group needs a live session; removing a cl
   assert.equal(applyMove(groups, { sessionId: 'closed', groupId: null }, () => undefined, live).status, 200)
   assert.equal(groups.groupOf('closed'), undefined)
 })
+
+// ---- manual group creation (empty groups) ----
+
+test('createGroup without a session makes an empty manual group that survives moves and restarts', () => {
+  const groups = fresh()
+  const g = groups.createGroup('Planning', undefined, 'ws1')
+  assert.deepEqual(g.sessionIds, [])
+  assert.equal(g.manual, true)
+  const auto = groups.ensureGroup('s1', 'ws1', { title: 'Alpha work' })
+  groups.moveSession('s1', null) // drops the emptied auto group, must not drop the manual one
+  assert.equal(groups.list().some((x) => x.id === auto.id), false)
+  assert.equal(groups.list().some((x) => x.id === g.id), true)
+  assert.equal(createGroups(groups.path.replace(/groups\.json$/, '')).list().some((x) => x.id === g.id), true)
+})
+
+test('a manual group stays when its last member leaves; an auto group still vanishes', () => {
+  const groups = fresh()
+  const g = groups.createGroup('Planning', 's1', 'ws1')
+  groups.moveSession('s1', null)
+  assert.equal(groups.list().length, 1)
+  assert.deepEqual(groups.list()[0].sessionIds, [])
+})
+
+test('deleteGroup removes only an empty group', () => {
+  const groups = fresh()
+  const g = groups.createGroup('Planning', undefined, 'ws1')
+  groups.addToGroup(g.id, 's1')
+  assert.throws(() => groups.deleteGroup(g.id), /not empty/)
+  groups.moveSession('s1', null)
+  groups.deleteGroup(g.id)
+  assert.equal(groups.list().length, 0)
+  assert.throws(() => groups.deleteGroup('nope'), /unknown group/)
+})
+
+test('applyMove: create an empty group in a known workspace; delete an empty group', () => {
+  const groups = fresh()
+  const workspaces = () => [{ id: 'ws1', title: 'Alpha' }]
+  const none = () => undefined
+  assert.equal(applyMove(groups, { newGroupName: 'Planning', workspaceId: 'ws1' }, none, () => true, workspaces).status, 200)
+  const g = groups.list()[0]
+  assert.equal(g.name, 'Planning')
+  assert.equal(g.workspaceId, 'ws1')
+  assert.equal(applyMove(groups, { newGroupName: 'X', workspaceId: 'zzz' }, none, () => true, workspaces).status, 404)
+  assert.equal(applyMove(groups, { newGroupName: 'X' }, none, () => true, workspaces).status, 400)
+  assert.equal(applyMove(groups, { newGroupName: '  ', workspaceId: 'ws1' }, none, () => true, workspaces).status, 400)
+  assert.equal(applyMove(groups, { newGroupName: 'X', workspaceId: 'ws1' }, none, () => true, undefined).status, 404) // workspaces unknown
+  assert.equal(applyMove(groups, { deleteGroupId: 'nope' }, none, () => true, workspaces).status, 404)
+  groups.addToGroup(g.id, 's1')
+  assert.equal(applyMove(groups, { deleteGroupId: g.id }, none, () => true, workspaces).status, 409)
+  groups.moveSession('s1', null)
+  assert.equal(applyMove(groups, { deleteGroupId: g.id }, none, () => true, workspaces).status, 200)
+  assert.equal(groups.list().length, 0)
+})
+
+test('buildGroupsView: carries manual flag, empty groups and the workspace list', () => {
+  const groups = fresh()
+  groups.createGroup('Planning', undefined, 'ws1')
+  const view = buildGroupsView(groups.list(), [], [{ id: 'ws1', title: 'Alpha' }])
+  assert.equal(view.groups[0].manual, true)
+  assert.deepEqual(view.groups[0].members, [])
+  assert.deepEqual(view.workspaces, [{ id: 'ws1', title: 'Alpha' }])
+})

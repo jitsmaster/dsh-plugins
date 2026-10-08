@@ -217,6 +217,9 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
   const workspaceIdOf = (id) => {
     try { return (ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry)?.list().find((w) => w.sessionIds?.includes(id))?.id } catch { return undefined }
   }
+  const workspaceList = () => {
+    try { return ((ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry)?.list() ?? []).map((w) => ({ id: w.id, title: w.title })) } catch { return [] }
+  }
   const liveSessions = () => [...agents].map(([id, agent]) => {
     let title
     try { title = ctx.get('sessionTitle')?.get(agent.session)?.title } catch { /* untitled */ }
@@ -249,13 +252,13 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
         req.on('end', () => {
           let parsed
           try { parsed = JSON.parse(body || '{}') } catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'invalid JSON' })); return }
-          const result = groups ? applyMove(groups, parsed, workspaceIdOf, (id) => agents.has(id)) : { status: 503, error: 'groups unavailable' }
+          const result = groups ? applyMove(groups, parsed, workspaceIdOf, (id) => agents.has(id), workspaceList) : { status: 503, error: 'groups unavailable' }
           res.statusCode = result.status
-          res.end(JSON.stringify(result.error ? { error: result.error } : buildGroupsView(groups.list(), liveSessions())))
+          res.end(JSON.stringify(result.error ? { error: result.error } : buildGroupsView(groups.list(), liveSessions(), workspaceList())))
         })
         return
       }
-      res.end(JSON.stringify(buildGroupsView(groups?.list() ?? [], liveSessions())))
+      res.end(JSON.stringify(buildGroupsView(groups?.list() ?? [], liveSessions(), workspaceList())))
     } else if (req.url?.startsWith('/settings')) {
       const origin = req.headers.origin
       if (!origin || !allowedOrigins.has(origin)) { res.statusCode = 403; res.end(); return }

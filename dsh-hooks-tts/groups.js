@@ -81,11 +81,11 @@ export function deriveGroupName({ title, request, cwd }) {
 }
 
 /** Explicit fields only: nothing else in the file is ever served. */
-const clone = (g) => ({ id: g.id, workspaceId: g.workspaceId, name: g.name, createdAt: g.createdAt, sessionIds: [...g.sessionIds] })
+const clone = (g) => ({ id: g.id, workspaceId: g.workspaceId, name: g.name, createdAt: g.createdAt, ...(g.manual ? { manual: true } : {}), sessionIds: [...g.sessionIds] })
 
 /** A group read from disk is trusted only with the expected shape; malformed entries are dropped. */
 const validGroup = (g) => typeof g?.id === 'string' && typeof g.name === 'string' && typeof g.createdAt === 'number'
-  && (g.workspaceId === undefined || typeof g.workspaceId === 'string') && Array.isArray(g.sessionIds) && g.sessionIds.every((s) => typeof s === 'string')
+  && (g.workspaceId === undefined || typeof g.workspaceId === 'string') && (g.manual === undefined || typeof g.manual === 'boolean') && Array.isArray(g.sessionIds) && g.sessionIds.every((s) => typeof s === 'string')
 
 /**
  * @param {string} stateDir
@@ -154,8 +154,8 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
     return clone(g)
   }
 
-  /** A group with no member left carries no information: remove it. */
-  function dropEmpty() { data.groups = data.groups.filter((x) => x.sessionIds.length > 0) }
+  /** An automatic group with no member left carries no information: remove it. A group the user created by hand stays until they delete it. */
+  function dropEmpty() { data.groups = data.groups.filter((x) => x.manual || x.sessionIds.length > 0) }
 
   /** Manual move: into group `groupId`, or out of every group when it is null. Throws on an unknown group. */
   function moveSession(sessionId, groupId) {
@@ -170,16 +170,28 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
     return target
   }
 
-  /** A new group with a user-chosen name, holding `sessionId` (moved out of any other group). */
+  /**
+   * A new group with a user-chosen name. With a `sessionId` it holds that session (moved out of any other group);
+   * without one it starts empty. Either way it is the user's group: it stays when emptied until deleted.
+   */
   function createGroup(name, sessionId, workspaceId) {
     const clean = clip(String(name ?? ''))
     if (!clean) throw new Error('a group needs a name')
-    for (const other of data.groups) other.sessionIds = other.sessionIds.filter((id) => id !== sessionId)
-    const group = { id: randomUUID(), workspaceId, name: clean, createdAt: now(), sessionIds: [sessionId] }
+    if (sessionId !== undefined) for (const other of data.groups) other.sessionIds = other.sessionIds.filter((id) => id !== sessionId)
+    const group = { id: randomUUID(), workspaceId, name: clean, createdAt: now(), manual: true, sessionIds: sessionId === undefined ? [] : [sessionId] }
     data.groups.push(group)
     dropEmpty()
     save()
     return clone(group)
+  }
+
+  /** Delete a group that has no members; a group with members must be emptied first. */
+  function deleteGroup(groupId) {
+    const g = data.groups.find((x) => x.id === groupId)
+    if (!g) throw new Error('unknown group')
+    if (g.sessionIds.length > 0) throw new Error('group is not empty')
+    data.groups = data.groups.filter((x) => x !== g)
+    save()
   }
 
   /** Give a workspace-less group the workspace of a session that joined it. */
@@ -191,7 +203,7 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
   /** Groups, optionally of one workspace. */
   const list = (workspaceId) => data.groups.filter((g) => workspaceId === undefined || g.workspaceId === workspaceId).map(clone)
 
-  return { ensureGroup, addToGroup, moveSession, createGroup, backfillWorkspace, groupOf, list, path }
+  return { ensureGroup, addToGroup, moveSession, createGroup, deleteGroup, backfillWorkspace, groupOf, list, path }
 }
 
 /**
@@ -199,7 +211,22 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
  * `{ sessionId, newGroupName }`. A session can only join a group of its own workspace.
  * @returns {{ status: number, error?: string }}
  */
-export function applyMove(groups, body, workspaceOf = () => undefined, isLive = () => true) {
+export function applyMove(groups, body, workspaceOf = () => undefined, isLive = () => true, workspaces = () => undefined) {
+  // Delete an empty group, or create an empty one in a known workspace: neither involves a session.
+  if (body && typeof body === 'object' && body.deleteGroupId !== undefined) {
+    if (typeof body.deleteGroupId !== 'string') return { status: 400, error: 'deleteGroupId must be a group id' }
+    const target = groups.list().find((x) => x.id === body.deleteGroupId)
+    if (!target) return { status: 404, error: 'unknown group' }
+    if (target.sessionIds.length > 0) return { status: 409, error: 'move the sessions out of the group before deleting it' }
+    groups.deleteGroup(body.deleteGroupId)
+    return { status: 200 }
+  }
+  if (body && typeof body === 'object' && body.sessionId === undefined && body.newGroupName !== undefined) {
+    if (typeof body.newGroupName !== 'string' || !body.newGroupName.trim()) return { status: 400, error: 'a group needs a name' }
+    if (typeof body.workspaceId !== 'string' || !body.workspaceId) return { status: 400, error: 'workspaceId is required' }
+    if (!(workspaces() ?? []).some((w) => w.id === body.workspaceId)) return { status: 404, error: 'unknown workspace' }
+    try { groups.createGroup(body.newGroupName, undefined, body.workspaceId); return { status: 200 } } catch (error) { return { status: 400, error: String(error?.message ?? error) } }
+  }
   const sessionId = body?.sessionId
   if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 200) return { status: 400, error: 'sessionId is required' }
   // Only a live session can be put into a group (no fabricated ids); taking any session out is always allowed.
@@ -233,12 +260,13 @@ export function applyMove(groups, body, workspaceOf = () => undefined, isLive = 
  * @param {ReturnType<ReturnType<typeof createGroups>['list']>} groupList
  * @param {{ id: string, title?: string, workspaceId?: string }[]} sessions
  */
-export function buildGroupsView(groupList, sessions) {
+export function buildGroupsView(groupList, sessions, workspaces = []) {
   const titleOf = new Map(sessions.map((s) => [s.id, s.title]))
   const groupOf = new Map()
   for (const g of groupList) for (const id of g.sessionIds) groupOf.set(id, g.id)
   return {
-    groups: groupList.map((g) => ({ id: g.id, workspaceId: g.workspaceId, name: g.name, members: g.sessionIds.map((id) => ({ id, title: titleOf.get(id), live: titleOf.has(id) })) })),
+    workspaces: workspaces.map((w) => ({ id: w.id, title: w.title })),
+    groups: groupList.map((g) => ({ id: g.id, workspaceId: g.workspaceId, name: g.name, manual: g.manual === true, members: g.sessionIds.map((id) => ({ id, title: titleOf.get(id), live: titleOf.has(id) })) })),
     sessions: sessions.map((s) => ({ id: s.id, title: s.title, workspaceId: s.workspaceId, groupId: groupOf.get(s.id) })),
   }
 }

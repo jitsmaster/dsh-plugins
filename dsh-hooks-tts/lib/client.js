@@ -179,6 +179,26 @@ window.__ModuleLoader__.load({
 				targets.map((g) => h("option", { key: g.id, value: g.id }, g.name)),
 				h("option", { value: NEW }, "New group…"));
 		}
+		// Create an empty group in a workspace (no session needed); sessions are moved in afterwards.
+		function NewGroupForm({ workspaces, onError }) {
+			const [name, setName] = React.useState("");
+			const [ws, setWs] = React.useState("");
+			const wsId = ws || (workspaces[0] && workspaces[0].id) || "";
+			const create = async () => {
+				onError("");
+				if (!name.trim()) { onError("Enter a group name"); return; }
+				if (!wsId) { onError("No workspace to create the group in"); return; }
+				try { await sendMove({ newGroupName: name, workspaceId: wsId }); setName(""); }
+				catch (err) { onError("Create failed: " + (err && err.message || String(err))); }
+			};
+			const box = { padding: "4px 6px", borderRadius: 6, border: "1px solid rgba(128,128,128,.4)", background: "transparent", color: "inherit" };
+			return h("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 10 } },
+				h("input", { type: "text", value: name, placeholder: "New group name", maxLength: 80, style: { ...box, flex: "1 1 120px", minWidth: 100 },
+					onChange: (e) => setName(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") create(); }, "aria-label": "New group name" }),
+				h("select", { value: wsId, onChange: (e) => setWs(e.target.value), style: { ...box, maxWidth: 140 }, "aria-label": "Workspace for the new group" },
+					workspaces.map((w) => h("option", { key: w.id, value: w.id }, w.title))),
+				h("button", { onClick: create, style: { ...box, cursor: "pointer" } }, "Create group"));
+		}
 		function GroupsSection() {
 			useStatus();
 			const [err, setErr] = React.useState("");
@@ -193,9 +213,14 @@ window.__ModuleLoader__.load({
 				h("div", { style: { fontSize: 12, opacity: 0.7, marginBottom: 8 } },
 					"Created when a session creates a PR or hands off. Move a session into, out of or between groups here (a session can only join a group of its own workspace; an emptied group disappears)."),
 				err ? h("div", { style: { fontSize: 12, color: "#e5484d", marginBottom: 6 } }, err) : null,
+				h(NewGroupForm, { workspaces: groupsView.workspaces || [], onError: setErr }),
 				gs.length === 0 ? h("div", { style: { fontSize: 12, opacity: 0.6 } }, "No groups yet.") : null,
 				gs.map((g) => h("div", { key: g.id, style: { marginBottom: 10 } },
-					h("div", { style: { fontSize: 13, fontWeight: 600 } }, g.name),
+					h("div", { style: { display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between" } },
+						h("div", { style: { fontSize: 13, fontWeight: 600 } }, g.name),
+						g.members.length === 0 ? h("button", { "aria-label": "Delete empty group " + g.name, style: { fontSize: 12, padding: "2px 6px", borderRadius: 6, border: "1px solid rgba(128,128,128,.4)", background: "transparent", color: "inherit", cursor: "pointer" },
+							onClick: async () => { setErr(""); try { await sendMove({ deleteGroupId: g.id }); } catch (e) { setErr("Delete failed: " + (e && e.message || String(e))); } } }, "Delete") : null),
+					g.members.length === 0 ? h("div", { style: { fontSize: 12, opacity: 0.6 } }, "Empty - move sessions in from \"Not in a group\" below.") : null,
 					g.members.map((m) => h("div", { key: m.id, style: row },
 						h("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, label(m)),
 						h(MoveSelect, { session: sessionById.get(m.id) || { id: m.id, workspaceId: g.workspaceId }, groups: gs, current: g.id, onError: setErr }))))),
