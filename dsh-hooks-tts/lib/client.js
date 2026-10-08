@@ -9,6 +9,7 @@ window.__ModuleLoader__.load({
 
 		const STATUS_URL = `http://${location.hostname || "127.0.0.1"}:3081/status`;
 		const SETTINGS_URL = STATUS_URL.replace(/\/status$/, "/settings");
+		const GROUPS_URL = STATUS_URL.replace(/\/status$/, "/groups");
 		// /status is a local JSON snapshot the host re-samples on every step, so polling it is cheap.
 		const POLL_MS = 3000;
 		const PANEL_ID = "usage";
@@ -19,6 +20,8 @@ window.__ModuleLoader__.load({
 
 		// ---- shared polling store (one fetch loop feeds the panel and the overlay) ----
 		let status = null;
+		let groupsSeq = 0; // a GET that started before a move must not overwrite the move's result
+		let groupsView = null; // { groups, sessions } from /groups (null until first read)
 		let failed = false;
 		const listeners = new Set();
 		const emit = () => listeners.forEach((l) => l());
@@ -31,6 +34,7 @@ window.__ModuleLoader__.load({
 				const res = await fetch(STATUS_URL, { cache: "no-store" });
 				status = await res.json();
 				failed = false;
+				try { const seq = ++groupsSeq; const g = await fetch(GROUPS_URL, { cache: "no-store" }); if (g.ok) { const v = await g.json(); if (seq === groupsSeq) groupsView = v; } } catch (_e) { /* older plugin host: no groups yet */ }
 				for (const s of status.spawned || []) {
 					if (handledSpawns.has(s.to)) continue;
 					handledSpawns.add(s.to);
@@ -145,6 +149,61 @@ window.__ModuleLoader__.load({
 						h("div", { style: { fontSize: 12, opacity: 0.7 } }, hint))),
 				err ? h("div", { style: { fontSize: 12, color: "#e5484d", marginTop: 4 } }, err) : null);
 		}
+		// ---- session groups: move sessions into, out of and between groups ----
+		const NONE = "__none"; const NEW = "__new"; const MOVE = "";
+		async function sendMove(body) {
+			const res = await fetch(GROUPS_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+			const b = await res.json().catch(() => ({}));
+			if (!res.ok) throw new Error(b.error || ("HTTP " + res.status));
+			groupsSeq++;
+			groupsView = b;
+			emit();
+		}
+		function MoveSelect({ session, groups, current, onError }) {
+			const targets = groups.filter((g) => g.id !== current && (g.workspaceId === undefined || session.workspaceId === undefined || g.workspaceId === session.workspaceId));
+			const change = async (e) => {
+				const v = e.target.value; e.target.value = MOVE; onError("");
+				if (v === MOVE) return;
+				try {
+					if (v === NEW) {
+						const name = window.prompt("Name for the new group");
+						if (!name || !name.trim()) return;
+						await sendMove({ sessionId: session.id, newGroupName: name });
+					} else await sendMove({ sessionId: session.id, groupId: v === NONE ? null : v });
+				} catch (err) { onError("Move failed: " + (err && err.message || String(err))); }
+			};
+			const box = { padding: "2px 4px", borderRadius: 6, border: "1px solid rgba(128,128,128,.4)", background: "transparent", color: "inherit", maxWidth: 170 };
+			return h("select", { defaultValue: MOVE, onChange: change, style: box, "aria-label": "Move session to a group" },
+				h("option", { value: MOVE }, current ? "Move…" : "Add to group…"),
+				current ? h("option", { value: NONE }, "Remove from group") : null,
+				targets.map((g) => h("option", { key: g.id, value: g.id }, g.name)),
+				h("option", { value: NEW }, "New group…"));
+		}
+		function GroupsSection() {
+			useStatus();
+			const [err, setErr] = React.useState("");
+			if (!groupsView) return null;
+			const gs = groupsView.groups || [];
+			const loose = (groupsView.sessions || []).filter((s) => !s.groupId);
+			const label = (m) => m.title || (m.live === false ? "(closed session) " : "") + (m.id || "").slice(0, 16);
+			const row = { display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", padding: "3px 0", fontSize: 12 };
+			const sessionById = new Map((groupsView.sessions || []).map((s) => [s.id, s]));
+			return h("div", { style: { marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(128,128,128,.25)" } },
+				h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, "Session groups"),
+				h("div", { style: { fontSize: 12, opacity: 0.7, marginBottom: 8 } },
+					"Created when a session creates a PR or hands off. Move a session into, out of or between groups here (a session can only join a group of its own workspace; an emptied group disappears)."),
+				err ? h("div", { style: { fontSize: 12, color: "#e5484d", marginBottom: 6 } }, err) : null,
+				gs.length === 0 ? h("div", { style: { fontSize: 12, opacity: 0.6 } }, "No groups yet.") : null,
+				gs.map((g) => h("div", { key: g.id, style: { marginBottom: 10 } },
+					h("div", { style: { fontSize: 13, fontWeight: 600 } }, g.name),
+					g.members.map((m) => h("div", { key: m.id, style: row },
+						h("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, label(m)),
+						h(MoveSelect, { session: sessionById.get(m.id) || { id: m.id, workspaceId: g.workspaceId }, groups: gs, current: g.id, onError: setErr }))))),
+				loose.length ? h("div", { style: { fontSize: 13, fontWeight: 600, marginTop: 6 } }, "Not in a group") : null,
+				loose.map((s) => h("div", { key: s.id, style: row },
+					h("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, label(s)),
+					h(MoveSelect, { session: s, groups: gs, current: undefined, onError: setErr }))));
+		}
 		function UsagePage() {
 			const { status: s, failed: bad } = useStatus();
 			const u = s && s.usage;
@@ -165,7 +224,8 @@ window.__ModuleLoader__.load({
 					h(Toggle, { label: "Auto-resume after handoff", hint: "When a handoff note is written, start a new session that picks it up.", field: "autoResumeHandoff", current: s && s.settings && s.settings.autoResumeHandoff }),
 					h(Toggle, { label: "Poll PR comments", hint: "While a session is titled \"PR <n>\", check its Azure DevOps pull request every 10 minutes and queue new review comments into that session (ado-pr-implement, up to its approval gate). Needs AZURE_DEVOPS_EXT_PAT.", field: "pollPrComments", current: s && s.settings && s.settings.pollPrComments }),
 					h(Toggle, { label: "Always allow full access", hint: "Start new sessions at full access with no approval prompts. Existing sessions and later mode changes are never overridden. Off by default.", field: "alwaysFullAccess", current: s && s.settings && s.settings.alwaysFullAccess })),
-				h(CapSetting, { current: s && s.settings && s.settings.contextCapTokens })));
+				h(CapSetting, { current: s && s.settings && s.settings.contextCapTokens }),
+				h(GroupsSection)));
 		}
 		function UsageIcon({ size }) {
 			const n = size || 16;
@@ -343,6 +403,7 @@ window.__ModuleLoader__.load({
 				try { ctx.get("uiWorkspace")?.openSession(sessionId); } catch (_e) { /* the sidebar still lists it */ }
 			};
 			poll();
+			syncFullWs();
 			const timer = setInterval(poll, POLL_MS);
 			listeners.add(renderInline);
 			// Re-attach after React re-renders and re-pick the session on URL changes.
@@ -351,7 +412,7 @@ window.__ModuleLoader__.load({
 			let raf = 0;
 			const observer = new MutationObserver(() => {
 				if (raf) return;
-				raf = requestAnimationFrame(() => { raf = 0; renderInline(); syncThink(); });
+				raf = requestAnimationFrame(() => { raf = 0; renderInline(); syncThink(); syncFullWs(); });
 			});
 			observer.observe(document.body, { childList: true, subtree: true });
 			// Remember the last Think expand/collapse choice and apply it to every later Think section.
@@ -367,7 +428,77 @@ window.__ModuleLoader__.load({
 				openContinuation = () => {};
 				clearInterval(timer); clearInterval(nav); observer.disconnect(); listeners.delete(renderInline);
 				document.querySelectorAll("[data-dsh-ctx]").forEach((n) => n.remove());
+				removeFullWs();
 			}, "hooks-tts: status");
+		}
+
+		// ---- Workspaces: full-height toggle ----
+		// A button after "Import from Claude Code" hides the sidebar blocks above the Workspaces list (logo row,
+		// New Session, global panels) so the session tree gets the whole left bar; the same button restores them.
+		// DSH class names are hashed, so everything is found by aria-label / data-slot, never by class.
+		const FULLWS_KEY = "dsh-hooks-tts:workspacesFull";
+		const FULLWS_ATTR = "data-hooks-fullws-hide";
+		const FULLWS_BTN = "data-hooks-fullws-toggle";
+		const FULLWS_ICON = (full) => full
+			? '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" stroke-width="1"><path d="M3 10.5h2.5V13M13 5.5h-2.5V3M5.5 13l-3-3M10.5 3l3 3" stroke="currentColor"/></svg>'
+			: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" stroke-width="1"><path d="M2.5 6V2.5H6M13.5 10v3.5H10M2.5 2.5L6 6M13.5 13.5L10 10" stroke="currentColor"/></svg>';
+		const fullWsOn = () => { try { return localStorage.getItem(FULLWS_KEY) === "1"; } catch (_e) { return false; } };
+		function ensureFullWsStyle() {
+			if (document.getElementById("hooks-fullws-style")) return;
+			const st = document.createElement("style");
+			st.id = "hooks-fullws-style";
+			st.textContent = "[" + FULLWS_ATTR + "]{display:none !important}";
+			document.head.appendChild(st);
+		}
+		// The sidebar column that holds both the global panel list and the Workspaces slot.
+		function sidebarRoot() {
+			const ws = document.querySelector("[data-slot='sidebar.workspaces']");
+			const nav = document.querySelector("nav[aria-label='Global panels']");
+			if (!ws || !nav || !nav.parentElement || !nav.parentElement.contains(ws)) return null;
+			return { root: nav.parentElement, ws };
+		}
+		function setFullWs(on) {
+			try { localStorage.setItem(FULLWS_KEY, on ? "1" : "0"); } catch (_e) { /* private mode */ }
+			syncFullWs();
+		}
+		function syncFullWs() {
+			ensureFullWsStyle();
+			const found = sidebarRoot();
+			if (!found) return;
+			const on = fullWsOn();
+			// Hide every sibling above the Workspaces block; restore by removing the marker.
+			let above = true;
+			for (const child of found.root.children) {
+				if (child.contains(found.ws)) { above = false; child.removeAttribute(FULLWS_ATTR); continue; }
+				if (above && on) child.setAttribute(FULLWS_ATTR, ""); else child.removeAttribute(FULLWS_ATTR);
+			}
+			// The toggle sits right after the Import from Claude Code button.
+			const imp = found.ws.querySelector("button[aria-label='Import from Claude Code']");
+			if (!imp || !imp.parentElement) return;
+			let btn = imp.parentElement.querySelector("[" + FULLWS_BTN + "]");
+			if (!btn) {
+				btn = document.createElement("button");
+				btn.type = "button";
+				btn.setAttribute(FULLWS_BTN, "");
+				btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); setFullWs(!fullWsOn()); });
+				imp.after(btn);
+			} else if (btn.previousElementSibling !== imp) imp.after(btn);
+			btn.className = imp.className; // same look as its neighbours
+			// The action row is capped at three buttons' width (max-width) and would push ours off the sidebar: lift the cap.
+			const row = imp.parentElement;
+			if (row.style.maxWidth !== "none") { row.style.width = "auto"; row.style.maxWidth = "none"; row.style.minWidth = "max-content"; row.style.flex = "none"; }
+			const label = on ? "Restore sidebar" : "Show workspaces full height";
+			if (btn.getAttribute("aria-label") !== label) {
+				btn.setAttribute("aria-label", label);
+				btn.title = label;
+				btn.setAttribute("aria-pressed", on ? "true" : "false");
+				btn.innerHTML = FULLWS_ICON(on);
+			}
+		}
+		function removeFullWs() {
+			document.querySelectorAll("[" + FULLWS_ATTR + "]").forEach((n) => n.removeAttribute(FULLWS_ATTR));
+			document.querySelectorAll("[" + FULLWS_BTN + "]").forEach((n) => n.remove());
+			const st = document.getElementById("hooks-fullws-style"); if (st) st.remove();
 		}
 
 		// ---- sticky Think sections ----
