@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installPrPoller, parsePrCreated, parsePollMarker, detectNewThreads, isPrSession, ciReviewCleanAt, ciReviewStands } from '../pr.js'
+import { installPrPoller, approvedBy, parsePrCreated, parsePollMarker, detectNewThreads, isPrSession, ciReviewCleanAt, ciReviewStands } from '../pr.js'
 import { createSettings } from '../settings.js'
 
 const PAT = 'sup3r-secret-pat'
@@ -51,7 +51,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
       if (state.commitFail) throw new Error('commit lookup failed')
       return { ok: true, status: 200, json: async () => ({ committer: { date: state.commitDate } }) }
     }
-    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, lastMergeSourceCommit: { commitId: state.headCommit ?? 'c1' }, mergeStatus: state.mergeStatus, targetRefName: 'refs/heads/develop' }
+    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, reviewers: state.reviewers, lastMergeSourceCommit: { commitId: state.headCommit ?? 'c1' }, mergeStatus: state.mergeStatus, targetRefName: 'refs/heads/develop' }
     return { ok: true, status: 200, json: async () => { if (state.badJson) throw new SyntaxError('Unexpected token < in JSON'); return body } }
   }
   const created = []
@@ -786,6 +786,76 @@ async function cleanHarnessWith(threads, extra) {
   await h.poller.poll('a1')
   return h
 }
+
+// ---- approval stop rule ----
+
+const rev = (displayName, vote, extra = {}) => ({ id: displayName, displayName, vote, ...extra })
+
+test('approvedBy: needs a human approval, every required reviewer approving, and no negative vote', () => {
+  assert.deepEqual(approvedBy({}), [])
+  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 0, { isRequired: true })] }), [])
+  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 10, { isRequired: true })] }), ['Laska'])
+  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 5, { isRequired: true })] }), ['Laska'])
+  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 0, { isRequired: true }), rev('Bob', 10)] }), [])
+  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 10, { isRequired: true }), rev('Bob', -5)] }), [])
+  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 10, { isRequired: true }), rev('Bob', 0)] }), ['Laska'])
+})
+
+test('approvedBy: groups, the PR author and the CI build identity never count', () => {
+  const pr = { createdBy: { id: 'me' }, reviewers: [rev('Team', 10, { isContainer: true }), rev('Me', 10, { id: 'me' }), rev('Project Collection Build Service (ingeniuxdev)', 10)] }
+  assert.deepEqual(approvedBy(pr), [])
+})
+
+test('auto-stop: an approved PR stops the poll and queues one final message', async () => {
+  const h = await cleanHarnessWith([], { reviewers: [rev('Laska Fitzhugh', 10, { isRequired: true })] })
+  assert.equal(h.poller.has('a1'), false)
+  assert.equal(h.calls.prompt.length, 1)
+  assert.match(h.calls.prompt[0].content[0].text, /PR 5 review poller stopped: the PR is approved \(Laska Fitzhugh\)/)
+  assert.match(h.log(), /PR approved by Laska Fitzhugh/)
+  await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+})
+
+test('auto-stop: an unapproved, or not fully approved, PR keeps polling', async () => {
+  const h = await cleanHarnessWith([], { reviewers: [rev('Laska Fitzhugh', 0, { isRequired: true }), rev('Bob', 10)] })
+  assert.equal(h.poller.has('a1'), true)
+  assert.equal(h.calls.prompt.length, 0)
+  h.poller.stopAll()
+})
+
+test('auto-stop: approval does not stop while new comments, a running pipeline, or merge conflicts are pending', async () => {
+  const approved = [rev('Laska Fitzhugh', 10, { isRequired: true })]
+  const a = await cleanHarnessWith([thread(11, 2)], { reviewers: approved })
+  assert.equal(a.poller.has('a1'), true)
+  assert.doesNotMatch(a.calls.prompt[0].content[0].text, /poller stopped/)
+  a.poller.stopAll()
+  const b = await cleanHarnessWith([], { reviewers: approved, builds: [{ id: 900, status: 'inProgress' }] })
+  assert.equal(b.poller.has('a1'), true)
+  b.poller.stopAll()
+  const c = await cleanHarnessWith([], { reviewers: approved, mergeStatus: 'conflicts' })
+  assert.equal(c.poller.has('a1'), true)
+  c.poller.stopAll()
+})
+
+test('auto-stop: a failed approval hand-over keeps the poll alive so it is retried', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.reviewers = [rev('Laska Fitzhugh', 10, { isRequired: true })]
+  const ok = h.ctx.get('sessionController').prompt
+  h.ctx.get('sessionController').prompt = async () => { throw new Error('queue down') }
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), true)
+  h.ctx.get('sessionController').prompt = ok
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), false)
+})
+
+test('an approved PR stays stopped across a server restart', async () => {
+  const h = await cleanHarnessWith([], { reviewers: [rev('Laska Fitzhugh', 10, { isRequired: true })] })
+  assert.equal(h.poller.has('a1'), false)
+  h.poller.register(h.agent, '5') // what the next step or a restart does for a session titled "PR <n>"
+  assert.equal(h.poller.has('a1'), false)
+})
 
 // ---- a finished PR stays stopped; its follow-up session starts by itself ----
 

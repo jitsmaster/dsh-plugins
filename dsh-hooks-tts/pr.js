@@ -124,6 +124,22 @@ export function ciReviewStands(threads, cleanAt) {
   return true
 }
 
+/** Reviewer votes: 10 approved, 5 approved with suggestions, 0 none, -5 waiting for author, -10 rejected. */
+const APPROVED_VOTE = 5
+
+/**
+ * Names of the reviewers who approved the PR, or [] while it is not approved: at least one human reviewer approved,
+ * every required reviewer approved, and nobody is waiting on the author or rejecting. Groups, the PR author and the
+ * CI build identity never count.
+ */
+export function approvedBy(pr) {
+  const authorId = pr?.createdBy?.id
+  const people = (pr?.reviewers ?? []).filter((r) => !r.isContainer && !(authorId != null && r.id != null && String(r.id) === String(authorId)) && !CI_AUTHOR.test(r.displayName ?? ''))
+  if (people.some((r) => Number(r.vote) < 0)) return []
+  if (people.some((r) => r.isRequired && !(Number(r.vote) >= APPROVED_VOTE))) return []
+  return people.filter((r) => Number(r.vote) >= APPROVED_VOTE).map((r) => r.displayName ?? 'a reviewer')
+}
+
 const formatSeen = (seen) => [...seen].map(([t, c]) => (c ? `${t}:${c}` : t)).join(',')
 
 /** Asks the agent to put the spawn decision to the user; only the user's Yes leads to the marker. */
@@ -138,6 +154,10 @@ function suggestionMessage(prId) {
 
 function cleanStopMessage(prId) {
   return `PR ${prId} review poller stopped: the CI review found no issues and no human review is open. No further comment messages will be sent for this PR.`
+}
+
+function approvedStopMessage(prId, names) {
+  return `PR ${prId} review poller stopped: the PR is approved (${names.join(', ')}). No further comment messages will be sent for this PR, and its merge is no longer reported: check it with \`az repos pr show --id ${prId}\` if a follow-up depends on it.`
 }
 
 /** One line naming the active CI review runs. */
@@ -335,6 +355,14 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         if (conflicted) return
         // A running (or unknown) pipeline means the CI verdict is about to change: never auto-stop on a stale all-clear.
         if (builds === undefined || builds.length) return
+        // An approved PR needs no more polling. This sits after the conflict and running-pipeline checks, so findings still
+        // to arrive, or a conflict that blocks the merge, keep the poll alive; the final message is queued BEFORE stopping.
+        const approvers = approvedBy(pr)
+        if (approvers.length) {
+          await queueMessage(entry, approvedStopMessage(entry.prId, approvers))
+          finish(id, `PR approved by ${approvers.join(', ')}`)
+          return
+        }
         // Stop once the CI review reports no issues, nothing newer or still open contradicts it, and it is not older than
         // the head commit (a newer push means a new review is pending). The final message is queued BEFORE stopping, so a
         // failed hand-over keeps the poll alive and is retried; after stop() nothing more is sent for this PR.
