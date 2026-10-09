@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createGroups, applyMove, buildGroupsView, deriveGroupName } from '../groups.js'
+import { createGroups, applyMove, buildGroupsView, deriveGroupName, afterPrTitle } from '../groups.js'
 import { chmodSync, mkdirSync } from 'node:fs'
 
 const fresh = () => createGroups(mkdtempSync(join(tmpdir(), 'groups-')))
@@ -180,4 +180,15 @@ test('applyMove answers 500 when the change could not be saved', () => {
   mkdirSync(join(dir, 'groups.json.tmp'))   // a directory where the temp file goes: the write must fail
   const res = applyMove(groups, { deleteGroupId: g.id }, () => undefined, () => true)
   assert.equal(res.status, 500)
+})
+
+test('afterPrTitle: a follow-up title refers to exactly one PR', () => {
+  assert.equal(afterPrTitle('Sonar fixes', 6507), 'Sonar fixes - after PR 6507')
+  assert.equal(afterPrTitle('Sonar fixes - after PR 6503', 6507), 'Sonar fixes - after PR 6507')
+  assert.equal(afterPrTitle('Sonar fixes - after PR 6503 - after PR 6505', 6507), 'Sonar fixes - after PR 6507')
+  assert.equal(afterPrTitle('Sonar fixes - after pr 6503  ', '6507'), 'Sonar fixes - after PR 6507')
+})
+
+test('deriveGroupName: older titles with stacked "after PR" suffixes name the group after the base title', () => {
+  assert.equal(deriveGroupName({ title: 'Sonar fixes - after PR 6503 - after PR 6507' }), 'Sonar fixes')
 })

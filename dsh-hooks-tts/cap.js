@@ -11,7 +11,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { isPrSession, PR_TITLE } from './pr.js'
-import { firstRequest } from './groups.js'
+import { firstRequest, afterPrTitle } from './groups.js'
 import { recordSpawn } from './spawned.js'
 const DEFAULT_HANDOFF_DIR = join(homedir(), '.dsh', 'handoffs')
 
@@ -369,7 +369,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         if (old) {
           const m = /^(.*?)\s*-\s*(\d+)$/.exec(old)
           // A numbered "PR 12 - 2" would itself be PR-titled (never respawned, polled), so prefix instead.
-          const next = job.kind === 'pr' ? `PR ${job.prId}` : job.kind === 'after' ? `${old} - after PR ${job.prId}` : PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
+          const next = job.kind === 'pr' ? `PR ${job.prId}` : job.kind === 'after' ? afterPrTitle(old, job.prId) : PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
           await sc.rename({ sessionId: created.sessionId, title: next })
           trace(`renamed "${old}" -> "${next}"`)
         } else trace('source has no title; not renaming')
