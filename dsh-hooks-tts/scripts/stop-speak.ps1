@@ -1,21 +1,9 @@
 . (Join-Path $PSScriptRoot 'tts-client.ps1')
 if (Test-TtsMuted) { exit }
 
-$raw  = [Console]::In.ReadToEnd()
-$data = try { $raw | ConvertFrom-Json } catch { $null }
+$data = Read-HookInput
 
-$msg = if ($data -and $data.last_assistant_message) { $data.last_assistant_message.Trim() } else { 'The agent is done.' }
+# Only the short headline built by the plugin is spoken, never the whole response.
+$msg = if ($data -and $data.headline) { $data.headline } else { 'Done.' }
 
-# Pull out an "Insights" section so it survives truncation and is spoken last.
-$insightsText = $null
-if ($msg -match '(?ms)(^#{1,6}\s*Insights\s*\r?\n(.*?)(?=^#{1,6}\s|\z))') {
-    $fullBlock = $Matches[1]
-    $insightsText = (Clean-ForSpeech ($Matches[2].Trim()) -replace '\s+', ' ').Trim()
-    $msg = $msg.Remove($msg.IndexOf($fullBlock), $fullBlock.Length).Trim()
-}
-
-$msg = Clean-ForSpeech $msg
-$where = Get-TtsWhere $data; if ($where) { $msg = "$msg ... $where;" }
-if ($insightsText) { $msg = "$msg ... Insights : $insightsText." }
-
-if (-not (Invoke-KokoroTts -Text $msg -Gender 'male')) { Add-TtsLog 'tts-failures.log' "stop-speak: $msg" }
+if (-not (Invoke-KokoroTts -Text (Clean-ForSpeech $msg) -Gender 'male')) { Add-TtsLog 'tts-failures.log' "stop-speak: $msg" }
