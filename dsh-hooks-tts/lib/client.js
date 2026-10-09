@@ -166,6 +166,7 @@ window.__ModuleLoader__.load({
 			const setMenuOpen = props.useMenuOpenState()[1];
 			useStatus();
 			const [, bump] = React.useState(0);
+			const [open, setOpen] = React.useState(false); // the "Grouping" submenu starts collapsed each time the menu opens
 			const findSample = () => [...document.querySelectorAll("[role='menuitem']")].find((n) => n.children.length >= 2 && n.children[0].tagName === "SPAN" && n.children[1].tagName === "SPAN" && !n.hasAttribute("data-hooks-menu"));
 			// The shipped rows are not in the DOM yet during the first render: look again once the menu is mounted.
 			React.useEffect(() => { if (findSample()) bump(1); }, []);
@@ -190,13 +191,25 @@ window.__ModuleLoader__.load({
 			const item = (key, label, fn, ico) => h("button", { key, type: "button", role: "menuitem", className: cls, "data-hooks-menu": "", onClick: run(fn) },
 				sample ? h("span", { className: iconCls }, icon(ICONS[ico])) : null,
 				sample ? h("span", { className: labelCls }, label) : label);
-			return h(React.Fragment, null,
+			// All group actions live under one expandable "Grouping" row. It toggles in place and keeps the menu open;
+			// the actions inside it close the menu like any other entry.
+			const chevron = h("svg", { width: 12, height: 12, viewBox: "0 0 16 16", fill: "none", "aria-hidden": "true", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", style: { transform: open ? "rotate(90deg)" : "none", transition: "transform .12s" } },
+				h("path", { d: "M6 3.5 10.5 8 6 12.5", stroke: "currentColor" }));
+			const toggle = h("button", { key: "grouping", type: "button", role: "menuitem", className: cls, "data-hooks-menu": "", "aria-haspopup": "true", "aria-expanded": open, onClick: (e) => { e.preventDefault(); setOpen(!open); } },
+				sample ? h("span", { className: iconCls }, icon(ICONS.add)) : null,
+				sample ? h("span", { className: labelCls }, "Grouping") : "Grouping",
+				h("span", { style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", opacity: 0.7 } }, chevron));
+			const entries = [
 				current ? item("out", "Remove from group \u201c" + current.name + "\u201d", () => sendMove({ sessionId, groupId: null }), "out") : null,
-				targets.map((g) => item(g.id, (current ? "Move to group \u201c" : "Add to group \u201c") + g.name + "\u201d", () => sendMove({ sessionId, groupId: g.id }), current ? "move" : "add")),
+				...targets.map((g) => item(g.id, (current ? "Move to group \u201c" : "Add to group \u201c") + g.name + "\u201d", () => sendMove({ sessionId, groupId: g.id }), current ? "move" : "add")),
 				item("new", current ? "Move to new group\u2026" : "New group\u2026", async () => {
 					const name = window.prompt("Name for the new group");
 					if (name && name.trim()) await sendMove({ sessionId, newGroupName: name });
-				}, "add"));
+				}, "add"),
+			];
+			return h(React.Fragment, null,
+				toggle,
+				open ? h("div", { key: "grouping-items", role: "group", "aria-label": "Grouping", style: { paddingLeft: 12 } }, entries) : null);
 		}
 
 		// "Follow-up from handoff": shown only while the session's latest handoff note still exists (host-side check).
