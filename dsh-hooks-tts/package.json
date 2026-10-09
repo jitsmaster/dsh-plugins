@@ -10,7 +10,7 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
-  "files": ["index.js", "status.js", "cap.js", "pr.js", "spawned.js", "groups.js", "handoffs.js", "hold.js", "settings.js", "worktrees.js", "hooks.json", "scripts", "lib", "assets", "cordis.patch.yml"],
+  "files": ["index.js", "status.js", "cap.js", "forecast.js", "pr.js", "spawned.js", "groups.js", "handoffs.js", "hold.js", "settings.js", "worktrees.js", "hooks.json", "scripts", "lib", "assets", "cordis.patch.yml"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {

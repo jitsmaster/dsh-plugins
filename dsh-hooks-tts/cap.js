@@ -14,7 +14,12 @@ import { isPrSession, PR_TITLE } from './pr.js'
 import { firstRequest, afterPrTitle } from './groups.js'
 import { recordSpawn } from './spawned.js'
 import { stripHold } from './hold.js'
+import { createGrowthTracker, effectiveLimit, handOffAhead } from './forecast.js'
 const DEFAULT_HANDOFF_DIR = join(homedir(), '.dsh', 'handoffs')
+
+export function contextWindow(ctx, agent) {
+  try { return ctx.get('sessionProjections')?.snapshot(agent.session, ['contextPressure'])?.values?.contextPressure?.contextWindow } catch { return undefined }
+}
 
 export function contextTokens(ctx, agent) {
   try {
@@ -71,6 +76,14 @@ function instruction(tokens, cap, path, forward, previousNote, prLines = [], hea
 
 const kTokens = n => `${Math.round(n / 1000)}k`
 
+/** Headline for a handoff requested ahead of the cap: the next chunk of work would not fit. */
+function aheadHeadline(tokens, estimate, limit) {
+  return [
+    `CONTEXT CAP AHEAD: this session's context is ${kTokens(tokens)} tokens and the next chunk of work is estimated at ~${kTokens(estimate)} tokens (the largest of the last few turns), which would not fit in the ${kTokens(limit - tokens)} left before the ${kTokens(limit)} limit.`,
+    "The user's latest request has not been started: do not start it. Copy it verbatim into the handoff note's \"What's Left\" as the first item, so the new session picks it up.",
+  ].join('\n')
+}
+
 /** Heads-up before the cap, with auto-handoff ON: the agent will stop and hand off at the cap. */
 function warning(tokens, cap, pct) {
   return [
@@ -115,12 +128,34 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     try { appendFileSync(join(dirname(settings.path), 'spawn.log'), `${new Date().toISOString()} ${line}\n`) } catch { /* best effort */ }
   }
 
+  const growth = createGrowthTracker()
+  /** agent.id -> context tokens when the early (next chunk) handoff was requested; cleared when the context shrinks a lot. */
+  const aheadAsked = new Map()
+  const turnOpen = new Set()
+
+  /** Record the handoff request for this session and build the instruction message. */
+  const requestHandoff = (agent, tokens, cap, prLines, headline) => {
+    instructed.add(agent.id)
+    const path = handoffPath(dir, agent)
+    // Short-session streak: only a session that was itself spawned from a handoff can count; its
+    // age is time since the spawn. Under 20 min extends the streak, otherwise it resets.
+    const origin = resumed.get(agent.id)
+    const ageMs = origin ? Date.now() - origin.startedAt : undefined
+    const streak = origin && ageMs < SHORT_SESSION_MS ? origin.streak + 1 : 0
+    const forward = streak >= SHORT_STREAK_FOR_FORWARD
+    pending.set(agent.id, { path, cwd: agent.session?.header?.cwd, streak })
+    handoffs?.record(agent.id, path) // offered by the session menu once the note exists
+    ctx.logger.warn(`hooks-tts: context ${tokens} ${headline ? 'is close to' : 'exceeds'} cap ${cap}; requesting handoff`)
+    trace(`handoff requested for ${agent.id} (${tokens}/${cap}) -> ${path}; session age ${ageMs === undefined ? 'n/a (not a resumed session)' : `${Math.round(ageMs / 60000)}min`}, short streak ${streak}, mode ${forward ? 'FORWARD' : 'normal'}`)
+    return makeMessage(instruction(tokens, cap, path, forward, origin?.note, prLines, headline))
+  }
+
   /**
    * The message to add for this agent, or undefined. With auto-handoff on: a heads-up near the cap, then the
    * stop-and-write-a-handoff instruction over it. With auto-handoff off: only informational notices, never an
    * instruction to stop or write a note. `allowWarn` is false when a turn is stopping (a steer would restart it).
    */
-  const check = (agent, allowWarn = true) => {
+  const check = (agent, allowWarn = true, turnStart = false) => {
     if (skip(agent)) return undefined
     // Read the live setting on every check, so a change applies from the very next step.
     const cap = settings.get().contextCapTokens
@@ -137,7 +172,20 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     // Re-arm once context drops well below the cap or the warning point (compaction, a new baseline).
     if (tokens < cap * 0.9) instructed.delete(agent.id)
     if (warnAt === undefined || tokens < warnAt * 0.9) warned.delete(agent.id)
+    const askedAt = aheadAsked.get(agent.id)
+    if (askedAt !== undefined && tokens < askedAt * 0.5) aheadAsked.delete(agent.id)
     if (tokens < cap) {
+      // The next chunk of work (a turn about to start) is estimated to pass the limit: hand off now, at a clean boundary.
+      if (turnStart && autoResume && settings.get().handoffAhead !== false && !aheadAsked.has(agent.id)) {
+        const estimate = growth.estimate(agent.id)
+        const limit = effectiveLimit(cap, contextWindow(ctx, agent))
+        if (handOffAhead({ tokens, limit, estimate })) {
+          aheadAsked.set(agent.id, tokens)
+          warned.add(agent.id) // this message says more than the plain warning would
+          trace(`next chunk ~${estimate} would pass ${limit} from ${tokens} for ${agent.id}`)
+          return requestHandoff(agent, tokens, cap, prLines, aheadHeadline(tokens, estimate, limit))
+        }
+      }
       // Once per session, only when entering a step.
       if (allowWarn && warnAt !== undefined && tokens >= warnAt && !warned.has(agent.id)) {
         warned.add(agent.id)
@@ -154,19 +202,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       trace(`over cap, auto-handoff off: notice only for ${agent.id} (${tokens}/${cap})`)
       return makeMessage(notice(tokens, cap, true, prState, prLines))
     }
-    instructed.add(agent.id)
-    const path = handoffPath(dir, agent)
-    // Short-session streak: only a session that was itself spawned from a handoff can count; its
-    // age is time since the spawn. Under 20 min extends the streak, otherwise it resets.
-    const origin = resumed.get(agent.id)
-    const ageMs = origin ? Date.now() - origin.startedAt : undefined
-    const streak = origin && ageMs < SHORT_SESSION_MS ? origin.streak + 1 : 0
-    const forward = streak >= SHORT_STREAK_FOR_FORWARD
-    pending.set(agent.id, { path, cwd: agent.session?.header?.cwd, streak })
-    handoffs?.record(agent.id, path) // offered by the session menu once the note exists
-    ctx.logger.warn(`hooks-tts: context ${tokens} exceeds cap ${cap}; requesting handoff`)
-    trace(`handoff requested for ${agent.id} (${tokens}/${cap}) -> ${path}; session age ${ageMs === undefined ? 'n/a (not a resumed session)' : `${Math.round(ageMs / 60000)}min`}, short streak ${streak}, mode ${forward ? 'FORWARD' : 'normal'}`)
-    return makeMessage(instruction(tokens, cap, path, forward, origin?.note, prLines))
+    return requestHandoff(agent, tokens, cap, prLines)
   }
 
   const fullAccessChecked = new Set()
@@ -199,7 +235,14 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     enforceFullAccess(agent)
     const downstream = await next()
     if (downstream.kind !== 'enter') return downstream
-    const message = check(agent)
+    // The first step after a turn ended is the start of a new chunk of work.
+    const turnStart = !turnOpen.has(agent.id)
+    if (turnStart && !skip(agent)) {
+      turnOpen.add(agent.id)
+      const tokens = contextTokens(ctx, agent)
+      if (tokens !== undefined) growth.turnStart(agent.id, tokens)
+    }
+    const message = check(agent, true, turnStart)
     return message ? { ...downstream, messages: [...downstream.messages, message] } : downstream
   })
 
@@ -434,6 +477,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     // A reply that says "Handoff written to <path>" (the SPARC stop message) makes the session offer a follow-up.
     if (handoffs && !skip(agent)) handoffs.observeText(agent.id, lastReply(agent))
     await spawnResume(agent)
+    if (turnOpen.delete(agent.id)) { const tokens = contextTokens(ctx, agent); if (tokens !== undefined) growth.turnEnd(agent.id, tokens) }
     const message = check(agent, false)
     if (message) agent.steer(message)
   })

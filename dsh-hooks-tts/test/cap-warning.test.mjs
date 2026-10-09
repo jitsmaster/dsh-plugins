@@ -535,3 +535,61 @@ test('turn end: a handoff note named in the closing reply is recorded for the se
   await h.stop(10_000)
   assert.equal(h.handoffs.latest('a'), note)
 })
+
+// ---- next chunk of work estimated to pass the limit: hand off ahead of the cap ----
+async function turn(h, start, end) { const m = await h.step(start); await h.stop(end); return m }
+
+test('hands off at the start of a turn whose estimated growth would pass the cap', async () => {
+  const h = harness()
+  assert.deepEqual(await turn(h, 100_000, 150_000), [])
+  assert.deepEqual(await turn(h, 150_000, 200_000), [])
+  assert.deepEqual(await turn(h, 300_000, 360_000), [])
+  const out = await h.stepFull(360_000)
+  assert.equal(out.length, 1)
+  assert.match(out[0].text, /^CONTEXT CAP AHEAD/)
+  assert.match(out[0].text, /60k/)
+  assert.match(out[0].text, /Write a handoff note NOW/)
+  assert.match(out[0].text, /latest request .* not been started/i)
+})
+
+test('ahead: asked once per session, only on the first step of a turn', async () => {
+  const h = harness()
+  await turn(h, 100_000, 150_000); await turn(h, 150_000, 200_000); await turn(h, 300_000, 360_000)
+  assert.deepEqual(await h.step(360_000), ['CONTEXT CAP AHEAD'])
+  assert.deepEqual(await h.step(365_000), []) // later steps of the same turn
+  await h.stop(370_000)
+  assert.deepEqual(await h.step(370_000), []) // next turn: already asked
+})
+
+test('ahead: re-armed after the context shrinks a lot', async () => {
+  const h = harness()
+  await turn(h, 100_000, 150_000); await turn(h, 150_000, 200_000); await turn(h, 300_000, 360_000)
+  assert.deepEqual(await h.step(360_000), ['CONTEXT CAP AHEAD'])
+  await h.stop(100_000)
+  for (const [a, b] of [[100_000, 160_000], [160_000, 220_000], [330_000, 340_000]]) await turn(h, a, b)
+  assert.deepEqual(await h.step(345_000), ['CONTEXT CAP AHEAD'])
+})
+
+test('ahead: not without an estimate, with auto-handoff off, the setting off, or in PR state', async () => {
+  let h = harness()
+  assert.deepEqual(await h.step(390_000), ['CONTEXT CAP WARNING']) // no finished turns yet: only the normal warning
+  for (const extra of [{ autoResumeHandoff: false }, { handoffAhead: false }]) {
+    h = harness(extra)
+    await turn(h, 100_000, 150_000); await turn(h, 150_000, 200_000); await turn(h, 300_000, 360_000)
+    assert.ok(!(await h.step(360_000)).includes('CONTEXT CAP AHEAD'), JSON.stringify(extra))
+  }
+  h = harness()
+  h.state.title = 'PR 12'
+  await turn(h, 100_000, 150_000); await turn(h, 150_000, 200_000); await turn(h, 300_000, 360_000)
+  assert.ok(!(await h.step(360_000)).includes('CONTEXT CAP AHEAD'))
+})
+
+test('ahead: the handoff is spawned like any other once the note exists', async () => {
+  const h = harness()
+  await turn(h, 100_000, 150_000); await turn(h, 150_000, 200_000); await turn(h, 300_000, 360_000)
+  const msg = (await h.stepFull(360_000))[0].text
+  const path = /NOW to: (.+)/.exec(msg)[1].trim()
+  writeFileSync(path, '# x Handoff\nMode: plain\n')
+  await h.stop(365_000)
+  assert.equal(h.calls.create, 1)
+})

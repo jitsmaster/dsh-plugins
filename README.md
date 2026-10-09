@@ -78,10 +78,11 @@ Defaults live in [`dsh-hooks-tts/cordis.patch.yml`](dsh-hooks-tts/cordis.patch.y
 | `handoffDir` | Where handoff notes are written | `~/.dsh/handoffs` |
 | `contextCapTokens` | Handoff threshold (0 disables) | 400000 |
 | `warnPercent` | Warn at this % of the cap, via the status pill and a one-time heads-up to the agent (0 disables). With *Auto-resume after handoff* on it reads `⚠ handoff at 400k → new session`, with it off `ℹ nearing 400k cap · auto-handoff off`, and the agent is only informed — it is never told to stop or write a handoff note | 85 |
+| `handoffAhead` | With auto-resume on, hand off at the start of a turn when the next chunk of work (the largest growth of the last three finished turns, needs two) would not fit under the cap or the model window | true |
 | `skipSubagents` | Don't run hooks for subagents | `true` |
 | `refreshIntervalMs`, `sessionBudgetTokens`, `weeklyBudgetTokens` | Status widget sampling and budgets | 30 s / 30M / 200M |
 
-Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tts/settings.json`, re-read on every step): `contextCapTokens`, `warnPercent`, `ttsEnabled`, `autoResumeHandoff`, `pollPrComments`, `alwaysFullAccess`. A saved value wins over the config default.
+Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tts/settings.json`, re-read on every step): `contextCapTokens`, `warnPercent`, `ttsEnabled`, `autoResumeHandoff`, `handoffAhead`, `pollPrComments`, `alwaysFullAccess`. A saved value wins over the config default.
 
 ### Verify
 
