@@ -125,6 +125,13 @@ test('handoffWrites: shell writes count, reads and deletes do not', () => {
   assert.deepEqual(handoffWrites('pwsh', { command: `Get-Content '${p}' | Set-Content 'D:\\v\\other.txt'` }), [])
 })
 
+test('handoffMentions: an unquoted path with spaces is not cut at a later separator', () => {
+  // "Dev Tasks/Handoffs/x-handoff.md" must not yield "/Handoffs/x-handoff.md" (a bare match starting mid-path)
+  assert.deepEqual(handoffMentions('Handoff written to D:/dev/Notes/Dev Tasks/Handoffs/x-handoff.md for the next session'), [])
+  assert.deepEqual(handoffMentions('Handoff written to D:\\dev\\Notes\\Dev Tasks\\Handoffs\\x-handoff.md'), [])
+  assert.deepEqual(handoffMentions('Handoff written to `D:/dev/Notes/Dev Tasks/Handoffs/x-handoff.md`'), ['D:/dev/Notes/Dev Tasks/Handoffs/x-handoff.md'])
+})
+
 test('handoffMentions: "handoff written to <path>" lines in assistant text', () => {
   const p = 'D:\\dev\\Notes\\CTnP\\Handoffs\\x-ph-4-final-review-handoff.md'
   assert.deepEqual(handoffMentions(`**Phase 3 complete.** Handoff written to \`${p}\`. The new session will open.`), [p])

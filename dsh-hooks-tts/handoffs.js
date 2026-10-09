@@ -16,8 +16,8 @@ const WRITE_TOOLS = new Set(['write', 'edit', 'multi_edit'])
 const PTC_WRITE = /tools\s*(?:\.\s*|\[\s*["'])(write|edit)(?:["']\s*\])?\s*\(\s*\{[^}]*?\bfile_path\s*:\s*(["'`])((?:\\.|(?!\2)[^\\\n])*?)\2/g
 /** Shell write targets ending in handoff.md: a quoted path (may hold spaces) or a bare one after the write verb or a redirect. */
 const SHELL_WRITE = /(?:\b(?:Set-Content|Add-Content|Out-File|WriteAllText|New-Item)\b[^\n|;>]*?|>>?\s*)(?:(["'])([^"'\n]*?handoff\.md)\1|((?:[A-Za-z]:[\\/]|\/)[^\s"'|;<>()]*?handoff\.md))/gi
-/** A handoff path in assistant text: in backticks (may hold spaces) or a bare absolute path. */
-const TEXT_PATH = /`([^`\n]*?handoff\.md)`|((?:[A-Za-z]:[\\/]|\/)[^\s`"'<>|]*?handoff\.md)/gi
+/** A handoff path in assistant text: in backticks (may hold spaces) or a bare absolute path. A bare path may not start mid-word, so "Dev Tasks/Handoffs/x" is not read as "/Handoffs/x". */
+const TEXT_PATH = /`([^`\n]*?handoff\.md)`|((?<![\w.~-])(?:[A-Za-z]:[\\/]|\/)[^\s`"'<>|]*?handoff\.md)/gi
 const WRITE_WORD = /\b(?:written|wrote|write|writing|saved|created)\b/i
 const MAX_PER_SESSION = 10
 const MAX_SESSIONS = 500
