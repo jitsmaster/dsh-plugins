@@ -70,9 +70,10 @@ test('Stop speaks the headline and never the response', opts, async () => {
   assert.equal(spoken[0].voice_gender, 'male')
 })
 
-test('Stop without a headline says Done, still not the response', opts, async () => {
-  const spoken = await speak('stop-speak.ps1', { last_assistant_message: 'The whole answer.' })
-  assert.deepEqual(spoken.map((s) => s.text), ['Done.'])
+test('Stop without a headline still says where, and never reads the response itself', opts, async () => {
+  const spoken = await speak('stop-speak.ps1', { last_assistant_message: 'The whole answer.', session_title: 'S', cwd: 'D:\\x\\proj' })
+  assert.deepEqual(spoken.map((s) => s.text), ['Done on: Session: S; Workspace: proj.'])
+  assert.deepEqual((await speak('stop-speak.ps1', { last_assistant_message: 'The whole answer.' })).map((s) => s.text), ['Done.'])
 })
 
 test('a Chinese project name reaches the TTS intact, also from a legacy console code page', opts, async () => {
