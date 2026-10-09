@@ -205,18 +205,24 @@ export function apply(ctx, baseConfig = {}) {
     const env = { ...baseEnv, CLAUDE_PROJECT_DIR: cwd ?? baseEnv.CLAUDE_PROJECT_DIR ?? process.cwd() }
     let sessionTitle
     try { sessionTitle = ctx.get('sessionTitle')?.get(agent?.session)?.title } catch { /* title is optional */ }
-    const body = buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts })
+    // Only a TTS hook that will really run gets a headline, so a session is numbered when it is first spoken for.
+    const noAlerts = { headlineFor: () => undefined }
+    let plainBody, ttsBody
+    const bodyFor = (isTts) => (isTts
+      ? (ttsBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts }))
+      : (plainBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts: noAlerts })))
     const folded = { decision: undefined, reason: undefined, context: [] }
     for (const group of hooks[event] ?? []) {
       if (!matchesAny(group.matcher, queries)) continue
       for (const hook of group.hooks) {
         // TTS hooks (the detached speak launchers) are switched together from the sidebar.
-        if (hook.args?.some(a => /detach-launcher\.ps1$/.test(a)) && !settings.get().ttsEnabled) continue
+        const isTts = Boolean(hook.args?.some(a => /detach-launcher\.ps1$/.test(a)))
+        if (isTts && !settings.get().ttsEnabled) continue
         const opts = {
           cwd, env, defaultTimeoutMs,
           signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
         }
-        const job = runCommand(hook, body, opts)
+        const job = runCommand(hook, bodyFor(isTts), opts)
         if (hook.async) {
           const tracked = job.finally(() => pending.delete(tracked))
           pending.add(tracked)

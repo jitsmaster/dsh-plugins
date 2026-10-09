@@ -63,3 +63,9 @@ test('buildHookBody adds no headline key for non-alert events and fills defaults
   assert.equal(body.source, 'startup')
   assert.equal(body.cwd, process.cwd())
 })
+
+test('a drive root or a dot is not a project name', () => {
+  const al = alerts()
+  assert.equal(al.headlineFor('Stop', { agentId: 'r1', cwd: 'D:\\', payload: {} }), 'One, done.')
+  assert.equal(al.headlineFor('Stop', { agentId: 'r2', cwd: '.', payload: {} }), 'Two, done.')
+})

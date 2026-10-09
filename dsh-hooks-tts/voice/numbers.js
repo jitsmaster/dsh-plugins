@@ -10,10 +10,13 @@ const localDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.ge
  */
 export function createNumbers(stateDir, now = () => new Date()) {
   const path = join(stateDir, 'voice-numbers.json')
-  let state = { date: '', next: 1, ids: {} }
+  const fresh = (date) => ({ date, next: 1, ids: Object.create(null) })
+  let state = fresh('')
   try {
     const saved = JSON.parse(readFileSync(path, 'utf8'))
-    if (saved && typeof saved.ids === 'object' && saved.ids && Number.isInteger(saved.next)) state = saved
+    if (saved && typeof saved.ids === 'object' && saved.ids && Number.isInteger(saved.next)) {
+      state = { date: String(saved.date ?? ''), next: saved.next, ids: Object.assign(Object.create(null), Object.fromEntries(Object.entries(saved.ids).filter(([, n]) => Number.isInteger(n)))) }
+    }
   } catch { /* first run, or a corrupt file: start empty */ }
 
   const save = () => {
@@ -22,7 +25,7 @@ export function createNumbers(stateDir, now = () => new Date()) {
   const roll = () => {
     const today = localDate(now())
     if (state.date !== today) {
-      state = { date: today, next: 1, ids: {} }
+      state = fresh(today)
       save()
     }
   }

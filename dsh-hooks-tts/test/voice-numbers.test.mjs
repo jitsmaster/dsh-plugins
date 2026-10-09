@@ -52,3 +52,18 @@ test('a corrupt state file or an unwritable folder does not break numbering', ()
   assert.equal(n.numberFor('a'), 1)
   assert.equal(n.numberFor('b'), 2)
 })
+
+test('session ids that look like object keys are ordinary ids', () => {
+  const d = dir()
+  const n = createNumbers(d, at('2026-10-09T10:00:00'))
+  assert.equal(n.numberFor('constructor'), 1)
+  assert.equal(n.numberFor('__proto__'), 2)
+  assert.equal(n.numberFor('toString'), 3)
+  assert.equal(createNumbers(d, at('2026-10-09T11:00:00')).numberFor('constructor'), 1)
+})
+
+test('a state file with a non-numeric counter is ignored', () => {
+  const d = dir()
+  writeFileSync(join(d, 'voice-numbers.json'), JSON.stringify({ date: '2026-10-09', next: 'x', ids: { a: 'y' } }))
+  assert.equal(createNumbers(d, at('2026-10-09T10:00:00')).numberFor('b'), 1)
+})

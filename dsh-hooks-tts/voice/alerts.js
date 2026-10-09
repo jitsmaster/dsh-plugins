@@ -2,8 +2,8 @@ import { permissionHeadline, questionHeadline, stopHeadline } from './headline.j
 
 const ASK_TOOLS = new Set(['ask_user_question', 'AskUserQuestion'])
 
-/** The last path segment, for Windows or POSIX paths with or without a trailing separator. */
-const projectOf = (cwd) => (cwd ? String(cwd).split(/[\\/]+/).filter(Boolean).at(-1) ?? '' : '')
+/** The last path segment, for Windows or POSIX paths with or without a trailing separator; a drive root or a dot is no name. */
+const projectOf = (cwd) => (cwd ? String(cwd).split(/[\\/]+/).filter((s) => s && !/^[A-Za-z]:$|^\.+$/.test(s)).at(-1) ?? '' : '')
 
 export function createAlerts({ numbers }) {
   return {

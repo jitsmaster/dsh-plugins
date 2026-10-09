@@ -23,7 +23,7 @@ function silentWav(ms = 50) {
 }
 
 /** Run a hook script with the payload on stdin; returns what it asked the (fake) TTS to say. */
-async function speak(script, payload) {
+async function speak(script, payload, { codepage, launcher } = {}) {
   const spoken = []
   const server = createServer((req, res) => {
     let body = ''
@@ -44,11 +44,18 @@ async function speak(script, payload) {
     DSH_TTS_HOTKEY_DIR: dir,
     DSH_TTS_SERVER_SCRIPT: '',
   }
-  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(SCRIPTS, script)], { env })
+  const ps = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File']
+  const file = launcher ? [join(SCRIPTS, 'detach-launcher.ps1'), join(SCRIPTS, script)] : [join(SCRIPTS, script)]
+  // Under a legacy console code page the child would decode stdin wrongly unless the script reads it as UTF-8.
+  const child = codepage
+    ? spawn('cmd.exe', ['/c', `chcp ${codepage} >nul & powershell.exe ${[...ps, ...file.map((f) => '"' + f + '"')].join(' ')}`], { env, windowsVerbatimArguments: true })
+    : spawn('powershell.exe', [...ps, ...file], { env })
   child.stdout.resume()
   child.stderr.resume()
   child.stdin.end(JSON.stringify(payload), 'utf8')
   await new Promise((resolve) => child.on('close', resolve))
+  // The launcher returns at once; the detached speak script reaches the server a moment later.
+  for (let i = 0; launcher && spoken.length === 0 && i < 300; i++) await new Promise((r) => setTimeout(r, 100))
   server.close()
   return spoken
 }
@@ -68,8 +75,15 @@ test('Stop without a headline says Done, still not the response', opts, async ()
   assert.deepEqual(spoken.map((s) => s.text), ['Done.'])
 })
 
-test('a Chinese project name reaches the TTS intact', opts, async () => {
-  const spoken = await speak('stop-speak.ps1', { headline: 'Three, 项目, done.' })
+test('a Chinese project name reaches the TTS intact, also from a legacy console code page', opts, async () => {
+  for (const codepage of [undefined, 936, 437]) {
+    const spoken = await speak('stop-speak.ps1', { headline: 'Three, 项目, done.' }, { codepage })
+    assert.deepEqual(spoken.map((s) => s.text), ['Three, 项目, done.'], 'code page ' + codepage)
+  }
+})
+
+test('the detached launcher passes a Chinese headline on intact from a legacy code page', opts, async () => {
+  const spoken = await speak('stop-speak.ps1', { headline: 'Three, 项目, done.' }, { codepage: 936, launcher: true })
   assert.deepEqual(spoken.map((s) => s.text), ['Three, 项目, done.'])
 })
 

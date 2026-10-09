@@ -269,7 +269,7 @@ window.__ModuleLoader__.load({
 				u ? h("div", { style: { fontSize: 12, opacity: 0.6, marginTop: 8 } },
 					`DSH tokens (local): ${fmt(u.fiveHour.tokens)} in the last 5h · ${fmt(u.weekly.tokens)} in the last 7 days`) : null,
 				h("div", { style: { marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(128,128,128,.25)" } },
-					h(Toggle, { label: "TTS hooks", hint: "Spoken read-outs for finished replies, questions and permission requests.", field: "ttsEnabled", current: s && s.settings && s.settings.ttsEnabled }),
+					h(Toggle, { label: "TTS hooks", hint: "Short numbered spoken alerts for finished replies, questions and permission requests.", field: "ttsEnabled", current: s && s.settings && s.settings.ttsEnabled }),
 					h(Toggle, { label: "Auto-resume after handoff", hint: "When a handoff note is written, start a new session that picks it up.", field: "autoResumeHandoff", current: s && s.settings && s.settings.autoResumeHandoff }),
 						h(Toggle, { label: "Hand off before a big chunk", hint: "With auto-resume on, hand off at the start of a turn when the next chunk of work (about the size of the last few turns) would not fit under the context cap, instead of being cut off halfway.", field: "handoffAhead", current: s && s.settings && s.settings.handoffAhead }),
 					h(Toggle, { label: "Poll PR comments", hint: "While a session is titled \"PR <n>\", check its Azure DevOps pull request every 10 minutes and queue new review comments into that session (ado-pr-implement, up to its approval gate). Needs AZURE_DEVOPS_EXT_PAT.", field: "pollPrComments", current: s && s.settings && s.settings.pollPrComments }),

@@ -171,14 +171,13 @@ function Invoke-KokoroTts {
 }
 
 
-# Spoken location suffix: project (cwd leaf) plus the session name when the host supplies one.
 # Hook payloads arrive as UTF-8 JSON on stdin; Windows PowerShell 5.1 would otherwise read them in the console code page.
 function Read-HookInput {
-    try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
-    $raw = [Console]::In.ReadToEnd()
+    $raw = (New-Object System.IO.StreamReader([Console]::OpenStandardInput(), (New-Object System.Text.UTF8Encoding($false)))).ReadToEnd()
     try { $raw | ConvertFrom-Json } catch { $null }
 }
 
+# Spoken location suffix: project (cwd leaf) plus the session name when the host supplies one.
 function Get-TtsWhere($data) {
     $parts = @()
     if ($data -and $data.cwd) { $parts += "Project : $(Split-Path $data.cwd -Leaf)" }
