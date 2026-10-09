@@ -24,6 +24,7 @@ import { installAskUserTuning } from './ask.js'
 import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
+import { createHandoffTracker } from './handoffs.js'
 
 export const name = 'hooks-tts'
 
@@ -172,12 +173,17 @@ export function apply(ctx, baseConfig = {}) {
   const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens })
   const worktrees = createWorktreeTracker(stateDir)
   const groups = createGroups(stateDir, { trace: (line) => ctx.logger.warn(`hooks-tts: ${line}`) })
-  startStatusService(ctx, config, stateDir, controller.signal, settings, worktrees, groups)
+  const handoffs = createHandoffTracker(stateDir)
+  // "Follow-up from handoff" spawns through the cap's machinery, installed further down (hence lazy).
+  let contextCap
+  startStatusService(ctx, config, stateDir, controller.signal, settings, worktrees, groups, { handoffs, followUp: (sessionId) => contextCap.followUp(sessionId) })
 
-  // Record the worktree each session actually works in (its cwd stays at the launch directory).
+  // Record the worktree each session actually works in (its cwd stays at the launch directory),
+  // and every handoff note it writes (the session menu offers a follow-up from the latest one).
   ctx.on('tools/post-execute', async (exec, result, next) => {
     const id = exec.agent?.id
     if (id) void worktrees.observe(id, exec.arguments, exec.agent.session?.header?.cwd)
+    if (id && !skip(exec.agent)) handoffs.observe(id, exec.name, exec.arguments, exec.agent.session?.header?.cwd)
     return next()
   })
 
@@ -243,7 +249,6 @@ export function apply(ctx, baseConfig = {}) {
 
   // PR comment poller (and PR rename); the cap reads its handoff lines so a resumed session can re-register the poll.
   // PR creation hands over to two new sessions through the cap's spawn machinery (installed right after, hence lazy).
-  let contextCap
   const prPoller = installPrPoller(ctx, config, { settings, skip, signal: controller.signal, onPrCreated: (agent, id) => contextCap?.prCreated(agent, id) })
   // A restart drops the in-memory polls: re-register every "PR <n>" session. The host services may not be ready at
   // once, so retry a few times (restore is idempotent).
@@ -252,11 +257,13 @@ export function apply(ctx, baseConfig = {}) {
     timer.unref?.()
     controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
   }
-  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId) })
+  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, handoffs, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId) })
   installAskUserTuning(ctx, { skip, makeMessage })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {
     if (skip(agent)) return
+    // Handoff notes the session wrote before the plugin watched it (one history scan per session, off the hot path).
+    setTimeout(() => handoffs.scan(agent.id, () => agent.session.deriveMessages(), agent.session?.header?.cwd), 0).unref?.()
     try {
       const folded = await run('SessionStart', [source ?? 'startup'], { source }, agent, signal)
       const message = contextMessage(folded)

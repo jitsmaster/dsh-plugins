@@ -10,6 +10,7 @@ window.__ModuleLoader__.load({
 		const STATUS_URL = `http://${location.hostname || "127.0.0.1"}:3081/status`;
 		const SETTINGS_URL = STATUS_URL.replace(/\/status$/, "/settings");
 		const GROUPS_URL = STATUS_URL.replace(/\/status$/, "/groups");
+		const FOLLOWUP_URL = STATUS_URL.replace(/\/status$/, "/followup");
 		// /status is a local JSON snapshot the host re-samples on every step, so polling it is cheap.
 		const POLL_MS = 3000;
 		const PANEL_ID = "usage";
@@ -196,6 +197,47 @@ window.__ModuleLoader__.load({
 					const name = window.prompt("Name for the new group");
 					if (name && name.trim()) await sendMove({ sessionId, newGroupName: name });
 				}, "add"));
+		}
+
+		// "Follow-up from handoff": shown only while the session's latest handoff note still exists (host-side check).
+		// The host opens a new session (same group when the source has one) that resumes the note with sparcr.
+		const followUpBusy = new Set();
+		async function startFollowUp(sessionId) {
+			if (followUpBusy.has(sessionId)) return;
+			followUpBusy.add(sessionId);
+			try {
+				const res = await fetch(FOLLOWUP_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }) });
+				const b = await res.json().catch(() => ({}));
+				if (!res.ok) throw new Error(res.status === 404 && !b.error ? "the plugin host is running older code - restart dsh web" : b.error || ("HTTP " + res.status));
+				if (b.sessionId) { handledSpawns.add(b.sessionId); openContinuation(b.sessionId); }
+				poll();
+			} catch (err) {
+				const m = err && err.message || String(err);
+				window.alert("Follow-up from handoff failed: " + (/Failed to fetch|NetworkError/i.test(m) ? "could not reach the plugin host (restart dsh web to load the latest plugin code)" : m));
+			} finally { followUpBusy.delete(sessionId); }
+		}
+		function FollowUpMenu(props) {
+			const sessionId = props.sessionId;
+			const setMenuOpen = props.useMenuOpenState()[1];
+			useStatus();
+			const [, bump] = React.useState(0);
+			const findSample = () => [...document.querySelectorAll("[role='menuitem']")].find((n) => n.children.length >= 2 && n.children[0].tagName === "SPAN" && n.children[1].tagName === "SPAN" && !n.hasAttribute("data-hooks-menu"));
+			React.useEffect(() => { if (findSample()) bump(1); }, []);
+			if (!groupsView || !(groupsView.handoffs || []).includes(sessionId)) return null;
+			const sample = findSample();
+			// Note with a forward arrow: pick the handoff up in a new session.
+			const icon = h("svg", { width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", "aria-hidden": "true", strokeWidth: 1, strokeLinecap: "round", strokeLinejoin: "round" },
+				h("path", { d: "M9.5 2.5H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h4", stroke: "currentColor" }),
+				h("path", { d: "M5.5 6h4M5.5 8.5h2.5", stroke: "currentColor" }),
+				h("path", { d: "M9.5 12h4.5M12 9.8l2 2.2-2 2.2", stroke: "currentColor" }));
+			const label = "Follow-up from handoff";
+			return h("button", {
+				type: "button", role: "menuitem", className: sample ? sample.className : undefined, "data-hooks-menu": "",
+				title: "Open a new session that resumes this session's latest handoff note (SPARC)",
+				onClick: () => { setMenuOpen(false); void startFollowUp(sessionId); },
+			},
+				sample ? h("span", { className: sample.children[0].className }, icon) : null,
+				sample ? h("span", { className: sample.children[1].className }, label) : label);
 		}
 
 		function UsagePage() {
@@ -386,6 +428,11 @@ window.__ModuleLoader__.load({
 				ctx.slots.inject("sidebar.workspaces.session.menu.item", () => ctx.slots.register({
 					name: "sidebar.workspaces.session.menu.item", id: "dsh-hooks-tts-groups", order: 350,
 				}, GroupMenu));
+			} catch (_e) { /* menu slot unavailable */ }
+			try {
+				ctx.slots.inject("sidebar.workspaces.session.menu.item", () => ctx.slots.register({
+					name: "sidebar.workspaces.session.menu.item", id: "dsh-hooks-tts-followup", order: 340,
+				}, FollowUpMenu));
 			} catch (_e) { /* menu slot unavailable */ }
 
 			// Identify the visible session. Failure here must never break the Usage panel.

@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installContextCap } from '../cap.js'
 import { createSettings } from '../settings.js'
 import { createGroups, deriveGroupName } from '../groups.js'
+import { createHandoffTracker } from '../handoffs.js'
 
 function harness({ cap = 400_000, prLines, ...extra } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cap-'))
@@ -15,7 +16,7 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
   const calls = { create: 0, prompt: 0, rename: [] }
   const controller = {
     create: async () => { calls.create++; return { sessionId: `s${calls.create + 1}` } },
-    resolveAgent: async () => ({ agent: { session: { append() {} } } }),
+    resolveAgent: async (id) => (id === 'a' ? { agent } : { agent: { session: { append() {} } } }),
     rename: async (r) => { calls.rename.push(r) },
     prompt: async (req) => { calls.prompt++; sink?.push(req) },
   }
@@ -32,7 +33,8 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
     on: (event, fn) => { handlers[event] = fn },
   }
   const groups = createGroups(dir)
-  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md') }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined, groups })
+  const handoffs = createHandoffTracker(dir)
+  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md') }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined, groups, handoffs })
   const steered = []
   const agent = { id: 'a', session: { header: { cwd: 'C:/proj' }, snapshotEvents: () => state.events, deriveMessages: () => state.messages }, steer: (m) => steered.push(m) }
   const step = async (tokens) => {
@@ -45,7 +47,7 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
     return (await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] }))).messages
   }
   const stop = async (tokens) => { state.tokens = tokens; await handlers['agent/turn-stopping']({ agent }) }
-  return { agentRef: agent, groups, dir, prCreated: cap_.prCreated, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
+  return { agentRef: agent, groups, handoffs, dir, prCreated: cap_.prCreated, followUp: cap_.followUp, controller, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
 }
 
 test('warns once at warnPercent, then hands off at the cap', async () => {
@@ -415,4 +417,89 @@ test('groups: malformed entries in groups.json are dropped and extra keys are ne
   const again = createGroups(h.dir)
   assert.deepEqual(again.list(), [{ id: 'g1', workspaceId: undefined, name: 'Ok', createdAt: 1, sessionIds: ['a'] }])
   assert.equal(again.groupOf('zzz'), undefined)
+})
+
+// ---- "Follow-up from handoff" (session menu) ----
+
+function withNote(h, name, body = '# note\nMode: plain\n') {
+  const path = join(h.dir, name)
+  writeFileSync(path, body)
+  h.handoffs.record('a', path)
+  return path
+}
+
+test('followUp: a session without a handoff note gets 404 and no session is created', async () => {
+  const h = harness()
+  const out = await h.followUp('a')
+  assert.equal(out.status, 404)
+  assert.equal(h.calls.create, 0)
+})
+
+test('followUp: resumes the LATEST handoff in SPARC mode, numbered title, same group, even with auto-resume off', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  h.state.title = 'Billing cleanup'
+  const group = h.groups.ensureGroup('a', undefined, { title: 'Billing cleanup' })
+  withNote(h, 'old-handoff.md')
+  const latest = withNote(h, 'new-ph-2-handoff.md', '# note\nMode: plain\n') // the menu always resumes in SPARC
+  const prompts = []
+  h.setPromptSink(prompts)
+  const out = await h.followUp('a')
+  assert.deepEqual(out, { status: 200, sessionId: 's2' })
+  assert.equal(h.calls.create, 1)
+  assert.deepEqual(h.calls.rename, [{ sessionId: 's2', title: 'Billing cleanup - 2' }])
+  const text = prompts[0].content[0].text
+  assert.match(text, new RegExp('Continue from handoff at ' + latest.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')))
+  assert.match(text, /Remain in SPARC mode/)
+  assert.deepEqual(h.groups.groupOf('s2').id, group.id)
+  assert.deepEqual(h.groups.groupOf('s2').sessionIds, ['a', 's2'])
+})
+
+test('followUp: the number increments from a numbered follow-up title', async () => {
+  const h = harness()
+  h.state.title = 'Billing cleanup - 2'
+  withNote(h, 'x-handoff.md')
+  await h.followUp('a')
+  assert.equal(h.calls.rename[0].title, 'Billing cleanup - 3')
+})
+
+test('followUp: a session in no group stays ungrouped (no group is created)', async () => {
+  const h = harness()
+  h.state.title = 'Solo work'
+  withNote(h, 'x-handoff.md')
+  const out = await h.followUp('a')
+  assert.equal(out.status, 200)
+  assert.equal(h.groups.list().length, 0)
+})
+
+test('followUp: a second click while the first is running does not create a second session', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  withNote(h, 'x-handoff.md')
+  const [one, two] = await Promise.all([h.followUp('a'), h.followUp('a')])
+  assert.deepEqual([one.status, two.status].sort(), [200, 409])
+  assert.equal(h.calls.create, 1)
+})
+
+test('followUp: a consumed (deleted) note no longer offers a follow-up', async () => {
+  const h = harness()
+  const path = withNote(h, 'x-handoff.md')
+  rmSync(path)
+  assert.equal((await h.followUp('a')).status, 404)
+})
+
+test('followUp: a failing session create reports an error', async () => {
+  const h = harness()
+  withNote(h, 'x-handoff.md')
+  h.controller.create = async () => { throw new Error('nope') }
+  const out = await h.followUp('a')
+  assert.equal(out.status, 500)
+  assert.match(out.error, /could not/)
+})
+
+test('followUp: an unknown session is a 404', async () => {
+  const h = harness()
+  h.handoffs.record('ghost', withNote(h, 'g-handoff.md'))
+  h.controller.resolveAgent = async () => ({ error: 'not found' })
+  assert.equal((await h.followUp('ghost')).status, 404)
+  assert.equal(h.calls.create, 0)
 })

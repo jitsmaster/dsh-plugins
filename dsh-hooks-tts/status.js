@@ -11,6 +11,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { applyMove, buildGroupsView } from './groups.js'
 import { listSpawned } from './spawned.js'
+import { applyFollowUp } from './handoffs.js'
 
 export const STATUS_PORT = 3081
 
@@ -54,7 +55,7 @@ const recordedWorktree = (r) => (r && existsSync(r.root) ? { name: r.name, root:
 
 const pct = (used, budget) => (budget > 0 ? Math.round((used / budget) * 1000) / 10 : undefined)
 
-export function startStatusService(ctx, config, stateDir, signal, settings, worktrees, groups) {
+export function startStatusService(ctx, config, stateDir, signal, settings, worktrees, groups, { handoffs, followUp } = {}) {
   const intervalMs = config.refreshIntervalMs ?? 30_000
   const sessionBudget = config.sessionBudgetTokens ?? 30_000_000
   const weeklyBudget = config.weeklyBudgetTokens ?? 200_000_000
@@ -231,6 +232,13 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     })
   }
 
+  // The /groups view, plus the sessions whose latest handoff note still exists (the menu offers "Follow-up from handoff").
+  const groupsPayload = () => {
+    let withHandoff = []
+    try { withHandoff = handoffs?.withHandoff() ?? [] } catch { /* best effort */ }
+    return { ...buildGroupsView(groups?.list() ?? [], liveSessions(), workspaceList()), handoffs: withHandoff }
+  }
+
   // Settings writes are accepted only from the DSH web page itself (never from other sites).
   const webUrl = new URL(process.env.DSH_WEB_URL || 'http://127.0.0.1:3080')
   const allowedOrigins = new Set(['127.0.0.1', 'localhost'].map(h => `${webUrl.protocol}//${h}:${webUrl.port}`).concat(webUrl.origin))
@@ -259,11 +267,30 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
           try { parsed = JSON.parse(body || '{}') } catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'invalid JSON' })); return }
           const result = groups ? applyMove(groups, parsed, workspaceIdOf, (id) => agents.has(id) || workspaceIdOf(id) !== undefined, workspaceList) : { status: 503, error: 'groups unavailable' }
           res.statusCode = result.status
-          res.end(JSON.stringify(result.error ? { error: result.error } : buildGroupsView(groups.list(), liveSessions(), workspaceList())))
+          res.end(JSON.stringify(result.error ? { error: result.error } : groupsPayload()))
         })
         return
       }
-      res.end(JSON.stringify(buildGroupsView(groups?.list() ?? [], liveSessions(), workspaceList())))
+      res.end(JSON.stringify(groupsPayload()))
+    } else if ((req.url ?? '').split('?')[0] === '/followup') {
+      // "Follow-up from handoff": spawns a session, so only the DSH web page may call it (like /groups).
+      const origin = req.headers.origin
+      if (!origin || !allowedOrigins.has(origin) || !['POST', 'OPTIONS'].includes(req.method)) { res.statusCode = 403; res.end(); return }
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+      res.setHeader('Vary', 'Origin')
+      if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return }
+      res.setHeader('Content-Type', 'application/json')
+      let body = ''
+      req.on('data', (d) => { body += d; if (body.length > 4096) req.destroy() })
+      req.on('end', async () => {
+        let parsed
+        try { parsed = JSON.parse(body || '{}') } catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'invalid JSON' })); return }
+        const out = await applyFollowUp(parsed, followUp)
+        res.statusCode = out.status
+        res.end(JSON.stringify(out.body))
+      })
     } else if (req.url?.startsWith('/settings')) {
       const origin = req.headers.origin
       if (!origin || !allowedOrigins.has(origin)) { res.statusCode = 403; res.end(); return }

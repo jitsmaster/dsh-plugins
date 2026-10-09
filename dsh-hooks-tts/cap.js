@@ -92,7 +92,14 @@ function notice(tokens, cap, over, prState = false, prLines = []) {
   ].join('\n')
 }
 
-export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups, waitForPr }) {
+/** Title of a continuation session: "x" -> "x - 2", "x - 2" / "x -2" -> "x - 3"; a PR title gets a prefix instead. */
+export function continuationTitle(old) {
+  const m = /^(.*?)\s*-\s*(\d+)$/.exec(old)
+  // A numbered "PR 12 - 2" would itself be PR-titled (never respawned, polled), so prefix instead.
+  return PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
+}
+
+export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups, waitForPr, handoffs }) {
   const dir = config.handoffDir ?? DEFAULT_HANDOFF_DIR
   const instructed = new Set()
   const warned = new Set()
@@ -312,6 +319,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     if (!existsSync(job.pr)) {
       try {
         writeFileSync(job.pr, `# PR ${job.prId} Handoff\nMode: plain\n\nPR ${job.prId} was created. Worktree: ${job.cwd ?? 'unknown'} · branch (check \`git branch --show-current\`)\n\nOnly job: poll the PR's review comments and run ado-pr-implement on new ones up to its approval gate.\n`)
+        handoffs?.record(agent.id, job.pr)
         trace(`PR note missing: wrote fallback ${job.pr}`)
       } catch (error) { trace(`fallback PR note failed: ${error}`); return }
     }
@@ -344,7 +352,8 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       trace(`workspace: ${workspaceId ?? 'none (using cwd)'}`)
       const created = await sc.create(workspaceId ? { workspaceId } : job.cwd ? { cwd: job.cwd } : {})
       // Handoff and PR continuations all live in the group of the session they come from (created if it has none).
-      const group = groupFor(agent)
+      // A follow-up from the session menu joins the source's group only when it already has one.
+      const group = job.kind === 'followup' ? groups?.groupOf(agent.id) : groupFor(agent)
       if (group) groups.addToGroup(group.id, created.sessionId)
       // Same access level as the source: copy its last permission/preset, sandbox/mode and approval/policy.
       // Session.append writes the log only, so no other side effects are triggered.
@@ -367,9 +376,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         const titles = ctx.get('sessionTitle')
         const old = titles?.get(agent.session)?.title
         if (old) {
-          const m = /^(.*?)\s*-\s*(\d+)$/.exec(old)
-          // A numbered "PR 12 - 2" would itself be PR-titled (never respawned, polled), so prefix instead.
-          const next = job.kind === 'pr' ? `PR ${job.prId}` : job.kind === 'after' ? afterPrTitle(old, job.prId) : PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
+          const next = job.kind === 'pr' ? `PR ${job.prId}` : job.kind === 'after' ? afterPrTitle(old, job.prId) : continuationTitle(old)
           await sc.rename({ sessionId: created.sessionId, title: next })
           trace(`renamed "${old}" -> "${next}"`)
         } else trace('source has no title; not renaming')
@@ -387,7 +394,8 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       } else if (job.kind === 'after') {
         const resume = resumePrompt(job.path, undefined, undefined, true, 'sparc')
         text = { sparc: true, value: afterPrPrompt(job, resume.value) }
-      } else text = resumePrompt(job.path, undefined, undefined, ranSparc(agent))
+      } else if (job.kind === 'followup') text = resumePrompt(job.path, undefined, undefined, true, 'sparc') // the menu always resumes with sparcr
+      else text = resumePrompt(job.path, undefined, undefined, ranSparc(agent))
       trace(`prompt kind: ${job.kind ?? (text.sparc ? 'sparc' : 'plain')}`)
       await sc.prompt({
         requestId: `handoff-${randomUUID()}`,
@@ -415,5 +423,29 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     if (message) agent.steer(message)
   })
 
-  return { prCreated }
+  const followingUp = new Set()
+
+  /**
+   * "Follow-up from handoff" (session menu): a new session that resumes the session's latest handoff note with the
+   * sparcr flow, in the source's group when it has one. Runs whatever the auto-resume setting says.
+   * @returns {Promise<{ status: number, sessionId?: string, error?: string }>}
+   */
+  async function followUp(sessionId) {
+    const path = handoffs?.latest(sessionId)
+    if (!path) return { status: 404, error: 'this session has no handoff note' }
+    if (followingUp.has(sessionId)) return { status: 409, error: 'a follow-up session is already being created' }
+    followingUp.add(sessionId)
+    try {
+      const sc = ctx.get('sessionController') ?? ctx.sessionController
+      let agent
+      try { agent = (await sc.resolveAgent(sessionId))?.agent } catch (error) { trace(`follow-up: resolve ${sessionId} failed: ${error}`) }
+      if (!agent) return { status: 404, error: 'unknown session' }
+      if (!agent.id) agent = Object.assign(Object.create(agent), { id: sessionId })
+      trace(`follow-up from handoff requested for ${sessionId}: ${path}`)
+      const created = await spawnSession(agent, { path, cwd: agent.session?.header?.cwd, streak: 0, kind: 'followup' })
+      return created ? { status: 200, sessionId: created } : { status: 500, error: 'the follow-up session could not be created or started (see spawn.log)' }
+    } finally { followingUp.delete(sessionId) }
+  }
+
+  return { prCreated, followUp }
 }
