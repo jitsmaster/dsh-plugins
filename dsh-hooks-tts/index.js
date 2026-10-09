@@ -24,6 +24,8 @@ import { installAskUserTuning } from './ask.js'
 import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
+import { buildHookBody, createAlerts } from './voice/alerts.js'
+import { createNumbers } from './voice/numbers.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
 
@@ -173,6 +175,7 @@ export function apply(ctx, baseConfig = {}) {
 
   const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens })
   const worktrees = createWorktreeTracker(stateDir)
+  const alerts = createAlerts({ numbers: createNumbers(stateDir) })
   const groups = createGroups(stateDir, { trace: (line) => ctx.logger.warn(`hooks-tts: ${line}`) })
   const handoffs = createHandoffTracker(stateDir)
   // "Follow-up from handoff" spawns through the cap's machinery, installed further down (hence lazy).
@@ -202,14 +205,7 @@ export function apply(ctx, baseConfig = {}) {
     const env = { ...baseEnv, CLAUDE_PROJECT_DIR: cwd ?? baseEnv.CLAUDE_PROJECT_DIR ?? process.cwd() }
     let sessionTitle
     try { sessionTitle = ctx.get('sessionTitle')?.get(agent?.session)?.title } catch { /* title is optional */ }
-    const body = {
-      session_id: agent?.session?.header?.id ?? '',
-      session_title: sessionTitle ?? '',
-      transcript_path: '',
-      cwd: cwd ?? process.cwd(),
-      hook_event_name: event,
-      ...payload,
-    }
+    const body = buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts })
     const folded = { decision: undefined, reason: undefined, context: [] }
     for (const group of hooks[event] ?? []) {
       if (!matchesAny(group.matcher, queries)) continue

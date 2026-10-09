@@ -21,3 +21,17 @@ export function createAlerts({ numbers }) {
     },
   }
 }
+
+/** The JSON a hook script receives on stdin, with the spoken headline for alert events. */
+export function buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts }) {
+  const headline = alerts.headlineFor(event, { agentId: agent?.id, cwd, payload })
+  return {
+    session_id: agent?.session?.header?.id ?? '',
+    session_title: sessionTitle ?? '',
+    transcript_path: '',
+    cwd: cwd ?? process.cwd(),
+    hook_event_name: event,
+    ...payload,
+    ...(headline ? { headline } : {}),
+  }
+}
