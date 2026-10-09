@@ -70,6 +70,16 @@ test('Stop speaks the headline and never the response', opts, async () => {
   assert.equal(spoken[0].voice_gender, 'male')
 })
 
+test('Stop is spoken slower with a pause between sentences; the other alerts keep the normal pace', opts, async () => {
+  const [stop] = await speak('stop-speak.ps1', { headline: 'Done on: Session: A; Workspace: B. Text.' })
+  assert.equal(stop.speed, 0.85)
+  assert.equal(stop.pause_s, 0.5)
+  const [perm] = await speak('speak.ps1', { headline: 'Four, approve write file?' })
+  assert.equal('speed' in perm || 'pause_s' in perm, false)
+  const [ask] = await speak('elicitation-speak.ps1', { headline: 'Two, question: Which one?' })
+  assert.equal('speed' in ask || 'pause_s' in ask, false)
+})
+
 test('Stop without a headline still says where, and never reads the response itself', opts, async () => {
   const spoken = await speak('stop-speak.ps1', { last_assistant_message: 'The whole answer.', session_title: 'S', cwd: 'D:\\x\\proj' })
   assert.deepEqual(spoken.map((s) => s.text), ['Done on: Session: S; Workspace: proj.'])

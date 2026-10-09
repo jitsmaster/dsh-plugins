@@ -83,7 +83,10 @@ function Invoke-KokoroTts {
     param(
         [Parameter(Mandatory)][string]$Text,
         [Parameter(Mandatory)][ValidateSet('male', 'female')][string]$Gender,
-        [ValidateSet('High', 'Normal')][string]$Priority = 'Normal'
+        [ValidateSet('High', 'Normal')][string]$Priority = 'Normal',
+        # Optional pacing, honoured by the Kokoro server: speaking rate (1.0 = normal) and silence between sentences.
+        [double]$Speed = 0,
+        [double]$PauseSeconds = 0
     )
     $dir = $script:TtsStateDir
     $flagPath = Join-Path $dir 'tts-priority-pending.flag'
@@ -102,7 +105,10 @@ function Invoke-KokoroTts {
         # Synthesize immediately; only PLAYBACK is serialized so nothing overlaps audibly.
         Add-Type -AssemblyName System.Net.Http
         Start-TtsServerIfDown
-        $body = @{ text = $Text; voice_gender = $Gender } | ConvertTo-Json -Compress
+        $request = @{ text = $Text; voice_gender = $Gender }
+        if ($Speed -gt 0) { $request.speed = $Speed }
+        if ($PauseSeconds -gt 0) { $request.pause_s = $PauseSeconds }
+        $body = $request | ConvertTo-Json -Compress
         $content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, 'application/json')
         $client = New-Object System.Net.Http.HttpClient
         $client.Timeout = [TimeSpan]::FromSeconds(30)

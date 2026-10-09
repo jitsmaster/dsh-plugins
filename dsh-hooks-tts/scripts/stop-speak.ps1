@@ -16,4 +16,4 @@ if ($data -and $data.headline) {
     $msg += '.'
 }
 
-if (-not (Invoke-KokoroTts -Text (Clean-ForSpeech $msg) -Gender 'male')) { Add-TtsLog 'tts-failures.log' "stop-speak: $msg" }
+if (-not (Invoke-KokoroTts -Text (Clean-ForSpeech $msg) -Gender 'male' -Speed 0.85 -PauseSeconds 0.5)) { Add-TtsLog 'tts-failures.log' "stop-speak: $msg" }
