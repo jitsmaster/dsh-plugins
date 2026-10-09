@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { stripHold } from './hold.js'
 
 export const PR_TITLE = /^PR \d+/
 const ADO_REPO = 'https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc'
@@ -32,7 +33,7 @@ const textOf = (content) => (typeof content === 'string' ? content : (content ??
 
 /** The session's current title, read live on every call; undefined when unavailable. */
 function titleOf(ctx, agent) {
-  try { return ctx.get('sessionTitle')?.get(agent.session)?.title } catch { return undefined }
+  try { return stripHold(ctx.get('sessionTitle')?.get(agent.session)?.title) } catch { return undefined }
 }
 
 /** True when the session is titled "PR <n>". */

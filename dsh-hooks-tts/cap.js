@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path'
 import { isPrSession, PR_TITLE } from './pr.js'
 import { firstRequest, afterPrTitle } from './groups.js'
 import { recordSpawn } from './spawned.js'
+import { stripHold } from './hold.js'
 const DEFAULT_HANDOFF_DIR = join(homedir(), '.dsh', 'handoffs')
 
 export function contextTokens(ctx, agent) {
@@ -94,6 +95,7 @@ function notice(tokens, cap, over, prState = false, prLines = []) {
 
 /** Title of a continuation session: "x" -> "x - 2", "x - 2" / "x -2" -> "x - 3"; a PR title gets a prefix instead. */
 export function continuationTitle(old) {
+  old = stripHold(old)
   const m = /^(.*?)\s*-\s*(\d+)$/.exec(old)
   // A numbered "PR 12 - 2" would itself be PR-titled (never respawned, polled), so prefix instead.
   return PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
@@ -248,7 +250,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     if (!groups) return undefined
     try {
       // Naming scans the whole conversation, so it is built only when a group is actually created.
-      const naming = () => ({ title: ctx.get('sessionTitle')?.get(agent.session)?.title, request: () => firstRequest(agent), cwd: agent.session?.header?.cwd })
+      const naming = () => ({ title: stripHold(ctx.get('sessionTitle')?.get(agent.session)?.title), request: () => firstRequest(agent), cwd: agent.session?.header?.cwd })
       const group = groups.ensureGroup(agent.id, workspaceOf(agent), naming)
       trace(`group for ${agent.id}: ${group.id}, ${group.sessionIds.length} member(s)`)
       return group
@@ -376,7 +378,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       // Numbered title: "x" -> "x - 2", "x - 2" / "x -2" -> "x - 3".
       try {
         const titles = ctx.get('sessionTitle')
-        const old = titles?.get(agent.session)?.title
+        const old = stripHold(titles?.get(agent.session)?.title)
         if (old) {
           const next = job.kind === 'pr' ? `PR ${job.prId}` : job.kind === 'after' ? afterPrTitle(old, job.prId) : continuationTitle(old)
           await sc.rename({ sessionId: created.sessionId, title: next })

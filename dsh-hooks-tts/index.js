@@ -25,6 +25,7 @@ import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
 import { createHandoffTracker } from './handoffs.js'
+import { installHoldTitles } from './hold.js'
 
 export const name = 'hooks-tts'
 
@@ -259,6 +260,7 @@ export function apply(ctx, baseConfig = {}) {
   }
   contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, handoffs, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId) })
   installAskUserTuning(ctx, { skip, makeMessage })
+  installHoldTitles(ctx, { skip, stateDir: dirname(settings.path) })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {
     if (skip(agent)) return
