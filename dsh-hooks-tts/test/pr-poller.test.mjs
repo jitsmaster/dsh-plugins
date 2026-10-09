@@ -614,7 +614,8 @@ test('PR-WAIT from a "... - after PR n" session registers a wait; a merged PR qu
   assert.equal(h.calls.prompt[0].sessionId, 'a1')
   const text = h.calls.prompt[0].content[0].text
   assert.match(text, /PR 5 (is|was) merged/)
-  assert.match(text, /ask_user_question/)
+  assert.doesNotMatch(text, /ask_user_question/) // merged: the follow-up starts without asking
+  assert.match(text, /Start the remaining work now/)
   assert.match(text, /origin\/develop/)
   assert.deepEqual(h.poller.waits(), [])
   await h.poller.checkWaits()
@@ -785,3 +786,75 @@ async function cleanHarnessWith(threads, extra) {
   await h.poller.poll('a1')
   return h
 }
+
+// ---- a finished PR stays stopped; its follow-up session starts by itself ----
+
+test('a PR session whose PR was merged is not re-registered on its next step', async () => {
+  const h = harness()
+  h.state.title = 'PR 5'
+  await h.fire('agent/pre-step', { agent: h.agent, messages: [] })
+  assert.equal(h.poller.has('a1'), true)
+  h.state.prStatus = 'completed'
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), false)
+  await h.fire('agent/pre-step', { agent: h.agent, messages: [] })
+  assert.equal(h.poller.has('a1'), false)
+  h.poller.register(h.agent, '5') // e.g. restore() or a resumed PR-POLL marker
+  assert.equal(h.poller.has('a1'), false)
+})
+
+test('a finished PR stays finished across a server restart', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'abandoned'
+  await h.poller.poll('a1')
+  const again = installPrPoller(h.ctx, {}, { settings: h.settings, fetchImpl: h.fetchImpl, env: { AZURE_DEVOPS_EXT_PAT: PAT } })
+  again.register(h.agent, '5')
+  assert.equal(again.has('a1'), false)
+})
+
+test('a PR that the CI review cleared stays stopped too', async () => {
+  const h = harness()
+  h.state.title = 'PR 5'
+  h.state.headCommit = 'c1'
+  h.state.commitDate = '2026-10-08T10:00:00Z'
+  h.state.threads = [{ id: 9, status: 'closed', comments: [{ id: 1, commentType: 'text', content: 'AI review complete — no issues found across all 10 passes', publishedDate: '2026-10-08T11:00:00Z', author: { displayName: 'Project Collection Build Service (ingeniuxdev)' } }] }]
+  h.poller.register(h.agent, '5')
+  await h.poller.poll('a1')
+  assert.equal(h.poller.has('a1'), false)
+  await h.fire('agent/pre-step', { agent: h.agent, messages: [] })
+  assert.equal(h.poller.has('a1'), false)
+})
+
+test('when a PR is merged its waiting follow-up session is started at once, by the poll that sees the merge', async () => {
+  const h = harness()
+  const follow = { id: 'f1', session: {} }
+  h.poller.addWait(follow.id, '5')
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(h.calls.prompt.length, 0) // PR still active
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'completed'
+  await h.poller.poll('a1')
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(h.calls.prompt.length, 1)
+  assert.equal(h.calls.prompt[0].sessionId, 'f1')
+  assert.deepEqual(h.poller.waits(), [])
+})
+
+test('a wait added after the PR was already merged is delivered immediately', async () => {
+  const h = harness()
+  h.state.prStatus = 'completed'
+  h.poller.addWait('f1', '5')
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(h.calls.prompt.length, 1)
+  assert.equal(h.calls.prompt[0].sessionId, 'f1')
+})
+
+test('checkWaits seeing a merge also stops the PR session poll of that PR', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.poller.addWait('f1', '5')
+  h.state.prStatus = 'completed'
+  await h.poller.checkWaits()
+  assert.equal(h.poller.has('a1'), false)
+})

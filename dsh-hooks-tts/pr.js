@@ -191,6 +191,23 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     return out
   }
 
+  // PRs that are over (merged, abandoned, or cleared by the CI review). A session titled "PR <n>" is re-registered on its
+  // next step and after every restart, so without this record a finished PR would be polled again and again.
+  const finishedFile = join(dirname(settings.path), 'pr-finished.json')
+  const finishedPrs = new Set()
+  try { for (const id of JSON.parse(readFileSync(finishedFile, 'utf8'))) finishedPrs.add(String(id)) } catch { /* none yet */ }
+  function markFinished(prId) {
+    if (finishedPrs.has(String(prId))) return
+    finishedPrs.add(String(prId))
+    try { writeFileSync(finishedFile, JSON.stringify([...finishedPrs].slice(-500))) } catch (error) { trace(`could not save finished PRs: ${scrub(error)}`) }
+  }
+  /** Stop the poll of a PR that is over, and remember that. */
+  function finish(id, reason) {
+    const entry = entries.get(id)
+    if (entry) markFinished(entry.prId)
+    stop(id, reason)
+  }
+
   function stop(id, reason) {
     const entry = entries.get(id)
     if (!entry) return
@@ -204,6 +221,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
 
   /** Register (or extend) the poll for a session. Re-registering the same PR only merges seen entries. */
   function register(agent, prId, seenEntries = [], resume, restored = false) {
+    if (finishedPrs.has(String(prId))) { trace(`PR ${prId} is already finished; not polling it for ${agent.id}`); return }
     const existing = entries.get(agent.id)
     if (existing && existing.prId === String(prId)) {
       for (const [t, c] of seenEntries) if (!existing.seen.has(t)) existing.seen.set(t, c)
@@ -290,8 +308,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       const quiet = entry.restored
       entry.restored = false
       void quiet
-      if (pr?.status === 'completed') { stop(id, 'PR completed'); return } // the "... - after PR n" session handles the merge (checkWaits)
-      if (pr?.status === 'abandoned') { stop(id, 'PR abandoned'); return }
+      if (pr?.status === 'completed') { finish(id, 'PR completed'); void checkWaits(); return } // start the waiting "... - after PR n" session now
+      if (pr?.status === 'abandoned') { finish(id, 'PR abandoned'); void checkWaits(); return }
       const data = await getJson(`${base}/threads?api-version=7.1`, pat)
       const found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
       for (const t of found.filter((f) => !f.notify)) entry.seen.set(t.threadId, t.lastCommentId)
@@ -323,7 +341,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         const cleanAt = ciReviewCleanAt(data?.value)
         if (cleanAt !== undefined && ciReviewStands(data?.value, cleanAt) && await ciResultIsCurrent(cleanAt, pr, pat)) {
           await queueMessage(entry, cleanStopMessage(entry.prId))
-          stop(id, 'CI review reports no issues found')
+          finish(id, 'CI review reports no issues found')
         }
         return
       }
@@ -469,7 +487,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   let waitTimer
   const armWaits = () => {
     if (waitTimer || !waitMap.size) return
-    waitTimer = setInterval(() => { void checkWaits() }, intervalMs)
+    waitTimer = setInterval(() => { void checkWaits() }, Math.min(intervalMs, 60_000)) // merges are noticed within a minute
     waitTimer.unref?.()
   }
   function addWait(sessionId, prId) {
@@ -477,23 +495,38 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     saveWaits()
     armWaits()
     trace(`session ${sessionId} waits for PR ${prId} to finish`)
+    void checkWaits() // the PR may already be over
   }
 
   /** Re-ask the waiting session once its PR is merged or abandoned; kept (and retried) when the hand-over fails. */
-  async function checkWaits() {
+  // Checks run one after another, so a merge seen by two triggers (poll, wait timer) never re-asks a session twice.
+  let waitsChain = Promise.resolve()
+  function checkWaits() {
     const pat = env.AZURE_DEVOPS_EXT_PAT
-    if (!pat) return
+    if (!pat) return Promise.resolve()
+    waitsChain = waitsChain.then(() => checkWaitsOnce(pat)).catch(() => {})
+    return waitsChain
+  }
+  async function checkWaitsOnce(pat) {
     for (const [sessionId, prId] of [...waitMap]) {
       try {
         const pr = await getJson(`${ADO_REPO}/pullRequests/${prId}?api-version=7.1`, pat)
         const merged = pr?.status === 'completed'
         if (!merged && pr?.status !== 'abandoned') continue
-        const text = [
-          merged ? `PR ${prId} was merged.` : `PR ${prId} was abandoned.`,
-          `Use the \`ask_user_question\` tool now to ask the user: "${merged ? `PR ${prId} is merged. Start the remaining work now?` : `PR ${prId} was abandoned. Continue anyway?`}" with exactly two options: Yes / No.`,
-          `If the user answers Yes, start the remaining work as described in your first message: create your own worktree from the latest origin/develop and work only there; ${merged ? 'rebase onto origin/develop for the tasks marked "(after merge)"' : 'treat tasks marked "(after merge)" as needing the user\'s decision'}. Continue in SPARC mode.`,
-          'If the user answers No, do nothing.',
-        ].join('\n')
+        // The PR is over: nothing left to poll for it in any PR session.
+        markFinished(prId)
+        for (const [eid, e] of [...entries]) if (e.prId === String(prId)) stop(eid, merged ? 'PR merged (wait check)' : 'PR abandoned (wait check)')
+        const text = merged
+          ? [
+            `PR ${prId} was merged.`,
+            'Start the remaining work now, as described in your first message (no question needed): if you have not started yet, create your own worktree from the latest origin/develop and work only there; if you already started, rebase onto origin/develop for the tasks marked "(after merge)". Continue in SPARC mode.',
+          ].join('\n')
+          : [
+            `PR ${prId} was abandoned.`,
+            `Use the \`ask_user_question\` tool now to ask the user: "PR ${prId} was abandoned. Continue anyway?" with exactly two options: Yes / No.`,
+            'If the user answers Yes, start the remaining work as described in your first message: create your own worktree from the latest origin/develop and work only there; treat tasks marked "(after merge)" as needing the user\'s decision. Continue in SPARC mode.',
+            'If the user answers No, do nothing.',
+          ].join('\n')
         await queueMessage({ agent: { id: sessionId } }, text)
         waitMap.delete(sessionId)
         saveWaits()

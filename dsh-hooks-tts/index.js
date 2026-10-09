@@ -252,7 +252,7 @@ export function apply(ctx, baseConfig = {}) {
     timer.unref?.()
     controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
   }
-  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups })
+  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId) })
   installAskUserTuning(ctx, { skip, makeMessage })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {

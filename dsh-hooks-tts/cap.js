@@ -92,7 +92,7 @@ function notice(tokens, cap, over, prState = false, prLines = []) {
   ].join('\n')
 }
 
-export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups }) {
+export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups, waitForPr }) {
   const dir = config.handoffDir ?? DEFAULT_HANDOFF_DIR
   const instructed = new Set()
   const warned = new Set()
@@ -395,6 +395,8 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         mode: 'queue',
         content: [{ type: 'text', text: text.value }],
       }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
+      // The remaining-work session starts by itself once its PR is merged, whatever the user answered to its question.
+      if (job.kind === 'after') { try { waitForPr?.(created.sessionId, job.prId) } catch (error) { trace(`could not register the PR wait: ${error?.message ?? error}`) } }
       resumed.set(created.sessionId, { startedAt: Date.now(), streak: job.streak ?? 0, note: job.path })
       recordSpawn(agent.id, created.sessionId)
       ctx.logger.info(`hooks-tts: spawned ${created.sessionId} from handoff ${job.path}`)
