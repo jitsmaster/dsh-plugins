@@ -31,6 +31,15 @@ const textOf = (content) => {
   return ''
 }
 
+/** Group names are stored and served in plaintext: blank out anything that looks like a credential. */
+export function redact(text) {
+  return String(text)
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]{8,}/gi, '[redacted]')
+    .replace(/\b(?:[A-Za-z0-9_-]*(?:token|secret|password|passwd|pwd|key|pat)[A-Za-z0-9_-]*)\s*[=:]\s*\S+/gi, '[redacted]')
+    .replace(/\b(?:sk|pk|ghp|gho|ghu|ghs|xox[a-z]|AKIA)[A-Za-z0-9_-]{12,}\b/g, '[redacted]')
+    .replace(/\b[A-Za-z0-9+\/_-]{32,}={0,2}/g, '[redacted]')
+}
+
 /** Shorten at a word boundary. */
 function clip(text, max = MAX_NAME) {
   const t = text.replace(/\s+/g, ' ').trim()
@@ -75,7 +84,7 @@ export function deriveGroupName({ title, request, cwd }) {
   if (isMeaningfulTitle(base)) return clip(base)
   // The request may be a function: scanning the conversation is only worth it when the title is no help.
   const text = typeof request === 'function' ? request() : request
-  if (text) return clip(text)
+  if (text) return clip(redact(text))
   const project = String(cwd ?? '').split(/[\\/]/).filter(Boolean).at(-1)
   return project ? `${project} work` : 'Session group'
 }
@@ -100,7 +109,13 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
   if (raw !== undefined) {
     try {
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed?.groups)) data = { groups: parsed.groups.filter(validGroup).map(clone) }
+      if (Array.isArray(parsed?.groups)) {
+        data = { groups: parsed.groups.filter(validGroup).map(clone) }
+        if (data.groups.length !== parsed.groups.length) {
+          trace(`groups.json: dropped ${parsed.groups.length - data.groups.length} malformed group(s); original kept as groups.json.corrupt`)
+          try { copyFileSync(path, `${path}.corrupt`) } catch { /* best effort */ }
+        }
+      }
     } catch (error) {
       // Keep the unreadable file: the next save would otherwise overwrite every group.
       trace(`groups.json is unreadable (${error}); kept as groups.json.corrupt`)
@@ -109,12 +124,19 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
   }
 
   /** Atomic: a crash mid-write leaves the previous file intact. */
+  let lastSaveOk = true
   const save = () => {
     try {
-      if (data.groups.length > MAX_GROUPS) data.groups.splice(0, data.groups.length - MAX_GROUPS)
+      // Over the cap: drop the oldest groups that have no member. A group with members is never evicted.
+      while (data.groups.length > MAX_GROUPS) {
+        const i = data.groups.findIndex((x) => x.sessionIds.length === 0)
+        if (i < 0) { trace(`groups.json holds ${data.groups.length} groups, all with members; none evicted`); break }
+        data.groups.splice(i, 1)
+      }
       writeFileSync(`${path}.tmp`, JSON.stringify(data, null, 2))
       renameSync(`${path}.tmp`, path)
-    } catch (error) { trace(`could not save groups: ${error}`) }
+      lastSaveOk = true
+    } catch (error) { lastSaveOk = false; trace(`could not save groups: ${error}`) }
   }
 
   /** The group a session belongs to, or undefined. */
@@ -177,6 +199,7 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
   function createGroup(name, sessionId, workspaceId) {
     const clean = clip(String(name ?? ''))
     if (!clean) throw new Error('a group needs a name')
+    if (data.groups.length >= MAX_GROUPS && !data.groups.some((x) => x.sessionIds.length === 0)) throw new Error('too many groups')
     if (sessionId !== undefined) for (const other of data.groups) other.sessionIds = other.sessionIds.filter((id) => id !== sessionId)
     const group = { id: randomUUID(), workspaceId, name: clean, createdAt: now(), ...(sessionId === undefined ? { manual: true } : {}), sessionIds: sessionId === undefined ? [] : [sessionId] }
     data.groups.push(group)
@@ -203,7 +226,7 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
   /** Groups, optionally of one workspace. */
   const list = (workspaceId) => data.groups.filter((g) => workspaceId === undefined || g.workspaceId === workspaceId).map(clone)
 
-  return { ensureGroup, addToGroup, moveSession, createGroup, deleteGroup, backfillWorkspace, groupOf, list, path }
+  return { ensureGroup, addToGroup, moveSession, createGroup, deleteGroup, backfillWorkspace, groupOf, list, saved: () => lastSaveOk, path }
 }
 
 /**
@@ -211,7 +234,8 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
  * `{ sessionId, newGroupName }`. A session can only join a group of its own workspace.
  * @returns {{ status: number, error?: string }}
  */
-export function applyMove(groups, body, workspaceOf = () => undefined, isLive = () => true, workspaces = () => undefined) {
+export function applyMove(groups, body, workspaceOf = () => undefined, isLive, workspaces = () => undefined) {
+  const done = () => (groups.saved?.() === false ? { status: 500, error: 'the change could not be saved' } : { status: 200 })
   // Delete an empty group, or create an empty one in a known workspace: neither involves a session.
   if (body && typeof body === 'object' && body.deleteGroupId !== undefined) {
     if (typeof body.deleteGroupId !== 'string') return { status: 400, error: 'deleteGroupId must be a group id' }
@@ -219,24 +243,24 @@ export function applyMove(groups, body, workspaceOf = () => undefined, isLive = 
     if (!target) return { status: 404, error: 'unknown group' }
     if (target.sessionIds.length > 0) return { status: 409, error: 'move the sessions out of the group before deleting it' }
     groups.deleteGroup(body.deleteGroupId)
-    return { status: 200 }
+    return done()
   }
   if (body && typeof body === 'object' && body.sessionId === undefined && body.newGroupName !== undefined) {
     if (typeof body.newGroupName !== 'string' || !body.newGroupName.trim()) return { status: 400, error: 'a group needs a name' }
     if (typeof body.workspaceId !== 'string' || !body.workspaceId) return { status: 400, error: 'workspaceId is required' }
     if (!(workspaces() ?? []).some((w) => w.id === body.workspaceId)) return { status: 404, error: 'unknown workspace' }
-    try { groups.createGroup(body.newGroupName, undefined, body.workspaceId); return { status: 200 } } catch (error) { return { status: 400, error: String(error?.message ?? error) } }
+    try { groups.createGroup(body.newGroupName, undefined, body.workspaceId); return done() } catch (error) { return { status: 400, error: String(error?.message ?? error) } }
   }
   const sessionId = body?.sessionId
   if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 200) return { status: 400, error: 'sessionId is required' }
   // Only a live session can be put into a group (no fabricated ids); taking any session out is always allowed.
-  if (body.groupId !== null && !isLive(sessionId)) return { status: 404, error: 'unknown session' }
+  if (body.groupId !== null && !(isLive?.(sessionId) ?? false)) return { status: 404, error: 'unknown session' }
   const sessionWorkspace = workspaceOf(sessionId)
   try {
     if (body.newGroupName !== undefined) {
       if (typeof body.newGroupName !== 'string') return { status: 400, error: 'newGroupName must be text' }
       groups.createGroup(body.newGroupName, sessionId, sessionWorkspace)
-      return { status: 200 }
+      return done()
     }
     if (body.groupId !== null && typeof body.groupId !== 'string') return { status: 400, error: 'groupId must be a group id or null' }
     if (body.groupId !== null) {
@@ -248,7 +272,7 @@ export function applyMove(groups, body, workspaceOf = () => undefined, isLive = 
     }
     groups.moveSession(sessionId, body.groupId)
     if (body.groupId !== null) groups.backfillWorkspace(body.groupId, sessionWorkspace)
-    return { status: 200 }
+    return done()
   } catch (error) {
     return { status: 400, error: String(error?.message ?? error) }
   }

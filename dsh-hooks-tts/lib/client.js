@@ -151,6 +151,7 @@ window.__ModuleLoader__.load({
 		}
 		// ---- session groups: per-session "..." menu entries ----
 		// Group actions live in each Session row's menu (slot sidebar.workspaces.session.menu.item), not on the Usage page.
+		function reportMoveError(err) { window.alert("Group change failed: " + (err && err.message || String(err))); }
 		async function sendMove(body) {
 			const res = await fetch(GROUPS_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 			const b = await res.json().catch(() => ({}));
@@ -183,7 +184,7 @@ window.__ModuleLoader__.load({
 			const ICONS = { out: "M5.5 8.9h5", move: "M5.5 8.9h4.6M8.4 7l1.9 1.9L8.4 10.8", add: "M8 6.8v4.2M5.9 8.9h4.2" };
 			const run = (fn) => async () => {
 				setMenuOpen(false);
-				try { await fn(); } catch (err) { window.alert("Group change failed: " + (err && err.message || String(err))); }
+				try { await fn(); } catch (err) { reportMoveError(err); }
 			};
 			const item = (key, label, fn, ico) => h("button", { key, type: "button", role: "menuitem", className: cls, "data-hooks-menu": "", onClick: run(fn) },
 				sample ? h("span", { className: iconCls }, icon(ICONS[ico])) : null,
@@ -514,7 +515,11 @@ window.__ModuleLoader__.load({
 		const GT_KEY = "dsh-hooks-tts:groupsCollapsed";
 		const GT_STEP = 10000;
 		const GT_REST = 1e7;
-		const gtCollapsed = () => { try { const o = JSON.parse(localStorage.getItem(GT_KEY) || "{}"); return o && typeof o === "object" ? o : {}; } catch (_e) { return {}; } };
+		let gtCollapsedMap = null; // read from localStorage once; syncGroupTree runs on every DOM mutation
+		const gtCollapsed = () => {
+			if (!gtCollapsedMap) { try { const o = JSON.parse(localStorage.getItem(GT_KEY) || "{}"); gtCollapsedMap = o && typeof o === "object" ? o : {}; } catch (_e) { gtCollapsedMap = {}; } }
+			return gtCollapsedMap;
+		};
 		function gtToggle(id) {
 			const o = gtCollapsed();
 			if (o[id]) delete o[id]; else o[id] = 1;
@@ -541,13 +546,16 @@ window.__ModuleLoader__.load({
 		// The row a direct child of a section wraps (the child itself, or its first element); nested rows do not count.
 		function gtRow(c) { if (!c || !c.hasAttribute) return null; if (c.hasAttribute("data-row-key")) return c; const f = c.firstElementChild; return f && f.hasAttribute("data-row-key") ? f : null; }
 		function gtSet(el, prop, val) { if (el.style[prop] !== val) el.style[prop] = val; }
-		function gtSection(sec, wsRow, wsId, children) {
-			const keyOf = (c) => { const r = gtRow(c); return r ? r.getAttribute("data-row-key") || "" : ""; };
-			const sessions = children.filter((c) => keyOf(c).startsWith("session:"));
-			const plan = planGroupTree(groupsView, wsId, sessions.map(keyOf), gtCollapsed());
-			const active = plan.groups.length > 0;
-			if (active) { gtSet(sec, "display", "flex"); gtSet(sec, "flexDirection", "column"); sec.setAttribute(GT_MARK, ""); }
-			// headers
+		const gtKeyOf = (c) => { const r = gtRow(c); return r ? r.getAttribute("data-row-key") || "" : ""; };
+		// Remove everything this feature added to one section (headers, order, indent, flex, marks).
+		function gtUndoSection(sec) {
+			sec.querySelectorAll(":scope > [" + GT_HEADER + "]").forEach((n) => n.remove());
+			sec.querySelectorAll(":scope > [" + GT_MARK + "]").forEach((n) => { ["order", "display", "marginLeft"].forEach((p) => { n.style[p] = ""; }); n.removeAttribute(GT_MARK); n.removeAttribute("data-hooks-gt-group"); });
+			["display", "flexDirection"].forEach((p) => { sec.style[p] = ""; });
+			sec.removeAttribute(GT_MARK);
+		}
+		// One workspace's chunk of a section whose flex layout is active: every child needs an explicit order.
+		function gtApply(sec, wsRow, wsId, children, plan) {
 			const have = new Map([...sec.children].filter((c) => c.hasAttribute(GT_HEADER) && c.getAttribute("data-ws") === wsId).map((c) => [c.getAttribute(GT_HEADER), c]));
 			for (const [id, el] of have) if (!plan.groups.some((g) => g.id === id)) el.remove();
 			for (const g of plan.groups) {
@@ -567,11 +575,14 @@ window.__ModuleLoader__.load({
 				el.setAttribute("aria-expanded", g.collapsed ? "false" : "true");
 			}
 			for (const c of children) {
-				const k = keyOf(c);
+				const k = gtKeyOf(c);
+				c.setAttribute(GT_MARK, "");
 				if (k.startsWith("workspace:")) { gtSet(c, "order", "0"); continue; }
+				if (k.startsWith("overflow:")) { gtSet(c, "order", String(GT_REST * 2)); continue; } // "Show more" stays last
 				const r = plan.rows[k];
-				if (!r) { if (!c.hasAttribute(GT_HEADER)) gtSet(c, "order", String(GT_REST * 2)); continue; } // overflow button last
-				if (active || c.hasAttribute(GT_MARK)) { c.setAttribute(GT_MARK, ""); if (r.group) c.setAttribute("data-hooks-gt-group", r.group); else c.removeAttribute("data-hooks-gt-group"); gtSet(c, "order", String(r.order)); gtSet(c, "display", r.hidden ? "none" : ""); gtSet(c, "marginLeft", r.indent ? "22px" : ""); }
+				if (!r) { gtSet(c, "order", "1"); continue; } // e.g. the wrapper of child workspaces: right under the workspace row
+				if (r.group) c.setAttribute("data-hooks-gt-group", r.group); else c.removeAttribute("data-hooks-gt-group");
+				gtSet(c, "order", String(r.order)); gtSet(c, "display", r.hidden ? "none" : ""); gtSet(c, "marginLeft", r.indent ? "22px" : "");
 			}
 		}
 		function syncGroupTree() {
@@ -580,21 +591,25 @@ window.__ModuleLoader__.load({
 				document.querySelectorAll("[data-row-key^='workspace:']").forEach((r) => { const w = r.parentElement; if (w && w.parentElement) secs.add(w.parentElement); });
 				for (const sec of secs) {
 					const children = [...sec.children].filter((c) => !c.hasAttribute(GT_HEADER));
-					let wsRow = null, wsId = "", chunk = [];
-					const flush = () => { if (wsRow) gtSection(sec, wsRow, wsId, chunk); };
+					const chunks = [];
 					for (const c of children) {
 						const r = gtRow(c);
-						if (r && (r.getAttribute("data-row-key") || "").startsWith("workspace:")) { flush(); wsRow = r; wsId = r.getAttribute("data-row-key").slice(10); chunk = [c]; } else chunk.push(c);
+						if (r && (r.getAttribute("data-row-key") || "").startsWith("workspace:")) chunks.push({ wsRow: r, wsId: r.getAttribute("data-row-key").slice(10), kids: [c] });
+						else if (chunks.length) chunks[chunks.length - 1].kids.push(c);
 					}
-					flush();
+					const plans = chunks.map((ch) => planGroupTree(groupsView, ch.wsId, ch.kids.map(gtKeyOf).filter((k) => k.startsWith("session:")), gtCollapsed()));
+					if (!plans.some((pl) => pl.groups.length > 0)) { if (sec.hasAttribute(GT_MARK)) gtUndoSection(sec); continue; }
+					gtSet(sec, "display", "flex"); gtSet(sec, "flexDirection", "column"); sec.setAttribute(GT_MARK, "");
+					chunks.forEach((ch, i) => gtApply(sec, ch.wsRow, ch.wsId, ch.kids, plans[i]));
 				}
 			} catch (_e) { /* a DOM mismatch must never break the sidebar */ }
 		}
 		// Drag a session row onto a group header (or onto one of the group's members) to move it into that group.
 		function installGroupDnd() {
 			let dragged = "";
+			let passthrough = false; // our own synthetic dragover must reach DSH untouched
 			const targetGroup = (e) => {
-				if (!dragged || !e.target || !e.target.closest) return null;
+				if (!dragged || passthrough || !e.target || !e.target.closest) return null;
 				const h = e.target.closest("[" + GT_HEADER + "]");
 				if (h) return { id: h.getAttribute(GT_HEADER), ws: h.getAttribute("data-ws"), el: h };
 				const m = e.target.closest("[data-hooks-gt-group]");
@@ -626,7 +641,13 @@ window.__ModuleLoader__.load({
 				e.preventDefault(); e.stopPropagation();
 				const sessionId = dragged;
 				onEnd();
-				sendMove({ sessionId, groupId: t.id }).catch((err) => { try { console.warn("hooks-tts: move failed", err); } catch (_e) { /* ignore */ } });
+				// DSH remembers the last row hovered during the drag and would also reorder the session next to it on dragend:
+				// hover the dragged row itself, which DSH treats as "nothing to reorder".
+				try {
+					const src = document.querySelector("[data-row-key='session:" + sessionId + "']");
+					if (src) { passthrough = true; src.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() })); }
+				} catch (_e) { /* best effort */ } finally { passthrough = false; }
+				sendMove({ sessionId, groupId: t.id }).catch(reportMoveError);
 			};
 			const evs = [["dragstart", onStart], ["dragend", onEnd], ["dragover", onOver], ["dragleave", onLeave], ["drop", onDrop]];
 			evs.forEach(([n, f]) => document.addEventListener(n, f, true));
@@ -635,8 +656,7 @@ window.__ModuleLoader__.load({
 		function removeGroupTree() {
 			try {
 				document.querySelectorAll("[" + GT_HEADER + "]").forEach((n) => n.remove());
-				document.querySelectorAll("[" + GT_MARK + "]").forEach((n) => { ["order", "display", "marginLeft", "flexDirection"].forEach((p) => { n.style[p] = ""; }); n.removeAttribute(GT_MARK); });
-				document.querySelectorAll("[data-row-key^='workspace:']").forEach((r) => { if (r.parentElement) r.parentElement.style.order = ""; });
+				document.querySelectorAll("[" + GT_MARK + "]").forEach((n) => { ["order", "display", "marginLeft", "flexDirection"].forEach((p) => { n.style[p] = ""; }); n.removeAttribute(GT_MARK); n.removeAttribute("data-hooks-gt-group"); });
 			} catch (_e) { /* ignore */ }
 		}
 

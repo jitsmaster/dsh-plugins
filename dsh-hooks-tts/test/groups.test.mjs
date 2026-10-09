@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createGroups, applyMove, buildGroupsView } from '../groups.js'
+import { createGroups, applyMove, buildGroupsView, deriveGroupName } from '../groups.js'
+import { chmodSync, mkdirSync } from 'node:fs'
 
 const fresh = () => createGroups(mkdtempSync(join(tmpdir(), 'groups-')))
 
@@ -51,19 +52,19 @@ test('applyMove: validates the request and enforces the workspace', () => {
   const groups = fresh()
   const a = groups.ensureGroup('s1', 'ws1', { title: 'Alpha work' })
   const wsOf = (id) => ({ s1: 'ws1', s2: 'ws1', s9: 'ws2' })[id]
-  assert.equal(applyMove(groups, { sessionId: 's2', groupId: a.id }, wsOf).status, 200)
+  assert.equal(applyMove(groups, { sessionId: 's2', groupId: a.id }, wsOf, () => true).status, 200)
   assert.deepEqual(groups.groupOf('s2').sessionIds, ['s1', 's2'])
-  assert.equal(applyMove(groups, { sessionId: 's9', groupId: a.id }, wsOf).status, 409) // other workspace
-  assert.equal(applyMove(groups, { sessionId: 's2', groupId: 'nope' }, wsOf).status, 404)
+  assert.equal(applyMove(groups, { sessionId: 's9', groupId: a.id }, wsOf, () => true).status, 409) // other workspace
+  assert.equal(applyMove(groups, { sessionId: 's2', groupId: 'nope' }, wsOf, () => true).status, 404)
   assert.equal(applyMove(groups, { sessionId: '', groupId: a.id }, wsOf).status, 400)
-  assert.equal(applyMove(groups, { sessionId: 's2', groupId: 5 }, wsOf).status, 400)
+  assert.equal(applyMove(groups, { sessionId: 's2', groupId: 5 }, wsOf, () => true).status, 400)
   assert.equal(applyMove(groups, { sessionId: 's2', groupId: null }, wsOf).status, 200)
   assert.equal(groups.groupOf('s2'), undefined)
-  const created = applyMove(groups, { sessionId: 's9', newGroupName: 'Fresh' }, wsOf)
+  const created = applyMove(groups, { sessionId: 's9', newGroupName: 'Fresh' }, wsOf, () => true)
   assert.equal(created.status, 200)
   assert.equal(groups.groupOf('s9').name, 'Fresh')
   assert.equal(groups.groupOf('s9').workspaceId, 'ws2')
-  assert.equal(applyMove(groups, { sessionId: 's9', newGroupName: '  ' }, wsOf).status, 400)
+  assert.equal(applyMove(groups, { sessionId: 's9', newGroupName: '  ' }, wsOf, () => true).status, 400)
 })
 
 test('buildGroupsView: members carry titles; sessions list their group; ids missing from the live list are still shown', () => {
@@ -79,9 +80,9 @@ test('buildGroupsView: members carry titles; sessions list their group; ids miss
 test('applyMove: joining a workspace-less group gives it the session workspace', () => {
   const groups = fresh()
   const g = groups.ensureGroup('s1', undefined, { title: 'Alpha work' })
-  assert.equal(applyMove(groups, { sessionId: 's2', groupId: g.id }, () => 'ws1').status, 200)
+  assert.equal(applyMove(groups, { sessionId: 's2', groupId: g.id }, () => 'ws1', () => true).status, 200)
   assert.equal(groups.list()[0].workspaceId, 'ws1')
-  assert.equal(applyMove(groups, { sessionId: 's3', groupId: g.id }, () => 'ws2').status, 409)
+  assert.equal(applyMove(groups, { sessionId: 's3', groupId: g.id }, () => 'ws2', () => true).status, 409)
 })
 
 test('applyMove: joining or creating a group needs a live session; removing a closed one is still allowed', () => {
@@ -156,4 +157,27 @@ test('buildGroupsView: carries manual flag, empty groups and the workspace list'
   assert.equal(view.groups[0].manual, true)
   assert.deepEqual(view.groups[0].members, [])
   assert.deepEqual(view.workspaces, [{ id: 'ws1', title: 'Alpha' }])
+})
+
+test('deriveGroupName: credentials in the first request are redacted', () => {
+  const name = deriveGroupName({ title: 'Untitled', request: 'deploy with token=abcd1234secretvalue now', cwd: 'D:/x/proj' })
+  assert.ok(!name.includes('abcd1234secretvalue'), name)
+  assert.ok(!deriveGroupName({ request: 'use ghp_ABCDEFGHIJKLMNOPQRSTUV for it' }).includes('ghp_ABCDEF'))
+})
+
+test('createGroup refuses at the cap when every group has members, and never evicts a group with members', () => {
+  const groups = fresh()
+  for (let i = 0; i < 200; i++) groups.ensureGroup('s' + i, 'ws', { title: 'Work ' + i })
+  assert.throws(() => groups.createGroup('One more', undefined, 'ws'), /too many/)
+  assert.equal(groups.list().length, 200)
+  assert.ok(groups.list().every((g) => g.sessionIds.length === 1))
+})
+
+test('applyMove answers 500 when the change could not be saved', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'groups-'))
+  const groups = createGroups(dir)
+  const g = groups.createGroup('Keep', undefined, 'ws')
+  mkdirSync(join(dir, 'groups.json.tmp'))   // a directory where the temp file goes: the write must fail
+  const res = applyMove(groups, { deleteGroupId: g.id }, () => undefined, () => true)
+  assert.equal(res.status, 500)
 })

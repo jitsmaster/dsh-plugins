@@ -220,11 +220,16 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
   const workspaceList = () => {
     try { return ((ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry)?.list() ?? []).map((w) => ({ id: w.id, title: w.title })) } catch { return [] }
   }
-  const liveSessions = () => [...agents].map(([id, agent]) => {
-    let title
-    try { title = ctx.get('sessionTitle')?.get(agent.session)?.title } catch { /* untitled */ }
-    return { id, title, workspaceId: workspaceIdOf(id) }
-  })
+  const liveSessions = () => {
+    // One registry scan per request, not one per live session.
+    const owner = new Map()
+    try { for (const w of (ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry)?.list() ?? []) for (const sid of w.sessionIds ?? []) if (!owner.has(sid)) owner.set(sid, w.id) } catch { /* registry unavailable */ }
+    return [...agents].map(([id, agent]) => {
+      let title
+      try { title = ctx.get('sessionTitle')?.get(agent.session)?.title } catch { /* untitled */ }
+      return { id, title, workspaceId: owner.get(id) }
+    })
+  }
 
   // Settings writes are accepted only from the DSH web page itself (never from other sites).
   const webUrl = new URL(process.env.DSH_WEB_URL || 'http://127.0.0.1:3080')
