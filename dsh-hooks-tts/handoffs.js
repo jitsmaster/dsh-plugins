@@ -14,6 +14,11 @@ const HANDOFF_FILE = /handoff\.md$/i
 const WRITE_TOOLS = new Set(['write', 'edit', 'multi_edit'])
 /** tools.write({ file_path: "..." }) / tools.edit(...) inside a run_code program; group 2 is the quote, 3 the literal. */
 const PTC_WRITE = /tools\s*(?:\.\s*|\[\s*["'])(write|edit)(?:["']\s*\])?\s*\(\s*\{[^}]*?\bfile_path\s*:\s*(["'`])((?:\\.|(?!\2)[^\\\n])*?)\2/g
+/** Shell write targets ending in handoff.md: a quoted path (may hold spaces) or a bare one after the write verb or a redirect. */
+const SHELL_WRITE = /(?:\b(?:Set-Content|Add-Content|Out-File|WriteAllText|New-Item)\b[^\n|;>]*?|>>?\s*)(?:(["'])([^"'\n]*?handoff\.md)\1|((?:[A-Za-z]:[\\/]|\/)[^\s"'|;<>()]*?handoff\.md))/gi
+/** A handoff path in assistant text: in backticks (may hold spaces) or a bare absolute path. */
+const TEXT_PATH = /`([^`\n]*?handoff\.md)`|((?:[A-Za-z]:[\\/]|\/)[^\s`"'<>|]*?handoff\.md)/gi
+const WRITE_WORD = /\b(?:written|wrote|write|writing|saved|created)\b/i
 const MAX_PER_SESSION = 10
 const MAX_SESSIONS = 500
 
@@ -38,6 +43,14 @@ export function handoffWrites(name, args, baseCwd) {
     const p = a.file_path
     return typeof p === 'string' && HANDOFF_FILE.test(p.trim()) ? [absolute(p.trim(), baseCwd)] : []
   }
+  if ((tool === 'pwsh' || tool === 'bash' || tool === 'powershell') && typeof a.command === 'string') {
+    const out = []
+    for (const m of a.command.matchAll(SHELL_WRITE)) {
+      const p = (m[2] ?? m[3] ?? '').trim()
+      if (p) out.push(absolute(p, baseCwd))
+    }
+    return out
+  }
   if (tool === 'run_code' && typeof a.code === 'string') {
     const out = []
     for (const m of a.code.matchAll(PTC_WRITE)) {
@@ -49,6 +62,28 @@ export function handoffWrites(name, args, baseCwd) {
   }
   return []
 }
+
+/**
+ * Handoff notes an assistant reply says it wrote ("Handoff written to \`<path>\`"): the SPARC stop message and the
+ * cap instruction both print the path. Only absolute paths on a line with a write verb count, so resuming from or
+ * deleting a note is not a write.
+ * @param {unknown} text
+ * @returns {string[]}
+ */
+export function handoffMentions(text) {
+  if (typeof text !== 'string' || !text) return []
+  const out = []
+  for (const line of text.split(/\r?\n/)) {
+    if (!WRITE_WORD.test(line)) continue
+    for (const m of line.matchAll(TEXT_PATH)) {
+      const p = (m[1] ?? m[2] ?? '').trim()
+      if (p && isAbsolute(p)) out.push(p)
+    }
+  }
+  return out
+}
+
+const textOfContent = (content) => (typeof content === 'string' ? content : Array.isArray(content) ? content.map((b) => (b?.type === 'text' ? b.text ?? '' : '')).join('\n') : '')
 
 /**
  * One "Follow-up from handoff" request from the web page: `{ sessionId }`.
@@ -115,6 +150,15 @@ export function createHandoffTracker(stateDir, { now = Date.now, exists = exists
     } catch { /* best effort */ }
   }
 
+  /** An assistant reply: remembers the handoff notes it says it wrote. Never throws. */
+  function observeText(sessionId, text) {
+    try {
+      const paths = handoffMentions(text)
+      for (const p of paths) record(sessionId, p, false)
+      if (paths.length) save()
+    } catch { /* best effort */ }
+  }
+
   /**
    * Once per session: notes written before the tracker watched it, from the session's messages.
    * @param {string} sessionId
@@ -126,7 +170,9 @@ export function createHandoffTracker(stateDir, { now = Date.now, exists = exists
     try {
       const found = []
       for (const message of messages() ?? []) {
-        if (message?.role !== 'assistant' || !Array.isArray(message.content)) continue
+        if (message?.role !== 'assistant') continue
+        found.push(...handoffMentions(textOfContent(message.content)))
+        if (!Array.isArray(message.content)) continue
         for (const block of message.content) {
           if (block?.type === 'tool-call') found.push(...handoffWrites(block.name, block.arguments, baseCwd))
         }
@@ -152,5 +198,5 @@ export function createHandoffTracker(stateDir, { now = Date.now, exists = exists
   /** Session ids with a handoff note that still exists. */
   const withHandoff = () => Object.keys(sessions).filter((id) => latest(id) !== undefined)
 
-  return { record, observe, scan, latest, withHandoff, path }
+  return { record, observe, observeText, scan, latest, withHandoff, path }
 }

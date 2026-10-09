@@ -161,6 +161,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const streak = origin && ageMs < SHORT_SESSION_MS ? origin.streak + 1 : 0
     const forward = streak >= SHORT_STREAK_FOR_FORWARD
     pending.set(agent.id, { path, cwd: agent.session?.header?.cwd, streak })
+    handoffs?.record(agent.id, path) // offered by the session menu once the note exists
     ctx.logger.warn(`hooks-tts: context ${tokens} exceeds cap ${cap}; requesting handoff`)
     trace(`handoff requested for ${agent.id} (${tokens}/${cap}) -> ${path}; session age ${ageMs === undefined ? 'n/a (not a resumed session)' : `${Math.round(ageMs / 60000)}min`}, short streak ${streak}, mode ${forward ? 'FORWARD' : 'normal'}`)
     return makeMessage(instruction(tokens, cap, path, forward, origin?.note, prLines))
@@ -283,6 +284,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const stamp = /(-\d{8}-\d{4})-handoff\.md$/.exec(handoffPath(dir, agent))?.[1] ?? ''
     // The notes are requested when the turn ends (handleHandover), so the rest of the PR skill (reviewer,
     // auto-complete, work item, notification) still runs in this session first.
+    handoffs?.record(agent.id, `${base}-after-pr-${id}${stamp}-handoff.md`) // offered once written
     pending.set(agent.id, {
       prId: id, attempts: 0, cwd: agent.session?.header?.cwd, streak: 0,
       pr: `${base}-pr-${id}${stamp}-handoff.md`, rest: `${base}-after-pr-${id}${stamp}-handoff.md`,
@@ -417,7 +419,18 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     }
   }
 
+  /** The session's last assistant reply, as text. */
+  function lastReply(agent) {
+    try {
+      const last = agent.session.deriveMessages().filter((m) => m.role === 'assistant').at(-1)
+      const c = last?.content
+      return typeof c === 'string' ? c : (c ?? []).filter((b) => b?.type === 'text').map((b) => b.text).join('\n')
+    } catch { return '' }
+  }
+
   ctx.on('agent/turn-stopping', async ({ agent }) => {
+    // A reply that says "Handoff written to <path>" (the SPARC stop message) makes the session offer a follow-up.
+    if (handoffs && !skip(agent)) handoffs.observeText(agent.id, lastReply(agent))
     await spawnResume(agent)
     const message = check(agent, false)
     if (message) agent.steer(message)

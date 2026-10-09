@@ -503,3 +503,35 @@ test('followUp: an unknown session is a 404', async () => {
   assert.equal((await h.followUp('ghost')).status, 404)
   assert.equal(h.calls.create, 0)
 })
+
+test('followUp: a cap handoff is offered as soon as the note exists, even before the session ends its turn', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  const [msg] = await h.stepFull(450_000)
+  const path = /Write a handoff note NOW to: (.+)/.exec(msg.text)[1]
+  assert.equal((await h.followUp('a')).status, 404) // requested, not written yet
+  writeFileSync(path, '# note\nMode: plain\n')
+  const out = await h.followUp('a')
+  assert.equal(out.status, 200)
+})
+
+test('followUp: PR hand-over notes are offered once written', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  const p = await startHandover(h)
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
+  assert.equal(h.handoffs.latest('a'), p.rest)
+})
+
+test('turn end: a handoff note named in the closing reply is recorded for the session', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  h.state.title = 'ADO Pipeline'
+  const note = join(h.dir, 'ph-4-final-handoff.md')
+  writeFileSync(note, '# note\n')
+  h.state.messages = [
+    { role: 'user', content: 'go' },
+    { role: 'assistant', content: [{ type: 'text', text: '**Phase 3 complete.** Handoff written to `' + note + '`. The new session will open.' }] },
+  ]
+  assert.equal(h.handoffs.latest('a'), undefined)
+  await h.stop(10_000)
+  assert.equal(h.handoffs.latest('a'), note)
+})

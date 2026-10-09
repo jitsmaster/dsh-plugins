@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { applyFollowUp, createHandoffTracker, handoffWrites } from '../handoffs.js'
+import { applyFollowUp, createHandoffTracker, handoffMentions, handoffWrites } from '../handoffs.js'
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'handoffs-'))
 
@@ -113,4 +113,41 @@ test('applyFollowUp: validates the body and maps the follow-up result', async ()
   assert.deepEqual(await applyFollowUp({ sessionId: 'a' }, async (id) => ({ status: 200, sessionId: id + '2' })), { status: 200, body: { sessionId: 'a2' } })
   assert.deepEqual(await applyFollowUp({ sessionId: 'a' }, async () => ({ status: 404, error: 'none' })), { status: 404, body: { error: 'none' } })
   assert.deepEqual(await applyFollowUp({ sessionId: 'a' }, async () => { throw new Error('boom') }), { status: 500, body: { error: 'boom' } })
+})
+test('handoffWrites: shell writes count, reads and deletes do not', () => {
+  const p = 'D:\\v\\a-ph-1-handoff.md'
+  assert.deepEqual(handoffWrites('pwsh', { command: `Set-Content -Path '${p}' -Value $text` }), [p])
+  assert.deepEqual(handoffWrites('pwsh', { command: `$t | Out-File "${p}" -Encoding utf8` }), [p])
+  assert.deepEqual(handoffWrites('pwsh', { command: `[IO.File]::WriteAllText('${p}', $t)` }), [p])
+  assert.deepEqual(handoffWrites('bash', { command: `cat <<EOF > ${p}` }), [p])
+  assert.deepEqual(handoffWrites('pwsh', { command: `Get-Content '${p}'` }), [])
+  assert.deepEqual(handoffWrites('pwsh', { command: `Remove-Item -Force '${p}'` }), [])
+  assert.deepEqual(handoffWrites('pwsh', { command: `Get-Content '${p}' | Set-Content 'D:\\v\\other.txt'` }), [])
+})
+
+test('handoffMentions: "handoff written to <path>" lines in assistant text', () => {
+  const p = 'D:\\dev\\Notes\\CTnP\\Handoffs\\x-ph-4-final-review-handoff.md'
+  assert.deepEqual(handoffMentions(`**Phase 3 complete.** Handoff written to \`${p}\`. The new session will open.`), [p])
+  assert.deepEqual(handoffMentions(`Wrote the note to ${p} and stopped.`), [p])
+  assert.deepEqual(handoffMentions('Handoff note saved: /home/u/notes/y-handoff.md'), ['/home/u/notes/y-handoff.md'])
+  // Reading / resuming / deleting is not writing.
+  assert.deepEqual(handoffMentions(`Resuming from ${p}`), [])
+  assert.deepEqual(handoffMentions(`Deleted the previous handoff ${p}`), [])
+  assert.deepEqual(handoffMentions('no paths here, handoff written'), [])
+  assert.deepEqual(handoffMentions(undefined), [])
+})
+
+test('observeText records mentioned handoff notes; scan reads assistant text blocks too', () => {
+  const dir = tmp()
+  const a = join(dir, 'a-handoff.md'), b = join(dir, 'b-handoff.md')
+  writeFileSync(a, '# a'); writeFileSync(b, '# b')
+  const tr = createHandoffTracker(dir)
+  tr.observeText('s1', 'Handoff written to `' + a + '`.')
+  assert.equal(tr.latest('s1'), a)
+  const tr2 = createHandoffTracker(tmp())
+  tr2.scan('s2', () => [
+    { role: 'assistant', content: [{ type: 'text', text: 'Handoff written to ' + b }] },
+    { role: 'assistant', content: 'plain string reply' },
+  ])
+  assert.equal(tr2.latest('s2'), b)
 })
