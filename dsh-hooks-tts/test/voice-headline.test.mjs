@@ -1,12 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { capWords, lastParagraph, permissionHeadline, questionHeadline, spoken, stopHeadline } from '../voice/headline.js'
-
-test('numbers up to twenty are spelled out and larger ones stay digits', () => {
-  assert.equal(spoken(3), 'three')
-  assert.equal(spoken(20), 'twenty')
-  assert.equal(spoken(21), '21')
-})
+import { capWords, lastParagraph, permissionHeadline, questionHeadline, stopHeadline } from '../voice/headline.js'
 
 test('capWords collapses whitespace, caps with an ellipsis and tolerates non-text', () => {
   assert.equal(capWords('  a   b  c ', 5), 'a b c')
@@ -39,23 +33,23 @@ test('lastParagraph takes the final prose block of a markdown reply', () => {
 
 test('question headline speaks the first usable question, capped at 15 words', () => {
   assert.equal(
-    questionHeadline({ number: 2, questions: [{ question: 'Which approach should I design around?' }] }),
-    'Two, question: Which approach should I design around?')
+    questionHeadline({ questions: [{ question: 'Which approach should I design around?' }] }),
+    'Question: Which approach should I design around?')
   const long = Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ')
-  const out = questionHeadline({ number: 2, questions: [{ question: long }] })
-  assert.equal(out.split(' ').length, 2 + 15)
+  const out = questionHeadline({ questions: [{ question: long }] })
+  assert.equal(out.split(' ').length, 1 + 15)
   assert.ok(out.endsWith('...'))
 })
 
 test('question headline survives missing, blank and non-string questions', () => {
-  assert.equal(questionHeadline({ number: 2, questions: [] }), 'Two, question.')
-  assert.equal(questionHeadline({ number: 2 }), 'Two, question.')
-  assert.equal(questionHeadline({ number: 2, questions: [null, { question: '  ' }, { question: 7 }, { question: 'Real one?' }] }), 'Two, question: Real one?')
+  assert.equal(questionHeadline({ questions: [] }), 'Question.')
+  assert.equal(questionHeadline({}), 'Question.')
+  assert.equal(questionHeadline({ questions: [null, { question: '  ' }, { question: 7 }, { question: 'Real one?' }] }), 'Question: Real one?')
 })
 
 test('permission headline uses plain words for known tools and de-snakes unknown ones', () => {
-  assert.equal(permissionHeadline({ number: 4, toolName: 'write' }), 'Four, approve write file?')
-  assert.equal(permissionHeadline({ number: 4, toolName: 'pwsh' }), 'Four, approve run command?')
-  assert.equal(permissionHeadline({ number: 4, toolName: 'custom_tool-x' }), 'Four, approve custom tool x?')
-  assert.equal(permissionHeadline({ number: 4 }), 'Four, approve tool?')
+  assert.equal(permissionHeadline({ toolName: 'write' }), 'Approve write file?')
+  assert.equal(permissionHeadline({ toolName: 'pwsh' }), 'Approve run command?')
+  assert.equal(permissionHeadline({ toolName: 'custom_tool-x' }), 'Approve custom tool x?')
+  assert.equal(permissionHeadline({}), 'Approve tool?')
 })

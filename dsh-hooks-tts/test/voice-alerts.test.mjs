@@ -1,14 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { buildHookBody, createAlerts } from '../voice/alerts.js'
-import { createNumbers } from '../voice/numbers.js'
 
-const alerts = () => createAlerts({
-  numbers: createNumbers(mkdtempSync(join(tmpdir(), 'alerts-')), () => new Date('2026-10-09T10:00:00')),
-})
+const alerts = () => createAlerts()
 
 test('Stop names session and workspace however the cwd is written, then reads the last paragraph', () => {
   const a = alerts()
@@ -28,26 +22,25 @@ test('a worktree is announced by the repository it belongs to', () => {
   assert.equal(say('D:/dev/ai/STT'), 'Done on: Session: T; Workspace: STT.')
 })
 
-test('a session keeps its number across alert kinds', () => {
+test('permission requests name the tool in plain words', () => {
   const a = alerts()
-  a.headlineFor('Stop', { agentId: 'x', cwd: 'C:\\p', payload: {} })
-  assert.equal(a.headlineFor('PermissionRequest', { agentId: 'y', payload: { tool_name: 'write' } }), 'Two, approve write file?')
-  assert.equal(a.headlineFor('PermissionRequest', { agentId: 'x', payload: { tool_name: 'edit' } }), 'One, approve edit file?')
+  assert.equal(a.headlineFor('PermissionRequest', { agentId: 'y', payload: { tool_name: 'write' } }), 'Approve write file?')
+  assert.equal(a.headlineFor('PermissionRequest', { agentId: 'x', payload: { tool_name: 'edit' } }), 'Approve edit file?')
 })
 
 test('ask_user_question becomes a question headline under either tool name', () => {
   const a = alerts()
   const tool_input = { questions: [{ question: 'Which one?' }] }
-  assert.equal(a.headlineFor('PreToolUse', { agentId: 'q', payload: { tool_name: 'ask_user_question', tool_input } }), 'One, question: Which one?')
-  assert.equal(a.headlineFor('PreToolUse', { agentId: 'q', payload: { tool_name: 'AskUserQuestion', tool_input } }), 'One, question: Which one?')
+  assert.equal(a.headlineFor('PreToolUse', { agentId: 'q', payload: { tool_name: 'ask_user_question', tool_input } }), 'Question: Which one?')
+  assert.equal(a.headlineFor('PreToolUse', { agentId: 'q', payload: { tool_name: 'AskUserQuestion', tool_input } }), 'Question: Which one?')
 })
 
-test('other tools, other events and calls without an agent give no headline', () => {
+test('other tools and other events give no headline', () => {
   const a = alerts()
   assert.equal(a.headlineFor('PreToolUse', { agentId: 'q', payload: { tool_name: 'read' } }), undefined)
   assert.equal(a.headlineFor('SessionStart', { agentId: 'q', payload: {} }), undefined)
-  assert.equal(a.headlineFor('Stop', { payload: {} }), 'Done.') // Stop does not need an agent: nothing numbered is spoken
-  assert.equal(a.headlineFor('PermissionRequest', { payload: {} }), undefined)
+  assert.equal(a.headlineFor('Stop', { payload: {} }), 'Done.')
+  assert.equal(a.headlineFor('PermissionRequest', { payload: {} }), 'Approve tool?') // no agent id is needed any more
 })
 
 test('buildHookBody keeps the existing fields and adds the headline for alerts', () => {

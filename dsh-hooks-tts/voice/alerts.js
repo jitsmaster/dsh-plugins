@@ -13,24 +13,22 @@ export function workspaceOf(cwd) {
   return parts.at(-1) ?? ''
 }
 
-export function createAlerts({ numbers }) {
+export function createAlerts() {
   return {
     /** The short spoken line for a hook event, or undefined when the event is not an alert. */
     headlineFor(event, { agentId, cwd, sessionTitle, payload = {} } = {}) {
       if (event === 'Stop') {
-        if (agentId) numbers.numberFor(agentId) // not spoken any more, but the number stays reserved for voice commands
         return stopHeadline({
           session: String(sessionTitle ?? '').trim(),
           workspace: workspaceOf(cwd),
           summary: lastParagraph(payload.last_assistant_message),
         })
       }
-      if (!agentId) return undefined
       if (event === 'PermissionRequest') {
-        return permissionHeadline({ number: numbers.numberFor(agentId), toolName: payload.tool_name })
+        return permissionHeadline({ toolName: payload.tool_name })
       }
       if (event === 'PreToolUse' && ASK_TOOLS.has(payload.tool_name)) {
-        return questionHeadline({ number: numbers.numberFor(agentId), questions: payload.tool_input?.questions })
+        return questionHeadline({ questions: payload.tool_input?.questions })
       }
       return undefined
     },

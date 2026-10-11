@@ -25,7 +25,6 @@ import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
 import { buildHookBody, createAlerts } from './voice/alerts.js'
-import { createNumbers } from './voice/numbers.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
 
@@ -175,7 +174,7 @@ export function apply(ctx, baseConfig = {}) {
 
   const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens })
   const worktrees = createWorktreeTracker(stateDir)
-  const alerts = createAlerts({ numbers: createNumbers(stateDir) })
+  const alerts = createAlerts()
   const groups = createGroups(stateDir, { trace: (line) => ctx.logger.warn(`hooks-tts: ${line}`) })
   const handoffs = createHandoffTracker(stateDir)
   // "Follow-up from handoff" spawns through the cap's machinery, installed further down (hence lazy).
