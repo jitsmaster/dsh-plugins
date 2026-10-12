@@ -20,7 +20,9 @@ export function createVoiceService({
   speak = () => {},
   trace = () => {},
   minConfidence = 0.3,
+  fetchImpl = globalThis.fetch,
 }) {
+  let secret
   const agents = new Set()
   let lastAlerted
   let client
@@ -53,6 +55,7 @@ export function createVoiceService({
         let token
         try {
           token = readSecret()
+          secret = token
           error = undefined
         } catch (e) {
           error = String(e?.message ?? e)
@@ -79,6 +82,12 @@ export function createVoiceService({
       lastTranscript,
       pendingApprovals: approvals.pending(),
     }),
+    async control(action) {
+      if (!['listen', 'finish', 'cancel'].includes(action)) throw new Error('unknown voice action ' + action)
+      if (!client) throw new Error('voice control is not running')
+      const res = await fetchImpl(`http://127.0.0.1:${port}/${action}`, { method: 'POST', headers: { Authorization: 'Bearer ' + secret } })
+      if (!res.ok) throw new Error(`STT service answered HTTP ${res.status}`)
+    },
     busy: () => client?.busy ?? false,
     intercept: (req, next) => approvals.intercept(req, next),
     agentCreated: (id) => { agents.add(id) },

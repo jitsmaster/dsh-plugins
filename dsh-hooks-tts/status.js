@@ -54,7 +54,7 @@ const recordedWorktree = (r) => (r && existsSync(r.root) ? { name: r.name, root:
 
 const pct = (used, budget) => (budget > 0 ? Math.round((used / budget) * 1000) / 10 : undefined)
 
-export function startStatusService(ctx, config, stateDir, signal, settings, worktrees, groups, { handoffs, followUp } = {}) {
+export function startStatusService(ctx, config, stateDir, signal, settings, worktrees, groups, { handoffs, followUp, voice } = {}) {
   const intervalMs = config.refreshIntervalMs ?? 30_000
   const sessionBudget = config.sessionBudgetTokens ?? 30_000_000
   const weeklyBudget = config.weeklyBudgetTokens ?? 200_000_000
@@ -301,6 +301,27 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
         res.statusCode = out.status
         res.end(JSON.stringify(out.body))
       })
+    } else if ((req.url ?? '').split('?')[0] === '/voice') {
+      // Voice control state, and push-to-talk: only the DSH web page may call it (like /groups); POST acts on the mic.
+      if (!['GET', 'POST'].includes(req.method)) { res.statusCode = 405; res.end(); return }
+      res.setHeader('Content-Type', 'application/json')
+      const svc = voice?.()
+      if (req.method === 'POST') {
+        let body = ''
+        req.on('data', (d) => { body += d; if (body.length > 1024) req.destroy() })
+        req.on('end', async () => {
+          try {
+            if (!svc) throw new Error('voice control is unavailable')
+            await svc.control(String(JSON.parse(body || '{}').action))
+            res.end(JSON.stringify(svc.status()))
+          } catch (error) {
+            res.statusCode = 400
+            res.end(JSON.stringify({ error: String(error?.message ?? error) }))
+          }
+        })
+        return
+      }
+      res.end(JSON.stringify(svc ? svc.status() : { running: false, connection: 'disconnected', busy: false }))
     } else if (req.url?.startsWith('/settings')) {
       if (!['GET', 'POST'].includes(req.method)) { res.statusCode = 405; res.end(); return }
       res.setHeader('Content-Type', 'application/json')

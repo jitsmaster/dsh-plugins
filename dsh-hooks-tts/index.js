@@ -180,7 +180,7 @@ export function apply(ctx, baseConfig = {}) {
   const handoffs = createHandoffTracker(stateDir)
   // "Follow-up from handoff" spawns through the cap's machinery, installed further down (hence lazy).
   let contextCap
-  startStatusService(ctx, config, stateDir, controller.signal, settings, worktrees, groups, { handoffs, followUp: (sessionId) => contextCap.followUp(sessionId) })
+  startStatusService(ctx, config, stateDir, controller.signal, settings, worktrees, groups, { handoffs, followUp: (sessionId) => contextCap.followUp(sessionId), voice: () => voice })
 
   // Record the worktree each session actually works in (its cwd stays at the launch directory),
   // and every handoff note it writes (the session menu offers a follow-up from the latest one).

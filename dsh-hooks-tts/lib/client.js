@@ -12,6 +12,7 @@ window.__ModuleLoader__.load({
 		const SETTINGS_URL = STATUS_URL.replace(/\/status$/, "/settings");
 		const GROUPS_URL = STATUS_URL.replace(/\/status$/, "/groups");
 		const FOLLOWUP_URL = STATUS_URL.replace(/\/status$/, "/followup");
+		const VOICE_URL = STATUS_URL.replace(/\/status$/, "/voice");
 		// /status is a local JSON snapshot the host re-samples on every step, so polling it is cheap.
 		const POLL_MS = 3000;
 		const PANEL_ID = "usage";
@@ -254,6 +255,32 @@ window.__ModuleLoader__.load({
 				sample ? h("span", { className: sample.children[1].className }, label) : label);
 		}
 
+		function VoicePanel({ enabled }) {
+			const [v, setV] = React.useState(null);
+			const [err, setErr] = React.useState("");
+			const load = React.useCallback(async () => {
+				try { const r = await fetch(VOICE_URL, { cache: "no-store" }); if (r.ok) setV(await r.json()); } catch { /* panel shows stale state */ }
+			}, []);
+			React.useEffect(() => { load(); const t = setInterval(load, 2000); return () => clearInterval(t); }, [load]);
+			const act = async (action) => {
+				setErr("");
+				try {
+					const r = await fetch(VOICE_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+					const b = await r.json().catch(() => ({}));
+					if (!r.ok) throw new Error(b.error || ("HTTP " + r.status));
+					setV(b);
+				} catch (e) { setErr(String((e && e.message) || e)); }
+			};
+			const t = v && v.lastTranscript;
+			const state = !enabled ? "off" : !v || !v.running ? (v && v.error ? "error: " + v.error : "starting") : v.busy ? "listening or transcribing" : v.connection;
+			const btn = (label, action, off) => h("button", { onClick: () => act(action), disabled: off, style: { marginRight: 8, padding: "4px 10px" } }, label);
+			return h("div", { style: { margin: "8px 0 16px", fontSize: 13 } },
+				h("div", { style: { opacity: 0.8 } }, "Voice: " + state),
+				t ? h("div", { style: { marginTop: 6 } }, "\u201C" + t.text + "\u201D", h("span", { style: { opacity: 0.6, marginLeft: 8, fontSize: 12 } }, (t.confidence !== undefined ? Math.round(t.confidence * 100) + "% " : "") + (t.engine || ""))) : null,
+				v && v.pendingApprovals && v.pendingApprovals.length ? h("div", { style: { marginTop: 6, opacity: 0.8 } }, "Waiting for approval: " + v.pendingApprovals.map((p) => p.toolName).join(", ")) : null,
+				h("div", { style: { marginTop: 8 } }, btn("Listen", "listen", !(v && v.running && v.connection === "connected")), btn("Finish", "finish", !(v && v.busy)), btn("Cancel", "cancel", !(v && v.busy))),
+				err ? h("div", { style: { color: "#e5484d", marginTop: 6, fontSize: 12 } }, err) : null);
+		}
 		function UsagePage() {
 			const { status: s, failed: bad } = useStatus();
 			const u = s && s.usage;
@@ -270,6 +297,8 @@ window.__ModuleLoader__.load({
 				u ? h("div", { style: { fontSize: 12, opacity: 0.6, marginTop: 8 } },
 					`DSH tokens (local): ${fmt(u.fiveHour.tokens)} in the last 5h · ${fmt(u.weekly.tokens)} in the last 7 days`) : null,
 				h("div", { style: { marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(128,128,128,.25)" } },
+					h(Toggle, { label: "Voice control", hint: "Drive sessions by speaking through the STT service (approve, deny, stop, dictation, slash commands). Mutes read-outs while the mic is open. Off by default.", field: "voiceControl", current: s && s.settings ? s.settings.voiceControl === true : false }),
+					h(VoicePanel, { enabled: s && s.settings && s.settings.voiceControl === true }),
 					h(Toggle, { label: "TTS hooks", hint: "Short numbered spoken alerts for finished replies, questions and permission requests.", field: "ttsEnabled", current: s && s.settings && s.settings.ttsEnabled }),
 					h(Toggle, { label: "Auto-resume after handoff", hint: "When a handoff note is written, start a new session that picks it up.", field: "autoResumeHandoff", current: s && s.settings && s.settings.autoResumeHandoff }),
 						h(Toggle, { label: "Hand off before a big chunk", hint: "With auto-resume on, hand off at the start of a turn when the next chunk of work (about the size of the last few turns) would not fit under the context cap, instead of being cut off halfway.", field: "handoffAhead", current: s && s.settings && s.settings.handoffAhead }),

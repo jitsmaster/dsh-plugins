@@ -106,3 +106,23 @@ test('slash commands go to the injected runner', async () => {
   await new Promise((r) => setImmediate(r))
   assert.deepEqual(h.calls, [['slash', { sessionId: 'a1', name: 'compact', input: '' }]])
 })
+
+test('control posts listen/finish/cancel to the STT service with the bearer secret', async () => {
+  const seen = []
+  const h = make({ fetchImpl: async (url, init) => { seen.push([url, init.method, init.headers.Authorization]); return { ok: true } } })
+  h.svc.reconcile()
+  await h.svc.control('listen')
+  assert.deepEqual(seen, [['http://127.0.0.1:8890/listen', 'POST', 'Bearer sekret']])
+  await assert.rejects(() => h.svc.control('format-disk'), /unknown/i)
+})
+
+test('control without a running client fails clearly', async () => {
+  const h = make()
+  await assert.rejects(() => h.svc.control('listen'), /not running/i)
+})
+
+test('control surfaces an HTTP failure', async () => {
+  const h = make({ fetchImpl: async () => ({ ok: false, status: 503 }) })
+  h.svc.reconcile()
+  await assert.rejects(() => h.svc.control('finish'), /503/)
+})
