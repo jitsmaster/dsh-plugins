@@ -1,11 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { matchCommand, resolveConfirmation, resolveSession } from './commands.js'
-
-const LABELS = {
-  'session-fork': 'Fork session',
-  permission: 'Switch permission',
-  'session-rename': 'Rename session',
-}
+import { describeMatch, matchCommand, resolveConfirmation, resolveSession } from './commands.js'
 
 /**
  * Turns STT transcripts into DSH actions. Every side effect is injected (session controller, approvals, slash
@@ -23,7 +17,13 @@ export function createDispatcher({
   minConfidence = 0.3,
   confirmTtlMs = 15000,
   approveMinConfidence = 0.75,
+  router,
+  ack = true,
+  maxRouterWords = 20,
 }) {
+  const say = (text) => { if (ack) speak(text) }
+  const heard = (text) => (text.length > 60 ? text.slice(0, 60) : text)
+  const tooLong = (text) => text.split(/\s+/).length > maxRouterWords || text.length > 140
   let pending
 
   async function execute(match, target) {
@@ -78,10 +78,24 @@ export function createDispatcher({
       }
 
       const list = sessions()
-      const match = matchCommand(text)
+      let match = matchCommand(text)
+      let dictation = false
       if (!match) {
+        if (router && !tooLong(text)) {
+          const routed = await router(text, { sessions: list, lastAlerted: lastAlerted() })
+          if (routed === undefined) {
+            speak('Could not interpret that')
+            return { kind: 'unroutable' }
+          }
+          if (routed.kind === 'dictation') dictation = true
+          else match = routed
+        } else dictation = true
+      }
+
+      if (dictation) {
         const target = event.context ? list.find((s) => s.id === event.context) : list.find((s) => s.id === lastAlerted())
         if (!target) return { kind: 'no-session' }
+        say(`Heard. Sending to ${target.title}.`)
         try {
           await session.prompt({
             requestId: 'voice-' + randomUUID(),
@@ -129,11 +143,13 @@ export function createDispatcher({
         target = found
       }
 
-      if (match.confirm) {
+      // The model's reading of an utterance is a guess: anything beyond answering a prompt is read back first.
+      if (match.confirm || (match.viaLlm && match.action !== 'approval')) {
         pending = { match, target, at: now() }
-        speak(`${LABELS[match.id] ?? match.id}${target ? ' ' + target.title : ''}. Say yes to confirm.`)
+        speak(`${describeMatch(match, target?.title)}. Say yes to confirm.`)
         return { kind: 'confirming', id: match.id }
       }
+      say(`Heard "${heard(text)}". ${describeMatch(match, target?.title)}.`)
       return run(match, target)
     },
   }

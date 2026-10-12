@@ -190,3 +190,58 @@ export function resolveSession(name, sessions, lastAlertedId) {
   }
   return undefined
 }
+
+/**
+ * Build a match from an id and arguments produced elsewhere (the LLM router). Returns undefined for an unknown id or
+ * a missing/invalid argument, so callers never act on a half-formed command.
+ */
+export function makeMatch(id, args = {}, target) {
+  const cmd = COMMANDS.find((x) => x.id === id)
+  if (!cmd) return undefined
+  const out = { ...route(cmd), args: {}, ...(target ? { target } : {}), ...(cmd.confirm ? { confirm: true } : {}) }
+  if (cmd.arg === 'text') {
+    const text = String(args.text ?? '').trim()
+    if (!text) return undefined
+    out.args = { text }
+  } else if (cmd.arg === 'number') {
+    if (!Number.isInteger(args.number) || args.number < 1 || args.number > 99) return undefined
+    out.args = { number: args.number }
+  } else if (cmd.arg === 'preset') {
+    if (!PRESETS.some((p) => p.preset === args.preset)) return undefined
+    out.args = { preset: args.preset }
+    if (args.preset === 'danger-full-access') out.confirm = true
+  }
+  return out
+}
+
+/** A short spoken description of what a match will do, for the acknowledgement and the confirmation read-back. */
+export function describeMatch(match, title) {
+  const where = title ? ` in ${title}` : ''
+  const a = match.args ?? {}
+  switch (match.id) {
+    case 'cancel': return title ? `Stopping ${title}` : 'Stopping'
+    case 'approve': return `Approving${where}`
+    case 'deny': return `Denying${where}`
+    case 'option': return `Choosing option ${a.number}${where}`
+    case 'session-new': return 'Starting a new session'
+    case 'session-fork': return `Forking session${title ? ' ' + title : ''}`
+    case 'session-rename': return `Renaming${title ? ' ' + title : ' the session'} to ${a.text}`
+    case 'session-switch': return `Switching to ${title ?? a.text}`
+    case 'model-select': return `Selecting model ${a.text}${where}`
+    case 'compact': return `Compacting${title ? ' ' + title : ''}`
+    case 'plan': return `Toggling plan mode${where}`
+    case 'goal': return `Setting the goal${where} to: ${a.text}`
+    case 'feedback': return `Recording feedback${where}`
+    case 'export': return `Exporting${title ? ' ' + title : ' the session'}`
+    case 'permission': return `Switching permission to ${a.preset}${where}`
+    default: return match.id
+  }
+}
+
+/** One line per command for the router's prompt. */
+export function commandCatalog() {
+  return COMMANDS.map((c) => {
+    const arg = c.arg === 'text' ? ' args: {"text": string}' : c.arg === 'number' ? ' args: {"number": 1-99}' : c.arg === 'preset' ? ' args: {"preset": "danger-full-access"|"workspace-write"}' : ''
+    return `- ${c.id}: e.g. "${c.en[0]}" / "${c.zh[0]}"${arg}`
+  }).join('\n')
+}

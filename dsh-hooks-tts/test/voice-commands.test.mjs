@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { COMMANDS, matchCommand, parseNumber, resolveConfirmation, resolveSession } from '../voice/commands.js'
+import { COMMANDS, describeMatch, makeMatch, matchCommand, parseNumber, resolveConfirmation, resolveSession } from '../voice/commands.js'
 
 const id = (text) => matchCommand(text)?.id
 
@@ -132,4 +132,28 @@ test('resolveSession: an ambiguous name returns every candidate instead of guess
   const sessions = [{ id: 'a', title: 'Voice Work' }, { id: 'c', title: 'Voice Control Design' }]
   const r = resolveSession('voice', sessions, 'a')
   assert.equal(r.ambiguous.length, 2)
+})
+
+test('makeMatch builds the same shape matchCommand returns', () => {
+  assert.deepEqual(makeMatch('cancel', {}, 'voice work'), matchCommand('stop in voice work'))
+  assert.deepEqual(makeMatch('goal', { text: 'ship it' }), matchCommand('goal ship it'))
+  assert.deepEqual(makeMatch('permission', { preset: 'danger-full-access' }), matchCommand('permission full access'))
+  assert.deepEqual(makeMatch('option', { number: 2 }), matchCommand('option two'))
+})
+
+test('makeMatch rejects unknown ids and missing or bad arguments', () => {
+  assert.equal(makeMatch('format-disk'), undefined)
+  assert.equal(makeMatch('goal', {}), undefined)
+  assert.equal(makeMatch('goal', { text: '  ' }), undefined)
+  assert.equal(makeMatch('option', { number: 0 }), undefined)
+  assert.equal(makeMatch('option', { number: 'two' }), undefined)
+  assert.equal(makeMatch('permission', { preset: 'root' }), undefined)
+})
+
+test('describeMatch gives a short spoken description of what will happen', () => {
+  assert.equal(describeMatch(matchCommand('stop'), 'Voice Work'), 'Stopping Voice Work')
+  assert.equal(describeMatch(matchCommand('approve'), 'TTS hooks'), 'Approving in TTS hooks')
+  assert.equal(describeMatch(matchCommand('option two'), 'A'), 'Choosing option 2 in A')
+  assert.equal(describeMatch(matchCommand('new session')), 'Starting a new session')
+  assert.equal(describeMatch(matchCommand('goal ship the client'), 'A'), 'Setting the goal in A to: ship the client')
 })

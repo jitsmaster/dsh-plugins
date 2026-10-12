@@ -168,3 +168,67 @@ test('a transcript with no confidence field is treated as unsure for approve', a
   const r = await h.d.handle({ type: 'transcript', id: 1, text: 'approve' })
   assert.equal(r.kind, 'unsure')
 })
+
+test('every action is acknowledged out loud before it runs', async () => {
+  const order = []
+  const h = harness({ speak: (s) => order.push('speak:' + s), session: { cancel: async () => { order.push('cancel') }, prompt: async () => { order.push('prompt') } } })
+  await h.d.handle(say('stop'))
+  assert.deepEqual(order, ['speak:Heard "stop". Stopping TTS hooks cleanup.', 'cancel'])
+  await h.d.handle(say('keep refactoring the parser please', { context: 'a' }))
+  assert.match(order.at(-2), /^speak:Heard\. Sending to Voice Work/)
+  assert.equal(order.at(-1), 'prompt')
+})
+
+test('acknowledgement can be switched off', async () => {
+  const h = harness({ ack: false })
+  await h.d.handle(say('stop'))
+  assert.deepEqual(h.spoken, [])
+})
+
+test('anything the grammar does not match goes to the router; a command it returns is run', async () => {
+  const routed = []
+  const h = harness({ router: async (text, ctx) => { routed.push([text, ctx.sessions.length]); return { id: 'cancel', action: 'session', method: 'cancel', args: {}, target: 'voice work', viaLlm: true } } })
+  const r = await h.d.handle(say('hey can you kill the voice session'))
+  assert.deepEqual(routed, [['hey can you kill the voice session', 2]])
+  assert.equal(r.kind, 'confirming')
+  await h.d.handle(say('yes'))
+  assert.deepEqual(h.calls, [['cancel', { sessionId: 'a' }]])
+})
+
+test('a router command that only observes or answers does not need a read-back', async () => {
+  const h = harness({ router: async () => ({ id: 'deny', action: 'approval', decision: 'deny', args: {}, viaLlm: true }) })
+  const r = await h.d.handle(say('nope do not let it'))
+  assert.equal(r.kind, 'executed')
+  assert.deepEqual(h.calls, [['answer', { sessionId: 'b', decision: 'deny' }]])
+})
+
+test('router says dictation: the text is sent as a prompt', async () => {
+  const h = harness({ router: async () => ({ kind: 'dictation' }) })
+  const r = await h.d.handle(say('please refactor the parser', { context: 'a' }))
+  assert.equal(r.kind, 'dictation')
+  assert.equal(h.calls[0][1].sessionId, 'a')
+})
+
+test('router unavailable: the user is told, and nothing is sent', async () => {
+  const h = harness({ router: async () => undefined })
+  const r = await h.d.handle(say('do something clever'))
+  assert.equal(r.kind, 'unroutable')
+  assert.deepEqual(h.calls, [])
+  assert.match(h.spoken.at(-1), /could not|couldn't/i)
+})
+
+test('a long utterance is dictation without asking the router', async () => {
+  let asked = 0
+  const h = harness({ router: async () => { asked++; return undefined } })
+  const long = Array.from({ length: 30 }, (_, i) => 'word' + i).join(' ')
+  const r = await h.d.handle(say(long, { context: 'a' }))
+  assert.equal(r.kind, 'dictation')
+  assert.equal(asked, 0)
+})
+
+test('grammar matches never wait for the router', async () => {
+  let asked = 0
+  const h = harness({ router: async () => { asked++; return undefined } })
+  await h.d.handle(say('stop'))
+  assert.equal(asked, 0)
+})
