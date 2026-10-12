@@ -110,6 +110,8 @@ function stripTarget(text) {
   return undefined
 }
 
+const route = (cmd) => ({ id: cmd.id, action: cmd.action, ...(cmd.method ? { method: cmd.method } : {}), ...(cmd.decision ? { decision: cmd.decision } : {}), ...(cmd.slash ? { slash: cmd.slash } : {}) })
+
 function matchWithArgument(text, lower) {
   for (const cmd of COMMANDS) {
     if (!cmd.arg) continue
@@ -119,17 +121,17 @@ function matchWithArgument(text, lower) {
       if (!(lower === p || lower.startsWith(cjk ? p : p + ' '))) continue
       const rest = text.slice(p.length).trim()
       if (!rest) continue
-      if (cmd.arg === 'text') return { id: cmd.id, action: cmd.action, args: { text: rest }, ...(cmd.confirm ? { confirm: true } : {}) }
+      if (cmd.arg === 'text') return { ...route(cmd), args: { text: rest }, ...(cmd.confirm ? { confirm: true } : {}) }
       if (cmd.arg === 'number') {
         const n = parseNumber(rest)
         if (n === undefined) continue
-        return { id: cmd.id, action: cmd.action, args: { number: n } }
+        return { ...route(cmd), args: { number: n } }
       }
       if (cmd.arg === 'preset') {
         const r = rest.toLowerCase()
         const hit = PRESETS.find((x) => [...x.en, ...x.zh].some((w) => w === r))
         if (!hit) continue
-        return { id: cmd.id, action: cmd.action, args: { preset: hit.preset }, ...(hit.preset === 'danger-full-access' ? { confirm: true } : {}) }
+        return { ...route(cmd), args: { preset: hit.preset }, ...(hit.preset === 'danger-full-access' ? { confirm: true } : {}) }
       }
     }
   }
@@ -154,7 +156,7 @@ export function matchCommand(transcript) {
 }
 
 function build(cmd, target) {
-  return { id: cmd.id, action: cmd.action, args: {}, ...(target ? { target } : {}), ...(cmd.confirm ? { confirm: true } : {}) }
+  return { ...route(cmd), args: {}, ...(target ? { target } : {}), ...(cmd.confirm ? { confirm: true } : {}) }
 }
 
 const YES = ['yes', 'yeah', 'yep', 'confirm', 'confirmed', 'do it', 'go ahead', 'ok', 'okay', 'sure', '确认', '确定', '是', '是的', '好', '好的']
