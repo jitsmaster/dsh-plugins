@@ -15,7 +15,8 @@ import {
 } from './git.js'
 import { createPrLookup } from './pr.js'
 
-export const GIT_VIEW_PORT = 3082
+export const GIT_VIEW_PORT = 3082 // standalone server only (tests, tooling); the plugin mounts under GIT_VIEW_PREFIX instead
+export const GIT_VIEW_PREFIX = '/git-view'
 const STATUS_TTL_MS = 700
 
 /** Collapse concurrent identical reads and keep the answer for a moment: the UI polls, several tabs may too. */
@@ -50,9 +51,10 @@ const json = (res, code, body) => {
 
 /**
  * @param {{ registry: ReturnType<import('./sessions.js').createSessionRegistry>, logger: { warn: Function }, signal?: AbortSignal,
- *   port?: number, webUrl?: string }} opts
+ *   port?: number, webUrl?: string, embedded?: boolean }} opts
+ * `embedded` returns `{ serve }` for mounting on the Host web server (which owns the Host / Origin / cookie fence) instead of opening a port.
  */
-export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, webUrl = process.env.DSH_WEB_URL || 'http://127.0.0.1:3080', deps = {} }) {
+export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, webUrl = process.env.DSH_WEB_URL || 'http://127.0.0.1:3080', deps = {}, embedded = false }) {
   const { readBranchCompare: compareFn = readBranchCompare, prDeps } = deps // injectable for tests
   const web = new URL(webUrl)
   const allowedOrigins = new Set([...['127.0.0.1', 'localhost'].map(h => `${web.protocol}//${h}:${web.port}`), web.origin])
@@ -167,17 +169,8 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
     }
   }
 
-  const server = createServer((req, res) => {
-    const origin = req.headers.origin
-    if (!origin || !allowedOrigins.has(origin) || !allowedHosts.has(String(req.headers.host ?? '').toLowerCase())) {
-      res.statusCode = 403
-      return res.end()
-    }
-    res.setHeader('Access-Control-Allow-Origin', origin)
-    res.setHeader('Vary', 'Origin')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-    if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end() }
+  /** Serve one request that already passed the caller's origin / authentication fence. */
+  const serve = (req, res) => {
     // Read-only API: anything that could be read as a mutation is refused before routing.
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.setHeader('Allow', 'GET, HEAD, OPTIONS'); res.statusCode = 405; return res.end() }
     let url
@@ -190,6 +183,22 @@ export function startServer({ registry, logger, signal, port = GIT_VIEW_PORT, we
       if (!res.headersSent) json(res, 500, { ok: false, error: String(error?.message ?? error) })
       else res.end()
     })
+  }
+  if (embedded) return { serve, allowedOrigins }
+
+  // Standalone loopback server: the Origin / Host fence is the only gate, so it runs before serve().
+  const server = createServer((req, res) => {
+    const origin = req.headers.origin
+    if (!origin || !allowedOrigins.has(origin) || !allowedHosts.has(String(req.headers.host ?? '').toLowerCase())) {
+      res.statusCode = 403
+      return res.end()
+    }
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end() }
+    serve(req, res)
   })
   server.on('error', error => logger.warn(`git-view: server failed on 127.0.0.1:${port}: ${String(error)}`))
   server.listen(port, '127.0.0.1')

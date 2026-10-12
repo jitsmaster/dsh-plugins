@@ -10,7 +10,8 @@ window.__ModuleLoader__.load({
 
 		const TAB_ID = "dsh-git-view";
 		const TAB_KIND = "git";
-		const API = `http://${(typeof location !== "undefined" && location.hostname) || "127.0.0.1"}:${(typeof window !== "undefined" && window.__GIT_VIEW_PORT__) || 3082}`;
+		// Same origin as the page: the plugin registers /git-view on the Host web server (browser, Desktop and remote access alike).
+		const API = "/git-view";
 		const POLL_MS = 3000;
 		const CONTEXT_FULL = 100000;
 		const FOLD_KEEP = 3;

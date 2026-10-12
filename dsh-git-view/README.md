@@ -32,20 +32,19 @@ Optional plugin config keys:
 | --- | --- | --- |
 | `stateDir` | `$DSH_HOME/git-view` (`~/.dsh/git-view`) | Where `sessions.json` (session -> folder / worktree) is kept. An unusable directory is logged and sessions are simply not persisted; the plugin still loads. |
 | `gitPath` | found on `PATH` | Absolute path of the git executable. Git is never resolved against a repository's folder, and if no absolute git is found the Git tab reports "git executable not found" instead of running a bare `git`. |
-| `port` | `3082` | Loopback API port. The shipped client always calls `3082` unless the page sets `window.__GIT_VIEW_PORT__`, which the plugin cannot do, so leave this alone unless you also change that. |
 
 Git child processes receive only an allow-listed environment (`PATH`, `SystemRoot`, `HOME`/`USERPROFILE`, `APPDATA`, `TEMP`, `LANG`/`LC_*`, `ProgramData`, `ProgramFiles*`, plus the plugin's own `GIT_*` flags); other variables, such as tokens, are not forwarded.
 
 ## How it works
 
-The host half records each session's cwd and the worktree its tool calls touch (`~/.dsh/git-view/`) and runs a small HTTP API on **`127.0.0.1:3082`** (loopback, local only). The tab calls it from the browser, so it works only when the browser runs on the same machine as DSH. There is no Tailscale or other remote access in this version.
+The host half records each session's cwd and the worktree its tool calls touch (`~/.dsh/git-view/`) and serves a small HTTP API on the Host web server under **`/git-view`** (same origin and port as the page, behind the Host's own Host/Origin check and cookie authentication). The browser, the Desktop app and the remote-access proxy all reach it the same way.
 
 Routes: `/v1/snapshot`, `/v1/commit`, `/v1/diff`, `/v1/history`, `/v1/blob`. The API is read-only and accepts requests only from the DSH web origin.
 
 ## Limits
 
 - No syntax highlighting in diffs.
-- Port 3082 is fixed for the shipped client (see `port` above); when git is overloaded the API answers HTTP 429 and the tab retries or says "busy, try again". If the port is taken (or the plugin is not loaded) the tab shows "Git service unreachable (...). Is dsh-git-view loaded? Restart DSH after installing it."
+- There is no separate port. When git is overloaded the API answers HTTP 429 and the tab retries or says "busy, try again". If the plugin is not loaded the tab shows "Git service unreachable (...). Is dsh-git-view loaded? Restart DSH after installing it."
 - Lists are capped at 1,000 changed files.
 
 ## Development

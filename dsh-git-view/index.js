@@ -5,14 +5,14 @@
  * started here.
  *
  * Config (all optional): `stateDir` (where sessions.json lives), `gitPath` (absolute git executable),
- * `port` (loopback API port; the shipped client only knows 3082, see README).
+ * (The API is served on the Host web server under /git-view; there is no separate port.)
  */
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setGitPath } from './gitpath.js'
 import { createSessionRegistry } from './sessions.js'
-import { GIT_VIEW_PORT, startServer } from './server.js'
+import { GIT_VIEW_PREFIX, startServer } from './server.js'
 
 export const name = 'git-view'
 
@@ -55,18 +55,21 @@ export function apply(ctx, config = {}) {
     return next()
   })
 
-  const controller = new AbortController()
-  ctx.effect(() => () => controller.abort(), 'git-view: stop server')
-  // The shipped client talks to 3082 only (it reads window.__GIT_VIEW_PORT__, which the page must set), so a
-  // different port is only useful together with that page-side change. Invalid values fall back to the default.
-  const port = Number.isInteger(config.port) && config.port > 0 && config.port < 65536 ? config.port : GIT_VIEW_PORT
-  // A bad DSH_WEB_URL (new URL throws) or a listen failure must not fail plugin load.
+  // The API rides the Host's own web server: same origin and port as the page, so the browser, Desktop and the
+  // remote-access proxy all reach it. Every request must pass the Host's Host/Origin fence and cookie authentication.
   try {
-    startServer({
-      registry,
-      logger: ctx.logger,
-      signal: controller.signal,
-      port,
+    const { serve } = startServer({ registry, logger: ctx.logger, embedded: true })
+    ctx.inject(['connection', 'webServer'], (webCtx) => {
+      webCtx.effect(() => webCtx.webServer.register({
+        kind: 'prefix',
+        path: GIT_VIEW_PREFIX,
+        handler: (req, res) => {
+          const admission = webCtx.connection.admit(req)
+          if ('rejection' in admission) { res.statusCode = admission.rejection; res.end(); return }
+          req.url = (req.url ?? '/').slice(GIT_VIEW_PREFIX.length) || '/'
+          serve(req, res)
+        },
+      }), 'git-view: routes')
     })
-  } catch (error) { ctx.logger?.warn?.(`git-view: server not started: ${String(error)}`) }
+  } catch (error) { ctx.logger?.warn?.(`git-view: routes not registered: ${String(error)}`) }
 }
