@@ -27,6 +27,7 @@ import { createGroups } from './groups.js'
 import { buildHookBody, createAlerts } from './voice/alerts.js'
 import { createVoiceService } from './voice/service.js'
 import { createLlmRouter } from './voice/llm-router.js'
+import { createSpeaker } from './voice/speaker.js'
 import { createSttLauncher } from './voice/stt-launcher.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
@@ -270,13 +271,7 @@ export function apply(ctx, baseConfig = {}) {
   // Voice control: the STT service's transcripts drive sessions (see voice/service.js). Off unless settings.voiceControl.
   const voiceAgents = new Map()
   const controllerOf = () => ctx.get('sessionController') ?? ctx.sessionController
-  const speakNow = (text) => {
-    try {
-      const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, 'scripts', 'stop-speak.ps1')], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, detached: true, env: baseEnv })
-      child.stdin.end(JSON.stringify({ headline: text }))
-      child.unref()
-    } catch (error) { ctx.logger.warn(`hooks-tts: voice speak failed: ${String(error)}`) }
-  }
+  const speakNow = createSpeaker({ spawn, root: ROOT, env: baseEnv, onError: (error) => ctx.logger.warn(`hooks-tts: voice speak failed: ${String(error)}`) })
   // Start the STT daemon together with DSH when voice control is on (config.sttAutoStart: false opts out).
   const sttPort = config.sttPort ?? 8890
   const sttLauncher = config.sttAutoStart === false ? undefined : createSttLauncher({
