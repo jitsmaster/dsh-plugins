@@ -301,7 +301,14 @@ export function apply(ctx, baseConfig = {}) {
       appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n')
     } catch { /* best effort */ }
   }
-  const voiceRouter = createLlmRouter({ llm: ctx.llm, log: (line) => { voiceLog({ type: 'router', line }); ctx.logger.info(`hooks-tts: ${line}`) } })
+  // Resolved per call and guarded: reading a service the plugin did not inject can throw, and that must never abort apply().
+  const llmService = () => { try { return ctx.get('llm') ?? ctx.llm } catch { return undefined } }
+  const lazyLlm = {
+    listProviders: () => llmService().listProviders(),
+    listModels: (p) => llmService().listModels(p),
+    prepareCall: (...a) => llmService().prepareCall(...a),
+  }
+  const voiceRouter = createLlmRouter({ llm: lazyLlm, log: (line) => { voiceLog({ type: 'router', line }); ctx.logger.info(`hooks-tts: ${line}`) } })
   const voice = createVoiceService({
     router: (t, c) => voiceRouter.route(t, c),
     confirm: () => settings.get().voiceConfirm !== false,
