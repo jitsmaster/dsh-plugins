@@ -126,3 +126,26 @@ test('control surfaces an HTTP failure', async () => {
   h.svc.reconcile()
   await assert.rejects(() => h.svc.control('finish'), /503/)
 })
+
+test('reconcile asks the launcher to ensure STT only while enabled and not connected', async () => {
+  const calls = []
+  const h = make({ ensureStt: async () => { calls.push('ensure'); return 'started' } })
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(calls, ['ensure'])
+  h.sock().onopen({})
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(calls, ['ensure'])
+  h.state.enabled = false
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(calls, ['ensure'])
+})
+
+test('an ensureStt failure never breaks reconcile', async () => {
+  const h = make({ ensureStt: async () => { throw new Error('x') } })
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.equal(h.svc.status().running, true)
+})

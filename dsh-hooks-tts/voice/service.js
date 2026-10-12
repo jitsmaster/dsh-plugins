@@ -21,6 +21,7 @@ export function createVoiceService({
   trace = () => {},
   minConfidence = 0.3,
   fetchImpl = globalThis.fetch,
+  ensureStt,
 }) {
   let secret
   const agents = new Set()
@@ -28,6 +29,7 @@ export function createVoiceService({
   let client
   let error
   let lastTranscript
+  let sttState
   const approvals = createVoiceApprovals({ enabled })
 
   const dispatcher = createDispatcher({
@@ -51,6 +53,9 @@ export function createVoiceService({
 
   return {
     reconcile() {
+      if (enabled() && ensureStt && client?.state !== 'connected') {
+        Promise.resolve().then(ensureStt).then((r) => { sttState = r }, (e) => { sttState = 'failed: ' + (e?.message ?? e) })
+      }
       if (enabled() && !client) {
         let token
         try {
@@ -79,6 +84,7 @@ export function createVoiceService({
       connection: client?.state ?? 'disconnected',
       busy: client?.busy ?? false,
       error,
+      stt: sttState,
       lastTranscript,
       pendingApprovals: approvals.pending(),
     }),

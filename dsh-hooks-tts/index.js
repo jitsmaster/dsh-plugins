@@ -13,7 +13,7 @@
  */
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +26,7 @@ import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
 import { buildHookBody, createAlerts } from './voice/alerts.js'
 import { createVoiceService } from './voice/service.js'
+import { createSttLauncher } from './voice/stt-launcher.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
 
@@ -275,10 +276,28 @@ export function apply(ctx, baseConfig = {}) {
       child.unref()
     } catch (error) { ctx.logger.warn(`hooks-tts: voice speak failed: ${String(error)}`) }
   }
+  // Start the STT daemon together with DSH when voice control is on (config.sttAutoStart: false opts out).
+  const sttPort = config.sttPort ?? 8890
+  const sttLauncher = config.sttAutoStart === false ? undefined : createSttLauncher({
+    dir: config.sttDir ?? 'D:\\dev\\ai\\STT',
+    configFile: config.sttConfig ?? 'config.example.toml',
+    port: sttPort,
+    probe: async (port) => { try { return (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1500) })).ok } catch { return false } },
+    exists: existsSync,
+    spawnDetached: (cmd, args, opts) => {
+      const log = openSync(join(stateDir, 'stt-service.log'), 'a')
+      try {
+        spawn(cmd, args, { ...opts, detached: true, stdio: ['ignore', log, log], windowsHide: true, env: baseEnv }).unref()
+      } finally { closeSync(log) }
+    },
+    readLock: () => { try { return readFileSync(join(stateDir, 'stt-starting'), 'utf8') } catch { return undefined } },
+    writeLock: (v) => { try { writeFileSync(join(stateDir, 'stt-starting'), String(v)) } catch { /* best effort */ } },
+  })
   const voice = createVoiceService({
+    ensureStt: sttLauncher ? async () => { const r = await sttLauncher.ensure(); if (r === 'started') ctx.logger.info('hooks-tts: started the STT service'); return r } : undefined,
     enabled: () => settings.get().voiceControl === true,
     readSecret: () => readFileSync(join(stateDir, 'stt-secret'), 'utf8').trim(),
-    port: config.sttPort ?? 8890,
+    port: sttPort,
     titleOf: (id) => { try { return ctx.get('sessionTitle')?.get(voiceAgents.get(id)?.session)?.title } catch { return undefined } },
     controller: {
       cancel: async (r) => controllerOf().cancel(r),
