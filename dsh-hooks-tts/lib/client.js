@@ -7,7 +7,8 @@ window.__ModuleLoader__.load({
 		const React = require("react");
 		const h = React.createElement;
 
-		const STATUS_URL = `http://${location.hostname || "127.0.0.1"}:3081/status`;
+		// Same origin as the page: the plugin registers /hooks-tts on the Host web server (browser, Desktop and remote access alike).
+		const STATUS_URL = "/hooks-tts/status";
 		const SETTINGS_URL = STATUS_URL.replace(/\/status$/, "/settings");
 		const GROUPS_URL = STATUS_URL.replace(/\/status$/, "/groups");
 		const FOLLOWUP_URL = STATUS_URL.replace(/\/status$/, "/followup");
@@ -262,7 +263,7 @@ window.__ModuleLoader__.load({
 			h("div", { style: { padding: 24, maxWidth: 520 } },
 				h("h2", { style: { margin: "0 0 4px" } }, "Hooks and Usage"),
 				h("div", { style: { fontSize: 12, opacity: 0.7, marginBottom: 20 } },
-					"Claude plan limits, across all sessions · refreshes every 30s" + (c && c.updatedAt ? ` · updated ${new Date(c.updatedAt).toLocaleTimeString()}` : "")),
+					"Claude plan limits, across all sessions · refreshes every 5 min" + (c && c.updatedAt ? ` · updated ${new Date(c.updatedAt).toLocaleTimeString()}` : "")),
 				bad ? h("div", { style: { color: "#e5484d", marginBottom: 12 } }, "Status service unreachable (is dsh-hooks-tts loaded?)") : null,
 				c && c.error ? h("div", { style: { color: "#f5a524", marginBottom: 12, fontSize: 12 } }, "Claude usage: " + c.error + (limits.length ? " (showing last reading)" : "")) : null,
 				limits.map((l) => h(Bar, { key: l.kind + l.label, label: l.label, data: { pct: l.percent }, sub: fmtReset(l.resetsAt) })),

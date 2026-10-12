@@ -2,10 +2,9 @@
  * Status service: every `refreshIntervalMs` (default 30s) it samples each live
  * agent's worktree, context size and token usage, keeps a persistent 7-day token
  * ledger for the weekly figure, and serves the snapshot as JSON on
- * http://127.0.0.1:3081/status for the browser widget (lib/client.js).
+ * /hooks-tts/status on the Host web server for the widget (lib/client.js).
  */
 import { execFile } from 'node:child_process'
-import { createServer } from 'node:http'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -13,7 +12,7 @@ import { applyMove, buildGroupsView } from './groups.js'
 import { listSpawned } from './spawned.js'
 import { applyFollowUp } from './handoffs.js'
 
-export const STATUS_PORT = 3081
+export const STATUS_PREFIX = '/hooks-tts'
 
 const git = (cwd, args) => new Promise((res) => {
   execFile('git', ['-C', cwd, ...args], { timeout: 5000, windowsHide: true }, (err, out) => res(err ? undefined : out.trim()))
@@ -93,8 +92,24 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     if (l.kind === 'weekly_scoped') return `Current week (${l.scope?.model?.display_name ?? l.scope?.surface ?? 'scoped'})`
     return l.kind
   }
+  // The usage endpoint rate-limits hard (HTTP 429, even for one call per half minute), and the web server and the
+  // Desktop app each run this service on the same profile. So the last good reading and the back-off live in one
+  // shared file: whichever process is due fetches, the others reuse it, and a 429 pauses everybody (5 min, doubling
+  // up to 30 min). The last good limits stay on screen, marked with the error, until a fetch succeeds again.
+  const cachePath = join(stateDir, 'claude-usage.json')
+  const FRESH_MS = config.claudeUsageIntervalMs ?? 300_000
+  const readCache = () => { try { return JSON.parse(readFileSync(cachePath, 'utf8')) } catch { return {} } }
+  const writeCache = (c) => { try { writeFileSync(cachePath, JSON.stringify(c)) } catch { /* best effort */ } }
   async function refreshClaude() {
     if (!claudeEnabled) return
+    const cache = readCache()
+    const now = Date.now()
+    const show = (error) => {
+      claude = { enabled: true, limits: cache.limits ?? claude.limits, updatedAt: cache.updatedAt ?? claude.updatedAt, error }
+      snapshot = { ...snapshot, claude }
+    }
+    if (cache.backoffUntil > now) return show(`rate limited, retrying at ${new Date(cache.backoffUntil).toLocaleTimeString()}`)
+    if (cache.updatedAt && now - Date.parse(cache.updatedAt) < FRESH_MS) return show(null)
     try {
       const token = JSON.parse(readFileSync(credPath, 'utf8'))?.claudeAiOauth?.accessToken
       if (!token) throw new Error('no Claude Code login found')
@@ -102,16 +117,24 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
         headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
         signal: AbortSignal.timeout(15_000),
       })
+      if (res.status === 429) {
+        const wait = Math.min(1_800_000, Math.max(300_000, (cache.backoffMs ?? 150_000) * 2))
+        writeCache({ ...cache, backoffMs: wait, backoffUntil: now + wait })
+        cache.backoffUntil = now + wait
+        return show(`rate limited (HTTP 429), retrying at ${new Date(now + wait).toLocaleTimeString()}`)
+      }
       if (!res.ok) throw new Error(res.status === 401 ? 'Claude token expired (open Claude Code to refresh)' : `HTTP ${res.status}`)
       const data = await res.json()
       const limits = (data.limits ?? []).map(l => ({
         kind: l.kind, label: limitLabel(l), percent: l.percent, resetsAt: l.resets_at, severity: l.severity,
       }))
-      claude = { enabled: true, limits, updatedAt: new Date().toISOString(), error: null }
+      const updatedAt = new Date().toISOString()
+      writeCache({ limits, updatedAt })
+      claude = { enabled: true, limits, updatedAt, error: null }
+      snapshot = { ...snapshot, claude }
     } catch (error) {
-      claude = { ...claude, enabled: true, error: String(error?.message ?? error) }
+      show(String(error?.message ?? error))
     }
-    snapshot = { ...snapshot, claude }
   }
 
   async function sample() {
@@ -239,24 +262,17 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     return { ...buildGroupsView(groups?.list() ?? [], liveSessions(), workspaceList()), handoffs: withHandoff }
   }
 
-  // Settings writes are accepted only from the DSH web page itself (never from other sites).
-  const webUrl = new URL(process.env.DSH_WEB_URL || 'http://127.0.0.1:3080')
-  const allowedOrigins = new Set(['127.0.0.1', 'localhost'].map(h => `${webUrl.protocol}//${h}:${webUrl.port}`).concat(webUrl.origin))
-
-  const server = createServer((req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*')
+  // The API rides the Host's own web server (same origin and port as the page, so the browser, Desktop and the
+  // remote-access proxy all reach it). Every request must pass the Host's Host/Origin fence and cookie authentication.
+  const handle = (req, res, admit) => {
+    const rejection = admit(req)
+    if (rejection !== undefined) { res.statusCode = rejection; res.end(); return }
     res.setHeader('Cache-Control', 'no-store')
     // Plain string split: URL parsing throws on a malformed request target, which must never reach the host process.
     if ((req.url ?? '').split('?')[0] === '/groups') {
       // Group names can quote the user's first request: other web pages are refused (like /settings). The loopback
       // bind is the real boundary; a local process can still send an Origin header.
-      const origin = req.headers.origin
-      if (!origin || !allowedOrigins.has(origin) || !['GET', 'POST', 'OPTIONS'].includes(req.method)) { res.statusCode = 403; res.end(); return }
-      res.setHeader('Access-Control-Allow-Origin', origin)
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-      res.setHeader('Vary', 'Origin')
-      if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return }
+      if (!['GET', 'POST'].includes(req.method)) { res.statusCode = 405; res.end(); return }
       res.setHeader('Content-Type', 'application/json')
       if (req.method === 'POST') {
         // Manual move of a session into / out of / between groups.
@@ -274,13 +290,7 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
       res.end(JSON.stringify(groupsPayload()))
     } else if ((req.url ?? '').split('?')[0] === '/followup') {
       // "Follow-up from handoff": spawns a session, so only the DSH web page may call it (like /groups).
-      const origin = req.headers.origin
-      if (!origin || !allowedOrigins.has(origin) || !['POST', 'OPTIONS'].includes(req.method)) { res.statusCode = 403; res.end(); return }
-      res.setHeader('Access-Control-Allow-Origin', origin)
-      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-      res.setHeader('Vary', 'Origin')
-      if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return }
+      if (!['GET', 'POST'].includes(req.method)) { res.statusCode = 405; res.end(); return }
       res.setHeader('Content-Type', 'application/json')
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 4096) req.destroy() })
@@ -292,13 +302,7 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
         res.end(JSON.stringify(out.body))
       })
     } else if (req.url?.startsWith('/settings')) {
-      const origin = req.headers.origin
-      if (!origin || !allowedOrigins.has(origin)) { res.statusCode = 403; res.end(); return }
-      res.setHeader('Access-Control-Allow-Origin', origin)
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-      res.setHeader('Vary', 'Origin')
-      if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return }
+      if (!['GET', 'POST'].includes(req.method)) { res.statusCode = 405; res.end(); return }
       res.setHeader('Content-Type', 'application/json')
       if (req.method === 'POST') {
         let body = ''
@@ -324,10 +328,19 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
       res.statusCode = 404
       res.end()
     }
+  }
+  // Mounted under STATUS_PREFIX; the handler routes on the path below it.
+  ctx.inject(['connection', 'webServer'], (webCtx) => {
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'prefix',
+      path: STATUS_PREFIX,
+      handler: (req, res) => {
+        req.url = (req.url ?? '/').slice(STATUS_PREFIX.length) || '/'
+        handle(req, res, (request) => { const admission = webCtx.connection.admit(request); return 'rejection' in admission ? admission.rejection : undefined })
+      },
+    }), 'hooks-tts: status routes')
   })
-  server.on('error', error => ctx.logger.warn(`hooks-tts: status server failed: ${String(error)}`))
-  server.listen(STATUS_PORT, '127.0.0.1')
 
-  const stop = () => { clearInterval(timer); clearTimeout(sampleTimer); server.close() }
+  const stop = () => { clearInterval(timer); clearTimeout(sampleTimer) }
   signal.addEventListener('abort', stop, { once: true })
 }
