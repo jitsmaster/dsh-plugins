@@ -1,0 +1,108 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { createVoiceService } from '../voice/service.js'
+
+class FakeSocket {
+  static instances = []
+  constructor(url) { this.url = url; FakeSocket.instances.push(this) }
+  close() { this.onclose?.({}) }
+}
+
+function make(extra = {}) {
+  FakeSocket.instances = []
+  const state = { enabled: true }
+  const calls = []
+  const spoken = []
+  const agents = new Map()
+  const svc = createVoiceService({
+    enabled: () => state.enabled,
+    readSecret: () => 'sekret',
+    WebSocketImpl: FakeSocket,
+    setTimer: () => 1,
+    clearTimer: () => {},
+    titleOf: (id) => agents.get(id)?.title,
+    controller: {
+      cancel: async (a) => { calls.push(['cancel', a]) },
+      create: async () => ({}), fork: async () => ({}), rename: async () => ({}), selectModel: async () => ({}),
+      prompt: async (a) => { calls.push(['prompt', a]) },
+    },
+    runSlash: async (a) => { calls.push(['slash', a]) },
+    switchTo: async () => {},
+    speak: (s) => spoken.push(s),
+    ...extra,
+  })
+  return { svc, state, calls, spoken, agents, sock: () => FakeSocket.instances.at(-1) }
+}
+
+test('reconcile starts the client when enabled and stops it when disabled', () => {
+  const h = make()
+  h.svc.reconcile()
+  assert.equal(FakeSocket.instances.length, 1)
+  assert.equal(h.sock().url, 'ws://127.0.0.1:8890/events?token=sekret')
+  h.svc.reconcile()
+  assert.equal(FakeSocket.instances.length, 1)
+  h.state.enabled = false
+  h.svc.reconcile()
+  assert.equal(h.svc.status().connection, 'disconnected')
+  assert.equal(h.svc.status().running, false)
+})
+
+test('a missing secret keeps it off without throwing', () => {
+  const h = make({ readSecret: () => { throw new Error('ENOENT') } })
+  h.svc.reconcile()
+  assert.equal(FakeSocket.instances.length, 0)
+  assert.equal(h.svc.status().running, false)
+  assert.match(h.svc.status().error, /ENOENT/)
+})
+
+test('busy follows listening/transcribing', () => {
+  const h = make()
+  h.svc.reconcile(); h.sock().onopen({})
+  assert.equal(h.svc.busy(), false)
+  h.sock().onmessage({ data: JSON.stringify({ type: 'listening' }) })
+  assert.equal(h.svc.busy(), true)
+  h.sock().onmessage({ data: JSON.stringify({ type: 'idle', reason: 'done' }) })
+  assert.equal(h.svc.busy(), false)
+})
+
+test('a transcript reaches the dispatcher: stop cancels the last alerted agent', async () => {
+  const h = make()
+  h.agents.set('a1', { title: 'Voice Work' })
+  h.svc.agentCreated('a1')
+  h.svc.noteAlert('a1')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'stop', confidence: 0.9 }) })
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(h.calls, [['cancel', { sessionId: 'a1' }]])
+  assert.equal(h.svc.status().lastTranscript.text, 'stop')
+})
+
+test('disposed agents are no longer targets', async () => {
+  const h = make()
+  h.agents.set('a1', { title: 'Voice Work' })
+  h.svc.agentCreated('a1'); h.svc.noteAlert('a1'); h.svc.agentDisposed('a1')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'stop', confidence: 0.9 }) })
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(h.calls, [])
+})
+
+test('approve with no pending request is spoken, not thrown', async () => {
+  const h = make()
+  h.agents.set('a1', { title: 'Voice Work' })
+  h.svc.agentCreated('a1'); h.svc.noteAlert('a1')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'approve', confidence: 0.9 }) })
+  await new Promise((r) => setImmediate(r))
+  assert.match(h.spoken.at(-1), /No pending/i)
+})
+
+test('slash commands go to the injected runner', async () => {
+  const h = make()
+  h.agents.set('a1', { title: 'Voice Work' })
+  h.svc.agentCreated('a1'); h.svc.noteAlert('a1')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'compact', confidence: 0.9 }) })
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(h.calls, [['slash', { sessionId: 'a1', name: 'compact', input: '' }]])
+})

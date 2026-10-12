@@ -25,6 +25,7 @@ import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
 import { buildHookBody, createAlerts } from './voice/alerts.js'
+import { createVoiceService } from './voice/service.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
 
@@ -210,13 +211,14 @@ export function apply(ctx, baseConfig = {}) {
     const bodyFor = (isTts) => (isTts
       ? (ttsBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts }))
       : (plainBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts: noAlerts })))
+    if (agent?.id && (event === 'Stop' || event === 'PermissionRequest' || (event === 'PreToolUse' && /^(ask_user_question|AskUserQuestion)$/.test(payload?.tool_name ?? '')))) voice.noteAlert(agent.id)
     const folded = { decision: undefined, reason: undefined, context: [] }
     for (const group of hooks[event] ?? []) {
       if (!matchesAny(group.matcher, queries)) continue
       for (const hook of group.hooks) {
         // TTS hooks (the detached speak launchers) are switched together from the sidebar.
         const isTts = Boolean(hook.args?.some(a => /detach-launcher\.ps1$/.test(a)))
-        if (isTts && !settings.get().ttsEnabled) continue
+        if (isTts && (!settings.get().ttsEnabled || voice.busy())) continue // no read-outs while the mic is open
         const opts = {
           cwd, env, defaultTimeoutMs,
           signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
@@ -262,6 +264,46 @@ export function apply(ctx, baseConfig = {}) {
   contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, handoffs, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId) })
   installAskUserTuning(ctx, { skip, makeMessage })
   installHoldTitles(ctx, { skip, stateDir: dirname(settings.path) })
+
+  // Voice control: the STT service's transcripts drive sessions (see voice/service.js). Off unless settings.voiceControl.
+  const voiceAgents = new Map()
+  const controllerOf = () => ctx.get('sessionController') ?? ctx.sessionController
+  const speakNow = (text) => {
+    try {
+      const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, 'scripts', 'stop-speak.ps1')], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, detached: true, env: baseEnv })
+      child.stdin.end(JSON.stringify({ headline: text }))
+      child.unref()
+    } catch (error) { ctx.logger.warn(`hooks-tts: voice speak failed: ${String(error)}`) }
+  }
+  const voice = createVoiceService({
+    enabled: () => settings.get().voiceControl === true,
+    readSecret: () => readFileSync(join(stateDir, 'stt-secret'), 'utf8').trim(),
+    port: config.sttPort ?? 8890,
+    titleOf: (id) => { try { return ctx.get('sessionTitle')?.get(voiceAgents.get(id)?.session)?.title } catch { return undefined } },
+    controller: {
+      cancel: async (r) => controllerOf().cancel(r),
+      create: async (r) => controllerOf().create(r),
+      fork: async (r) => controllerOf().fork(r),
+      rename: async (r) => controllerOf().rename(r),
+      selectModel: async (r) => controllerOf().selectModel(r),
+      prompt: async (r) => controllerOf().prompt(r, AbortSignal.timeout(30_000)),
+    },
+    runSlash: async ({ sessionId, name, input }) => {
+      const resolved = await controllerOf().resolveAgent(sessionId)
+      if (!resolved.agent) throw new Error('session is not available')
+      const done = await ctx.get('commands').execute(resolved.agent, `/${name}${input}`, [], AbortSignal.timeout(30_000))
+      if (done === undefined) throw new Error(`/${name} is not a known command`)
+      if (done.result?.kind === 'error') throw new Error(done.result.text)
+    },
+    switchTo: async () => { throw new Error('switching sessions by voice is not available yet') },
+    speak: speakNow,
+    trace: (line) => ctx.logger.info(`hooks-tts: ${line}`),
+  })
+  const voiceTimer = setInterval(() => { try { voice.reconcile() } catch (error) { ctx.logger.warn(`hooks-tts: voice reconcile failed: ${String(error)}`) } }, 5000)
+  voiceTimer.unref?.()
+  ctx.effect(() => () => { clearInterval(voiceTimer); voice.stop() }, 'hooks-tts: stop voice control')
+  ctx.on('agent/created', ({ agent }) => { if (!skip(agent)) { voiceAgents.set(agent.id, agent); voice.agentCreated(agent.id) } })
+  ctx.on('agent/disposed', ({ agent }) => { voiceAgents.delete(agent.id); voice.agentDisposed(agent.id) })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {
     if (skip(agent)) return
@@ -337,6 +379,6 @@ export function apply(ctx, baseConfig = {}) {
         tool_name: req.toolName, message,
       }, req.agent, req.signal).catch(() => {})
     }
-    return next()
+    return voice.intercept(req, next) // off = plain next(); on = a spoken approve/deny races the GUI
   })
 }
