@@ -150,7 +150,7 @@ test('a failing action is spoken and reported, never thrown', async () => {
 
 test('a low-confidence approve is never executed; the user is asked to repeat', async () => {
   const h = harness()
-  const r = await h.d.handle(say('approve', { confidence: 0.5 }))
+  const r = await h.d.handle(say('approve', { confidence: 0.4 }))
   assert.equal(r.kind, 'unsure')
   assert.deepEqual(h.calls, [])
   assert.match(h.spoken.at(-1), /again/i)
@@ -380,7 +380,7 @@ test('security: an unchanged request is approved on yes', async () => {
 test('security: a low-confidence yes does not confirm and keeps the question open', async () => {
   const h = harness({ confirm: true })
   await h.d.handle(say('compact'))
-  const r = await h.d.handle(say('yes', { confidence: 0.5 }))
+  const r = await h.d.handle(say('yes', { confidence: 0.4 }))
   assert.equal(r.kind, 'unsure')
   assert.deepEqual(h.calls, [])
   assert.equal((await h.d.handle(say('yes', { confidence: 0.9 }))).kind, 'executed')
@@ -437,4 +437,54 @@ test('dictation with no known session says so out loud', async () => {
   const r = await h.d.handle(say('please refactor the parser'))
   assert.equal(r.kind, 'no-session')
   assert.match(h.spoken.at(-1), /no session/i)
+})
+
+test('real STT confidences for short words sit around 0.55-0.65: a yes at 0.55 confirms', async () => {
+  const h = harness({ confirm: true, approveMinConfidence: undefined })
+  await h.d.handle(say('compact'))
+  const r = await h.d.handle(say('Yes.', { confidence: 0.55 }))
+  assert.equal(r.kind, 'executed')
+})
+
+test('a read-back stays answerable for 40 s (speech plus the hotkey take time)', async () => {
+  const h = harness({ confirm: true, confirmTtlMs: undefined })
+  await h.d.handle(say('compact'))
+  h.advance(40000)
+  assert.equal((await h.d.handle(say('yes'))).kind, 'executed')
+  assert.equal(h.calls[0][0], 'slash')
+})
+
+test('switch to <name> selects the session for later dictation, instantly even with confirm on', async () => {
+  const h = harness({ confirm: true })
+  const r = await h.d.handle(say('switch to voice work'))
+  assert.equal(r.kind, 'executed')
+  assert.match(h.spoken.at(-1), /Voice Work/)
+  await h.d.handle(say('please refactor the parser'))
+  assert.match(h.spoken.at(-1), /Voice Work/)
+  await h.d.handle(say('yes'))
+  assert.equal(h.calls.find((c) => c[0] === 'prompt')[1].sessionId, 'a')
+})
+
+test('a selected session also becomes the default target for commands; a spoken name still wins', async () => {
+  const h = harness({ confirm: false })
+  await h.d.handle(say('switch to voice work'))
+  await h.d.handle(say('stop'))
+  assert.deepEqual(h.calls.at(-1), ['cancel', { sessionId: 'a' }])
+  await h.d.handle(say('stop in tts hooks'))
+  assert.deepEqual(h.calls.at(-1), ['cancel', { sessionId: 'b' }])
+})
+
+test('a selection works even when the UI cannot switch, and clear(id) forgets it', async () => {
+  const h = harness({ confirm: false, ui: { switchTo: async () => { throw new Error('not available') } } })
+  assert.equal((await h.d.handle(say('switch to voice work'))).kind, 'executed')
+  h.d.clear('a')
+  await h.d.handle(say('keep going please'))
+  assert.equal(h.calls.find((c) => c[0] === 'prompt')[1].sessionId, 'b')
+})
+
+test('an event context still beats the selection', async () => {
+  const h = harness({ confirm: false })
+  await h.d.handle(say('switch to voice work'))
+  await h.d.handle(say('keep going please', { context: 'b' }))
+  assert.equal(h.calls.find((c) => c[0] === 'prompt')[1].sessionId, 'b')
 })

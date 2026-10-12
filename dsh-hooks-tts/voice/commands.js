@@ -226,7 +226,7 @@ export function describeMatch(match, title) {
     case 'session-new': return 'Starting a new session'
     case 'session-fork': return `Forking session${title ? ' ' + title : ''}`
     case 'session-rename': return `Renaming${title ? ' ' + title : ' the session'} to ${a.text}`
-    case 'session-switch': return `Switching to ${title ?? a.text}`
+    case 'session-switch': return `Now talking to ${title ?? a.text}`
     case 'model-select': return `Selecting model ${a.text}${where}`
     case 'compact': return `Compacting${title ? ' ' + title : ''}`
     case 'plan': return `Toggling plan mode${where}`

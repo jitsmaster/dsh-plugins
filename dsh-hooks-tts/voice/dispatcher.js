@@ -15,8 +15,10 @@ export function createDispatcher({
   speak = () => {},
   now = Date.now,
   minConfidence = 0.3,
-  confirmTtlMs = 15000,
-  approveMinConfidence = 0.75,
+  // Real STT confidences for short words sit around 0.55-0.65, so these gates must sit below that.
+  confirmTtlMs = 45000,
+  approveMinConfidence = 0.5,
+  confirmMinConfidence = 0.45,
   router,
   ack = true,
   maxRouterWords = 20,
@@ -28,8 +30,10 @@ export function createDispatcher({
   const tooLong = (text) => text.split(/\s+/).length > maxRouterWords || text.length > 140
   let pending
   let seq = 0
+  let selected // session the user picked by voice ("switch to ..."); default target for commands and dictation
+  const isSelect = (m) => m.action === 'ui'
   // Stop, deny and option answers never wait for a read-back.
-  const isFast = (m) => m.id === 'cancel' || (m.action === 'approval' && (m.decision === 'deny' || m.decision === 'option'))
+  const isFast = (m) => isSelect(m) || m.id === 'cancel' || (m.action === 'approval' && (m.decision === 'deny' || m.decision === 'option'))
 
   async function execute(match, target) {
     const sessionId = target?.id
@@ -50,7 +54,10 @@ export function createDispatcher({
         return slash({ sessionId, name: match.slash, input: arg === undefined ? '' : ' ' + arg })
       }
       case 'ui':
-        return ui.switchTo({ sessionId })
+        selected = sessionId
+        // Moving the on-screen focus is best effort; the voice target is what matters.
+        try { await ui.switchTo({ sessionId }) } catch { /* UI switching may be unavailable */ }
+        return
     }
     throw new Error('unknown action ' + match.action)
   }
@@ -81,7 +88,10 @@ export function createDispatcher({
   }
 
   return {
-    clear(sessionId) { if (sessionId === undefined || pending?.sessionId === sessionId) pending = undefined },
+    clear(sessionId) {
+      if (sessionId === undefined || pending?.sessionId === sessionId) pending = undefined
+      if (sessionId === undefined || selected === sessionId) selected = undefined
+    },
     async handle(event) {
       if (event?.type !== 'transcript') return { kind: 'ignored' }
       const text = String(event.text ?? '').trim()
@@ -100,7 +110,7 @@ export function createDispatcher({
           pending = undefined
         } else {
           const answer = resolveConfirmation(text)
-          if (answer === 'yes' && !(event.confidence >= approveMinConfidence)) {
+          if (answer === 'yes' && typeof event.confidence === 'number' && event.confidence < confirmMinConfidence) {
             speak('Say yes again')
             return { kind: 'unsure' }
           }
@@ -125,7 +135,9 @@ export function createDispatcher({
       }
 
       if (dictation) {
-        const target = event.context ? list.find((s) => s.id === event.context) : list.find((s) => s.id === lastAlerted())
+        const target = event.context
+          ? list.find((s) => s.id === event.context)
+          : list.find((s) => s.id === selected) ?? list.find((s) => s.id === lastAlerted())
         if (!target) {
           speak('No session to send that to')
           return { kind: 'no-session' }
@@ -160,7 +172,7 @@ export function createDispatcher({
         target = found
       } else if (needsSession) {
         const spoken = match.target ?? undefined
-        const found = resolveSession(spoken, list, event.context ?? lastAlerted())
+        const found = resolveSession(spoken, list, event.context ?? (list.some((x) => x.id === selected) ? selected : undefined) ?? lastAlerted())
         if (found?.ambiguous) {
           speak('Which one? ' + found.ambiguous.map((s) => s.title).join(', '))
           return { kind: 'ambiguous' }
@@ -174,7 +186,7 @@ export function createDispatcher({
 
       // The model's reading of an utterance is a guess: anything beyond answering a prompt is read back first.
       // With confirm on, everything is read back except the fast safety paths (stop, deny).
-      if (match.confirm || (match.viaLlm && !(match.action === 'approval' && match.decision === 'deny')) || (confirmOn() && !isFast(match))) {
+      if (match.confirm || (match.viaLlm && !isFast(match) && !(match.action === 'approval' && match.decision === 'deny') || (match.viaLlm && match.id === 'cancel')) || (confirmOn() && !isFast(match))) {
         const isApprove = match.action === 'approval' && match.decision === 'approve'
         const snap = isApprove && approvals.peek ? approvals.peek({ sessionId: target?.id }) : undefined
         pending = {
