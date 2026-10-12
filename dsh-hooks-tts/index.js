@@ -13,7 +13,7 @@
  */
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +26,7 @@ import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
 import { buildHookBody, createAlerts } from './voice/alerts.js'
 import { createVoiceService } from './voice/service.js'
+import { createLlmRouter } from './voice/llm-router.js'
 import { createSttLauncher } from './voice/stt-launcher.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
@@ -293,7 +294,18 @@ export function apply(ctx, baseConfig = {}) {
     readLock: () => { try { return readFileSync(join(stateDir, 'stt-starting'), 'utf8') } catch { return undefined } },
     writeLock: (v) => { try { writeFileSync(join(stateDir, 'stt-starting'), String(v)) } catch { /* best effort */ } },
   })
+  const voiceLog = (entry) => {
+    try {
+      const file = join(stateDir, 'voice.log')
+      try { if (statSync(file).size > 1_000_000) renameSync(file, file + '.1') } catch { /* no log yet */ }
+      appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n')
+    } catch { /* best effort */ }
+  }
+  const voiceRouter = createLlmRouter({ llm: ctx.llm, log: (line) => { voiceLog({ type: 'router', line }); ctx.logger.info(`hooks-tts: ${line}`) } })
   const voice = createVoiceService({
+    router: (t, c) => voiceRouter.route(t, c),
+    confirm: () => settings.get().voiceConfirm !== false,
+    record: voiceLog,
     ensureStt: sttLauncher ? async () => { const r = await sttLauncher.ensure(); if (r === 'started') ctx.logger.info('hooks-tts: started the STT service'); return r } : undefined,
     enabled: () => settings.get().voiceControl === true,
     readSecret: () => readFileSync(join(stateDir, 'stt-secret'), 'utf8').trim(),

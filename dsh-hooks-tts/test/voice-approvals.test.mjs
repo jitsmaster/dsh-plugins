@@ -70,3 +70,15 @@ test('describe lists what each session is waiting on', async () => {
   v.intercept({ agent: { id: 'a' }, toolName: 'bash' }, () => new Promise(() => {}))
   assert.deepEqual(v.pending(), [{ sessionId: 'a', toolName: 'bash' }])
 })
+
+test('peek returns the latest pending request of a session with an identity token', () => {
+  const a = createVoiceApprovals({ enabled: () => true })
+  a.intercept({ agent: { id: 's' }, toolName: 'Bash' }, () => new Promise(() => {}))
+  const p1 = a.peek({ sessionId: 's' })
+  assert.equal(p1.toolName, 'Bash')
+  a.intercept({ agent: { id: 's' }, toolName: 'Write' }, () => new Promise(() => {}))
+  const p2 = a.peek({ sessionId: 's' })
+  assert.equal(p2.toolName, 'Write')
+  assert.notEqual(p1.token, p2.token)
+  assert.equal(a.peek({ sessionId: 'none' }), undefined)
+})

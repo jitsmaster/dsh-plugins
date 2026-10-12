@@ -20,11 +20,16 @@ export function createDispatcher({
   router,
   ack = true,
   maxRouterWords = 20,
+  confirm = true,
 }) {
+  const confirmOn = () => (typeof confirm === 'function' ? confirm() : confirm) !== false
   const say = (text) => { if (ack) speak(text) }
   const heard = (text) => (text.length > 60 ? text.slice(0, 60) : text)
   const tooLong = (text) => text.split(/\s+/).length > maxRouterWords || text.length > 140
   let pending
+  let seq = 0
+  // Stop, deny and option answers never wait for a read-back.
+  const isFast = (m) => m.id === 'cancel' || (m.action === 'approval' && (m.decision === 'deny' || m.decision === 'option'))
 
   async function execute(match, target) {
     const sessionId = target?.id
@@ -50,6 +55,21 @@ export function createDispatcher({
     throw new Error('unknown action ' + match.action)
   }
 
+  async function sendPrompt(text, target) {
+    try {
+      await session.prompt({
+        requestId: 'voice-' + randomUUID(),
+        sessionId: target.id,
+        mode: 'queue',
+        content: [{ type: 'text', text }],
+      })
+      return { kind: 'dictation', sessionId: target.id, text }
+    } catch (error) {
+      speak('Could not send that: ' + (error?.message ?? error))
+      return { kind: 'failed', id: 'dictation', error: String(error?.message ?? error) }
+    }
+  }
+
   async function run(match, target) {
     try {
       await execute(match, target)
@@ -61,6 +81,7 @@ export function createDispatcher({
   }
 
   return {
+    clear(sessionId) { if (sessionId === undefined || pending?.sessionId === sessionId) pending = undefined },
     async handle(event) {
       if (event?.type !== 'transcript') return { kind: 'ignored' }
       const text = String(event.text ?? '').trim()
@@ -69,25 +90,36 @@ export function createDispatcher({
 
       if (pending) {
         const waiting = pending
-        pending = undefined
-        if (now() - waiting.at <= confirmTtlMs) {
+        const direct = matchCommand(text)
+        const soft = ['no', 'nope', 'never mind', '不', '不要', '否'].includes(text.toLowerCase().replace(/[.!?,，。！？\s]+$/g, '').trim())
+        const stopWord = /\bstop\b|停/i.test(text)
+        const dismiss = resolveConfirmation(text) === 'no' && !stopWord
+        if (direct && isFast(direct) && !soft && !dismiss) {
+          pending = undefined
+        } else if (now() - waiting.at > confirmTtlMs) {
+          pending = undefined
+        } else {
           const answer = resolveConfirmation(text)
-          if (answer === 'yes') return run(waiting.match, waiting.target)
+          if (answer === 'yes' && !(event.confidence >= approveMinConfidence)) {
+            speak('Say yes again')
+            return { kind: 'unsure' }
+          }
+          pending = undefined
+          if (answer === 'yes') return waiting.go()
           if (answer === 'no') return { kind: 'cancelled' }
         }
       }
 
+      const mySeq = ++seq
       const list = sessions()
       let match = matchCommand(text)
       let dictation = false
       if (!match) {
         if (router && !tooLong(text)) {
           const routed = await router(text, { sessions: list, lastAlerted: lastAlerted() })
-          if (routed === undefined) {
-            speak('Could not interpret that')
-            return { kind: 'unroutable' }
-          }
-          if (routed.kind === 'dictation') dictation = true
+          if (seq !== mySeq) return { kind: 'superseded' }
+          // No decision (model down, slow or unparseable): treat as dictation, which the read-back still gates.
+          if (routed === undefined || routed.kind === 'dictation') dictation = true
           else match = routed
         } else dictation = true
       }
@@ -95,19 +127,13 @@ export function createDispatcher({
       if (dictation) {
         const target = event.context ? list.find((s) => s.id === event.context) : list.find((s) => s.id === lastAlerted())
         if (!target) return { kind: 'no-session' }
-        say(`Heard. Sending to ${target.title}.`)
-        try {
-          await session.prompt({
-            requestId: 'voice-' + randomUUID(),
-            sessionId: target.id,
-            mode: 'queue',
-            content: [{ type: 'text', text }],
-          })
-          return { kind: 'dictation', sessionId: target.id }
-        } catch (error) {
-          speak('Could not send that: ' + (error?.message ?? error))
-          return { kind: 'failed', id: 'dictation', error: String(error?.message ?? error) }
+        if (confirmOn()) {
+          pending = { go: () => sendPrompt(text, target), at: now(), sessionId: target.id }
+          speak(`Heard: ${text}. Send to ${target.title}? Say yes to confirm.`)
+          return { kind: 'confirming', id: 'dictation' }
         }
+        say(`Heard. Sending to ${target.title}.`)
+        return sendPrompt(text, target)
       }
 
       // A misheard approve would grant a permission, so it needs a confident transcript (deny stays easy).
@@ -144,9 +170,23 @@ export function createDispatcher({
       }
 
       // The model's reading of an utterance is a guess: anything beyond answering a prompt is read back first.
-      if (match.confirm || (match.viaLlm && match.action !== 'approval')) {
-        pending = { match, target, at: now() }
-        speak(`${describeMatch(match, target?.title)}. Say yes to confirm.`)
+      // With confirm on, everything is read back except the fast safety paths (stop, deny).
+      if (match.confirm || (match.viaLlm && !(match.action === 'approval' && match.decision === 'deny')) || (confirmOn() && !isFast(match))) {
+        const isApprove = match.action === 'approval' && match.decision === 'approve'
+        const snap = isApprove && approvals.peek ? approvals.peek({ sessionId: target?.id }) : undefined
+        pending = {
+          at: now(),
+          sessionId: target?.id,
+          go: async () => {
+            if (isApprove && approvals.peek && approvals.peek({ sessionId: target?.id })?.token !== snap?.token) {
+              speak('That request changed. Not approving.')
+              return { kind: 'stale', id: match.id }
+            }
+            return run(match, target)
+          },
+        }
+        const said = snap ? describeMatch(match, target?.title).replace('Approving', `Approving ${snap.toolName}`) : describeMatch(match, target?.title)
+        speak(`${said}. Say yes to confirm.`)
         return { kind: 'confirming', id: match.id }
       }
       say(`Heard "${heard(text)}". ${describeMatch(match, target?.title)}.`)

@@ -22,6 +22,9 @@ export function createVoiceService({
   minConfidence = 0.3,
   fetchImpl = globalThis.fetch,
   ensureStt,
+  router,
+  confirm,
+  record = () => {},
 }) {
   let secret
   const agents = new Set()
@@ -36,18 +39,27 @@ export function createVoiceService({
     sessions: () => [...agents].map((id) => ({ id, title: titleOf(id) ?? id })),
     lastAlerted: () => lastAlerted,
     session: controller,
-    approvals: { answer: async (a) => approvals.answer(a) },
+    approvals: { answer: async (a) => approvals.answer(a), peek: (a) => approvals.peek(a) },
     slash: runSlash,
     ui: { switchTo },
     speak,
     minConfidence,
+    router,
+    ...(confirm === undefined ? {} : { confirm }),
   })
 
   const onEvent = (event) => {
     if (event.type === 'transcript' && String(event.text ?? '').trim()) lastTranscript = event
     dispatcher.handle(event).then(
-      (r) => { if (r.kind !== 'ignored') trace(`voice ${event.type}: ${r.kind}${r.id ? ' ' + r.id : ''}`) },
-      (e) => trace('voice dispatch error: ' + (e?.message ?? e)),
+      (r) => {
+        if (r.kind !== 'ignored') trace(`voice ${event.type}: ${r.kind}${r.id ? ' ' + r.id : ''}`)
+        if (event.type !== 'transcript') return
+        try { record({ type: 'transcript', text: event.text, confidence: event.confidence, kind: r.kind, id: r.id, error: r.error, ...(r.text !== undefined ? { sent: r.text } : {}) }) } catch { /* logging must not break voice */ }
+      },
+      (e) => {
+        trace('voice dispatch error: ' + (e?.message ?? e))
+        try { record({ type: 'transcript', text: event.text, confidence: event.confidence, kind: 'error', error: String(e?.message ?? e) }) } catch { /* ignore */ }
+      },
     )
   }
 
@@ -100,9 +112,11 @@ export function createVoiceService({
     agentDisposed: (id) => {
       agents.delete(id)
       if (lastAlerted === id) lastAlerted = undefined
+      dispatcher.clear(id)
     },
     noteAlert: (id) => { lastAlerted = id },
     stop() {
+      dispatcher.clear()
       client?.stop()
       client = undefined
     },

@@ -90,3 +90,18 @@ test('the call has a deadline: a hung model resolves to undefined', async () => 
   const hung = { listProviders: () => [{ id: 'p' }], listModels: async () => [{ provider: 'p', id: 'm' }], prepareCall: async () => ({ config: {}, stream: (o) => (async function* () { await new Promise((_, rej) => o.signal.addEventListener('abort', () => rej(new Error('aborted')))) })() }) }
   assert.equal(await ask(createLlmRouter({ llm: hung, timeoutMs: 30 }), 'x'), undefined)
 })
+
+test('after a failure the router backs off instead of waiting for the timeout on every utterance', async () => {
+  let t = 1000
+  let attempts = 0
+  const llm = { listProviders: () => { attempts++; throw new Error('down') }, listModels: async () => [] }
+  const router = createLlmRouter({ llm, now: () => t, backoffMs: 30000 })
+  assert.equal(await ask(router, 'something unmatched'), undefined)
+  assert.equal(attempts, 1)
+  t += 5000
+  assert.equal(await ask(router, 'another unmatched'), undefined)
+  assert.equal(attempts, 1)
+  t += 30000
+  await ask(router, 'third unmatched')
+  assert.equal(attempts, 2)
+})

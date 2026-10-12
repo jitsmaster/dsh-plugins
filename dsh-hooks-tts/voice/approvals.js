@@ -12,6 +12,10 @@ export function createVoiceApprovals({ enabled = () => false } = {}) {
 
   return {
     pendingCount: () => waiting.length,
+    peek: ({ sessionId }) => {
+      const entry = waiting.findLast((w) => w.sessionId === sessionId)
+      return entry ? { toolName: entry.toolName, token: entry } : undefined
+    },
     pending: () => waiting.map(({ sessionId, toolName }) => ({ sessionId, toolName })),
 
     intercept(req, next) {

@@ -29,6 +29,7 @@ function make(extra = {}) {
     runSlash: async (a) => { calls.push(['slash', a]) },
     switchTo: async () => {},
     speak: (s) => spoken.push(s),
+    confirm: false,
     ...extra,
   })
   return { svc, state, calls, spoken, agents, sock: () => FakeSocket.instances.at(-1) }
@@ -148,4 +149,54 @@ test('an ensureStt failure never breaks reconcile', async () => {
   h.svc.reconcile()
   await new Promise((r) => setImmediate(r))
   assert.equal(h.svc.status().running, true)
+})
+
+test('service forwards the router and records each transcript outcome via record', async () => {
+  const records = []
+  const routed = []
+  const h = make({ router: async (t) => { routed.push(t); return { kind: 'dictation' } }, record: (r) => records.push(r), confirm: false })
+  h.agents.set('a1', { title: 'Voice Work' })
+  h.svc.agentCreated('a1'); h.svc.noteAlert('a1')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'please look at the parser', confidence: 0.8 }) })
+  await new Promise((r) => setImmediate(r))
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(routed, ['please look at the parser'])
+  assert.equal(records.length, 1)
+  assert.equal(records[0].text, 'please look at the parser')
+  assert.equal(records[0].confidence, 0.8)
+  assert.equal(records[0].kind, 'dictation')
+})
+
+test('service passes the live confirm setting to the dispatcher', async () => {
+  const h = make({ confirm: () => true })
+  h.agents.set('a1', { title: 'Voice Work' })
+  h.svc.agentCreated('a1'); h.svc.noteAlert('a1')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'compact', confidence: 0.9 }) })
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(h.calls, [])
+  assert.match(h.spoken.at(-1), /yes/i)
+})
+
+test('ignored transcripts are recorded too, and the log entries are typed', async () => {
+  const records = []
+  const h = make({ record: (r) => records.push(r) })
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'mumble', confidence: 0.01 }) })
+  await new Promise((r) => setImmediate(r))
+  assert.equal(records[0].kind, 'ignored')
+  assert.equal(records[0].type, 'transcript')
+})
+
+test('a confirmed prompt is logged with the text that was sent', async () => {
+  const records = []
+  const h = make({ record: (r) => records.push(r), confirm: true })
+  h.agents.set('a1', { title: 'Voice Work' })
+  h.svc.agentCreated('a1'); h.svc.noteAlert('a1')
+  h.svc.reconcile(); h.sock().onopen({})
+  const say = (text) => h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text, confidence: 0.9 }) })
+  say('please refactor the parser'); await new Promise((r) => setImmediate(r))
+  say('yes'); await new Promise((r) => setImmediate(r))
+  assert.equal(records.at(-1).sent, 'please refactor the parser')
 })

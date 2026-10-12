@@ -23,6 +23,7 @@ function harness(extra = {}) {
     now: () => t,
     minConfidence: 0.3,
     confirmTtlMs: 15000,
+    confirm: false,
     ...extra,
   })
   return { d, calls, spoken, advance: (ms) => { t += ms } }
@@ -209,12 +210,25 @@ test('router says dictation: the text is sent as a prompt', async () => {
   assert.equal(h.calls[0][1].sessionId, 'a')
 })
 
-test('router unavailable: the user is told, and nothing is sent', async () => {
-  const h = harness({ router: async () => undefined })
-  const r = await h.d.handle(say('do something clever'))
-  assert.equal(r.kind, 'unroutable')
+test('router unavailable: the text falls back to dictation, still read back when confirm is on', async () => {
+  const h = harness({ confirm: true, router: async () => undefined })
+  const r = await h.d.handle(say('do something clever', { context: 'a' }))
+  assert.equal(r.kind, 'confirming')
   assert.deepEqual(h.calls, [])
-  assert.match(h.spoken.at(-1), /could not|couldn't/i)
+  await h.d.handle(say('yes'))
+  assert.equal(h.calls[0][0], 'prompt')
+})
+
+test('clear(id) only drops a pending confirmation that targets that session', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('compact', { context: 'a' }))
+  h.d.clear('b')
+  await h.d.handle(say('yes'))
+  assert.equal(h.calls.filter((c) => c[0] === 'slash').length, 1)
+  await h.d.handle(say('compact', { context: 'a' }))
+  h.d.clear('a')
+  await h.d.handle(say('yes'))
+  assert.equal(h.calls.filter((c) => c[0] === 'slash').length, 1)
 })
 
 test('a long utterance is dictation without asking the router', async () => {
@@ -231,4 +245,189 @@ test('grammar matches never wait for the router', async () => {
   const h = harness({ router: async () => { asked++; return undefined } })
   await h.d.handle(say('stop'))
   assert.equal(asked, 0)
+})
+
+test('with confirm on, a dictation is read back and sent only on yes', async () => {
+  const h = harness({ confirm: true })
+  const r = await h.d.handle(say('please refactor the parser', { context: 'a' }))
+  assert.equal(r.kind, 'confirming')
+  assert.deepEqual(h.calls, [])
+  assert.match(h.spoken.at(-1), /please refactor the parser/)
+  assert.match(h.spoken.at(-1), /Voice Work/)
+  assert.match(h.spoken.at(-1), /yes/i)
+  const r2 = await h.d.handle(say('yes'))
+  assert.equal(r2.kind, 'dictation')
+  assert.equal(h.calls[0][0], 'prompt')
+  assert.equal(h.calls[0][1].sessionId, 'a')
+  assert.deepEqual(h.calls[0][1].content, [{ type: 'text', text: 'please refactor the parser' }])
+})
+
+test('with confirm on, a no cancels a pending dictation', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('please refactor the parser', { context: 'a' }))
+  assert.equal((await h.d.handle(say('no'))).kind, 'cancelled')
+  assert.deepEqual(h.calls, [])
+})
+
+test('with confirm on, grammar commands are read back first', async () => {
+  const h = harness({ confirm: true })
+  const r = await h.d.handle(say('compact'))
+  assert.equal(r.kind, 'confirming')
+  assert.deepEqual(h.calls, [])
+  await h.d.handle(say('yes'))
+  assert.deepEqual(h.calls, [['slash', { sessionId: 'b', name: 'compact', input: '' }]])
+})
+
+test('with confirm on, stop and deny stay immediate', async () => {
+  const h = harness({ confirm: true })
+  assert.equal((await h.d.handle(say('stop'))).kind, 'executed')
+  assert.equal((await h.d.handle(say('deny'))).kind, 'executed')
+  assert.equal(h.calls.length, 2)
+})
+
+test('with confirm on, an approve is read back before it grants anything', async () => {
+  const h = harness({ confirm: true })
+  assert.equal((await h.d.handle(say('approve'))).kind, 'confirming')
+  assert.deepEqual(h.calls, [])
+  await h.d.handle(say('yes'))
+  assert.deepEqual(h.calls, [['answer', { sessionId: 'b', decision: 'approve' }]])
+})
+
+test('with confirm on, a pending dictation expires and an unrelated reply replaces it', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('first prompt text here', { context: 'a' }))
+  const r = await h.d.handle(say('second prompt text here', { context: 'a' }))
+  assert.equal(r.kind, 'confirming')
+  await h.d.handle(say('yes'))
+  assert.equal(h.calls.length, 1)
+  assert.equal(h.calls[0][1].content[0].text, 'second prompt text here')
+})
+
+test('confirm can be a live setting (function)', async () => {
+  let on = true
+  const h = harness({ confirm: () => on })
+  assert.equal((await h.d.handle(say('compact'))).kind, 'confirming')
+  on = false
+  h.advance(20000)
+  assert.equal((await h.d.handle(say('compact'))).kind, 'executed')
+})
+
+test('settings: voiceConfirm defaults on and is validated as boolean', async () => {
+  const { createSettings } = await import('../settings.js')
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const s = createSettings(mkdtempSync(join(tmpdir(), 'vc-')), {})
+  assert.equal(s.get().voiceConfirm, true)
+  assert.throws(() => s.set({ voiceConfirm: 'yes' }))
+  s.set({ voiceConfirm: false })
+  assert.equal(s.get().voiceConfirm, false)
+})
+
+test('the read-back contains the whole dictated text, not a truncated head', async () => {
+  const h = harness({ confirm: true })
+  const text = 'please ' + Array.from({ length: 25 }, (_, i) => 'word' + i).join(' ') + ' and finally delete nothing'
+  await h.d.handle(say(text, { context: 'a' }))
+  assert.ok(h.spoken.at(-1).includes('and finally delete nothing'))
+})
+
+test('a confirmed dictation reports the text that was sent', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('please refactor the parser', { context: 'a' }))
+  const r = await h.d.handle(say('yes'))
+  assert.equal(r.text, 'please refactor the parser')
+})
+
+test('with confirm on, option answers stay immediate', async () => {
+  const h = harness({ confirm: true })
+  assert.equal((await h.d.handle(say('option two'))).kind, 'executed')
+})
+
+test('a pending dictation really expires after the ttl', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('please refactor the parser', { context: 'a' }))
+  h.advance(20000)
+  await h.d.handle(say('yes'))
+  assert.equal(h.calls.filter((c) => c[0] === 'prompt').length, 0)
+})
+
+test('security: an LLM-routed approve is always read back, even with confirm off', async () => {
+  const h = harness({ confirm: false, router: async () => ({ id: 'approve', action: 'approval', decision: 'approve', args: {}, viaLlm: true }) })
+  const r = await h.d.handle(say('sure go ahead then', { confidence: 0.9 }))
+  assert.equal(r.kind, 'confirming')
+  assert.deepEqual(h.calls, [])
+})
+
+test('security: the approve read-back names the tool and a changed request is refused', async () => {
+  let current = { toolName: 'Bash', token: 1 }
+  const h = harness({ confirm: true, approvals: { answer: async (a) => { h.calls.push(['answer', a]); return {} }, peek: () => current } })
+  await h.d.handle(say('approve'))
+  assert.match(h.spoken.at(-1), /Bash/)
+  current = { toolName: 'Write', token: 2 }
+  const r = await h.d.handle(say('yes'))
+  assert.equal(r.kind, 'stale')
+  assert.deepEqual(h.calls, [])
+  assert.match(h.spoken.at(-1), /changed/i)
+})
+
+test('security: an unchanged request is approved on yes', async () => {
+  const cur = { toolName: 'Bash', token: 1 }
+  const h = harness({ confirm: true, approvals: { answer: async (a) => { h.calls.push(['answer', a]); return {} }, peek: () => cur } })
+  await h.d.handle(say('approve'))
+  assert.equal((await h.d.handle(say('yes'))).kind, 'executed')
+})
+
+test('security: a low-confidence yes does not confirm and keeps the question open', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('compact'))
+  const r = await h.d.handle(say('yes', { confidence: 0.5 }))
+  assert.equal(r.kind, 'unsure')
+  assert.deepEqual(h.calls, [])
+  assert.equal((await h.d.handle(say('yes', { confidence: 0.9 }))).kind, 'executed')
+})
+
+test('security: stop runs instantly even while a confirmation is pending', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('compact'))
+  const r = await h.d.handle(say('stop'))
+  assert.equal(r.kind, 'executed')
+  assert.deepEqual(h.calls, [['cancel', { sessionId: 'b' }]])
+  assert.equal((await h.d.handle(say('yes'))).kind, 'confirming') // pending was dropped; yes is the plain approve command, itself read back
+  assert.equal(h.calls.filter((c) => c[0] === 'slash').length, 0)
+})
+
+test('security: clear() drops a pending confirmation', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('compact'))
+  h.d.clear()
+  await h.d.handle(say('yes'))
+  assert.equal(h.calls.filter((c) => c[0] === 'slash').length, 0)
+})
+
+test('security: feedback text is spoken in the read-back', async () => {
+  const { describeMatch } = await import('../voice/commands.js')
+  assert.match(describeMatch({ id: 'feedback', args: { text: 'the tool is slow' } }, 'X'), /the tool is slow/)
+})
+
+test('security: cancel/deny/reject dismiss a pending read-back instead of acting; stop still stops', async () => {
+  const h = harness({ confirm: true })
+  await h.d.handle(say('please refactor the parser', { context: 'a' }))
+  assert.equal((await h.d.handle(say('cancel'))).kind, 'cancelled')
+  await h.d.handle(say('please refactor the parser', { context: 'a' }))
+  assert.equal((await h.d.handle(say('deny'))).kind, 'cancelled')
+  assert.deepEqual(h.calls, [])
+  await h.d.handle(say('please refactor the parser', { context: 'a' }))
+  assert.equal((await h.d.handle(say('stop'))).kind, 'executed')
+  assert.equal(h.calls[0][0], 'cancel')
+})
+
+test('security: a routed result is dropped when a newer transcript arrived meanwhile', async () => {
+  let release
+  const h = harness({ confirm: true, router: () => new Promise((r) => { release = r }) })
+  const first = h.d.handle(say('do something clever for me', { context: 'a' }))
+  await new Promise((r) => setImmediate(r))
+  await h.d.handle(say('stop'))
+  release({ kind: 'dictation' })
+  assert.equal((await first).kind, 'superseded')
+  assert.equal(h.calls.filter((c) => c[0] === 'prompt').length, 0)
 })

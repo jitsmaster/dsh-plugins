@@ -46,11 +46,14 @@ function parseReply(text) {
  * Classifies an utterance the strict grammar did not match, using a small fast model through DSH's own LLM service.
  * route() resolves to a match (viaLlm), { kind: 'dictation' }, or undefined when no decision could be made.
  */
-export function createLlmRouter({ llm, model: override, timeoutMs = 6000, maxTokens = 200, log = () => {} } = {}) {
+export function createLlmRouter({ llm, model: override, timeoutMs = 6000, maxTokens = 200, log = () => {}, now = Date.now, backoffMs = 30000 } = {}) {
+  let downUntil = 0
   let chosen
+  let loggedModel
   return {
     async route(text, { sessions = [] } = {}) {
       if (!llm) return undefined
+      if (now() < downUntil) return undefined
       const ac = new AbortController()
       let timer
       const deadline = new Promise((_, reject) => {
@@ -60,6 +63,7 @@ export function createLlmRouter({ llm, model: override, timeoutMs = 6000, maxTok
         chosen ??= pickModel(llm, override)
         const m = await chosen
         if (!m) throw new Error('no model available')
+        if (loggedModel !== m.model) { loggedModel = m.model; log(`router: using ${m.provider}/${m.model}`) }
         const call = await llm.prepareCall({ provider: m.provider, model: m.model, maxTokens }, ac.signal)
         const payload = JSON.stringify({ utterance: text, sessions: sessions.map((s) => s.title) })
         let out = ''
@@ -87,6 +91,7 @@ export function createLlmRouter({ llm, model: override, timeoutMs = 6000, maxTok
         return match ? { ...match, viaLlm: true } : { kind: 'dictation' }
       } catch (error) {
         chosen = undefined // re-resolve the model next time
+        downUntil = now() + backoffMs
         log(`router: ${error?.message ?? error}`)
         return undefined
       } finally {

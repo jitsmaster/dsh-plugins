@@ -231,7 +231,7 @@ export function describeMatch(match, title) {
     case 'compact': return `Compacting${title ? ' ' + title : ''}`
     case 'plan': return `Toggling plan mode${where}`
     case 'goal': return `Setting the goal${where} to: ${a.text}`
-    case 'feedback': return `Recording feedback${where}`
+    case 'feedback': return `Recording feedback${where}${a.text ? ': ' + a.text : ''}`
     case 'export': return `Exporting${title ? ' ' + title : ' the session'}`
     case 'permission': return `Switching permission to ${a.preset}${where}`
     default: return match.id
