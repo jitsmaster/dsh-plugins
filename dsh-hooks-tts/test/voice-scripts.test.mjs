@@ -70,9 +70,9 @@ test('Stop speaks the headline and never the response', opts, async () => {
   assert.equal(spoken[0].voice_gender, 'male')
 })
 
-test('Stop is spoken slower with a pause between sentences; the other alerts keep the normal pace', opts, async () => {
+test('Stop is spoken at the normal pace with a pause between sentences; the other alerts keep the normal pace', opts, async () => {
   const [stop] = await speak('stop-speak.ps1', { headline: 'Done on: Session: A; Workspace: B. Text.' })
-  assert.equal(stop.speed, 0.85)
+  assert.equal('speed' in stop, false)
   assert.equal(stop.pause_s, 0.5)
   const [perm] = await speak('speak.ps1', { headline: 'Four, approve write file?' })
   assert.equal('speed' in perm || 'pause_s' in perm, false)
