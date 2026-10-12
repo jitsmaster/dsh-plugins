@@ -431,3 +431,10 @@ test('security: a routed result is dropped when a newer transcript arrived meanw
   assert.equal((await first).kind, 'superseded')
   assert.equal(h.calls.filter((c) => c[0] === 'prompt').length, 0)
 })
+
+test('dictation with no known session says so out loud', async () => {
+  const h = harness({ lastAlerted: () => undefined, confirm: false })
+  const r = await h.d.handle(say('please refactor the parser'))
+  assert.equal(r.kind, 'no-session')
+  assert.match(h.spoken.at(-1), /no session/i)
+})

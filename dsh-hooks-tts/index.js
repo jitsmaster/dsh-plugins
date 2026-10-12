@@ -357,6 +357,7 @@ export function apply(ctx, baseConfig = {}) {
   })
 
   ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
+    if (agent?.id && !skip(agent)) { voiceAgents.set(agent.id, agent); voice.noteActive(agent.id) }
     if (skip(agent) || !messages?.length || !hooks.UserPromptSubmit) return next()
     const prompt = messages.map(m => textOf(m.content)).join('')
     const folded = await run('UserPromptSubmit', [''], { prompt }, agent, signal)

@@ -29,6 +29,7 @@ export function createVoiceService({
   let secret
   const agents = new Set()
   let lastAlerted
+  let lastActive
   let client
   let error
   let lastTranscript
@@ -37,7 +38,7 @@ export function createVoiceService({
 
   const dispatcher = createDispatcher({
     sessions: () => [...agents].map((id) => ({ id, title: titleOf(id) ?? id })),
-    lastAlerted: () => lastAlerted,
+    lastAlerted: () => lastAlerted ?? lastActive,
     session: controller,
     approvals: { answer: async (a) => approvals.answer(a), peek: (a) => approvals.peek(a) },
     slash: runSlash,
@@ -112,9 +113,12 @@ export function createVoiceService({
     agentDisposed: (id) => {
       agents.delete(id)
       if (lastAlerted === id) lastAlerted = undefined
+      if (lastActive === id) lastActive = undefined
       dispatcher.clear(id)
     },
     noteAlert: (id) => { lastAlerted = id },
+    // A session doing work is a valid target even if it was created before the plugin loaded.
+    noteActive: (id) => { agents.add(id); lastActive = id },
     stop() {
       dispatcher.clear()
       client?.stop()

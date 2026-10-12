@@ -200,3 +200,26 @@ test('a confirmed prompt is logged with the text that was sent', async () => {
   say('yes'); await new Promise((r) => setImmediate(r))
   assert.equal(records.at(-1).sent, 'please refactor the parser')
 })
+
+test('with no alert yet, dictation goes to the most recently active session (even one never seen being created)', async () => {
+  const h = make({ confirm: false })
+  h.agents.set('old', { title: 'Old Session' })
+  h.svc.noteActive('old')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'please look at the parser', confidence: 0.8 }) })
+  await new Promise((r) => setImmediate(r))
+  await new Promise((r) => setImmediate(r))
+  assert.equal(h.calls[0][0], 'prompt')
+  assert.equal(h.calls[0][1].sessionId, 'old')
+})
+
+test('an alerted session wins over a merely active one', async () => {
+  const h = make({ confirm: false })
+  h.agents.set('a', { title: 'A' }); h.agents.set('b', { title: 'B' })
+  h.svc.agentCreated('a'); h.svc.noteAlert('a'); h.svc.noteActive('b')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', id: 1, text: 'please look at the parser', confidence: 0.8 }) })
+  await new Promise((r) => setImmediate(r))
+  await new Promise((r) => setImmediate(r))
+  assert.equal(h.calls[0][1].sessionId, 'a')
+})

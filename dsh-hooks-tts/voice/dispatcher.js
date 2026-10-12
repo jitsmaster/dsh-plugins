@@ -126,7 +126,10 @@ export function createDispatcher({
 
       if (dictation) {
         const target = event.context ? list.find((s) => s.id === event.context) : list.find((s) => s.id === lastAlerted())
-        if (!target) return { kind: 'no-session' }
+        if (!target) {
+          speak('No session to send that to')
+          return { kind: 'no-session' }
+        }
         if (confirmOn()) {
           pending = { go: () => sendPrompt(text, target), at: now(), sessionId: target.id }
           speak(`Heard: ${text}. Send to ${target.title}? Say yes to confirm.`)
