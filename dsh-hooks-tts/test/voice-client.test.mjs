@@ -131,3 +131,14 @@ test('a constructor that throws is retried with backoff', () => {
   assert.equal(h.client.state, 'disconnected')
   assert.equal(h.timers.at(-1).ms, 100)
 })
+
+test('busy clears itself if idle never arrives', () => {
+  const h = harness({ busyTimeoutMs: 90000 })
+  h.client.start(); h.sock().open()
+  h.sock().say({ type: 'listening' })
+  assert.equal(h.client.busy, true)
+  const t = h.timers.find((x) => x.ms === 90000)
+  assert.ok(t, 'a failsafe timer is armed')
+  t.fn()
+  assert.equal(h.client.busy, false)
+})

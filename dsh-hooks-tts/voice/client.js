@@ -16,7 +16,9 @@ export function createVoiceClient({
   onEvent = () => {},
   onState = () => {},
   onBusy = () => {},
+  busyTimeoutMs = 90000,
 } = {}) {
+  let busyTimer
   const { initialMs = 500, maxMs = 10000, factor = 2 } = backoff
   let socket
   let wanted = false
@@ -32,6 +34,8 @@ export function createVoiceClient({
   const setBusy = (b) => {
     if (client.busy === b) return
     client.busy = b
+    if (busyTimer !== undefined) clearTimer(busyTimer)
+    busyTimer = b ? setTimer(() => { busyTimer = undefined; setBusy(false) }, busyTimeoutMs) : undefined
     onBusy(b)
   }
 

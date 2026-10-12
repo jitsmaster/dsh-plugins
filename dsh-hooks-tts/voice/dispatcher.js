@@ -22,6 +22,7 @@ export function createDispatcher({
   now = Date.now,
   minConfidence = 0.3,
   confirmTtlMs = 15000,
+  approveMinConfidence = 0.75,
 }) {
   let pending
 
@@ -93,6 +94,12 @@ export function createDispatcher({
           speak('Could not send that: ' + (error?.message ?? error))
           return { kind: 'failed', id: 'dictation', error: String(error?.message ?? error) }
         }
+      }
+
+      // A misheard approve would grant a permission, so it needs a confident transcript (deny stays easy).
+      if (match.action === 'approval' && match.decision === 'approve' && !(event.confidence >= approveMinConfidence)) {
+        speak('Say approve again')
+        return { kind: 'unsure', id: match.id }
       }
 
       let target

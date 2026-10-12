@@ -146,3 +146,25 @@ test('a failing action is spoken and reported, never thrown', async () => {
   assert.equal(r.kind, 'failed')
   assert.match(h.spoken.at(-1), /failed|could not/i)
 })
+
+test('a low-confidence approve is never executed; the user is asked to repeat', async () => {
+  const h = harness()
+  const r = await h.d.handle(say('approve', { confidence: 0.5 }))
+  assert.equal(r.kind, 'unsure')
+  assert.deepEqual(h.calls, [])
+  assert.match(h.spoken.at(-1), /again/i)
+  await h.d.handle(say('deny', { confidence: 0.5 }))
+  assert.deepEqual(h.calls, [['answer', { sessionId: 'b', decision: 'deny' }]])
+})
+
+test('a confident approve still runs', async () => {
+  const h = harness()
+  await h.d.handle(say('approve', { confidence: 0.9 }))
+  assert.equal(h.calls[0][0], 'answer')
+})
+
+test('a transcript with no confidence field is treated as unsure for approve', async () => {
+  const h = harness()
+  const r = await h.d.handle({ type: 'transcript', id: 1, text: 'approve' })
+  assert.equal(r.kind, 'unsure')
+})
