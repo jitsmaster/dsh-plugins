@@ -1,21 +1,152 @@
 import { join } from 'node:path'
 
 /**
- * Speaks a short line through the plugin's own stop-speak.ps1 (the same Kokoro path as the Stop alert).
- * The child must stay attached: a detached powershell with piped stdio exits in ~250 ms without speaking on Windows.
+ * Persistent speak worker (docs/voice-two-stage-flow.md §0 D1): one prewarmed scripts/speak-worker.ps1 process speaks
+ * every voice-flow line over a JSON-lines protocol, so PowerShell's cold start (~0.5-1 s) is paid once, not per line.
+ *
+ * Protocol: request  {"id","text","gender","priority"}\n on stdin;
+ *           replies  {"ready":true} | {"id","event":"start"} | {"id","status":"done"|"failed","ms"} on stdout.
+ * When the worker keeps dying (more than maxRespawns exits within 60 s) every line gets its own process instead
+ * (one line, then EOF). The child is never detached: a detached PowerShell with piped stdio exits silently on Windows.
+ * speak() never rejects; it resolves { status:'done'|'failed'|'timeout', ms, startMs? }.
  */
-export function createSpeaker({ spawn, root, env, onError = () => {} }) {
-  return (text) => {
-    try {
-      const child = spawn(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts', 'stop-speak.ps1')],
-        { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, env },
-      )
-      child.stdin.end(JSON.stringify({ headline: text }))
-      child.unref?.()
-    } catch (error) {
-      onError(error)
+
+const RESPAWN_WINDOW_MS = 60_000
+const VOICE = Object.freeze({ gender: 'female', priority: 'High' })
+
+export function createSpeakWorker({
+  spawn, root, env, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now,
+  requestTimeoutMs = 45_000, maxRespawns = 3,
+}) {
+  const script = join(root, 'scripts', 'speak-worker.ps1')
+  const live = new Set() // every running worker record (the persistent one plus one-shot processes)
+  let worker // the persistent worker record, when one is running
+  let nextId = 1
+  let oneShot = false
+  let deaths = [] // times of unexpected persistent-worker exits
+
+  const note = (stage, data) => { try { log(stage, data) } catch { /* logging is best-effort */ } }
+
+  /** Starts one worker process; throws when spawn itself throws. */
+  function start(single) {
+    const t0 = now()
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
+      stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env,
+    })
+    const w = { child, single, pending: new Map(), buf: '', gone: false, killedByUs: false, t0 }
+    live.add(w)
+    note('worker.spawn', { oneShot: single })
+    child.stdin?.on?.('error', () => {}) // EPIPE after the worker died is handled by its 'exit'
+    child.stderr?.on?.('data', (d) => note('worker.stderr', { text: String(d).trim().slice(0, 200) }))
+    child.stdout?.on?.('data', (d) => onData(w, d))
+    child.on('exit', (code, signal) => onExit(w, { code, signal }))
+    child.on('error', (error) => onExit(w, { error: String(error?.message ?? error) }))
+    return w
+  }
+
+  function ensureWorker() {
+    if (!worker) worker = start(false)
+    return worker
+  }
+
+  function onData(w, chunk) {
+    w.buf += String(chunk)
+    let i
+    while ((i = w.buf.indexOf('\n')) >= 0) {
+      const text = w.buf.slice(0, i).trim()
+      w.buf = w.buf.slice(i + 1)
+      let msg
+      try { msg = JSON.parse(text) } catch { continue } // non-protocol output (warnings etc.) is ignored
+      if (msg && typeof msg === 'object') onMessage(w, msg)
     }
+  }
+
+  function onMessage(w, msg) {
+    if (msg.ready === true) return note('worker.ready', { ms: now() - w.t0 })
+    const req = w.pending.get(msg.id)
+    if (!req) return
+    if (msg.event === 'start') { req.startAt = now(); return }
+    if (msg.status === undefined) return
+    const result = { status: msg.status === 'done' ? 'done' : 'failed', ms: Number(msg.ms) || 0 }
+    if (req.startAt !== undefined) result.startMs = req.startAt - req.t0
+    finish(w, req, result)
+  }
+
+  function finish(w, req, result) {
+    if (!w.pending.delete(req.id)) return
+    clearTimer(req.timer)
+    req.resolve(result)
+  }
+
+  function onExit(w, info) {
+    if (w.gone) return
+    w.gone = true
+    live.delete(w)
+    note('worker.exit', { ...info, oneShot: w.single })
+    for (const req of [...w.pending.values()]) finish(w, req, { status: 'failed', ms: now() - req.t0 })
+    if (w !== worker) return
+    worker = undefined
+    if (!w.killedByUs) countDeath()
+  }
+
+  /** The (maxRespawns + 1)th unexpected exit within 60 s switches to one-shot mode for good. */
+  function countDeath() {
+    const t = now()
+    deaths = [...deaths.filter((d) => t - d < RESPAWN_WINDOW_MS), t]
+    if (deaths.length > maxRespawns && !oneShot) {
+      oneShot = true
+      note('worker.one-shot', { deaths: deaths.length })
+    }
+  }
+
+  function kill(w) {
+    w.killedByUs = true
+    if (w === worker) worker = undefined
+    try { w.child.kill() } catch { /* already gone */ }
+  }
+
+  /** A hung line resolves 'timeout' and its worker is killed; the next line goes to a new worker. */
+  function onTimeout(w, req) {
+    if (!w.pending.has(req.id)) return
+    finish(w, req, { status: 'timeout', ms: now() - req.t0 })
+    note('worker.timeout', { id: req.id })
+    kill(w)
+  }
+
+  function speak(text, opts = {}) {
+    const id = nextId++
+    const t0 = now()
+    const body = JSON.stringify({ id, text: String(text ?? ''), gender: opts.gender ?? VOICE.gender, priority: opts.priority ?? VOICE.priority }) + '\n'
+    return new Promise((resolve) => {
+      let w
+      try { w = oneShot ? start(true) : ensureWorker() } catch (error) {
+        note('worker.spawn-failed', { error: String(error?.message ?? error) })
+        return resolve({ status: 'failed', ms: now() - t0 })
+      }
+      const req = { id, t0, resolve }
+      w.pending.set(id, req)
+      req.timer = setTimer(() => onTimeout(w, req), requestTimeoutMs)
+      try {
+        w.child.stdin.write(body)
+        if (w.single) w.child.stdin.end()
+      } catch (error) {
+        note('worker.write-failed', { error: String(error?.message ?? error) })
+        finish(w, req, { status: 'failed', ms: now() - t0 })
+        kill(w)
+      }
+    })
+  }
+
+  return {
+    speak,
+    /** Prewarm the persistent worker (no audio). No-op in one-shot mode or when spawning fails. */
+    warm() {
+      if (oneShot) return
+      try { ensureWorker() } catch (error) { note('worker.spawn-failed', { error: String(error?.message ?? error) }) }
+    },
+    /** Kill every worker; their pending lines resolve 'failed' and nothing respawns until the next speak()/warm(). */
+    stop() {
+      for (const w of [...live]) kill(w)
+    },
   }
 }

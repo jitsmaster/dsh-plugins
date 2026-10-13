@@ -26,8 +26,8 @@ import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
 import { buildHookBody, createAlerts } from './voice/alerts.js'
 import { createVoiceService } from './voice/service.js'
-import { createLlmRouter } from './voice/llm-router.js'
-import { createSpeaker } from './voice/speaker.js'
+import { createDecider } from './voice/decider.js'
+import { createSpeakWorker } from './voice/speaker.js'
 import { createSttLauncher } from './voice/stt-launcher.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
@@ -271,7 +271,6 @@ export function apply(ctx, baseConfig = {}) {
   // Voice control: the STT service's transcripts drive sessions (see voice/service.js). Off unless settings.voiceControl.
   const voiceAgents = new Map()
   const controllerOf = () => ctx.get('sessionController') ?? ctx.sessionController
-  const speakNow = createSpeaker({ spawn, root: ROOT, env: baseEnv, onError: (error) => ctx.logger.warn(`hooks-tts: voice speak failed: ${String(error)}`) })
   // Start the STT daemon together with DSH when voice control is on (config.sttAutoStart: false opts out).
   const sttPort = config.sttPort ?? 8890
   const sttLauncher = config.sttAutoStart === false ? undefined : createSttLauncher({
@@ -303,10 +302,24 @@ export function apply(ctx, baseConfig = {}) {
     listModels: (p) => llmService().listModels(p),
     prepareCall: (...a) => llmService().prepareCall(...a),
   }
-  const voiceRouter = createLlmRouter({ llm: lazyLlm, log: (line) => { voiceLog({ type: 'router', line }); ctx.logger.info(`hooks-tts: ${line}`) } })
+  // The flow's lines go through one persistent, prewarmed speak worker (attached child; see voice/speaker.js).
+  const speaker = createSpeakWorker({ spawn, root: ROOT, env: baseEnv, log: (stage, data) => voiceLog({ type: 'flow', stage, ...data }) })
+  // Lazy: the decider context reads the voice service, created right below.
+  const decider = createDecider({
+    llm: lazyLlm,
+    log: (line) => { voiceLog({ type: 'decider', line }); ctx.logger.info(`hooks-tts: ${line}`) },
+    context: () => voice.context(),
+  })
   const voice = createVoiceService({
-    router: (t, c) => voiceRouter.route(t, c),
-    confirm: () => settings.get().voiceConfirm !== false,
+    speaker,
+    decide: (utterance, opts) => decider.decide(utterance, opts),
+    cwdOf: (id) => voiceAgents.get(id)?.session?.header?.cwd,
+    // Slash commands the target session offers (name + description only), for the decider and for validation.
+    slashOf: (id) => {
+      const agent = voiceAgents.get(id)
+      if (!agent) return []
+      return (ctx.get('commands')?.list(agent) ?? []).map((c) => ({ name: c.name, description: c.description ?? '' }))
+    },
     record: voiceLog,
     ensureStt: sttLauncher ? async () => { const r = await sttLauncher.ensure(); if (r === 'started') ctx.logger.info('hooks-tts: started the STT service'); return r } : undefined,
     enabled: () => settings.get().voiceControl === true,
@@ -328,8 +341,6 @@ export function apply(ctx, baseConfig = {}) {
       if (done === undefined) throw new Error(`/${name} is not a known command`)
       if (done.result?.kind === 'error') throw new Error(done.result.text)
     },
-    switchTo: async () => { throw new Error('switching sessions by voice is not available yet') },
-    speak: speakNow,
     trace: (line) => ctx.logger.info(`hooks-tts: ${line}`),
   })
   const voiceTimer = setInterval(() => { try { voice.reconcile() } catch (error) { ctx.logger.warn(`hooks-tts: voice reconcile failed: ${String(error)}`) } }, 5000)

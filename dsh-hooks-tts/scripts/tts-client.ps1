@@ -86,7 +86,9 @@ function Invoke-KokoroTts {
         [ValidateSet('High', 'Normal')][string]$Priority = 'Normal',
         # Optional pacing, honoured by the Kokoro server: speaking rate (1.0 = normal) and silence between sentences.
         [double]$Speed = 0,
-        [double]$PauseSeconds = 0
+        [double]$PauseSeconds = 0,
+        # Optional callback invoked once right before playback starts (the voice flow measures its latency with it).
+        [scriptblock]$OnPlaybackStart = $null
     )
     $dir = $script:TtsStateDir
     $flagPath = Join-Path $dir 'tts-priority-pending.flag'
@@ -149,6 +151,7 @@ function Invoke-KokoroTts {
 
         # Async play + poll for the stop flag so cancel/mute halts audio instantly.
         $duration = Get-WavDurationSeconds -Bytes $bytes
+        if ($OnPlaybackStart) { $null = & $OnPlaybackStart }
         $player.Play()
         if ($duration) {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
