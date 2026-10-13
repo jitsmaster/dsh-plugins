@@ -71,7 +71,7 @@ function payload(utterance, history, ctx = {}) {
   })
 }
 
-export function createDecider({ llm, model: override, timeoutMs = 8000, maxTokens = 300, log = () => {}, now = Date.now, context = () => ({}) } = {}) {
+export function createDecider({ llm, model: override, timeoutMs = 8000, maxTokens = 1500, log = () => {}, now = Date.now, context = () => ({}) } = {}) {
   let chosen
 
   /** Streams the model's whole reply text; throws on any failure to call it. */

@@ -51,7 +51,8 @@ test('D1 prefers a Haiku model and sends the utterance, history, session handles
   const { config, options } = llm.calls[0]
   assert.equal(config.provider, 'claude')
   assert.equal(config.model, 'claude-haiku-4-5')
-  assert.equal(config.maxTokens, 300)
+  // default must cover MAX_TEXT (4000 chars, voice/actions.js) echoed back in the JSON reply, or parseReply gets a truncated reply
+  assert.equal(config.maxTokens, 1500)
   assert.match(options.system, /Reply with ONE line of JSON, no prose\./)
   for (const name of ['switch', 'prompt', 'new', 'approve', 'deny', 'cancel', 'slash', 'clarify']) assert.match(options.system, new RegExp('"' + name + '"'), name)
   assert.equal(options.messages.length, 1)

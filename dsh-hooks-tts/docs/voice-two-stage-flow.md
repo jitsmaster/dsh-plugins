@@ -96,7 +96,7 @@ New voice/flow.js
   log(stage, data) → void             (never throws into the flow)
 
 New voice/decider.js (replaces llm-router.js; pickModel/parseReply moved here)
-  createDecider({ llm, model, timeoutMs=8000, maxTokens=300, log, now, context })
+  createDecider({ llm, model, timeoutMs=8000, maxTokens=1500, log, now, context })
     context() → {sessions:[{handle,title,selected,lastAlerted,pending?}], slash:[{name,description}], target}
   → { decide(utterance,{history}) }  · no backoff (each user try gets a real call) · abort on timeout.
 

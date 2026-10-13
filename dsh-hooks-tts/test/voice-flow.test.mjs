@@ -828,6 +828,9 @@ test('F36 the flow works without a cancelSpeech dep', async () => {
   const h = harness({ cancelSpeech: undefined })
   h.capture('open the parser'); await tick()
   assert.doesNotThrow(() => h.bargeIn())
+  assert.equal(h.flow.active(), false)
+  h.capture('again'); await tick()
+  assert.equal(h.lastSaid(), 'I heard: again. Is that right?')
 })
 
 test('F37 a speak that resolves cancelled is a silent stop: no retry, no speak-dead, no listen', async () => {
