@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BATTERY } from './fixtures/speech-battery.mjs'
@@ -184,11 +184,10 @@ function collectLines(stream) {
 
 const statusCount = (lines) => lines.filter((l) => l.includes('"status"')).length
 
-test('SC1 speak-worker.ps1 is pure ASCII, ignores tts-muted.flag, says ready, then start and status per line in the female voice', opts, async () => {
+test('SC1 speak-worker.ps1 is pure ASCII, says ready, then start and status per line in the female voice', opts, async () => {
   const worker = join(SCRIPTS, 'speak-worker.ps1')
   assert.equal(/[^\x00-\x7F]/.test(readFileSync(worker, 'utf8')), false, 'speak-worker.ps1 is pure ASCII')
   const tts = await fakeTts()
-  writeFileSync(join(tts.dir, 'tts-muted.flag'), 'muted')
   const child = spawn('powershell.exe', [...PS, worker], { env: tts.env })
   child.stderr.resume()
   const out = collectLines(child.stdout)
@@ -222,10 +221,12 @@ test('SC1 speak-worker.ps1 is pure ASCII, ignores tts-muted.flag, says ready, th
   assert.equal(existsSync(join(tts.dir, 'audio.pids')), false, 'the worker never writes its PID to audio.pids')
 })
 
-test('SC4 speak-worker.ps1 removes a stale tts-priority-pending.flag (left by a killed worker) at start-up', opts, async () => {
+test('SC4 speak-worker.ps1 removes a stale (older than 20 s) tts-priority-pending.flag (left by a killed worker) at start-up', opts, async () => {
   const tts = await fakeTts()
   const flag = join(tts.dir, 'tts-priority-pending.flag')
   writeFileSync(flag, 'stale')
+  const old = new Date(Date.now() - 60_000)
+  utimesSync(flag, old, old)
   const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
   child.stderr.resume()
   const out = collectLines(child.stdout)
@@ -297,7 +298,7 @@ const elapsedOf = (out) => Number(out.find((l) => l.startsWith('ELAPSED='))?.sli
 
 test('SC5 a stop flag created while the line is being synthesised still cuts its playback', opts, async () => {
   const r = await runKokoro([
-    "$r = Invoke-KokoroTts -Text 'Long stale line.' -Gender female -Priority High " + PLAY_MARK,
+    "$r = Invoke-KokoroTts -Text 'Long stale line.' -Gender female -Priority High -KeepNewerStopFlag " + PLAY_MARK,
     ...elapsedLines,
     "[Console]::Out.WriteLine('RESULT=' + $r)",
   ], { wavMs: 8000, onRequest: (dir) => writeFileSync(join(dir, 'tts-stop.flag'), 'barge-in') })
@@ -308,7 +309,7 @@ test('SC5 a stop flag created while the line is being synthesised still cuts its
 
 test('SC5 a stop flag left over from before the call is still deleted and the line plays in full', opts, async () => {
   const r = await runKokoro([
-    "$r = Invoke-KokoroTts -Text 'Fresh line.' -Gender female -Priority High " + PLAY_MARK,
+    "$r = Invoke-KokoroTts -Text 'Fresh line.' -Gender female -Priority High -KeepNewerStopFlag " + PLAY_MARK,
     ...elapsedLines,
     "[Console]::Out.WriteLine('RESULT=' + $r)",
   ], {
@@ -323,6 +324,70 @@ test('SC5 a stop flag left over from before the call is still deleted and the li
   assert.ok(r.out.includes('RESULT=True'), r.out.join('|'))
   assert.ok(elapsedOf(r.out) >= 1200, 'a stale flag must not cut a new line, took ' + elapsedOf(r.out) + ' ms')
   assert.equal(existsSync(join(r.dir, 'tts-stop.flag')), false, 'the stale flag was cleaned up')
+})
+
+// --- Regression R1: legacy callers (stop-speak/speak/elicitation-speak) clear tts-stop.flag when they get the playback mutex.
+// Only the speak worker passes -KeepNewerStopFlag; without it a flag created after the call began is cleared as before, so
+// Ctrl+Alt+M / the mute toggle never cut or eat the NEXT queued alert.
+test('R1 without -KeepNewerStopFlag a stop flag created after the call started is cleared and the line plays in full', opts, async () => {
+  const r = await runKokoro([
+    "$r = Invoke-KokoroTts -Text 'Legacy alert.' -Gender female -Priority High " + PLAY_MARK,
+    ...elapsedLines,
+    "[Console]::Out.WriteLine('RESULT=' + $r + ' CUT=' + $script:TtsLastCut)",
+  ], { wavMs: 1500, onRequest: (dir) => writeFileSync(join(dir, 'tts-stop.flag'), 'mute-toggle') })
+  assert.ok(r.out.includes('RESULT=True CUT=False'), r.out.join('|'))
+  assert.ok(elapsedOf(r.out) >= 1200, 'a legacy caller is not cut by a flag raised before it got the mutex, took ' + elapsedOf(r.out) + ' ms')
+  assert.equal(existsSync(join(r.dir, 'tts-stop.flag')), false, 'the flag was cleared')
+})
+
+test('R1 speak-worker.ps1 passes -KeepNewerStopFlag to Invoke-KokoroTts (and nothing else does)', () => {
+  assert.match(readFileSync(join(SCRIPTS, 'speak-worker.ps1'), 'utf8'), /Invoke-KokoroTts[^\r\n]*-KeepNewerStopFlag/)
+  for (const f of ['stop-speak.ps1', 'speak.ps1', 'elicitation-speak.ps1']) {
+    assert.doesNotMatch(readFileSync(join(SCRIPTS, f), 'utf8'), /KeepNewerStopFlag/, f)
+  }
+})
+
+// --- Regression R3: voice-flow lines honour tts-muted.flag (checked at request time); R9: a live High-priority flag survives worker start.
+test('R3 speak-worker.ps1 answers muted, without synthesis or start event, while tts-muted.flag exists; speaks again once unmuted', opts, async () => {
+  const tts = await fakeTts()
+  writeFileSync(join(tts.dir, 'tts-muted.flag'), 'muted')
+  const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  try {
+    await out.until((l) => l.length >= 1)
+    child.stdin.write(JSON.stringify({ id: 1, text: 'Cancelled.', gender: 'female', priority: 'High' }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 1)
+    rmSync(join(tts.dir, 'tts-muted.flag'))
+    child.stdin.write(JSON.stringify({ id: 2, text: 'audible', gender: 'female', priority: 'High' }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 2)
+  } finally {
+    child.stdin.end()
+    child.kill()
+    tts.close()
+  }
+  const msgs = out.lines.map((l) => JSON.parse(l))
+  assert.deepEqual(msgs.filter((m) => 'status' in m).map((m) => [m.id, m.status]), [[1, 'muted'], [2, 'done']])
+  assert.deepEqual(msgs.filter((m) => m.event === 'start').map((m) => m.id), [2], 'no playback start for a muted line')
+  assert.deepEqual(tts.spoken.map((s) => s.text), ['audible'], 'a muted line never reaches the TTS server')
+})
+
+test('R9 speak-worker.ps1 keeps a fresh tts-priority-pending.flag (a live High-priority alert) at start-up', opts, async () => {
+  const tts = await fakeTts()
+  const flag = join(tts.dir, 'tts-priority-pending.flag')
+  writeFileSync(flag, 'live')
+  const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  try {
+    await out.until((l) => l.length >= 1)
+    assert.deepEqual(out.lines, ['{"ready":true}'])
+    assert.equal(existsSync(flag), true, 'a flag younger than 20 s may belong to a live elicitation-speak')
+  } finally {
+    child.stdin.end()
+    child.kill()
+    tts.close()
+  }
 })
 
 test('SC6 speak-worker.ps1 answers cancelled, without speaking, for lines below the tts-voice-cancel.json marker; later lines are spoken', opts, async () => {
@@ -422,7 +487,7 @@ test('SC7 speak-worker.ps1 answers cut when the stop flag ended the line early, 
 const r0 = { done: false }
 test('SC7 Invoke-KokoroTts still returns true for a cut line and records the cut in $script:TtsLastCut', opts, async () => {
   const r = await runKokoro([
-    "$r = Invoke-KokoroTts -Text 'Cut line.' -Gender female -Priority High",
+    "$r = Invoke-KokoroTts -Text 'Cut line.' -Gender female -Priority High -KeepNewerStopFlag",
     "[Console]::Out.WriteLine('RESULT=' + $r + ' CUT=' + $script:TtsLastCut)",
     "$r = Invoke-KokoroTts -Text 'Full line.' -Gender female -Priority High",
     "[Console]::Out.WriteLine('RESULT=' + $r + ' CUT=' + $script:TtsLastCut)",

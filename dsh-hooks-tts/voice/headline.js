@@ -10,13 +10,16 @@ const TOOL_SPEECH = {
 /** Own keys only: a tool called "constructor" must not resolve to Object.prototype.constructor. */
 export const isKnownTool = (toolName) => typeof toolName === 'string' && Object.hasOwn(TOOL_SPEECH, toolName)
 
+/** Longest spoken tool name in a permission alert: long MCP names must not be cut mid-word (spokenName's default is 40). */
+const TOOL_NAME_MAX = 80
+
 /**
  * A tool's spoken wording: the fixed phrase of a known tool; any other name as the speaker will say it (see sanitize.js spokenName),
  * prefixed "unknown tool" when it would sound like a known phrase (a tool named run_command must not pass for pwsh).
  */
 function toolWords(toolName) {
   if (isKnownTool(toolName)) return TOOL_SPEECH[toolName]
-  const words = spokenName(String(toolName ?? '')).text.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim() || 'tool'
+  const words = spokenName(String(toolName ?? ''), TOOL_NAME_MAX).text.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim() || 'tool'
   return Object.values(TOOL_SPEECH).includes(words) ? 'unknown tool ' + words : words
 }
 

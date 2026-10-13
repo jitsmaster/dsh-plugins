@@ -102,7 +102,11 @@ function Invoke-KokoroTts {
         [scriptblock]$OnPlaybackStart = $null,
         # Keep this process out of <hotDir>\audio.pids: a long-lived caller (speak-worker.ps1) must not be killed by the
         # Ctrl+Alt+M hotkey; its playback is cut through the polled tts-stop.flag instead.
-        [switch]$NoPidFile
+        [switch]$NoPidFile,
+        # Keep a stop flag created after this call started (a barge-in / Ctrl+Alt+M while the line was synthesised or queued) so it
+        # still cuts THIS line. Only speak-worker.ps1 passes it. Legacy hook callers (stop/speak/elicitation) clear every stop flag
+        # when they get the playback mutex, so a hotkey press never cuts or eats the NEXT queued alert.
+        [switch]$KeepNewerStopFlag
     )
     $callStart = Get-Date
     # Set when the stop flag (Ctrl+Alt+M, barge-in) ended playback early; speak-worker.ps1 reports it as status 'cut'.
@@ -161,7 +165,10 @@ function Invoke-KokoroTts {
 
         # Record our PID only now that we hold the playback mutex, so the hotkey kills the speaker that is audible.
         if ($stopFlags.Count -gt 1 -and -not $NoPidFile) { Set-Content -Path (Join-Path $hotDir 'audio.pids') -Value $PID }
-        foreach ($f in $stopFlags) { Remove-StopFlagOlderThan $f $callStart }
+        foreach ($f in $stopFlags) {
+            if ($KeepNewerStopFlag) { Remove-StopFlagOlderThan $f $callStart }
+            else { Remove-Item -Path $f -Force -ErrorAction SilentlyContinue }
+        }
         $stream = New-Object System.IO.MemoryStream(, $bytes)
         $player = New-Object System.Media.SoundPlayer
         $player.Stream = $stream

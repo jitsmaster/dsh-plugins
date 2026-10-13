@@ -14,7 +14,7 @@ import { join } from 'node:path'
  * with the WAV duration + playbackMarginMs (playbackFallbackMs when the worker sent no duration).
  * When the worker keeps dying (more than maxRespawns exits within 60 s) every line gets its own process instead
  * (one line, then EOF). The child is never detached: a detached PowerShell with piped stdio exits silently on Windows.
- * speak() never rejects; it resolves { status:'done'|'cut'|'failed'|'timeout'|'cancelled', ms, startMs? }. 'cut' = the line was stopped early
+ * speak() never rejects; it resolves { status:'done'|'cut'|'failed'|'timeout'|'cancelled'|'muted', ms, startMs? }. 'muted' = tts-muted.flag existed when the worker took the line; it was not spoken. 'cut' = the line was stopped early
  * (the worker saw the stop flag, or exited unexpectedly after the line's start event) and does not count as a worker death.
  * cancel() (a barge-in): lines queued behind the head resolve 'cancelled' at once. Requests are already written to the
  * worker's stdin, so the worker is told through two files in the TTS state dir (the worker cannot read stdin while it
@@ -91,7 +91,7 @@ export function createSpeakWorker({
     if (!req) return
     if (msg.event === 'start') return onStart(w, req, msg)
     if (msg.status === undefined) return
-    const known = msg.status === 'done' || msg.status === 'cancelled' || msg.status === 'cut'
+    const known = msg.status === 'done' || msg.status === 'cancelled' || msg.status === 'cut' || msg.status === 'muted'
     const result = { status: known ? msg.status : 'failed', ms: Number(msg.ms) || 0 }
     if (req.startAt !== undefined) result.startMs = req.startAt - req.t0
     finish(w, req, result)

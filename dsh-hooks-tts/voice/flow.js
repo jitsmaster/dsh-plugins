@@ -7,7 +7,7 @@
  * barge-in, abort or re-capture silently drops pending speak/listen/decide/execute continuations. Listens carry
  * {flow:'voice', id, turn, step}; only an exact match with the current listen is consumed, anything else is stale.
  * Barge-in and abort also call cancelSpeech(), which silences queued and in-flight lines (the mic is open: a stale line
- * must not play into it). A line that resolves 'cancelled' ends its turn silently (no retry, no speak-dead).
+ * must not play into it). A line that resolves 'cancelled' or 'muted' (tts-muted.flag) ends its turn silently (no retry, no speak-dead).
  * Exception: a barge-in or capture during EXECUTE is held (the action ran either way, so its outcome is always said):
  * the result line waits until the barge-in's listen has ended (transcript or idle) so it is not spoken into the open
  * mic, is then spoken first, and a held capture then starts the next conversation.
@@ -20,6 +20,8 @@ const LISTEN_RETRY_MS = 500
 /** Events of a barge-in/capture listen (context null) that are held while EXECUTE runs. */
 const HELD_EVENTS = new Set(['listening', 'transcript', 'idle', 'error'])
 const LOG_RAW_MAX = 300
+/** An execute() that has not settled by then counts as failed ("That failed: timed out."), so a hung call cannot hold EXECUTE forever. */
+const EXECUTE_TIMEOUT_MS = 35_000
 
 const LINES = Object.freeze({
   notCaught: 'I did not catch that.',
@@ -69,7 +71,7 @@ export function failText(error) {
 export function createVoiceFlow({
   speak, listen, decide, validate, readBack, resultText, execute, classify,
   now = Date.now, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout,
-  uuid, windowS = 10, guardExtraMs = 15000, maxClarify = 2, cancelSpeech,
+  uuid, windowS = 10, guardExtraMs = 15000, maxClarify = 2, cancelSpeech, executeTimeoutMs = EXECUTE_TIMEOUT_MS,
 }) {
   const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0 }
 
@@ -211,7 +213,8 @@ export function createVoiceFlow({
       note('speak.end', { status, ms: r?.ms })
       // 'cancelled' (barge-in/abort silenced the line) is final: retrying it would speak into the open mic.
       // 'cut' (the user silenced the line, Ctrl+Alt+M) is final as well: playing it again would defeat the silencing.
-      if (status === 'done' || status === 'cancelled' || status === 'cut' || turn !== s.turn) return status
+      // 'muted' (tts-muted.flag was set when the worker took the line) is final and silent as well.
+      if (status === 'done' || status === 'cancelled' || status === 'muted' || status === 'cut' || turn !== s.turn) return status
     }
     return 'failed'
   }
@@ -222,10 +225,10 @@ export function createVoiceFlow({
     clearGuard(); reset()
   }
 
-  /** A line that did not finish: 'cancelled' is a deliberate silence (no speak-dead), anything else means the speaker is dead. */
+  /** A line that did not finish: 'cancelled' and 'muted' are deliberate silences (no speak-dead), anything else means the speaker is dead. */
   function lineFailed(status, line) {
-    if (status !== 'cancelled') return dead(line)
-    note('speak-cancelled', { line, state: s.state })
+    if (status !== 'cancelled' && status !== 'muted') return dead(line)
+    note(status === 'muted' ? 'speak-muted' : 'speak-cancelled', { line, state: s.state })
     clearGuard(); reset()
   }
 
@@ -340,7 +343,7 @@ export function createVoiceFlow({
     note('execute.start', { action: loggable(action) })
     let line
     try {
-      const result = await execute(action)
+      const result = await executeWithTimeout(action)
       note('execute.end', { ms: now() - t, ok: true })
       line = resultText(action, result)
     } catch (e) {
@@ -351,6 +354,13 @@ export function createVoiceFlow({
       await waitHeldListen(hold) // never speak into a barge-in mic that is still open
       if (s.hold === hold) await end(line, turn) // abort() cleared the hold: nothing is said
     } finally { release(hold) }
+  }
+
+  /** execute(action), failing with 'timed out' when it has not settled after executeTimeoutMs (the timer never outlives the call). */
+  async function executeWithTimeout(action) {
+    let timer
+    const timedOut = new Promise((_, reject) => { timer = setTimer(() => reject(new Error('timed out')), executeTimeoutMs) })
+    try { return await Promise.race([(async () => execute(action))(), timedOut]) } finally { clearTimer(timer) }
   }
 
   /** The result line is done: replay a capture held during EXECUTE. Dropped when abort() cleared the hold. */

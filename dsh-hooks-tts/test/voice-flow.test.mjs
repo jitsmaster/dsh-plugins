@@ -1047,3 +1047,84 @@ test('F1 validate receives the confirmed utterance, so CJK in an action is only 
   await h.speakDone() // Deciding
   assert.deepEqual(seen, [{ utterance: 'fix the parser' }])
 })
+
+// --- Regression R3: a line the worker answers 'muted' (tts-muted.flag at request time) ends the turn silently.
+test('R3 a muted line is a silent stop: logged, no retry, no listen, no speak-dead', async () => {
+  const h = harness()
+  h.capture('open the parser'); await tick()
+  await h.speakDone('muted')
+  assert.equal(h.speaks.length, 1, 'no retry of a muted line')
+  assert.equal(h.listens.length, 0)
+  assert.equal(h.flow.active(), false)
+  assert.ok(h.stages().includes('speak-muted'))
+  assert.ok(!h.stages().includes('speak-dead'))
+})
+
+test('R3 muted at the Deciding line and at a final line also end silently', async () => {
+  const h = harness()
+  await toDecide(h)
+  await h.decideWith({ ok: true, raw: PROMPT })
+  await h.speakDone('muted')
+  assert.equal(h.speaks.length, 2, 'no read-back, no retry')
+  assert.equal(h.flow.active(), false)
+  assert.ok(!h.stages().includes('speak-dead'))
+  const g = harness()
+  g.capture('  '); await tick()
+  await g.speakDone('muted')
+  assert.equal(g.speaks.length, 1)
+  assert.equal(g.flow.active(), false)
+})
+
+test('R3 a line cut by the mute toggle does not speak Cancelled. aloud: the Cancelled. line comes back muted and the flow goes idle', async () => {
+  const h = harness()
+  h.capture('open the parser'); await tick()
+  await h.speakDone('cut') // Ctrl+Alt+M cut the echo
+  assert.equal(h.lastSaid(), 'Cancelled.')
+  await h.speakDone('muted') // the worker refuses to speak while muted
+  assert.equal(h.speaks.length, 2, 'Cancelled. is not retried')
+  assert.equal(h.state(), 'IDLE')
+  assert.equal(h.flow.active(), false)
+  assert.equal(h.listens.length, 0)
+  assert.ok(!h.stages().includes('speak-dead'))
+})
+
+// --- Regression R5: execute() has a timeout (35 s, injectable): a hung call must not leave EXECUTE forever.
+test('R5 a hung execute times out after 35 s: That failed: timed out. is spoken and the flow goes idle', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  assert.equal(h.state(), 'EXECUTE')
+  const n = h.speaks.length
+  await h.fire(35_000)
+  assert.equal(h.speaks.length, n + 1)
+  assert.equal(h.lastSaid(), 'That failed: timed out.')
+  assert.equal(h.flow.active(), true, 'still active while the line is spoken')
+  await h.speakDone()
+  assert.equal(h.state(), 'IDLE')
+  assert.equal(h.flow.active(), false)
+  h.executes[0].resolve({ late: true }); await tick()
+  assert.equal(h.speaks.length, n + 1, 'a late result is dropped')
+})
+
+test('R5 the execute timeout is injectable, and does not outlive an execute that finished in time', async () => {
+  const h = harness({ executeTimeoutMs: 1234 })
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  assert.ok(h.timers.some((t) => t.ms === 1234))
+  h.executes[0].resolve({}); await tick()
+  assert.ok(!h.timers.some((t) => t.ms === 1234), 'the timer is cleared once execute settled')
+  assert.equal(h.lastSaid(), 'Sent to Voice Work.')
+})
+
+test('R5 a capture held during a hung execute is released after the timeout line and starts the next conversation', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  h.capture('second thing'); await tick()
+  await h.fire(35_000)
+  assert.equal(h.lastSaid(), 'That failed: timed out.')
+  await h.speakDone()
+  assert.equal(h.lastSaid(), 'I heard: second thing. Is that right?')
+  assert.equal(h.state(), 'ECHO_SPEAK')
+})

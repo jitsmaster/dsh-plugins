@@ -2,9 +2,10 @@
 # stdin:  one UTF-8 JSON request per line: {"id":n,"text":"...","gender":"female","priority":"High"}
 # stdout: JSON lines only: {"ready":true} once, then per request {"id":n,"event":"start","durationMs":n} right before
 #         playback (durationMs = WAV length, omitted when unknown; speaker.js times playback with it) and
-#         {"id":n,"status":"done"|"cut"|"failed","ms":n}. EOF on stdin -> exit 0.
-# The voice flow is user-initiated, so tts-muted.flag is deliberately NOT checked; Ctrl+Alt+M (tts-stop.flag) still
-# cuts the current line short inside Invoke-KokoroTts. -NoPidFile keeps the worker's PID out of audio.pids, so the hotkey
+#         {"id":n,"status":"done"|"cut"|"failed"|"muted"|"cancelled","ms":n}. EOF on stdin -> exit 0.
+# tts-muted.flag IS checked, at request time: a line requested while muted is answered {"id":n,"status":"muted"} without
+# synthesis (the flow ends silently; ttsEnabled stays ignored). Ctrl+Alt+M (tts-stop.flag) cuts the current line short inside
+# Invoke-KokoroTts (-KeepNewerStopFlag: a flag raised while the line was being synthesised still cuts it). -NoPidFile keeps the worker's PID out of audio.pids, so the hotkey
 # never kills the worker itself (a cut line reports "cut").
 # Barge-in: while a line is spoken the worker cannot read stdin, so the plugin cancels the lines queued behind it with
 # <state dir>\tts-voice-cancel-<this worker's PID>.json {"before":N}: a line with id < N that has not begun is answered
@@ -19,8 +20,11 @@ function Write-WorkerLine([string]$Json) {
 }
 
 # A worker killed mid-line (timeout or stop) skips Invoke-KokoroTts's finally block and can leave the High-priority flag
-# behind, which makes Normal-priority hook read-outs wait up to 20 s. A new worker clears it before taking any line.
-Remove-Item -Path (Join-Path $script:TtsStateDir 'tts-priority-pending.flag') -Force -ErrorAction SilentlyContinue
+# behind, which makes Normal-priority hook read-outs wait up to 20 s. A new worker clears it before taking any line, but only
+# when it is older than 20 s (the same staleness limit Invoke-KokoroTts uses): a younger one may belong to a live
+# elicitation-speak.ps1 High-priority alert that must keep its place in the queue.
+$priorityFlag = Get-Item -Path (Join-Path $script:TtsStateDir 'tts-priority-pending.flag') -ErrorAction SilentlyContinue
+if ($priorityFlag -and ((Get-Date) - $priorityFlag.LastWriteTime).TotalSeconds -gt 20) { Remove-Item -Path $priorityFlag.FullName -Force -ErrorAction SilentlyContinue }
 
 # The cancel marker is only valid for the plugin session that wrote it; request ids restart at 1 with every plugin
 # start, so a marker older than this process (a previous session's, or one written before this worker was spawned)
@@ -53,11 +57,13 @@ while ($true) {
     $workerReqId = $null
     $ok = $false
     $cancelled = $false
+    $muted = $false
     $script:TtsLastCut = $false
     try {
         $req = $line | ConvertFrom-Json
         $workerReqId = $req.id
         if (Test-VoiceCancelled $workerReqId) { $cancelled = $true; throw 'cancelled' }
+        if (Test-TtsMuted) { $muted = $true; throw 'muted' }
         $gender = if ($req.gender -in @('male', 'female')) { [string]$req.gender } else { 'female' }
         $priority = if ($req.priority -in @('High', 'Normal')) { [string]$req.priority } else { 'High' }
         $idJson = $workerReqId | ConvertTo-Json -Compress
@@ -67,13 +73,13 @@ while ($true) {
             $dur = if ($Seconds) { ',"durationMs":' + [int][math]::Round([double]$Seconds * 1000) } else { '' }
             [Console]::Out.WriteLine('{"id":' + $idJson + ',"event":"start"' + $dur + '}'); [Console]::Out.Flush()
         }
-        $ok = [bool](Invoke-KokoroTts -Text (Clean-ForSpeech ([string]$req.text)) -Gender $gender -Priority $priority -OnPlaybackStart $onStart -NoPidFile)
+        $ok = [bool](Invoke-KokoroTts -Text (Clean-ForSpeech ([string]$req.text)) -Gender $gender -Priority $priority -OnPlaybackStart $onStart -NoPidFile -KeepNewerStopFlag)
     } catch {
-        if (-not $cancelled) { Add-TtsLog 'tts-client-errors.log' "speak-worker: $($_.Exception.Message)" }
+        if (-not $cancelled -and -not $muted) { Add-TtsLog 'tts-client-errors.log' "speak-worker: $($_.Exception.Message)" }
         $ok = $false
     }
     if ($null -eq $workerReqId) { continue }
-    $status = if ($cancelled) { 'cancelled' } elseif ($ok -and $script:TtsLastCut) { 'cut' } elseif ($ok) { 'done' } else { 'failed' }
+    $status = if ($cancelled) { 'cancelled' } elseif ($muted) { 'muted' } elseif ($ok -and $script:TtsLastCut) { 'cut' } elseif ($ok) { 'done' } else { 'failed' }
     Write-WorkerLine ('{"id":' + ($workerReqId | ConvertTo-Json -Compress) + ',"status":"' + $status + '","ms":' + [int]$sw.ElapsedMilliseconds + '}')
 }
 exit 0

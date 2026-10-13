@@ -134,3 +134,11 @@ test('F4 tool names go through the spoken form: no inherited properties, no coll
   assert.equal(permissionHeadline({ toolName: 'run_command' }), 'Approve unknown tool run command?')
   assert.equal(permissionHeadline({ toolName: 'read_file' }), 'Approve unknown tool read file?')
 })
+
+test('R10 a long MCP/unknown tool name in the permission alert is spoken whole up to 80 characters, not cut mid-word at 40', () => {
+  const name = 'mcp__playwright__browser_find_element_by_accessibility_label'
+  assert.ok(name.length > 40 && name.length < 80)
+  assert.equal(permissionHeadline({ toolName: name }), 'Approve mcp playwright browser find element by accessibility label?')
+  const huge = 'x'.repeat(200)
+  assert.equal(permissionHeadline({ toolName: huge }), 'Approve ' + 'x'.repeat(80) + '?')
+})

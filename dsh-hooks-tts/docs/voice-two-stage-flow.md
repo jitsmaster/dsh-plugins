@@ -6,8 +6,10 @@ Spec for TDD implementation. Target users: blind. Every outcome is SPOKEN; nothi
 - D1 Speaker = **option (b) persistent speak worker** (scripts/speak-worker.ps1, JSON lines). Why: PowerShell cold start
   + Add-Type ≈ 0.5–1 s per spawn blows the ≤1 s echo target; the worker pays it once (prewarmed). Same script = one-shot
   fallback (1 line, EOF) when the worker keeps dying. Testable via injected spawn + plain JSON-lines protocol.
-- D2 Flow ALWAYS speaks, ignoring tts-muted.flag and settings.ttsEnabled (user-initiated). Ctrl+Alt+M (tts-stop.flag)
-  still cuts the current line short. The worker reports such a line as status `cut` (not `done`). A cut ECHO or READ-BACK line was
+- D2 Flow ignores settings.ttsEnabled (user-initiated) but HONOURS tts-muted.flag, checked by the worker at request time: a line
+  requested while muted is answered status `muted` without synthesis and the flow ends that turn silently (T30; no retry, no
+  'speak-dead', logged 'speak-muted'). That also covers a line cut by Ctrl+Alt+M / the mute toggle: the "Cancelled." that
+  follows the cut comes back `muted`, so it is not spoken aloud. Ctrl+Alt+M (tts-stop.flag) cuts the current line short. The worker reports such a line as status `cut` (not `done`). A cut ECHO or READ-BACK line was
   not fully heard, so the flow does NOT open the mic and does not execute: it speaks "Cancelled." and ends (T28). A cut
   Deciding / clarify / result / end line behaves as before (the flow continues).
 - D3 One voice: gender 'female' on every flow line (EN→bf_isabella, ZH→zf_xiaobei server-side), Priority 'High'.
@@ -68,10 +70,12 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T22 | CLARIFY_LISTEN | answer 'text' or 'yes' | utterance = answer; speak echo (T1 wording) | ECHO_SPEAK |
 | T23 | EXECUTE | ok | → END resultText(action); when a barge-in/capture mic is open (listening{context null} seen, no transcript/idle/error yet) the line is held until that listen ended (or windowS+15 s), then spoken first; a held capture is echoed after it (T1) | IDLE |
 | T24 | EXECUTE | throws / stale approval | → END "That failed: {short error}." / "That request changed. Nothing done." | IDLE |
+| T24a | EXECUTE | execute() has not settled after executeTimeoutMs (default 35 s, injectable) | → END "That failed: timed out." (a later result is dropped; any held capture is released after that line) | IDLE |
 | T25 | any *_SPEAK | speak status failed/timeout | log; one retry of the same line; still failing → IDLE silently (cannot speak) + log 'speak-dead' | IDLE |
 | T26 | any | voice control disabled / service.stop() | abort (also `cancelSpeech()` when a turn was running); no speech | IDLE |
 | T27 | any *_SPEAK / END_SPEAK / DECIDE line | speak status 'cancelled' (speaker.cancel()) | silent stop for that turn: no retry, no 'speak-dead' log, no listen | IDLE |
 | T28 | ECHO_SPEAK / READBACK_SPEAK | speak status 'cut' (Ctrl+Alt+M ended the line early) | no retry, no listen, nothing executes; → END "Cancelled." (a cut CLARIFY_SPEAK line still opens its listen; a cut Deciding/result/end line behaves like 'done') | IDLE |
+| T30 | any *_SPEAK / END_SPEAK / DECIDE line | speak status 'muted' (tts-muted.flag existed when the worker took the line) | silent stop for that turn, like T27 but logged 'speak-muted': no retry, no 'speak-dead', no listen | IDLE |
 | T29 | DECIDE | validate error 'too-long' (prompt/new text over 1500 chars) | → END "That is too long to confirm by voice. Cancelled." | IDLE |
 | T29a | DECIDE | validate error 'not-approvable' (approve whose summary is cut, unavailable, hides characters, or is of an unknown tool; deny is unaffected) | → END "That request is too long or unclear to approve by voice. Answer it on screen." | IDLE |
 
@@ -90,14 +94,14 @@ Notes:
 
 New voice/flow.js
   createVoiceFlow({ speak, listen, decide, validate, readBack, resultText, execute, classify, now, log,
-                    setTimer, clearTimer, uuid, windowS=10, guardExtraMs=15000, maxClarify=2 })
+                    setTimer, clearTimer, uuid, windowS=10, guardExtraMs=15000, maxClarify=2, executeTimeoutMs=35000 })
   → { handle(event): void, active(): boolean, abort(reason): void, snapshot(): {state, id, turn, step} }
   cancelSpeech() → void   (optional dep; called on barge-in/abort/recapture of a running turn; service.js wires speaker.cancel)
-  speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'cut'|'failed'|'timeout'|'cancelled', startMs?, ms}>
+  speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'cut'|'failed'|'timeout'|'cancelled'|'muted', startMs?, ms}>
   listen({context, window_s}) → Promise<{started:boolean}>     (rejects on HTTP/network error)
   decide(utterance, {history}) → Promise<{ok:true, raw:object} | {ok:false, error:'timeout'|'llm'|'unparseable'}>
   validate(raw, { utterance }) → {ok:true, action} | {ok:false, error:'invalid'|'too-long'|'no-session'|'no-approval'|'not-approvable', title?}
-  execute(action) → Promise<result>   (throws Error with short message)
+  execute(action) → Promise<result>   (throws Error with short message; a call still pending after executeTimeoutMs counts as failed: T24a)
   log(stage, data) → void             (never throws into the flow)
 
 New voice/decider.js (replaces llm-router.js; pickModel/parseReply moved here)
@@ -136,12 +140,16 @@ Changed
   with no outstanding line (it would cut an unrelated hook read-out). The worker is never killed. Killing a worker mid-line
   deletes <state dir>\tts-priority-pending.flag after it exited (its finally block never ran).
 - scripts/speak-worker.ps1 (new, pure ASCII): dot-source tts-client.ps1; emit {"ready":true}; loop: read UTF-8 stdin
-  line → {id,text,gender,priority} → NO Test-TtsMuted → Invoke-KokoroTts -Text (Clean-ForSpeech text) -Gender
-  -Priority -OnPlaybackStart { emit {"id",event:"start",durationMs} } → emit {"id","status":"done"|"failed","ms"};
-  EOF → exit 0. At start-up (before ready) it removes a stale tts-priority-pending.flag.
+  line → {id,text,gender,priority} → Test-TtsMuted at request time → emit {"id","status":"muted"} without synthesis, else
+  Invoke-KokoroTts -Text (Clean-ForSpeech text) -Gender -Priority -OnPlaybackStart { emit {"id",event:"start",durationMs} }
+  -NoPidFile -KeepNewerStopFlag → emit {"id","status":"done"|"cut"|"failed","ms"}; EOF → exit 0. At start-up (before ready) it removes
+  tts-priority-pending.flag only when it is older than 20 s (a younger one may be a live High-priority alert of elicitation-speak.ps1).
 - scripts/tts-client.ps1: Invoke-KokoroTts gains optional [scriptblock]$OnPlaybackStart, invoked right before
-  $player.Play() (backward compatible; hooks unchanged). Before playback it deletes only stop flags older than its own
-  start ($callStart), so a barge-in flag created while the line was synthesised/queued still cuts it.
+  $player.Play() (backward compatible; hooks unchanged). New switch -KeepNewerStopFlag (passed ONLY by
+  speak-worker.ps1): before playback it then deletes only stop flags older than its own start ($callStart), so a barge-in flag
+  created while the line was synthesised/queued still cuts it. Without the switch (stop-speak/speak/elicitation-speak, as
+  before) every stop flag is cleared when the playback mutex is acquired, so Ctrl+Alt+M / the mute toggle never cut or eat the
+  NEXT queued alert.
 - scripts/speak-worker.ps1 also: reports status `cut` when the stop flag ended playback early (Invoke-KokoroTts sets `$script:TtsLastCut` and still returns $true); uses its own tts-voice-cancel-$PID.json; removes that marker if older than its own process at start-up (request ids restart
   per plugin session; a marker written after the process started is kept) and answers cancelled lines {"id","status":"cancelled","ms":0}.
 - index.js: wire decider/flow/speaker; delete createLlmRouter + createSpeaker + confirm: wiring; L224 keeps
@@ -364,8 +372,9 @@ test/voice-speaker.test.mjs (rewritten): S1 one worker spawned for many lines; J
 test/voice-service.test.mjs (updated): SV1 listen POSTs JSON {context,window_s} with bearer · SV2 GUI control('listen')
   still posts without body · SV3 busy() true while flow active · SV4 agentDisposed clears selected and aborts flow
   targeting it · SV5 transcripts reach flow.handle; logs typed 'flow' · keep reconcile/ensureStt/secret tests
-test/voice-scripts.test.mjs: SC1 speak-worker.ps1 pure ASCII, ignores tts-muted.flag, emits ready/start/status lines
-  (fake TTS URL) · SC2 Invoke-KokoroTts without -OnPlaybackStart unchanged (existing tests stay green)
+test/voice-scripts.test.mjs: SC1 speak-worker.ps1 pure ASCII, emits ready/start/status lines
+  (fake TTS URL) · SC2 Invoke-KokoroTts without -OnPlaybackStart unchanged (existing tests stay green) · R1 legacy callers clear a newer stop flag · R3 worker answers `muted` while tts-muted.flag exists · R9 worker keeps a fresh tts-priority-pending.flag
+Regression tests: voice-flow R3 muted lines end silently / R5 execute timeout (fake timers) · voice-speaker R3 `muted` passes through · voice-headline R10 permission alert names up to 80 chars
 Settings: ST1 'voiceConfirm' no longer accepted/defaulted (old settings.json with it still loads).
 
 ## 8. Open risks

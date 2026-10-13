@@ -275,6 +275,15 @@ test('S7 a worker that exits after the line started playing (hotkey cut) resolve
   assert.equal(h.child().ended, false, 'still a persistent worker')
 })
 
+test('R3 a muted status from the worker is passed through (not folded into failed)', async () => {
+  const h = harness()
+  const p = h.speaker.speak('Cancelled.', VOICE)
+  await tick()
+  h.t += 5
+  await h.child().send({ id: 1, status: 'muted', ms: 3 })
+  assert.deepEqual(await peek(p), { status: 'muted', ms: 3 })
+})
+
 test('S7 a worker exit before the start event still fails the line', async () => {
   const h = harness()
   const p = h.speaker.speak('x', VOICE)
