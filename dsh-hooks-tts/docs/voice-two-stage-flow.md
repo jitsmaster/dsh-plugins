@@ -111,10 +111,14 @@ Changed
   the flow if its frozen action targets that id ("That session closed. Cancelled."); reconcile() prewarms speaker when
   enabled, speaker.stop() when disabled; status() adds flow: flow.snapshot(), selected.
 - voice/speaker.js: replace createSpeaker with createSpeakWorker({ spawn, root, env, log, setTimer, clearTimer,
-  requestTimeoutMs=45000, maxRespawns=3 within 60 s → one-shot mode }) → { speak(text,opts), warm(), stop() }.
+  requestTimeoutMs=45000 (head of queue → 'start' only), playbackMarginMs=5000, playbackFallbackMs=120000, unlink,
+  maxRespawns=3 within 60 s → one-shot mode }) → { speak(text,opts), warm(), stop() }; also exports VOICE.
+  On 'start' the timer is re-armed with durationMs + 5 s (120 s without a duration). Killing a worker mid-line
+  deletes <state dir>\tts-priority-pending.flag after it exited (its finally block never ran).
 - scripts/speak-worker.ps1 (new, pure ASCII): dot-source tts-client.ps1; emit {"ready":true}; loop: read UTF-8 stdin
   line → {id,text,gender,priority} → NO Test-TtsMuted → Invoke-KokoroTts -Text (Clean-ForSpeech text) -Gender
-  -Priority -OnPlaybackStart { emit {"id",event:"start"} } → emit {"id","status":"done"|"failed","ms"}; EOF → exit 0.
+  -Priority -OnPlaybackStart { emit {"id",event:"start",durationMs} } → emit {"id","status":"done"|"failed","ms"};
+  EOF → exit 0. At start-up (before ready) it removes a stale tts-priority-pending.flag.
 - scripts/tts-client.ps1: Invoke-KokoroTts gains optional [scriptblock]$OnPlaybackStart, invoked right before
   $player.Play() (backward compatible; hooks unchanged).
 - index.js: wire decider/flow/speaker; delete createLlmRouter + createSpeaker + confirm: wiring; L224 keeps
@@ -350,7 +354,8 @@ Settings: ST1 'voiceConfirm' no longer accepted/defaulted (old settings.json wit
 - R4 Long dictations make the echo/read-back long; Ctrl+Alt+M cuts the line and the flow still opens the mic (D2).
 - R5 Bluetooth ~1 s mic lead-in may clip the first syllable of a fast "yes"; STT window counts audio frames so the
   10 s budget is honest, but the beep plays before the mic is really live.
-- R6 Worker process health: a hung Invoke-KokoroTts (HTTP 30 s) blocks the worker; 45 s request timeout kills+respawns.
+- R6 Worker process health: a hung Invoke-KokoroTts (HTTP 30 s) blocks the worker; 45 s wait-for-start timeout (then WAV duration
+  + 5 s for playback) kills+respawns.
 - R7 LLM may pick prompt where user meant a command (or vice versa); two read-backs are the guard. No offline fallback
   when no LLM is configured → every request ends "The LLM is not available."
 - R8 controller.create({cwd}) inherits the target session's cwd; with no target, host default cwd.

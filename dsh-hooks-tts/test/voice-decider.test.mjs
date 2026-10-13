@@ -76,13 +76,13 @@ test('D1 the slash list sent to the model is capped at 30 entries', async () => 
 
 test('D2 JSON wrapped in prose or a code fence is parsed into raw', async () => {
   const decider = createDecider({ llm: fakeLlm('Sure!\n```json\n{"action":"cancel","session":"s2"}\n```'), context: CTX })
-  assert.deepEqual(await decider.decide('stop the PR one', { history: [] }), { ok: true, raw: { action: 'cancel', session: 's2' } })
+  assert.deepEqual(await decider.decide('stop the PR one', { history: [] }), { ok: true, raw: { action: 'cancel', session: 's2' }, model: 'claude-haiku-4-5' })
 })
 
 test('D3 a reply without parseable JSON is unparseable', async () => {
   for (const reply of ['no idea', '{not json}', '"just a string"']) {
     const decider = createDecider({ llm: fakeLlm(reply), context: CTX })
-    assert.deepEqual(await decider.decide('x', { history: [] }), { ok: false, error: 'unparseable' }, reply)
+    assert.deepEqual(await decider.decide('x', { history: [] }), { ok: false, error: 'unparseable', model: 'claude-haiku-4-5' }, reply)
   }
 })
 
@@ -153,6 +153,6 @@ test('D6 no backoff: the call right after a failure really calls the model again
   }
   const decider = createDecider({ llm, context: CTX, now: () => 1000 })
   assert.deepEqual(await decider.decide('stop it', { history: [] }), { ok: false, error: 'llm' })
-  assert.deepEqual(await decider.decide('stop it', { history: [] }), { ok: true, raw: { action: 'cancel' } })
+  assert.deepEqual(await decider.decide('stop it', { history: [] }), { ok: true, raw: { action: 'cancel' }, model: 'claude-haiku-4-5' })
   assert.equal(attempts, 2)
 })

@@ -203,9 +203,9 @@ test('SC1 speak-worker.ps1 is pure ASCII, ignores tts-muted.flag, says ready, th
   for (const m of msgs.filter((x) => 'status' in x)) assert.equal(typeof m.ms, 'number')
   assert.deepEqual(msgs.map((m) => ('ms' in m ? { ...m, ms: 'n' } : m)), [
     { ready: true },
-    { id: 1, event: 'start' },
+    { id: 1, event: 'start', durationMs: 50 },
     { id: 1, status: 'done', ms: 'n' },
-    { id: 2, event: 'start' },
+    { id: 2, event: 'start', durationMs: 50 },
     { id: 2, status: 'done', ms: 'n' },
   ])
   assert.deepEqual(tts.spoken.map((s) => [s.text, s.voice_gender]), [
@@ -214,6 +214,24 @@ test('SC1 speak-worker.ps1 is pure ASCII, ignores tts-muted.flag, says ready, th
   ])
   // The Ctrl+Alt+M hotkey kills every PID in audio.pids; the worker must never list itself there (only tts-stop.flag cuts it).
   assert.equal(existsSync(join(tts.dir, 'audio.pids')), false, 'the worker never writes its PID to audio.pids')
+})
+
+test('SC4 speak-worker.ps1 removes a stale tts-priority-pending.flag (left by a killed worker) at start-up', opts, async () => {
+  const tts = await fakeTts()
+  const flag = join(tts.dir, 'tts-priority-pending.flag')
+  writeFileSync(flag, 'stale')
+  const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  try {
+    await out.until((l) => l.length >= 1)
+    assert.deepEqual(out.lines, ['{"ready":true}'])
+    assert.equal(existsSync(flag), false, 'the stale flag is gone before the worker says ready')
+  } finally {
+    child.stdin.end()
+    child.kill()
+    tts.close()
+  }
 })
 
 async function runKokoro(lines) {

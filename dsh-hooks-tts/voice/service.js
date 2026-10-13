@@ -4,9 +4,12 @@ import { createVoiceApprovals } from './approvals.js'
 import { createVoiceFlow } from './flow.js'
 import { createExecutor, readBack, resultText, toolPhrase, validateAction } from './actions.js'
 import { classifyAnswer } from './answers.js'
+import { VOICE } from './speaker.js'
 
-const VOICE = Object.freeze({ priority: 'High', gender: 'female' })
 const CLOSED_LINE = 'That session closed. Cancelled.'
+
+/** Short random id for voice requests and conversations. */
+const uuid8 = () => randomUUID().slice(0, 8)
 
 /**
  * Glue for voice control (docs/voice-two-stage-flow.md §2): owns the STT client, the two-stage conversation flow,
@@ -121,13 +124,13 @@ export function createVoiceService({
       approvals: { peek: (a) => approvals.peek(a), answer: async (a) => approvals.answer(a) },
       select: (id) => { selected = id },
       cwdOf,
-      uuid: () => randomUUID().slice(0, 8),
+      uuid: uuid8,
     }),
     classify: classifyAnswer,
     log,
     setTimer,
     clearTimer,
-    uuid: () => randomUUID().slice(0, 8),
+    uuid: uuid8,
   })
 
   const onEvent = (event) => {
@@ -147,9 +150,11 @@ export function createVoiceService({
    * The flow's frozen action targets a session that just closed: abort the flow and say so. While the flow waits on an
    * answer (*_LISTEN) the STT mic window is still open, so it is cancelled first; otherwise the line would be spoken
    * into it. A 'new' action only uses its session as the cwd source and stays valid (cwdOf falls back), so it is kept.
+   * Only READBACK_* counts: from EXECUTE on the action already ran, and its own result line says how it went.
    */
   function abortForClosedSession(id) {
     const snap = flow.snapshot()
+    if (!String(snap?.state ?? '').startsWith('READBACK_')) return
     const action = snap?.action
     if (action?.sessionId !== id || action.action === 'new') return
     const listening = String(snap.state ?? '').endsWith('_LISTEN')

@@ -241,7 +241,7 @@ test('SV6 agentDisposed during a *_LISTEN state cancels the STT listen before sp
 test('SV6 agentDisposed outside a listen does not cancel STT; a failing cancel still speaks', async () => {
   const seen = []
   const h = disposeSetup(
-    { state: 'EXECUTE', id: 'f1', turn: 5, step: 'decision', action: Object.freeze({ action: 'cancel', sessionId: 'a1', title: 'Voice Work' }) },
+    { state: 'READBACK_SPEAK', id: 'f1', turn: 5, step: 'decision', action: Object.freeze({ action: 'cancel', sessionId: 'a1', title: 'Voice Work' }) },
     okFetch(seen),
   )
   h.svc.agentDisposed('a1')
@@ -270,6 +270,21 @@ test('SV7 agentDisposed leaves a frozen new action alone (its session is only th
   assert.deepEqual(seen, [])
   assert.equal(h.svc.busy(), true)
 })
+
+for (const state of ['EXECUTE', 'END_SPEAK']) {
+  test('SV8 agentDisposed after the action ran (' + state + ') neither aborts the flow nor says the session closed', async () => {
+    const seen = []
+    const h = disposeSetup(
+      { state, id: 'f1', turn: 6, step: 'decision', action: Object.freeze({ action: 'cancel', sessionId: 'a1', title: 'Voice Work' }) },
+      okFetch(seen),
+    )
+    h.svc.agentDisposed('a1')
+    await tick()
+    assert.equal(h.flow.aborts.length, 0)
+    assert.deepEqual(h.spoken, [])
+    assert.deepEqual(seen, [])
+  })
+}
 
 test('SV4 stop() aborts the flow without speaking', () => {
   const h = make()

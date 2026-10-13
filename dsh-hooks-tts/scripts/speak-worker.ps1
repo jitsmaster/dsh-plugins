@@ -1,6 +1,7 @@
 # Persistent speak worker for the voice flow (docs/voice-two-stage-flow.md section 2).
 # stdin:  one UTF-8 JSON request per line: {"id":n,"text":"...","gender":"female","priority":"High"}
-# stdout: JSON lines only: {"ready":true} once, then per request {"id":n,"event":"start"} right before playback and
+# stdout: JSON lines only: {"ready":true} once, then per request {"id":n,"event":"start","durationMs":n} right before
+#         playback (durationMs = WAV length, omitted when unknown; speaker.js times playback with it) and
 #         {"id":n,"status":"done"|"failed","ms":n}. EOF on stdin -> exit 0.
 # The voice flow is user-initiated, so tts-muted.flag is deliberately NOT checked; Ctrl+Alt+M (tts-stop.flag) still
 # cuts the current line short inside Invoke-KokoroTts. -NoPidFile keeps the worker's PID out of audio.pids, so the hotkey
@@ -11,6 +12,10 @@ function Write-WorkerLine([string]$Json) {
     [Console]::Out.WriteLine($Json)
     [Console]::Out.Flush()
 }
+
+# A worker killed mid-line (timeout or stop) skips Invoke-KokoroTts's finally block and can leave the High-priority flag
+# behind, which makes Normal-priority hook read-outs wait up to 20 s. A new worker clears it before taking any line.
+Remove-Item -Path (Join-Path $script:TtsStateDir 'tts-priority-pending.flag') -Force -ErrorAction SilentlyContinue
 
 Write-WorkerLine '{"ready":true}'
 
@@ -29,7 +34,11 @@ while ($true) {
         $priority = if ($req.priority -in @('High', 'Normal')) { [string]$req.priority } else { 'High' }
         $idJson = $workerReqId | ConvertTo-Json -Compress
         # Runs inside Invoke-KokoroTts right before playback; writes straight to stdout so nothing leaks into its result.
-        $onStart = { [Console]::Out.WriteLine('{"id":' + $idJson + ',"event":"start"}'); [Console]::Out.Flush() }
+        $onStart = {
+            param($Seconds)
+            $dur = if ($Seconds) { ',"durationMs":' + [int][math]::Round([double]$Seconds * 1000) } else { '' }
+            [Console]::Out.WriteLine('{"id":' + $idJson + ',"event":"start"' + $dur + '}'); [Console]::Out.Flush()
+        }
         $ok = [bool](Invoke-KokoroTts -Text (Clean-ForSpeech ([string]$req.text)) -Gender $gender -Priority $priority -OnPlaybackStart $onStart -NoPidFile)
     } catch {
         Add-TtsLog 'tts-client-errors.log' "speak-worker: $($_.Exception.Message)"

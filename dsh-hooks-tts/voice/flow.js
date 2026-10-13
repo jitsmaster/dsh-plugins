@@ -6,10 +6,14 @@
  * Turn discipline: every state entry bumps s.turn. Every await re-checks its captured turn afterwards, so a
  * barge-in, abort or re-capture silently drops pending speak/listen/decide/execute continuations. Listens carry
  * {flow:'voice', id, turn, step}; only an exact match with the current listen is consumed, anything else is stale.
+ * Exception: a barge-in or capture during EXECUTE is held until the result line was spoken (the action ran either
+ * way, so its outcome is always said); a held capture then starts the next conversation.
  */
 
-const VOICE = Object.freeze({ priority: 'High', gender: 'female' })
+import { VOICE } from './speaker.js'
+
 const LISTEN_RETRY_MS = 500
+const LOG_RAW_MAX = 300
 
 const LINES = Object.freeze({
   notCaught: 'I did not catch that.',
@@ -49,7 +53,7 @@ export function createVoiceFlow({
   now = Date.now, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout,
   uuid, windowS = 10, guardExtraMs = 15000, maxClarify = 2,
 }) {
-  const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null }
+  const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0 }
 
   const ctxFor = (step) => ({ flow: 'voice', id: s.id, turn: s.turn, step })
   const mine = (c) => !!c && c.flow === 'voice' && c.id === s.id && c.turn === s.turn && c.step === s.step
@@ -61,7 +65,7 @@ export function createVoiceFlow({
 
   /** Runs a detached async step; an unexpected throw (e.g. a dep bug) ends the conversation instead of crashing. */
   function detach(promise) {
-    promise.catch((e) => { note('error', { message: String(e?.message ?? e) }); clearGuard(); reset() })
+    promise.catch((e) => { note('error', { message: String(e?.message ?? e) }); clearGuard(); s.hold = null; reset() })
   }
 
   const sleep = (ms) => new Promise((resolve) => setTimer(resolve, ms))
@@ -72,7 +76,8 @@ export function createVoiceFlow({
     if (!ev || typeof ev !== 'object') return
     const c = ev.context
     if (c && c.flow === 'voice' && !mine(c)) return note('stale', { ev: ev.type, c })
-    if (ev.type === 'listening') return c == null ? (s.state !== 'IDLE' ? bargeIn() : undefined) : note('listen.open')
+    if (s.hold && c == null && (ev.type === 'listening' || ev.type === 'transcript')) return holdEvent(ev)
+    if (ev.type === 'listening') return c == null ? (s.state !== 'IDLE' ? bargeIn() : undefined) : note('listen.open', { ms: now() - s.listenAt })
     if (ev.type === 'transcribing') return mine(c) ? rearmGuard() : undefined
     if (ev.type === 'transcript') {
       if (ev.revision !== 1) return
@@ -97,6 +102,14 @@ export function createVoiceFlow({
     s.utterance = text; s.action = null
     // Echo latency is measured from when the utterance was heard (the capture transcript time t0 for a capture).
     detach(sayThenListen('ECHO', echoLine(text), 'echo', heardAt))
+  }
+
+  /** During EXECUTE: a barge-in waits for the result line; the latest capture is replayed after it (release). */
+  function holdEvent(ev) {
+    if (ev.type === 'listening') return note('barge-in.held', { from: s.state })
+    if (ev.revision !== 1) return
+    s.hold.capture = ev
+    note('capture.held', { text: ev.text })
   }
 
   function answer(raw) {
@@ -162,6 +175,7 @@ export function createVoiceFlow({
     const arg = { context: ctxFor(step), window_s: windowS }
     for (let attempt = 0; attempt < 2; attempt++) {
       let res
+      s.listenAt = now() // listen.open reports the time from this POST to the STT 'listening' event (§6)
       try { res = await listen({ ...arg, context: { ...arg.context } }) } catch (e) {
         note('listen.post', { step, error: String(e?.message ?? e) })
         if (turn === s.turn) await end(LINES.sttDown)
@@ -208,6 +222,14 @@ export function createVoiceFlow({
     }
   }
 
+  /** The decider's raw action as text cut to 300 chars, so one odd reply cannot bloat the log. */
+  function rawForLog(raw) {
+    if (raw === undefined) return undefined
+    let text
+    try { text = typeof raw === 'string' ? raw : JSON.stringify(raw) } catch { text = String(raw) }
+    return String(text).slice(0, LOG_RAW_MAX)
+  }
+
   function invalidLine(v) {
     if (v.error === 'no-session') return LINES.noSession
     if (v.error === 'no-approval') return v.title + ' has no pending permission request. Cancelled.'
@@ -221,7 +243,7 @@ export function createVoiceFlow({
     const t = now()
     const [d, said] = await Promise.all([safeDecide(), speakOnce(LINES.deciding, turn)])
     if (turn !== s.turn) return note('stale', { stage: 'decide' })
-    note('decide.end', { ms: now() - t, ok: d.ok, error: d.error, raw: d.raw })
+    note('decide.end', { ms: now() - t, model: d.model, ok: d.ok, error: d.error, raw: rawForLog(d.raw) })
     if (said !== 'done') return dead(LINES.deciding)
     if (!d.ok) return end(LLM_ERRORS[d.error] ?? LLM_ERRORS.llm)
     const v = safeValidate(d.raw)
@@ -242,6 +264,7 @@ export function createVoiceFlow({
   /** T21 → T23/T24: execute exactly the frozen action that was read back. */
   async function executeNow() {
     const turn = enter('EXECUTE'), action = s.action, t = now()
+    const hold = s.hold = { capture: null }
     note('execute.start', { action })
     let line
     try {
@@ -252,7 +275,14 @@ export function createVoiceFlow({
       note('execute.end', { ms: now() - t, ok: false, error: String(e?.message ?? e) })
       line = failText(e)
     }
-    await end(line, turn)
+    try { await end(line, turn) } finally { release(hold) }
+  }
+
+  /** The result line is done: replay a capture held during EXECUTE. Dropped when abort() cleared the hold. */
+  function release(hold) {
+    if (s.hold !== hold) return
+    s.hold = null
+    if (hold.capture) capture(hold.capture)
   }
 
   // ---- ending & state helpers --------------------------------------------------------------------------
@@ -292,7 +322,7 @@ export function createVoiceFlow({
   return {
     handle,
     active: () => s.state !== 'IDLE',
-    abort: (why = 'abort') => { abortTurn(why); reset() },
+    abort: (why = 'abort') => { s.hold = null; abortTurn(why); reset() },
     snapshot: () => ({ state: s.state, id: s.id, turn: s.turn, step: s.step, utterance: s.utterance, clarifies: s.clarifies, action: s.action }),
   }
 }

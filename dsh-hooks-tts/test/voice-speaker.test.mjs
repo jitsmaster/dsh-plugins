@@ -47,7 +47,7 @@ function fakeChild() {
 }
 
 function harness(over = {}) {
-  const h = { spawns: [], logs: [], timers: [], t: 1000 }
+  const h = { spawns: [], logs: [], timers: [], unlinks: [], t: 1000 }
   let tid = 0
   h.speaker = speakerModule.createSpeakWorker({
     spawn: (cmd, args, opts) => { const child = fakeChild(); h.spawns.push({ cmd, args, opts, child }); return child },
@@ -57,6 +57,7 @@ function harness(over = {}) {
     setTimer: (fn, ms) => { const id = ++tid; h.timers.push({ id, fn, ms }); return id },
     clearTimer: (id) => { h.timers = h.timers.filter((t) => t.id !== id) },
     now: () => h.t,
+    unlink: (p) => { h.unlinks.push(p) }, // never touch the real priority flag from a test
     ...over,
   })
   h.child = () => h.spawns.at(-1)?.child
@@ -277,6 +278,108 @@ test('S7 a worker exit before the start event still fails the line', async () =>
   h.t += 50
   await h.child().die(1)
   assert.deepEqual(await peek(p), { status: 'failed', ms: 50 })
+})
+
+test('S0 speaker.js exports the one frozen voice-flow voice (female, High)', () => {
+  assert.deepEqual(speakerModule.VOICE, VOICE)
+  assert.ok(Object.isFrozen(speakerModule.VOICE))
+})
+
+/** Fires (and removes) the active timer with that duration. */
+async function fireTimer(h, ms) {
+  const t = h.timers.find((x) => x.ms === ms)
+  assert.ok(t, 'an active ' + ms + ' ms timer')
+  h.timers = h.timers.filter((x) => x !== t)
+  t.fn()
+  await tick()
+}
+
+test('S8 the request timeout covers only the wait for playback; on start it re-arms with the WAV duration + 5 s', async () => {
+  const h = harness()
+  const p = h.speaker.speak('a very long read-back', VOICE)
+  await tick()
+  const c = h.child()
+  assert.deepEqual(h.timers.map((t) => t.ms), [45000])
+  h.t += 40000
+  await c.send({ id: 1, event: 'start', durationMs: 32000 })
+  assert.deepEqual(h.timers.map((t) => t.ms), [37000], 'the pre-start timer is replaced by the playback budget')
+  h.t += 33000 // 73 s after the line was sent: past the old 45 s limit, still playing
+  assert.equal(await peek(p), 'pending')
+  assert.equal(c.killed, false)
+  await c.send({ id: 1, status: 'done', ms: 73000 })
+  assert.deepEqual(await peek(p), { status: 'done', startMs: 40000, ms: 73000 })
+  assert.deepEqual(h.timers, [])
+})
+
+test('S8 playback that overruns its budget times out and kills the worker', async () => {
+  const h = harness()
+  const p = h.speaker.speak('x', VOICE)
+  await tick()
+  await h.child().send({ id: 1, event: 'start', durationMs: 2000 })
+  h.t += 7000
+  await fireTimer(h, 7000)
+  assert.deepEqual(await peek(p), { status: 'timeout', ms: 7000 })
+  assert.equal(h.child().killed, true)
+})
+
+test('S8 a start event without durationMs gets the generous fallback playback budget', async () => {
+  const h = harness()
+  h.speaker.speak('x', VOICE)
+  await tick()
+  await h.child().send({ id: 1, event: 'start' })
+  assert.deepEqual(h.timers.map((t) => t.ms), [120000])
+})
+
+test('S8 a queued line starts its wait timer only when the line ahead of it has finished', async () => {
+  const h = harness()
+  const p1 = h.speaker.speak('one', VOICE)
+  const p2 = h.speaker.speak('two', VOICE)
+  await tick()
+  const c = h.child()
+  assert.deepEqual(h.timers.map((t) => t.ms), [45000], 'only the head line waits on a timer')
+  await c.send({ id: 1, event: 'start', durationMs: 50000 })
+  assert.deepEqual(h.timers.map((t) => t.ms), [55000])
+  h.t += 50000
+  await c.send({ id: 1, status: 'done', ms: 50000 })
+  assert.deepEqual(await peek(p1), { status: 'done', startMs: 0, ms: 50000 })
+  assert.deepEqual(h.timers.map((t) => t.ms), [45000], 'the next line now waits for its own start')
+  assert.equal(await peek(p2), 'pending')
+})
+
+test('S9 a worker killed mid-line (timeout) has its leftover priority flag removed once it exited', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' } })
+  h.speaker.speak('x', VOICE)
+  await tick()
+  h.t += 45000
+  await fireTimer(h, 45000)
+  assert.deepEqual(h.unlinks, [join('SD', 'tts-priority-pending.flag')])
+})
+
+test('S9 stop() during a line removes the priority flag; stop() of an idle worker leaves it alone', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' } })
+  h.speaker.warm()
+  h.speaker.stop()
+  await tick()
+  assert.deepEqual(h.unlinks, [], 'an idle worker owns no flag')
+  h.speaker.speak('x', VOICE)
+  await tick()
+  h.speaker.stop()
+  await tick()
+  assert.deepEqual(h.unlinks, [join('SD', 'tts-priority-pending.flag')])
+})
+
+test('S9 a failing unlink never breaks the speaker', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' }, unlink: () => { throw new Error('ENOENT') } })
+  const p = h.speaker.speak('x', VOICE)
+  await tick()
+  h.speaker.stop()
+  await tick()
+  assert.deepEqual(await peek(p), { status: 'failed', ms: 0 })
+  const h2 = harness({ env: { DSH_TTS_STATE_DIR: 'SD' }, unlink: async () => { throw new Error('EBUSY') } })
+  h2.speaker.speak('x', VOICE)
+  await tick()
+  h2.speaker.stop()
+  await tick()
 })
 
 test('S6 stop() without a worker is a no-op', () => {

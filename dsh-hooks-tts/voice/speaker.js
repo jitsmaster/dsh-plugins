@@ -1,3 +1,5 @@
+import { unlink as unlinkFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 /**
@@ -5,7 +7,10 @@ import { join } from 'node:path'
  * every voice-flow line over a JSON-lines protocol, so PowerShell's cold start (~0.5-1 s) is paid once, not per line.
  *
  * Protocol: request  {"id","text","gender","priority"}\n on stdin;
- *           replies  {"ready":true} | {"id","event":"start"} | {"id","status":"done"|"failed","ms"} on stdout.
+ *           replies  {"ready":true} | {"id","event":"start","durationMs"?} | {"id","status":"done"|"failed","ms"} on stdout.
+ * Timeouts: a line waits at most requestTimeoutMs for its 'start' event (counted from when it reaches the head of its
+ * worker's queue, so it covers synthesis and the playback mutex, not earlier lines); on 'start' the timer is re-armed
+ * with the WAV duration + playbackMarginMs (playbackFallbackMs when the worker sent no duration).
  * When the worker keeps dying (more than maxRespawns exits within 60 s) every line gets its own process instead
  * (one line, then EOF). The child is never detached: a detached PowerShell with piped stdio exits silently on Windows.
  * speak() never rejects; it resolves { status:'done'|'failed'|'timeout', ms, startMs? }. A worker that exits unexpectedly
@@ -13,13 +18,19 @@ import { join } from 'node:path'
  */
 
 const RESPAWN_WINDOW_MS = 60_000
-const VOICE = Object.freeze({ gender: 'female', priority: 'High' })
+const PRIORITY_FLAG = 'tts-priority-pending.flag'
+
+/** The one voice of every voice-flow line (spec §0 D3); flow.js and service.js reuse it. */
+export const VOICE = Object.freeze({ gender: 'female', priority: 'High' })
 
 export function createSpeakWorker({
   spawn, root, env, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now,
-  requestTimeoutMs = 45_000, maxRespawns = 3,
+  requestTimeoutMs = 45_000, playbackMarginMs = 5_000, playbackFallbackMs = 120_000, maxRespawns = 3,
+  unlink = unlinkFile,
 }) {
   const script = join(root, 'scripts', 'speak-worker.ps1')
+  // Same state dir tts-client.ps1 uses for its High-priority flag.
+  const flagPath = join(env?.DSH_TTS_STATE_DIR || join(env?.TEMP || tmpdir(), 'dsh-tts'), PRIORITY_FLAG)
   const live = new Set() // every running worker record (the persistent one plus one-shot processes)
   let worker // the persistent worker record, when one is running
   let nextId = 1
@@ -66,17 +77,33 @@ export function createSpeakWorker({
     if (msg.ready === true) return note('worker.ready', { ms: now() - w.t0 })
     const req = w.pending.get(msg.id)
     if (!req) return
-    if (msg.event === 'start') { req.startAt = now(); return }
+    if (msg.event === 'start') return onStart(w, req, msg)
     if (msg.status === undefined) return
     const result = { status: msg.status === 'done' ? 'done' : 'failed', ms: Number(msg.ms) || 0 }
     if (req.startAt !== undefined) result.startMs = req.startAt - req.t0
     finish(w, req, result)
   }
 
+  /** Playback began: the wait timer is replaced by a budget for the playback itself (WAV duration + margin). */
+  function onStart(w, req, msg) {
+    req.startAt = now()
+    clearTimer(req.timer)
+    const d = msg.durationMs
+    const budget = typeof d === 'number' && Number.isFinite(d) && d >= 0 ? d + playbackMarginMs : playbackFallbackMs
+    req.timer = setTimer(() => onTimeout(w, req), budget)
+  }
+
+  /** Arms the wait timer of the line at the head of the worker's queue (the worker speaks its lines in order). */
+  function armHead(w) {
+    const head = w.pending.values().next().value
+    if (head && head.timer === undefined) head.timer = setTimer(() => onTimeout(w, head), requestTimeoutMs)
+  }
+
   function finish(w, req, result) {
     if (!w.pending.delete(req.id)) return
     clearTimer(req.timer)
     req.resolve(result)
+    if (!w.gone) armHead(w)
   }
 
   function onExit(w, info) {
@@ -84,6 +111,7 @@ export function createSpeakWorker({
     w.gone = true
     live.delete(w)
     note('worker.exit', { ...info, oneShot: w.single })
+    if (w.killedByUs && w.ownsFlag) removePriorityFlag()
     // An unexpected exit after a line's 'start' event is a cut line (e.g. an external stop killed the process): it
     // counts as done (spec §0 D2) and is not a crash, so it never counts toward the one-shot death limit.
     let cut = false
@@ -108,8 +136,13 @@ export function createSpeakWorker({
     }
   }
 
-  function kill(w) {
+  /**
+   * A worker killed mid-line skips Invoke-KokoroTts's finally block, so its High-priority flag would linger and make
+   * Normal-priority hook read-outs wait up to 20 s. midLine = the line being killed was already resolved (timeout).
+   */
+  function kill(w, midLine = false) {
     w.killedByUs = true
+    w.ownsFlag ||= midLine || [...w.pending.values()].some((r) => r.high)
     if (w === worker) worker = undefined
     try { w.child.kill() } catch { /* already gone */ }
   }
@@ -118,23 +151,32 @@ export function createSpeakWorker({
   function onTimeout(w, req) {
     if (!w.pending.has(req.id)) return
     finish(w, req, { status: 'timeout', ms: now() - req.t0 })
-    note('worker.timeout', { id: req.id })
-    kill(w)
+    note('worker.timeout', { id: req.id, started: req.startAt !== undefined })
+    kill(w, req.high)
+  }
+
+  /** Best-effort: the flag may not exist (the line never got that far) or be locked; neither may break speaking. */
+  function removePriorityFlag() {
+    const fail = (error) => {
+      if (error?.code !== 'ENOENT') note('worker.flag-remove-failed', { error: String(error?.message ?? error) })
+    }
+    try { Promise.resolve(unlink(flagPath)).then(() => note('worker.flag-removed', {}), fail) } catch (error) { fail(error) }
   }
 
   function speak(text, opts = {}) {
     const id = nextId++
     const t0 = now()
-    const body = JSON.stringify({ id, text: String(text ?? ''), gender: opts.gender ?? VOICE.gender, priority: opts.priority ?? VOICE.priority }) + '\n'
+    const priority = opts.priority ?? VOICE.priority
+    const body = JSON.stringify({ id, text: String(text ?? ''), gender: opts.gender ?? VOICE.gender, priority }) + '\n'
     return new Promise((resolve) => {
       let w
       try { w = oneShot ? start(true) : ensureWorker() } catch (error) {
         note('worker.spawn-failed', { error: String(error?.message ?? error) })
         return resolve({ status: 'failed', ms: now() - t0 })
       }
-      const req = { id, t0, resolve }
+      const req = { id, t0, resolve, high: priority === 'High' }
       w.pending.set(id, req)
-      req.timer = setTimer(() => onTimeout(w, req), requestTimeoutMs)
+      armHead(w)
       try {
         w.child.stdin.write(body)
         if (w.single) w.child.stdin.end()

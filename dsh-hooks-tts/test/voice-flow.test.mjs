@@ -628,6 +628,68 @@ test('F33 no speak.start is logged when the result carries no startMs', async ()
   assert.equal(h.stages().includes('speak.start'), false)
 })
 
+test('F34 a capture during EXECUTE still speaks the result line first, then echoes the new utterance', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  h.capture('second thing'); await tick()
+  assert.equal(h.state(), 'EXECUTE', 'the started execute is not abandoned')
+  const n = h.speaks.length
+  h.executes[0].resolve({}); await tick()
+  assert.equal(h.speaks.length, n + 1)
+  assert.equal(h.lastSaid(), 'Sent to Voice Work.')
+  await h.speakDone()
+  assert.equal(h.lastSaid(), 'I heard: second thing. Is that right?')
+  assert.equal(h.state(), 'ECHO_SPEAK')
+  await h.speakDone()
+  assert.equal(h.ctx().id, 'id2')
+  assert.equal(h.ctx().step, 'echo')
+})
+
+test('F34 a bare barge-in during EXECUTE still speaks the result line, then goes idle', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  h.executes[0].reject(new Error('controller offline')); await tick()
+  await assertEnds(h, 'That failed: controller offline.')
+})
+
+test('F34 abort() during EXECUTE drops the result line and any held capture', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.capture('second thing'); await tick()
+  h.flow.abort('disabled')
+  const n = h.speaks.length
+  h.executes[0].resolve({}); await tick()
+  assert.equal(h.speaks.length, n)
+  assert.equal(h.flow.active(), false)
+})
+
+test('F35 listen.open logs ms since the listen POST; decide.end logs the model and raw cut to 300 chars', async () => {
+  let t = 1000
+  const h = harness({ now: () => t })
+  h.capture('open the parser'); await tick()
+  t = 2000
+  await h.speakDone()
+  t = 2350
+  await h.listenStarted()
+  h.flow.handle({ type: 'listening', context: h.ctx() }); await tick()
+  const open = h.logs.find((l) => l.stage === 'listen.open')
+  assert.equal(open.data.ms, 350)
+  h.answer('yes'); await tick()
+  const raw = { ...PROMPT, text: 'x'.repeat(400) }
+  await h.decideWith({ ok: true, raw, model: 'claude-haiku-4-5' })
+  await h.speakDone() // decide.end is logged once the "Deciding" line has ended too
+  const end = h.logs.find((l) => l.stage === 'decide.end')
+  assert.equal(end.data.model, 'claude-haiku-4-5')
+  assert.equal(typeof end.data.raw, 'string')
+  assert.equal(end.data.raw.length, 300)
+  assert.equal(end.data.raw, JSON.stringify(raw).slice(0, 300))
+})
+
 test('F32 bare no at clarify is echoed as the answer', async () => {
   const h = harness()
   await toClarifyListen(h, 'Do you mean Voice Work?')

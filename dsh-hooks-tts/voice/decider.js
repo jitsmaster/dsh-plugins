@@ -1,7 +1,8 @@
 /**
  * Stage two of the voice flow: turns ONE confirmed utterance into ONE raw action object using a small fast model
  * through DSH's own LLM service. The result is still unvalidated (see actions.js validateAction).
- * decide() resolves { ok:true, raw } or { ok:false, error:'timeout'|'llm'|'unparseable' } and never rejects.
+ * decide() resolves { ok:true, raw, model } or { ok:false, error:'timeout'|'llm'|'unparseable', model? } and never rejects;
+ * model is the model that answered (logged by the flow as decide.end, spec §6).
  */
 
 const PREFER = [/haiku/i, /flash|mini|lite|small|fast|nano/i]
@@ -122,6 +123,6 @@ export function createDecider({ llm, model: override, timeoutMs = 8000, maxToken
 
   function done(result, started, model) {
     log('decider: ' + (result.ok ? 'ok' : result.error) + ' in ' + (now() - started) + ' ms' + (model ? ' (' + model + ')' : ''))
-    return result
+    return model ? { ...result, model } : result
   }
 }

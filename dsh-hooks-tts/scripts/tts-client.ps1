@@ -87,7 +87,8 @@ function Invoke-KokoroTts {
         # Optional pacing, honoured by the Kokoro server: speaking rate (1.0 = normal) and silence between sentences.
         [double]$Speed = 0,
         [double]$PauseSeconds = 0,
-        # Optional callback invoked once right before playback starts (the voice flow measures its latency with it).
+        # Optional callback invoked once right before playback starts (the voice flow measures its latency with it);
+        # it gets the WAV duration in seconds (or $null when unknown) as its only argument.
         [scriptblock]$OnPlaybackStart = $null,
         # Keep this process out of <hotDir>\audio.pids: a long-lived caller (speak-worker.ps1) must not be killed by the
         # Ctrl+Alt+M hotkey; its playback is cut through the polled tts-stop.flag instead.
@@ -154,7 +155,7 @@ function Invoke-KokoroTts {
 
         # Async play + poll for the stop flag so cancel/mute halts audio instantly.
         $duration = Get-WavDurationSeconds -Bytes $bytes
-        if ($OnPlaybackStart) { $null = & $OnPlaybackStart }
+        if ($OnPlaybackStart) { $null = & $OnPlaybackStart $duration }
         $player.Play()
         if ($duration) {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
