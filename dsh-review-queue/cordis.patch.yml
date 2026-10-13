@@ -1,0 +1,5 @@
+
+- insert:
+    - id: review-queue
+      name: dsh-review-queue
+      config: {}

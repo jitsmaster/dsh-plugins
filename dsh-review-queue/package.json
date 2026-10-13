@@ -1,0 +1,38 @@
+{
+  "name": "dsh-review-queue",
+  "version": "0.1.0",
+  "description": "Review queue for DeepSeek Harness: completed work and open questions/permission requests from every session, in a full-screen overlay opened from a button in the session header.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "store.js",
+    "speech.js",
+    "summary.js",
+    "capture.js",
+    "service.js",
+    "server.js",
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/store.test.mjs test/speech.test.mjs test/summary.test.mjs test/capture.test.mjs test/service.test.mjs test/server.test.mjs test/index.test.mjs test/client.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  }
+}
