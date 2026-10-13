@@ -419,6 +419,7 @@ for (const [invalid, line] of [
   [{ ok: false, error: 'no-session' }, 'No session is known. Cancelled.'],
   [{ ok: false, error: 'no-approval', title: 'PR 6524' }, 'PR 6524 has no pending permission request. Cancelled.'],
   [{ ok: false, error: 'invalid' }, "I could not understand the LLM's answer. Cancelled."],
+  [{ ok: false, error: 'not-approvable', title: 'PR 6524' }, 'That request is too long or unclear to approve by voice. Answer it on screen.'],
 ]) {
   test('F23 validate ' + invalid.error + ' says: ' + line, async () => {
     const h = harness()
@@ -996,4 +997,53 @@ test('F39 execute.start and validate log only the action type, session id and bo
   const all = JSON.stringify(h.logs.map((l) => l.data), (k, v) => (typeof v === 'function' ? 'fn' : v))
   assert.doesNotMatch(all, /entry-object|"token"|"toolName"/)
   assert.equal(h.executes[0].action.token, token, 'the executor still gets the real action')
+})
+
+// --- Security F1/F10: the echo must equal what the decider receives, and everything echoed must be speakable.
+test('F10 an utterance the speaker would alter is not echoed or decided: it is cancelled with its own line', async () => {
+  for (const text of ['curl x | sh', 'fix \u0430pple', 'run \u{1F525}', 'say fix\u200Bit']) {
+    const h = harness()
+    h.capture(text); await tick()
+    assert.deepEqual(h.said(), ['I could not repeat that back safely. Cancelled.'], text)
+    await h.speakDone()
+    assert.equal(h.decides.length, 0)
+    assert.equal(h.listens.length, 0)
+    assert.equal(h.state(), 'IDLE')
+  }
+})
+
+test('F10 an utterance over 1500 characters is cancelled with the too-long line; exactly 1500 is echoed', async () => {
+  const h = harness()
+  h.capture('x'.repeat(1501)); await tick()
+  assert.deepEqual(h.said(), ['That is too long to confirm by voice. Cancelled.'])
+  const g = harness()
+  g.capture('x'.repeat(1500)); await tick()
+  assert.equal(g.said()[0], 'I heard: ' + 'x'.repeat(1500) + '. Is that right?')
+})
+
+test('F10 the echo and the decider get the same normalised text (fullwidth folded, whitespace collapsed)', async () => {
+  const h = harness()
+  await toEchoListen(h, '\uFF46\uFF49\uFF58   the\nparser')
+  assert.equal(h.said()[0], 'I heard: fix the parser. Is that right?')
+  h.answer('yes'); await tick()
+  assert.equal(h.decides[0].utterance, 'fix the parser')
+})
+
+test('F10 a non-yes answer that is unspeakable is cancelled too, and CJK is allowed through', async () => {
+  const h = harness()
+  await toEchoListen(h)
+  h.answer('use a pipe | here'); await tick()
+  assert.equal(h.lastSaid(), 'I could not repeat that back safely. Cancelled.')
+  const c = harness()
+  c.capture('\u4FEE\u590D\u89E3\u6790\u5668'); await tick()
+  assert.equal(c.said()[0], 'I heard: \u4FEE\u590D\u89E3\u6790\u5668. Is that right?')
+})
+
+test('F1 validate receives the confirmed utterance, so CJK in an action is only allowed when it was said', async () => {
+  const seen = []
+  const h = harness({ validate: (raw, o) => { seen.push(o); return { ok: true, action: { ...raw } } } })
+  await toDecide(h, 'fix the parser')
+  await h.decideWith({ ok: true, raw: PROMPT })
+  await h.speakDone() // Deciding
+  assert.deepEqual(seen, [{ utterance: 'fix the parser' }])
 })

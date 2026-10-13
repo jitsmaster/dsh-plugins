@@ -82,12 +82,13 @@ export function createVoiceService({
   }
 
   /** Validates against the handles the decider saw (only sessions still alive). */
-  function validate(raw) {
+  function validate(raw, { utterance } = {}) {
     const live = sessions()
     const list = handles.length
       ? handles.filter((h) => agents.has(h.id)).map((h) => ({ ...h, title: titleOf(h.id) }))
       : live
     return validateAction(raw, {
+      utterance,
       sessions: list,
       target: target(),
       peek: (a) => approvals.peek(a),

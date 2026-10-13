@@ -430,7 +430,7 @@ test('SV11 a /listen that never answers ends the flow with Speech service unavai
 })
 
 test('SV9 a pending approval is summarised for the decider and frozen (summary + count) into a validated approve action', () => {
-  const h = make({ summaryOf: (req) => (req.callId === 'c1' ? 'rm -rf build' : undefined) })
+  const h = make({ summaryOf: (req) => (req.callId === 'c1' ? { text: 'rm -rf build', complete: true } : undefined) })
   h.svc.agentCreated('a1')
   h.agents.set('a1', { title: 'Voice\u200B Work' })
   h.svc.intercept({ agent: { id: 'a1' }, toolName: 'pwsh', callId: 'c1' }, () => new Promise(() => {}))
@@ -441,7 +441,7 @@ test('SV9 a pending approval is summarised for the decider and frozen (summary +
   assert.equal(v.ok, true)
   assert.equal(v.action.summary, 'rm -rf build')
   assert.equal(v.action.pendingCount, 1)
-  assert.equal(h.flow.deps.readBack(v.action), 'approve run command rm -rf build in Voice Work')
+  assert.equal(h.flow.deps.readBack(v.action), 'approve run command rm -rf build in Voice Work, session 1', 'the cleaned title carries its ordinal (F4)')
 })
 
 test('SV9 without a summaryOf the read-back says the details are not available', () => {
@@ -449,7 +449,8 @@ test('SV9 without a summaryOf the read-back says the details are not available',
   h.svc.agentCreated('a1')
   h.svc.intercept({ agent: { id: 'a1' }, toolName: 'pwsh' }, () => new Promise(() => {}))
   assert.equal(h.svc.context().sessions[0].pending, 'permission: run command')
-  const v = h.flow.deps.validate({ action: 'approve', session: 's1' })
+  assert.deepEqual(h.flow.deps.validate({ action: 'approve', session: 's1' }), { ok: false, error: 'not-approvable', title: 'session 1' }, 'F2c: unavailable details cannot be approved by voice')
+  const v = h.flow.deps.validate({ action: 'deny', session: 's1' })
   assert.match(h.flow.deps.readBack(v.action), /details not available/)
 })
 

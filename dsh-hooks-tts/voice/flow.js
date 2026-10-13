@@ -14,6 +14,7 @@
  */
 
 import { VOICE } from './speaker.js'
+import { speakableUtterance } from './sanitize.js'
 
 const LISTEN_RETRY_MS = 500
 /** Events of a barge-in/capture listen (context null) that are held while EXECUTE runs. */
@@ -33,6 +34,8 @@ const LINES = Object.freeze({
   noSession: 'No session is known. Cancelled.',
   badAnswer: "I could not understand the LLM's answer. Cancelled.",
   tooLong: 'That is too long to confirm by voice. Cancelled.',
+  unspeakable: 'I could not repeat that back safely. Cancelled.',
+  notApprovable: 'That request is too long or unclear to approve by voice. Answer it on screen.',
 })
 
 /** decide() error kind → final line (T15–T17). Unknown kinds count as "LLM not available". */
@@ -114,9 +117,17 @@ export function createVoiceFlow({
 
   /** T1/T7/T22: (re)start at the echo confirm with a new utterance; any frozen action is discarded. */
   function echo(text, heardAt = now()) {
-    s.utterance = text; s.action = null
+    // Security: the echo must be what the decider receives, and everything echoed must be speakable (sanitize.js): an
+    // utterance the speaker would alter or drop, or one too long to confirm by ear, is cancelled here.
+    const said = speakableUtterance(text)
+    if (!said.ok) {
+      note('echo.rejected', { error: said.error })
+      s.utterance = ''; s.action = null
+      return void detach(end(said.error === 'too-long' ? LINES.tooLong : LINES.unspeakable))
+    }
+    s.utterance = said.text; s.action = null
     // Echo latency is measured from when the utterance was heard (the capture transcript time t0 for a capture).
-    detach(sayThenListen('ECHO', echoLine(text), 'echo', heardAt))
+    detach(sayThenListen('ECHO', echoLine(said.text), 'echo', heardAt))
   }
 
   /**
@@ -276,7 +287,7 @@ export function createVoiceFlow({
   }
 
   function safeValidate(raw) {
-    try { return validate(raw) ?? { ok: false, error: 'invalid' } } catch (e) {
+    try { return validate(raw, { utterance: s.utterance }) ?? { ok: false, error: 'invalid' } } catch (e) {
       return { ok: false, error: 'invalid', message: String(e?.message ?? e) }
     }
   }
@@ -292,6 +303,7 @@ export function createVoiceFlow({
   function invalidLine(v) {
     if (v.error === 'no-session') return LINES.noSession
     if (v.error === 'too-long') return LINES.tooLong
+    if (v.error === 'not-approvable') return LINES.notApprovable
     if (v.error === 'no-approval') return v.title + ' has no pending permission request. Cancelled.'
     return LINES.badAnswer
   }

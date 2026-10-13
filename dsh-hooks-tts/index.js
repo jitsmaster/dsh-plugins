@@ -29,7 +29,7 @@ import { createVoiceService } from './voice/service.js'
 import { createDecider } from './voice/decider.js'
 import { createSpeakWorker } from './voice/speaker.js'
 import { createSttLauncher, normalizePort } from './voice/stt-launcher.js'
-import { toolSummary } from './voice/headline.js'
+import { createToolSummaries } from './voice/tool-summaries.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
 
@@ -189,6 +189,7 @@ export function apply(ctx, baseConfig = {}) {
   // Record the worktree each session actually works in (its cwd stays at the launch directory),
   // and every handoff note it writes (the session menu offers a follow-up from the latest one).
   ctx.on('tools/post-execute', async (exec, result, next) => {
+    toolSummaries.drop(exec) // the call settled: its approval summary is no longer needed
     const id = exec.agent?.id
     if (id) void worktrees.observe(id, exec.arguments, exec.agent.session?.header?.cwd)
     if (id && !skip(exec.agent)) handoffs.observe(id, exec.name, exec.arguments, exec.agent.session?.header?.cwd)
@@ -290,16 +291,9 @@ export function apply(ctx, baseConfig = {}) {
     readLock: () => { try { return readFileSync(join(stateDir, 'stt-starting'), 'utf8') } catch { return undefined } },
     writeLock: (v) => { try { writeFileSync(join(stateDir, 'stt-starting'), String(v)) } catch { /* best effort */ } },
   })
-  // What each pending tool call will do (callId -> spoken summary of its command/path/URL), recorded before the approval
-  // request so a spoken approve/deny can say what is being approved. Bounded: the oldest entries are dropped.
-  const toolSummaries = new Map()
-  const noteToolInput = (exec) => {
-    try {
-      if (exec.callId === undefined) return
-      toolSummaries.set(exec.callId, toolSummary(exec.name, exec.arguments))
-      if (toolSummaries.size > 200) toolSummaries.delete(toolSummaries.keys().next().value)
-    } catch { /* best effort: the read-back then says the details are not available */ }
-  }
+  // What each pending tool call will do, recorded before the approval request so a spoken approve/deny can say what is being
+  // approved. Security: keyed by session + tool + call id with an argument hash, dropped when the call settles (voice/tool-summaries.js).
+  const toolSummaries = createToolSummaries()
   const voiceLog = (entry) => {
     try {
       const file = join(stateDir, 'voice.log')
@@ -324,7 +318,7 @@ export function apply(ctx, baseConfig = {}) {
   })
   const voice = createVoiceService({
     speaker,
-    summaryOf: (req) => (req.callId === undefined ? undefined : toolSummaries.get(req.callId)),
+    summaryOf: (req) => toolSummaries.lookup(req),
     decide: (utterance, opts) => decider.decide(utterance, opts),
     cwdOf: (id) => voiceAgents.get(id)?.session?.header?.cwd,
     // Slash commands the target session offers (name + description only), for the decider and for validation.
@@ -388,7 +382,7 @@ export function apply(ctx, baseConfig = {}) {
   })
 
   ctx.on('tools/pre-execute', async (exec, next) => {
-    noteToolInput(exec)
+    toolSummaries.note(exec)
     if (skip(exec.agent) || !hooks.PreToolUse) return next()
     const folded = await run('PreToolUse', toolQueries(exec.name), {
       tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId,
@@ -438,6 +432,7 @@ export function apply(ctx, baseConfig = {}) {
         tool_name: req.toolName, message,
       }, req.agent, req.signal).catch(() => {})
     }
-    return voice.intercept(req, next) // off = plain next(); on = a spoken approve/deny races the GUI
+    // off = plain next(); on = a spoken approve/deny races the GUI. The summary goes once the request is answered or withdrawn.
+    return Promise.resolve(voice.intercept(req, next)).finally(() => toolSummaries.drop(req))
   })
 }

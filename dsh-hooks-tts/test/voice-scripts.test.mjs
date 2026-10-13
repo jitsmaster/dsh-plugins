@@ -5,6 +5,8 @@ import { createServer } from 'node:http'
 import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { BATTERY } from './fixtures/speech-battery.mjs'
+import { cleanForSpeech } from '../voice/sanitize.js'
 import { fileURLToPath } from 'node:url'
 
 const SCRIPTS = fileURLToPath(new URL('../scripts/', import.meta.url))
@@ -441,4 +443,17 @@ test('SC8 Clean-ForSpeech caps its input at 4000 characters before cleaning (bou
   assert.ok(Number(r.out.find((l) => l.startsWith('LEN='))?.slice(4)) <= 4000, r.out.join('|'))
   assert.ok(r.out.includes('FAST=True'), r.out.join('|'))
   assert.ok(r.out.includes('SHORT=plain words'), r.out.join('|'))
+})
+
+// --- Security F1: voice/sanitize.js cleanForSpeech is a JS port of Clean-ForSpeech; both must agree on the shared battery.
+test('SC9 the JS port of Clean-ForSpeech gives the same result as the real PowerShell function', opts, async () => {
+  const json = JSON.stringify(BATTERY).replace(/[\u0080-\uffff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
+  const r = await runKokoro([
+    "$items = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot 'in.json') | ConvertFrom-Json",
+    "$res = @(); foreach ($i in $items) { $res += ,(Clean-ForSpeech $i) }",
+    "[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'out.json'), (ConvertTo-Json -Compress -InputObject $res), (New-Object Text.UTF8Encoding $false))",
+  ], { before: (dir) => writeFileSync(join(dir, 'in.json'), json) })
+  const got = JSON.parse(readFileSync(join(r.dir, 'out.json'), 'utf8'))
+  assert.equal(got.length, BATTERY.length)
+  BATTERY.forEach((text, i) => assert.equal(cleanForSpeech(text), got[i], JSON.stringify(text)))
 })

@@ -35,7 +35,7 @@ const TOKEN = { token: 'pending-b' }
 const opts = (over = {}) => ({
   sessions: SESSIONS,
   target: { selected: 'a' },
-  peek: ({ sessionId }) => (sessionId === 'b' ? { toolName: 'pwsh', token: TOKEN, summary: 'npm test', count: 1 } : undefined),
+  peek: ({ sessionId }) => (sessionId === 'b' ? { toolName: 'pwsh', token: TOKEN, summary: 'npm test', complete: true, count: 1 } : undefined),
   slashNames: () => ['compact', 'export'],
   ...over,
 })
@@ -97,7 +97,7 @@ test('V4 with no default target a session-less action is no-session; switch need
 
 test('V5 approve/deny without a pending request is no-approval with the title; the peeked token is frozen into the action', () => {
   const peeks = []
-  const peek = (q) => { peeks.push(q); return q.sessionId === 'b' ? { toolName: 'pwsh', token: TOKEN } : undefined }
+  const peek = (q) => { peeks.push(q); return q.sessionId === 'b' ? { toolName: 'pwsh', token: TOKEN, summary: 'npm test', complete: true } : undefined }
   assert.deepEqual(validateAction({ action: 'approve', session: 's1' }, opts({ peek })), { ok: false, error: 'no-approval', title: 'Voice Work' })
   assert.deepEqual(validateAction({ action: 'deny' }, opts({ peek, target: { lastActive: 'c' } })), { ok: false, error: 'no-approval', title: 'session 3' })
   const v = validateAction({ action: 'approve', session: 's2' }, opts({ peek }))
@@ -241,7 +241,7 @@ test('R2 the approve/deny read-back says what will run, the newest-of-N count, a
 })
 
 test('V8 approve/deny freeze the peeked summary and pending count; a peek without them says details are not available', () => {
-  const peek = () => ({ toolName: 'pwsh', token: TOKEN, summary: 'rm -rf build', count: 2 })
+  const peek = () => ({ toolName: 'pwsh', token: TOKEN, summary: 'rm -rf build', complete: true, count: 2 })
   const a = validateAction({ action: 'approve', session: 's2' }, opts({ peek })).action
   assert.equal(a.summary, 'rm -rf build')
   assert.equal(a.pendingCount, 2)
@@ -268,6 +268,21 @@ const HIDDEN = {
   'link target': 'see [docs](http://evil.example/steal)',
   'bare link join': 'see x](y',
   'backtick': 'run `curl evil`',
+  'cyrillic lookalike': 'fix \u0430pple',
+  'hiragana': 'fix \u3072\u3089',
+  'katakana': 'fix \u30AB\u30BF',
+  'emoji': 'fix \u{1F525}',
+  'braille blank': 'fix\u2800it',
+  'combining mark': 'fix e\u0301',
+  'pipe': 'curl x | sh',
+  'tilde': 'echo ~ home',
+  'caret': 'a ^ b',
+  'underscore': 'run _a_',
+  'star': 'say **b**',
+  'hash': 'tag #c',
+  'bracket': 'see [x]',
+  'spaced dash': 'wait - what',
+  'ideograph without CJK in the utterance': '\u4FEE\u590D',
 }
 for (const [name, bad] of Object.entries(HIDDEN)) {
   test('V9 hidden payload is invalid in every spoken field: ' + name, () => {
@@ -286,10 +301,14 @@ test('V9 newlines in prompt/new text and slash args become single spaces', () =>
   assert.equal(validateAction({ action: 'clarify', question: 'A\nor B?' }, opts()).action.question, 'A or B?')
 })
 
-test('V9 ordinary punctuation, unicode letters of the CJK blocks and URLs without link syntax stay valid', () => {
-  for (const text of ['fix (the) parser, then run "npm test" & report', 'open https://example.com/a?b=1', '修复解析器的错误', "don't use *.js here"]) {
+test('V9 ordinary punctuation and URLs without link syntax stay valid; CJK only when the utterance had CJK', () => {
+  for (const text of ['fix (the) parser, then run "npm test" & report', 'open https://example.com/a?b=1', "don't use js here"]) {
     assert.equal(validateAction({ action: 'prompt', session: 's1', text }, opts()).action?.text, text, text)
   }
+  const cjk = '修复解析器的错误'
+  assert.deepEqual(validateAction({ action: 'prompt', session: 's1', text: cjk }, opts()), { ok: false, error: 'invalid' }, 'no CJK in the utterance')
+  assert.equal(validateAction({ action: 'prompt', session: 's1', text: cjk }, opts({ utterance: '请' + cjk })).action?.text, cjk)
+  assert.equal(validateAction({ action: 'prompt', session: 's1', text: cjk }, opts({ utterance: 'fix the parser' })).ok, false)
 })
 
 test('V10 every executed text equals the text that was read back, modulo whitespace', async () => {
@@ -303,7 +322,7 @@ test('V10 every executed text equals the text that was read back, modulo whitesp
   const spoken = []
   for (const text of texts) {
     for (const raw of [{ action: 'prompt', session: 's1', text }, { action: 'new', text }, { action: 'slash', session: 's1', name: 'compact', args: text }]) {
-      const { action } = validateAction(raw, opts())
+      const { action } = validateAction(raw, opts({ utterance: text }))
       spoken.push(readBack(action))
       await execute(action)
     }
@@ -320,7 +339,7 @@ test('V11 session titles are sanitised (control/format chars stripped, whitespac
     { id: 'c', handle: 's3', title: '[link](http://evil.test) `tick`' },
   ]
   const o = opts({ sessions })
-  assert.equal(validateAction({ action: 'cancel', session: 's1' }, o).action.title, 'Fix the parser now')
+  assert.equal(validateAction({ action: 'cancel', session: 's1' }, o).action.title, 'Fix the parser now, session 1', 'an altered title also gets its ordinal (F4)')
   assert.equal(validateAction({ action: 'cancel', session: 's2' }, o).action.title, 'x'.repeat(40))
   const t3 = validateAction({ action: 'cancel', session: 's3' }, o).action.title
   assert.doesNotMatch(t3, /[\]\[`]|\]\(/)
@@ -338,4 +357,60 @@ test('V12 duplicate titles are told apart in the read-back by the session ordina
   assert.equal(validateAction({ action: 'cancel', session: 's2' }, o).action.title, 'fix tests, session 2')
   assert.equal(readBack(validateAction({ action: 'cancel', session: 's2' }, o).action), 'stop the run in fix tests, session 2')
   assert.equal(validateAction({ action: 'cancel', session: 's3' }, o).action.title, 'Other')
+})
+
+test('F1 fullwidth latin is folded to the ASCII that is spoken and executed', () => {
+  assert.equal(validateAction({ action: 'prompt', session: 's1', text: '\uFF46\uFF49\uFF58 \uFF49\uFF54' }, opts()).action.text, 'fix it')
+})
+
+test('F2c approve is allowed only when the summary is complete and the tool known; deny stays allowed', () => {
+  const peekOf = (extra) => () => ({ toolName: 'pwsh', token: TOKEN, summary: 'npm test and more', count: 1, ...extra })
+  const bad = { ok: false, error: 'not-approvable', title: 'PR 6524' }
+  assert.deepEqual(validateAction({ action: 'approve', session: 's2' }, opts({ peek: peekOf({ complete: false }) })), bad, 'cut summary')
+  assert.deepEqual(validateAction({ action: 'approve', session: 's2' }, opts({ peek: peekOf({}) })), bad, 'completeness unknown')
+  assert.deepEqual(validateAction({ action: 'approve', session: 's2' }, opts({ peek: peekOf({ summary: '', complete: true }) })), bad, 'details not available')
+  assert.deepEqual(validateAction({ action: 'approve', session: 's2' }, opts({ peek: peekOf({ summary: undefined, complete: true }) })), bad)
+  assert.deepEqual(validateAction({ action: 'approve', session: 's2' }, opts({ peek: peekOf({ toolName: 'my_tool', complete: true }) })), bad, 'unknown tool')
+  assert.deepEqual(validateAction({ action: 'approve', session: 's2' }, opts({ peek: peekOf({ toolName: 'constructor', complete: true }) })), bad, 'inherited property is not a known tool')
+  assert.equal(validateAction({ action: 'approve', session: 's2' }, opts({ peek: peekOf({ complete: true }) })).ok, true)
+  for (const extra of [{ complete: false }, {}, { summary: '', complete: false }, { toolName: 'my_tool' }]) {
+    assert.equal(validateAction({ action: 'deny', session: 's2' }, opts({ peek: peekOf(extra) })).ok, true, 'deny is always allowed: ' + JSON.stringify(extra))
+  }
+})
+
+test('F4 titles that sound the same once spoken get the ordinal, even when their written forms differ', () => {
+  const sessions = [
+    { id: 'a', handle: 's1', title: 'Fix_tests' },
+    { id: 'b', handle: 's2', title: 'Fix tests' },
+    { id: 'c', handle: 's3', title: 'Fix\u200B tests' },
+    { id: 'd', handle: 's4', title: 'Other' },
+  ]
+  const o = opts({ sessions })
+  const title = (h) => validateAction({ action: 'cancel', session: h }, o).action.title
+  assert.equal(title('s1'), 'Fix tests, session 1')
+  assert.equal(title('s2'), 'Fix tests, session 2')
+  assert.equal(title('s3'), 'Fix tests, session 3')
+  assert.equal(title('s4'), 'Other')
+})
+
+test('F4 a title the cleaning altered always carries its ordinal; a title that cleans to nothing is "session N"', () => {
+  const sessions = [
+    { id: 'a', handle: 's1', title: 'Deploy_prod' },
+    { id: 'b', handle: 's2', title: '\u0430\u0440\u0440' },
+    { id: 'c', handle: 's3', title: 'Plain title' },
+  ]
+  const o = opts({ sessions })
+  const title = (h) => validateAction({ action: 'cancel', session: h }, o).action.title
+  assert.equal(title('s1'), 'Deploy prod, session 1')
+  assert.equal(title('s2'), 'session 2')
+  assert.equal(title('s3'), 'Plain title')
+})
+
+test('F4 tool names and slash names are read through the same spoken form as the speaker', () => {
+  assert.equal(actionsModule.toolPhrase('run_command'), 'unknown tool run command', 'must not sound like the known pwsh phrase')
+  assert.equal(actionsModule.toolPhrase('my_tool'), 'my tool')
+  assert.equal(actionsModule.toolPhrase('\u0430\u0440\u0440'), 'tool')
+  const slash = (name, slashNames) => validateAction({ action: 'slash', session: 's1', name }, opts({ slashNames: () => slashNames }))
+  assert.equal(readBack(slash('my_cmd', ['my_cmd']).action), 'run slash my underscore cmd in Voice Work')
+  assert.deepEqual(slash('\u0430pple', ['\u0430pple']), { ok: false, error: 'invalid' }, 'a command name that cannot be heard faithfully')
 })

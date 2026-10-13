@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { capWords, lastParagraph, permissionHeadline, questionHeadline, stopHeadline, toolSummary } from '../voice/headline.js'
+import { capWords, isKnownTool, lastParagraph, permissionHeadline, questionHeadline, stopHeadline, toolSummary, toolSummaryInfo, withReason } from '../voice/headline.js'
 
 test('capWords collapses whitespace, caps with an ellipsis and tolerates non-text', () => {
   assert.equal(capWords('  a   b  c ', 5), 'a b c')
@@ -57,7 +57,7 @@ test('permission headline uses plain words for known tools and de-snakes unknown
 test('toolSummary: the command, file path or URL of the tool input, ready to be spoken', () => {
   assert.equal(toolSummary('pwsh', { command: 'npm test' }), 'npm test')
   assert.equal(toolSummary('bash', { command: 'ls -la' }), 'ls -la')
-  assert.equal(toolSummary('write', { file_path: 'D:\\proj\\a.txt', content: 'secret body' }), 'D:\\proj\\a.txt')
+  assert.equal(toolSummary('write', { file_path: 'D:\\proj\\a.txt', content: 'secret body' }), 'D: backslash proj backslash a.txt')
   assert.equal(toolSummary('web_fetch', { url: 'https://example.com/a' }), 'https://example.com/a')
   assert.equal(toolSummary('web_search', { query: 'node docs' }), 'node docs')
   assert.equal(toolSummary('pwsh', JSON.stringify({ command: 'whoami' })), 'whoami', 'a JSON string input is parsed')
@@ -86,4 +86,51 @@ test('toolSummary turns hidden characters into spoken warnings and collapses whi
   assert.match(s, /unusual character/)
   assert.doesNotMatch(s, /[\u0000-\u001f\u200b-\u200f\u202a-\u202e\u00e9]/)
   assert.equal(toolSummary('pwsh', { command: '  a \r\n  b\t c ' }), 'a b c')
+})
+
+test('F2a model-written description/prompt/task are never the summary; run_code is summarised by its code', () => {
+  assert.equal(toolSummary('run_code', { description: 'list the files', code: 'rm -rf build' }), 'rm -rf build')
+  assert.equal(toolSummary('pwsh', { description: 'harmless listing', command: 'rm -rf x' }), 'rm -rf x')
+  for (const key of ['description', 'prompt', 'task']) {
+    const info = toolSummaryInfo('subagent', { [key]: 'be nice' })
+    assert.equal(info.complete, false, key)
+    assert.notEqual(info.text, 'be nice', key)
+  }
+  assert.equal(toolSummary('run_code', { description: 'x', code: 'c'.repeat(150) }), 'c'.repeat(100) + ' and more')
+})
+
+test('F2b sandbox escalation, work directory and background runs are spoken with the command', () => {
+  const s = toolSummary('pwsh', { command: 'npm test', sandbox_permissions: 'danger-full-access', workdir: 'D:\\x', run_in_background: true, justification: 'trust me' })
+  assert.equal(s, 'npm test, outside the sandbox, in directory D: backslash x, in the background')
+  assert.equal(toolSummary('pwsh', { command: 'npm test', sandbox_permissions: 'workspace-write' }), 'npm test, outside the sandbox')
+  assert.equal(toolSummary('pwsh', { command: 'npm test' }), 'npm test')
+})
+
+test('F2b the approval request reason is appended; a cut or missing summary stays unapprovable', () => {
+  assert.deepEqual(withReason({ text: 'npm test', complete: true }, 'writes outside the workspace'), { text: 'npm test, reason: writes outside the workspace', complete: true })
+  assert.equal(withReason({ text: 'npm test', complete: true }, 'r'.repeat(300)).complete, false)
+  assert.deepEqual(withReason({ text: 'npm test', complete: true }, undefined), { text: 'npm test', complete: true })
+  assert.deepEqual(withReason({ complete: false }, 'why'), { complete: false })
+})
+
+test('F2c toolSummaryInfo.complete: known tool, operand fully read, nothing hidden', () => {
+  assert.deepEqual(toolSummaryInfo('pwsh', { command: 'npm test' }), { text: 'npm test', complete: true })
+  assert.equal(toolSummaryInfo('pwsh', { command: 'a'.repeat(101) }).complete, false, 'cut')
+  assert.equal(toolSummaryInfo('pwsh', { command: 'a'.repeat(100) }).complete, true)
+  assert.equal(toolSummaryInfo('my_tool', { command: 'ls' }).complete, false, 'unknown tool')
+  assert.equal(toolSummaryInfo('pwsh', { command: 'echo \u0430' }).complete, false, 'unusual character')
+  assert.equal(toolSummaryInfo('pwsh', { command: 'echo a\u200Bb' }).complete, false, 'hidden character')
+  assert.equal(toolSummaryInfo('pwsh', { foo: 'bar' }).complete, false, 'no identifiable operand')
+  assert.equal(toolSummaryInfo('pwsh', { command: 'ls', workdir: 'D:\\' + 'x'.repeat(120) }).complete, false, 'cut workdir')
+  assert.deepEqual(toolSummaryInfo('pwsh', undefined), { complete: false })
+  assert.equal(isKnownTool('pwsh'), true)
+  assert.equal(isKnownTool('run_code'), true)
+  assert.equal(isKnownTool('constructor'), false)
+  assert.equal(isKnownTool('toString'), false)
+})
+
+test('F4 tool names go through the spoken form: no inherited properties, no collision with a known tool phrase', () => {
+  assert.equal(permissionHeadline({ toolName: 'constructor' }), 'Approve constructor?')
+  assert.equal(permissionHeadline({ toolName: 'run_command' }), 'Approve unknown tool run command?')
+  assert.equal(permissionHeadline({ toolName: 'read_file' }), 'Approve unknown tool read file?')
 })

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { permissionHeadline } from './headline.js'
-import { cleanTitle, speakableText } from './sanitize.js'
+import { isKnownTool, permissionHeadline } from './headline.js'
+import { hasCjk, speakableText, spokenName, spokenSummaryInfo } from './sanitize.js'
 
 /**
  * Pure helpers for the voice flow's action stage: validate the decider's raw JSON into a frozen-ready action,
@@ -13,9 +13,12 @@ const ACTIONS = new Set(['switch', 'prompt', 'new', 'approve', 'deny', 'cancel',
 const MAX_TEXT = 1500
 const MAX_ARGS = 500
 const MAX_QUESTION = 200
+const MAX_NAME = 60
 const INVALID = Object.freeze({ ok: false, error: 'invalid' })
 const NO_SESSION = Object.freeze({ ok: false, error: 'no-session' })
 const TOO_LONG = Object.freeze({ ok: false, error: 'too-long' })
+// An approve whose summary was cut, hidden, unknown or of an unknown tool cannot be confirmed by ear (flow.js says the line).
+const NOT_APPROVABLE = 'not-approvable'
 const STALE_TEXT = 'That request changed. Nothing done.'
 
 /** Trimmed string, '' when absent, or undefined when the value is present but not a string. */
@@ -26,22 +29,28 @@ function str(value) {
 
 /**
  * Text that will be both read back and executed: '' when absent, undefined (= invalid) when it is not a string or holds
- * hidden/control characters, markdown links or backticks (see sanitize.js); newlines become spaces.
+ * anything the speaker would alter or drop (see sanitize.js speakableText; CJK only when the utterance had CJK).
+ * Newlines become spaces and the text is NFKC-normalised.
  */
-function spoken(value) {
+function spoken(value, allowCjk) {
   if (value === undefined || value === null) return ''
-  return speakableText(value)
+  return speakableText(value, { allowCjk })
 }
 
 const fits = (text, min, max) => text !== undefined && text.length >= min && text.length <= max
 const ordinal = (s) => String(s.handle).replace(/^s/, '')
-const plainTitle = (s) => cleanTitle(s.title) || 'session ' + ordinal(s)
+const plainTitle = (s) => spokenName(s.title).text || 'session ' + ordinal(s)
 
-/** The spoken name of a session; a title another session shares also gets its ordinal ("Fix tests, session 2"). */
+/**
+ * The spoken name of a session: the title as the speaker will say it (sanitize.js spokenName). It gets its ordinal
+ * ("Fix tests, session 2") when another session sounds the same once spoken (compared on the spoken form) or when cleaning
+ * changed it, so a look-alike title cannot pass for a trusted one. A title that cleans to nothing is "session N".
+ */
 function titleOf(s, sessions = []) {
-  const title = plainTitle(s)
-  const shared = sessions.some((o) => o.handle !== s.handle && plainTitle(o).toLowerCase() === title.toLowerCase())
-  return shared ? title + ', session ' + ordinal(s) : title
+  const { text, altered } = spokenName(s.title)
+  if (!text) return 'session ' + ordinal(s)
+  const shared = sessions.some((o) => o.handle !== s.handle && plainTitle(o).toLowerCase() === text.toLowerCase())
+  return shared || altered ? text + ', session ' + ordinal(s) : text
 }
 const resolved = (s, sessions) => ({ sessionId: s.id, title: titleOf(s, sessions) })
 
@@ -50,6 +59,9 @@ function defaultSession(sessions, target = {}) {
   const id = target.selected ?? target.lastAlerted ?? target.lastActive
   return id === undefined ? undefined : sessions.find((s) => s.id === id)
 }
+
+/** A pending request voice may approve: a known tool and a complete, non-empty summary of it. */
+const approvable = (pending) => isKnownTool(pending.toolName) && pending.complete === true && typeof pending.summary === 'string' && pending.summary !== ''
 
 /** { session } for an explicit handle or the default target, or { error } ('invalid' | 'no-session'). */
 function pickSession(raw, { sessions = [], target }) {
@@ -64,8 +76,8 @@ function pickSession(raw, { sessions = [], target }) {
   return fallback ? { session: fallback } : { error: NO_SESSION }
 }
 
-function validateNew(raw, opts) {
-  const text = spoken(raw.text)
+function validateNew(raw, opts, allowCjk) {
+  const text = spoken(raw.text, allowCjk)
   if (text === undefined) return INVALID
   if (text.length > MAX_TEXT) return TOO_LONG
   // The default target only lends its cwd to the new session; with no target the host default cwd is used.
@@ -73,16 +85,16 @@ function validateNew(raw, opts) {
   return { ok: true, action: { action: 'new', ...(target ? { sessionId: target.id } : {}), ...(text ? { text } : {}) } }
 }
 
-function validateClarify(raw) {
-  const question = spoken(raw.question)
+function validateClarify(raw, allowCjk) {
+  const question = spoken(raw.question, allowCjk)
   return fits(question, 1, MAX_QUESTION) ? { ok: true, action: { action: 'clarify', question } } : INVALID
 }
 
 /** Per-action fields for actions bound to a session (already resolved to { sessionId, title }). */
-function sessionFields(raw, where, { peek, slashNames }) {
+function sessionFields(raw, where, { peek, slashNames }, allowCjk) {
   switch (raw.action) {
     case 'prompt': {
-      const text = spoken(raw.text)
+      const text = spoken(raw.text, allowCjk)
       if (text === undefined || !text.length) return INVALID
       return text.length > MAX_TEXT ? TOO_LONG : { text }
     }
@@ -91,6 +103,9 @@ function sessionFields(raw, where, { peek, slashNames }) {
       const pending = peek?.({ sessionId: where.sessionId })
       // The peeked token is frozen into the action so execution can refuse a request that changed meanwhile.
       if (!pending) return { ok: false, error: 'no-approval', title: where.title }
+      // Security: nothing executes unless the user heard EXACTLY what it is. APPROVE needs a complete summary of a known
+      // tool (not cut, not unavailable, no hidden characters); denying is always safe.
+      if (raw.action === 'approve' && !approvable(pending)) return { ok: false, error: NOT_APPROVABLE, title: where.title }
       // The summary and the count are frozen with the token: the read-back says what the user is about to approve.
       return {
         toolName: pending.toolName, token: pending.token,
@@ -99,8 +114,8 @@ function sessionFields(raw, where, { peek, slashNames }) {
     }
     case 'slash': {
       const name = str(raw.name)?.replace(/^\/+/, '').trim()
-      const args = spoken(raw.args)
-      if (!name || !fits(args, 0, MAX_ARGS)) return INVALID
+      const args = spoken(raw.args, allowCjk)
+      if (!name || !fits(args, 0, MAX_ARGS) || !spokenSummaryInfo(name, MAX_NAME).complete) return INVALID
       return (slashNames?.(where.sessionId) ?? []).includes(name) ? { name, args } : INVALID
     }
     default:
@@ -114,12 +129,14 @@ function sessionFields(raw, where, { peek, slashNames }) {
  */
 export function validateAction(raw, opts = {}) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !ACTIONS.has(raw.action)) return INVALID
-  if (raw.action === 'clarify') return validateClarify(raw)
-  if (raw.action === 'new') return validateNew(raw, opts)
+  // CJK ideographs may only be executed when the confirmed utterance itself held some (see sanitize.js speakableText).
+  const allowCjk = hasCjk(opts.utterance)
+  if (raw.action === 'clarify') return validateClarify(raw, allowCjk)
+  if (raw.action === 'new') return validateNew(raw, opts, allowCjk)
   const picked = pickSession(raw, opts)
   if (picked.error) return picked.error
   const where = resolved(picked.session, opts.sessions ?? [])
-  const fields = sessionFields(raw, where, opts)
+  const fields = sessionFields(raw, where, opts, allowCjk)
   if (fields.ok === false) return fields
   return { ok: true, action: { action: raw.action, ...where, ...fields } }
 }
@@ -142,7 +159,7 @@ export function readBack(action) {
     case 'approve':
     case 'deny': return action.action + ' ' + approvalPhrase(action) + ' in ' + action.title + pendingNote(action)
     case 'cancel': return 'stop the run in ' + action.title
-    case 'slash': return 'run slash ' + action.name + (action.args ? ' ' + action.args : '') + ' in ' + action.title
+    case 'slash': return 'run slash ' + spokenSummaryInfo(action.name, MAX_NAME).text + (action.args ? ' ' + action.args : '') + ' in ' + action.title
     default: return 'do that'
   }
 }

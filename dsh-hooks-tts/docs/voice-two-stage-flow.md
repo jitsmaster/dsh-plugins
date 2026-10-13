@@ -43,7 +43,7 @@ Answer classification (answers.js, at confirm steps ONLY; `classifyAnswer(text, 
 Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | # | From | Event / condition | Action / spoken | To |
 |---|------|-------------------|-----------------|----|
-| T1 | IDLE or any | E.capture, text non-empty | abort old turn; new id; utterance=text; history=[] ; speak "I heard: {text}. Is that right?" | ECHO_SPEAK |
+| T1 | IDLE or any | E.capture, text non-empty | abort old turn; new id; utterance=text (NFKC-normalised, whitespace collapsed; must be speakable and ≤1500 chars, else → END "I could not repeat that back safely. Cancelled." / the T29 too-long line; the echo is exactly what decide() receives); history=[] ; speak "I heard: {text}. Is that right?" | ECHO_SPEAK |
 | T2 | IDLE or any | E.capture, text empty/whitespace | → END "I did not catch that." | IDLE |
 | T3 | any ≠ IDLE | E.bargein | turn++ (kills pending awaits); `cancelSpeech()` (speaker.cancel(): queued lines resolve 'cancelled', the line in flight is cut, see §2); log barge-in; await the capture transcript | IDLE(waiting) |
 | T4 | ECHO_SPEAK | E.spoken | listen(step 'echo', 10 s) | ECHO_LISTEN |
@@ -73,6 +73,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T27 | any *_SPEAK / END_SPEAK / DECIDE line | speak status 'cancelled' (speaker.cancel()) | silent stop for that turn: no retry, no 'speak-dead' log, no listen | IDLE |
 | T28 | ECHO_SPEAK / READBACK_SPEAK | speak status 'cut' (Ctrl+Alt+M ended the line early) | no retry, no listen, nothing executes; → END "Cancelled." (a cut CLARIFY_SPEAK line still opens its listen; a cut Deciding/result/end line behaves like 'done') | IDLE |
 | T29 | DECIDE | validate error 'too-long' (prompt/new text over 1500 chars) | → END "That is too long to confirm by voice. Cancelled." | IDLE |
+| T29a | DECIDE | validate error 'not-approvable' (approve whose summary is cut, unavailable, hides characters, or is of an unknown tool; deny is unaffected) | → END "That request is too long or unclear to approve by voice. Answer it on screen." | IDLE |
 
 Notes:
 - DECIDE waits for BOTH the "Deciding with LLM." line to end AND decide() before the read-back (avoid queue overlap);
@@ -95,7 +96,7 @@ New voice/flow.js
   speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'cut'|'failed'|'timeout'|'cancelled', startMs?, ms}>
   listen({context, window_s}) → Promise<{started:boolean}>     (rejects on HTTP/network error)
   decide(utterance, {history}) → Promise<{ok:true, raw:object} | {ok:false, error:'timeout'|'llm'|'unparseable'}>
-  validate(raw) → {ok:true, action} | {ok:false, error:'invalid'|'too-long'|'no-session'|'no-approval', title?}
+  validate(raw, { utterance }) → {ok:true, action} | {ok:false, error:'invalid'|'too-long'|'no-session'|'no-approval'|'not-approvable', title?}
   execute(action) → Promise<result>   (throws Error with short message)
   log(stage, data) → void             (never throws into the flow)
 
@@ -166,15 +167,15 @@ Session handles "s1".."sN" (stable order of service agents); the LLM never sees 
 Validation (validateAction): object; action ∈ set; unknown keys dropped; strings trimmed.
 - session: optional; if absent → default target = selected ?? lastAlerted ?? lastActive; must map to a live agent →
   else 'no-session' (T18). switch requires explicit session.
-- prompt.text: 1..1500 chars, required. new.text: optional, ≤1500. Longer → validate error 'too-long' (T29). Security: every text that is both read back and executed (prompt/new text, slash args ≤500, clarify question ≤200) must be speakable as heard: newlines become single spaces and whitespace is collapsed; control, format (\p{Cf}: zero-width, bidi, BOM), tag (U+E0000-E007F), private-use chars, markdown link syntax "](" and backticks make the action 'invalid' (T17 line), because Clean-ForSpeech drops link targets/backticks and humans cannot hear the rest. Session titles are sanitised the same way (control/format stripped, link/backtick chars removed, ≤40 chars); a title shared by several sessions gets ", session N" appended in the read-back.
-- approve/deny: approvals.peek({sessionId}) must exist → else 'no-approval' (T19); snapshot {toolName, token, summary, count} frozen (summary = bounded speakable first ~100 chars of the command / file path / URL of the pending tool call, recorded from tools/pre-execute by callId in index.js and taken by approvals.intercept via summaryOf; '' when unknown)
+- prompt.text: 1..1500 chars, required. new.text: optional, ≤1500. Longer → validate error 'too-long' (T29). Security (the user must hear EXACTLY what executes): every text that is both read back and executed (prompt/new text, slash args ≤500, clarify question ≤200) is NFKC-normalised (fullwidth latin → the ASCII that is heard; typographic quotes → ASCII quotes), newlines become single spaces and whitespace is collapsed; the result must then be printable ASCII only — any other char (Cyrillic, kana, emoji, braille blank, combining marks ...) makes the action 'invalid' (T17 line). CJK ideographs are allowed only when the confirmed utterance itself contained CJK (validate gets `{ utterance }`). Control, format, tag, private-use chars, the symbols Clean-ForSpeech drops (| ~ ^ _ * # [ ] backtick) and a dash between spaces ('a - b', also at either end) are rejected too, so dictating those yields the "could not understand" line. voice/sanitize.js `cleanForSpeech` is a JS port of tts-client.ps1 Clean-ForSpeech (cross-checked against the real script in test SC9). Session titles are spoken as the speaker will say them (`spokenName`: same transformation as Clean-ForSpeech, `_` → space, symbols dropped); a title gets ", session N" appended when another session sounds the same once spoken or when cleaning altered it; a title that cleans to nothing is "session N". Tool names and slash names use the same spoken form (slash names spell their symbols; a name that cannot be heard faithfully is 'invalid'); an unknown tool whose name sounds like a known phrase is spoken "unknown tool …".
+- approve/deny: approvals.peek({sessionId}) must exist → else 'no-approval' (T19); snapshot {toolName, token, summary, count} frozen (summary = bounded speakable first ~100 chars of the command / code (run_code) / file path / URL of the pending tool call — never the model-written description/prompt/task — followed by "outside the sandbox" when sandbox_permissions is set, "in directory {workdir}", "in the background" and the approval request's reason (", reason: …"); '' when unknown). Spoken symbols: | ~ ^ _ * # [ ] backtick > < & ; $ ( ) { } backslash quote apostrophe = ! and a lone dash are spelled out. The summary is recorded by tools/pre-execute under the key session + tool + call id with a hash of the arguments (voice/tool-summaries.js), taken by approvals.intercept via summaryOf as { text, complete }, and dropped when the call settles; a mismatching or conflicting key yields no summary. Security: APPROVE (not deny) requires complete = known tool, operand not cut ('and more'), nothing hidden/replaced ('unusual character'), summary present; otherwise validate → 'not-approvable' (T29a).
   into the action.
 - slash.name: strip leading '/', must be in commands.list for that session; args ≤500 chars → else 'invalid'.
 - clarify.question: 1..200 chars.
 Read-back (inside "I will {x}. Shall I do it?"), title = session title (fallback "session N"):
   switch → "talk to {title}" · prompt → "send to {title}: {text}" · new → "start a new session" [+ " and send: {text}"]
   approve → "approve {tool phrase} {summary|details not available} in {title}[, the newest of N pending requests]" · deny → same with "deny" · cancel → "stop the run in
-  {title}" · slash → "run slash {name}{ ' ' + args} in {title}". tool phrase via alerts/headline permission wording.
+  {title}" · slash → "run slash {spoken name}{ ' ' + args} in {title}". tool phrase via alerts/headline permission wording (voice/headline.js toolWords).
 Execution mapping → spoken result:
   switch  → select(id) (voice-side only; no UI)                         → "Now talking to {title}."
   prompt  → controller.prompt({requestId:'voice-'+uuid, sessionId, mode:'queue', content:[{type:'text',text}]})

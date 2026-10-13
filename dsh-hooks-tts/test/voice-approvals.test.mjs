@@ -107,3 +107,16 @@ test('peek has no summary when the tool input is unknown, and a throwing summary
   bad.answer({ sessionId: 's', decision: 'approve' })
   assert.equal(await p, 'allowed-once')
 })
+
+test('F2c peek carries whether the summary is complete: only an explicit { text, complete: true } counts', () => {
+  const forever = () => new Promise(() => {})
+  const make = (result) => { const a = createVoiceApprovals({ enabled: () => true, summaryOf: () => result }); a.intercept({ agent: { id: 's' }, toolName: 'pwsh' }, forever); return a.peek({ sessionId: 's' }) }
+  assert.deepEqual([make({ text: 'npm test', complete: true }).summary, make({ text: 'npm test', complete: true }).complete], ['npm test', true])
+  assert.equal(make({ text: 'npm test and more', complete: false }).complete, false)
+  assert.equal(make({ text: 'npm test' }).complete, false)
+  assert.equal(make('npm test').summary, 'npm test')
+  assert.equal(make('npm test').complete, false, 'a bare string says nothing about completeness')
+  assert.equal(make(undefined).complete, false)
+  assert.equal(make({ complete: true }).complete, false, 'no text, nothing to approve')
+  assert.equal(make({ complete: true }).summary, undefined)
+})
