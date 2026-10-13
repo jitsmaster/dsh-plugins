@@ -34,6 +34,7 @@ Roomy, collapsed by default, expands for more detail, **Open session** button ju
 
 ## Leaving the queue (status = completed)
 - Question: answered by the user, or expired and the recommended option was auto-selected (record which option).
+- Late answers (added 2026-10-13): an expired question stays answerable from Resolved. If the late answer equals the recommended option the assistant already took, it is only confirmed (resolution `confirmed`, nothing sent). If it differs, it is steered into the live session through `userQuestions.answer(agent, callId, {answers})` and recorded as `late-answered`. After a restart or when the session is gone the answer cannot be delivered (`no-session`).
 - Completed: user clicks **Reviewed**, or sends a follow-up message from the card's reply box.
 - Permission: Approve/Deny, or session ends.
 

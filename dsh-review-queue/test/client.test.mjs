@@ -91,3 +91,8 @@ test('apply puts one button in the session header utilities and nothing in the r
   assert.ok(seen[0].order >= 1000, 'last among the utilities, so it sits next to the right-sidebar button')
   assert.ok(!injected.some((n) => n.startsWith('sidebar.right')))
 })
+
+test('resolutionText names late answers and confirmations', () => {
+  assert.match(T.resolutionText({ resolution: { kind: 'late-answered', by: 'card', answers: [{ id: 'q', selected: ['B'] }] } }), /^Answered late: B/)
+  assert.match(T.resolutionText({ resolution: { kind: 'confirmed', by: 'card', answers: [{ id: 'q', selected: ['A'] }] } }), /^Confirmed the recommended option: A/)
+})

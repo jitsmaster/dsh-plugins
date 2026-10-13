@@ -67,6 +67,8 @@ window.__ModuleLoader__.load({
 			const where = r.by === "card" ? "here" : r.by === "screen" ? "on screen" : "";
 			switch (r.kind) {
 				case "answered": return "Answered" + (where ? " " + where : "") + (r.answers ? ": " + answerText(r.answers) : "");
+				case "late-answered": return "Answered late" + (r.answers ? ": " + answerText(r.answers) : "");
+				case "confirmed": return "Confirmed the recommended option" + (r.answers ? ": " + answerText(r.answers) : "");
 				case "expired": return r.assumed && r.assumed.length ? "Expired; recommended option taken: " + r.assumed.join(", ") : "Expired; the assistant carried on";
 				case "approved": return "Approved" + (where ? " " + where : "");
 				case "denied": return "Denied" + (where ? " " + where : "");
@@ -93,7 +95,7 @@ window.__ModuleLoader__.load({
 
 		const state = {
 			snap: null, error: null, skew: 0, expanded: {}, drafts: {}, replies: {}, busy: {}, errors: {},
-			selected: null, showResolved: false, overlay: storage.get(LS.overlay) === "1",
+			selected: null, showResolved: false, lateOpen: {}, overlay: storage.get(LS.overlay) === "1",
 		};
 		const listeners = new Set();
 		let version = 0;
@@ -141,6 +143,7 @@ window.__ModuleLoader__.load({
 			"not-open": "That item is no longer waiting.", "not-pending": "That request is no longer waiting for an answer.",
 			"bad-answer": "That answer does not match the question.", "empty": "Type something first.", "too-long": "That is too long.",
 			"no-controller": "Cannot reach the session right now.", "not-completed": "That only applies to finished work.",
+			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so a late answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
 		};
 
 		// Host capabilities captured in apply(); absent on a DSH without the workspace API, which just hides the button.
@@ -209,7 +212,7 @@ window.__ModuleLoader__.load({
 			return Date.now() + state.skew;
 		}
 
-		function QuestionBody({ item, full }) {
+		function QuestionBody({ item, full, path = "/v1/answer", sendLabel = "Send answer" }) {
 			const st = useStore();
 			const questions = item.payload.questions || [];
 			const drafts = st.drafts[item.id] || {};
@@ -237,7 +240,7 @@ window.__ModuleLoader__.load({
 						h("input", { className: "rq-input", placeholder: "Other answer…", value: d.custom || "", disabled: busy, onChange: (e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value }) }));
 				}),
 				h("div", { className: "rq-row" },
-					h("button", { className: "rq-btn pri", disabled: !answers || busy, onClick: async () => { if (await act("/v1/answer", { id: item.id, answers }, item.id)) set({ drafts: { ...state.drafts, [item.id]: undefined } }); } }, busy ? "Sending…" : "Send answer"),
+					h("button", { className: "rq-btn pri", disabled: !answers || busy, onClick: async () => { if (await act(path, { id: item.id, answers }, item.id)) set({ drafts: { ...state.drafts, [item.id]: undefined } }); } }, busy ? "Sending…" : sendLabel),
 					!answers ? h("span", { className: "rq-sub" }, "Pick an option or type an answer for every question.") : null));
 		}
 
@@ -289,10 +292,21 @@ window.__ModuleLoader__.load({
 				h("div", { className: "rq-row" }, hostApi.openSession ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
 		}
 
-		function ResolvedList({ items }) {
-			return h("div", { className: "rq-opts" }, items.length ? items.map((it) => h("div", { key: it.id, className: "rq-card rq-res" },
+		function ResolvedCard({ it }) {
+			const st = useStore();
+			const late = it.type === "question" && it.resolution && it.resolution.kind === "expired";
+			const open = !!st.lateOpen[it.id];
+			return h("div", { className: "rq-card rq-res" },
 				h("div", { className: "rq-card-h" }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title" }, it.sessionTitle || "Untitled session"), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
-				h("div", { className: "rq-sub" }, resolutionText(it)))) : h("div", { className: "rq-empty" }, "Nothing resolved in the last 7 days."));
+				h("div", { className: "rq-sub" }, resolutionText(it)),
+				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
+				late && open ? h(QuestionBody, { item: it, full: true, path: "/v1/late-answer", sendLabel: "Send late answer" }) : null,
+				late && open ? h("div", { className: "rq-sub" }, "The assistant already carried on with the recommended option. An answer that differs is sent to it as a late reply; the same one is just confirmed.") : null,
+				st.errors[it.id] ? h("div", { className: "rq-err" }, st.errors[it.id]) : null);
+		}
+
+		function ResolvedList({ items }) {
+			return h("div", { className: "rq-opts" }, items.length ? items.map((it) => h(ResolvedCard, { key: it.id, it })) : h("div", { className: "rq-empty" }, "Nothing resolved in the last 7 days."));
 		}
 
 		function Head({ snap, extra }) {

@@ -3,7 +3,7 @@
 A review queue for DeepSeek Harness. It collects what is waiting on you from **every session** in one oldest-first list:
 
 - **Done**: a session finished a turn (short summary; the full reply is one click away). Clear it with *Reviewed*, or send a reply into that session.
-- **Question**: an `ask_user_question` is open. Answer it from the card (pick an option or type your own). Questions with a timeout expire into *Resolved* with the recommended option taken.
+- **Question**: an `ask_user_question` is open. Answer it from the card (pick an option or type your own). Questions with a timeout expire into *Resolved* with the recommended option taken. An expired question stays answerable from *Resolved* (*Answer now (late)*): picking the option the assistant already took is only recorded as confirmed; a different answer is steered into the session if it is still live.
 - **Permission**: a tool needs approval. *Approve* or *Deny* from the card.
 
 The queue is global, so it is an **overlay only** (the right sidebar is per session and is not used). A round-check button in the session header, just left of the right-sidebar button, opens it; Esc, the Close button or the button again closes it. *Open session* jumps to the item's session. Resolved items are kept for 7 days.
@@ -35,12 +35,13 @@ Served on the DSH web server under `/review-queue` (same host/origin fence and c
 | --- | --- | --- | --- |
 | `/v1/snapshot` | GET | query `since=<snapshotId>[|<focusId>]`, `wait=<ms>` | Open and resolved items, `snapshotId`, `serverNow`. With `since` it long-polls up to 25 s and answers `{unchanged:true}` if nothing changed. |
 | `/v1/answer` | POST | `{id, answers:[{id, selected:[...], custom?}]}` | Answers an open question. |
+| `/v1/late-answer` | POST | `{id, answers:[{id, selected:[...], custom?}]}` | Answers an expired question. Same as the recommended option: recorded as `confirmed`, nothing sent. Different: sent into the session (`late-answered`). |
 | `/v1/approve`, `/v1/deny` | POST | `{id}` | Permission items. |
 | `/v1/reviewed` | POST | `{id}` | Done items only. |
 | `/v1/reply` | POST | `{id, text}` | Done items only; queues the text as a prompt to that session. |
 | `/v1/focus` | POST | `{id}` or `{id:null}` | Shared selection (screen and voice follow it). |
 
-Answers: 200 `{ok:true}`; 400 for bad input (`bad-answer`, `bad-decision`, `empty`, `too-long`); 409 when it cannot apply now (`not-open`, `not-completed`, `no-controller`, or the host's error); 413/415 for body size/type.
+Answers: 200 `{ok:true}`; 400 for bad input (`bad-answer`, `bad-decision`, `empty`, `too-long`); 409 when it cannot apply now (`not-open`, `not-completed`, `no-controller`, `not-expired`, `no-session` (the session is no longer live, e.g. after a restart), `not-pending` (the assistant no longer waits on that question), `reply-queued`, or the host's error); 413/415 for body size/type.
 
 ## Limits
 
