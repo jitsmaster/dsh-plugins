@@ -11,6 +11,7 @@ function setup() {
   const capture = {
     answerQuestion: (id, answers) => { calls.push(['answer', id, answers]); return { ok: true } },
     decidePermission: (id, decision) => { calls.push(['decide', id, decision]); return { ok: true } },
+    lateAnswerQuestion: async (id, answers) => { calls.push(['late', id, answers]); return { ok: true, sent: true } },
   }
   // Like the real Remote method: refuses a call without a caller signal.
   const controller = { prompt: async (req, signal) => { if (!(signal instanceof AbortSignal)) throw new TypeError("Cannot read properties of undefined (reading 'throwIfAborted')"); calls.push(['prompt', req]); return {} } }
@@ -106,4 +107,10 @@ test('focus is shared state that voice and the screen both follow', () => {
   assert.equal(n, 1)
   store.resolve(a.id, { kind: 'reviewed' })
   assert.equal(queue.getFocus(), undefined)
+})
+
+test('lateAnswer delegates to capture for an expired question', async () => {
+  const { queue, calls } = setup()
+  assert.deepEqual(await queue.lateAnswer('i1', [{ id: 'q', selected: ['B'] }]), { ok: true, sent: true })
+  assert.deepEqual(calls.at(-1), ['late', 'i1', [{ id: 'q', selected: ['B'] }]])
 })

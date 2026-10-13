@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
 import { installCapture, summarizeTool, cancelStalePending } from '../capture.js'
 
-function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'Session One' } } = {}) {
+function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'Session One' }, services = {} } = {}) {
   const handlers = {}
   const ctx = {
     on: (name, fn) => { (handlers[name] ??= []).push(fn) },
-    get: (name) => (name === 'sessionTitle' ? { get: (session) => ({ title: titles[session.id] }) } : undefined),
+    get: (name) => (name === 'sessionTitle' ? { get: (session) => ({ title: titles[session.id] }) } : services[name]),
     logger: { warn() {}, info() {} },
   }
   let t = 1000
@@ -231,4 +231,51 @@ test('the registered handlers are exposed by name for the dev route', () => {
   const { capture } = setup()
   assert.equal(typeof capture.handlers['user-questions/request'], 'function')
   assert.equal(typeof capture.handlers['agent/turn-stopping'], 'function')
+})
+
+// ---- late answers to expired questions ----
+async function expired(opts) {
+  const x = setup(opts)
+  const ac = new AbortController()
+  const ag = x.agent()
+  const p = x.fire('user-questions/request', { agent: ag, questions: QUESTIONS, signal: ac.signal, wait: { callId: 'c1', timed: true } }, never)
+  ac.abort(Object.assign(new Error('timed out'), { code: 'ASK_TIMED_OUT' }))
+  await p.catch(() => {})
+  return { ...x, ag, id: x.store.snapshot().resolved[0].id }
+}
+const liveServices = (answer) => { const calls = []; return { calls, services: { agents: { get: (id) => (id === 'a1' ? { id } : undefined) }, userQuestions: { answer: async (agent, callId, body) => { calls.push([agent.id, callId, body]); return answer ? answer() : true } } } } }
+
+test('a late answer that differs from the default is sent into the session and recorded', async () => {
+  const live = liveServices()
+  const { capture, store, id } = await expired({ services: live.services })
+  assert.deepEqual(await capture.lateAnswerQuestion(id, [{ id: 'q1', selected: ['B'] }]), { ok: true, sent: true })
+  assert.deepEqual(live.calls, [['a1', 'c1', { answers: [{ id: 'q1', selected: ['B'] }] }]])
+  const r = store.get(id).resolution
+  assert.equal(r.kind, 'late-answered'); assert.equal(r.by, 'card'); assert.deepEqual(r.assumed, ['A (Recommended)'])
+})
+
+test('a late answer equal to the default is only confirmed: nothing is sent', async () => {
+  const live = liveServices()
+  const { capture, store, id } = await expired({ services: live.services })
+  assert.deepEqual(await capture.lateAnswerQuestion(id, [{ id: 'q1', selected: ['A (Recommended)'] }]), { ok: true, sent: false })
+  assert.equal(live.calls.length, 0)
+  assert.equal(store.get(id).resolution.kind, 'confirmed')
+  assert.equal((await capture.lateAnswerQuestion(id, [{ id: 'q1', selected: ['B'] }])).error, 'not-expired') // settled now
+})
+
+test('late answers refuse anything that is not an expired question, bad answers, a gone session and a closed question', async () => {
+  const live = liveServices()
+  const x = await expired({ services: live.services })
+  assert.equal((await x.capture.lateAnswerQuestion('nope', [])).error, 'not-expired')
+  assert.equal((await x.capture.lateAnswerQuestion(x.id, [{ id: 'q1', selected: ['Z'] }])).error, 'bad-answer')
+  assert.equal((await x.capture.lateAnswerQuestion(x.id, [])).error, 'bad-answer')
+  const none = await expired({})
+  assert.equal((await none.capture.lateAnswerQuestion(none.id, [{ id: 'q1', selected: ['B'] }])).error, 'no-session')
+  const closed = liveServices(() => false)
+  const y = await expired({ services: closed.services })
+  assert.equal((await y.capture.lateAnswerQuestion(y.id, [{ id: 'q1', selected: ['B'] }])).error, 'not-pending')
+  assert.equal(y.store.get(y.id).resolution.kind, 'expired') // still expired: nothing was delivered
+  const queued = liveServices(() => { throw Object.assign(new Error('queued'), { code: 'REPLY_QUEUED' }) })
+  const z = await expired({ services: queued.services })
+  assert.equal((await z.capture.lateAnswerQuestion(z.id, [{ id: 'q1', selected: ['B'] }])).error, 'reply-queued')
 })

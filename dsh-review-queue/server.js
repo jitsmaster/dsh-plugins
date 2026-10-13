@@ -39,6 +39,7 @@ const outcome = (res, result) => {
 export function createRouter({ queue, dev }) {
   const actions = {
     '/v1/answer': (b) => queue.answer(String(b.id), b.answers),
+    '/v1/late-answer': (b) => queue.lateAnswer(String(b.id), b.answers),
     '/v1/approve': (b) => queue.approve(String(b.id)),
     '/v1/deny': (b) => queue.deny(String(b.id)),
     '/v1/reviewed': (b) => queue.markReviewed(String(b.id)),

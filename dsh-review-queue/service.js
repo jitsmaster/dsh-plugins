@@ -35,6 +35,7 @@ export function createReviewQueue({ store, capture, controllerOf, now = Date.now
     },
     onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
     answer: (id, answers) => capture.answerQuestion(id, answers),
+    lateAnswer: (id, answers) => capture.lateAnswerQuestion(id, answers),
     approve: (id) => capture.decidePermission(id, 'approve'),
     deny: (id) => capture.decidePermission(id, 'deny'),
     markReviewed(id) {

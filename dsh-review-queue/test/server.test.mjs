@@ -13,6 +13,7 @@ before(async () => {
   const capture = {
     answerQuestion: (id, answers) => { calls.push(['answer', id, answers]); return answers.length ? { ok: true } : { ok: false, error: 'bad-answer' } },
     decidePermission: (id, d) => { calls.push([d, id]); return { ok: true } },
+    lateAnswerQuestion: async (id, answers) => { calls.push(['late', id, answers]); return answers.length ? { ok: true, sent: true } : { ok: false, error: 'bad-answer' } },
   }
   queue = createReviewQueue({ store, capture, controllerOf: () => ({ prompt: async () => ({}) }) })
   const serve = createRouter({ queue, dev: undefined })
@@ -107,4 +108,10 @@ test('with dev enabled, the dev route runs the real handlers', async () => {
   assert.equal(res.status, 200)
   assert.deepEqual(seen, [{ kind: 'question' }])
   s.closeAllConnections?.(); s.close()
+})
+
+test('POST /v1/late-answer reaches the queue; bad input is 400, a vanished question 409', async () => {
+  assert.equal((await post('/v1/late-answer', { id: 'x', answers: [{ id: 'q', selected: ['B'] }] })).status, 200)
+  assert.deepEqual(calls.at(-1), ['late', 'x', [{ id: 'q', selected: ['B'] }]])
+  assert.equal((await post('/v1/late-answer', { id: 'x', answers: [] })).status, 400)
 })

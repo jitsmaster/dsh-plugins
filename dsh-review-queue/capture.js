@@ -37,6 +37,31 @@ function boundedMap(limit) {
   }
 }
 
+/** One validated answer per question (options must exist, one choice unless multiSelect, something chosen or typed); undefined when the batch is not acceptable. */
+function cleanAnswers(questions, answers) {
+  if (!Array.isArray(answers) || answers.length !== questions.length) return undefined
+  const ids = new Set()
+  for (const a of answers) {
+    const q = questions.find((x) => x.id === a?.id)
+    if (!q || ids.has(a.id) || !Array.isArray(a.selected)) return undefined
+    ids.add(a.id)
+    const labels = (q.options ?? []).map((o) => o.label)
+    if (a.selected.some((v) => !labels.includes(v))) return undefined
+    if (!a.selected.length && !(typeof a.custom === 'string' && a.custom.trim())) return undefined
+    if (a.selected.length > 1 && !q.multiSelect) return undefined
+  }
+  return answers.map((a) => ({ id: a.id, selected: a.selected, ...(typeof a.custom === 'string' && a.custom.trim() ? { custom: a.custom.trim() } : {}) }))
+}
+
+/** True when every answer is exactly the recommended option the assistant already carried on with. */
+function isDefaultAnswer(questions, clean) {
+  return questions.every((q) => {
+    const rec = recommendedOf(q)
+    const a = clean.find((x) => x.id === q.id)
+    return rec !== undefined && a && !a.custom && a.selected.length === 1 && a.selected[0] === rec
+  })
+}
+
 export function installCapture(ctx, { store, summarizer, log = () => {} }) {
   const children = new Set()
   const pending = new Map() // item id -> { type, ... }
@@ -186,19 +211,35 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
     answerQuestion(itemId, answers) {
       const entry = pending.get(itemId)
       if (!entry || entry.type !== 'question') return { ok: false, error: 'not-pending' }
-      if (!Array.isArray(answers) || answers.length !== entry.questions.length) return { ok: false, error: 'bad-answer' }
-      const ids = new Set()
-      for (const a of answers) {
-        const q = entry.questions.find((x) => x.id === a?.id)
-        if (!q || ids.has(a.id) || !Array.isArray(a.selected)) return { ok: false, error: 'bad-answer' }
-        ids.add(a.id)
-        const labels = (q.options ?? []).map((o) => o.label)
-        if (a.selected.some((s) => !labels.includes(s))) return { ok: false, error: 'bad-answer' }
-        if (!a.selected.length && !(typeof a.custom === 'string' && a.custom.trim())) return { ok: false, error: 'bad-answer' }
-        if (a.selected.length > 1 && !q.multiSelect) return { ok: false, error: 'bad-answer' }
-      }
-      const clean = answers.map((a) => ({ id: a.id, selected: a.selected, ...(typeof a.custom === 'string' && a.custom.trim() ? { custom: a.custom.trim() } : {}) }))
+      const clean = cleanAnswers(entry.questions, answers)
+      if (!clean) return { ok: false, error: 'bad-answer' }
       return entry.answer(clean) ? { ok: true } : { ok: false, error: 'not-pending' }
+    },
+    /**
+     * Answer a question that already expired. The assistant carried on with the recommended option; if the late answer is
+     * the same, nothing is sent (the item is just confirmed), otherwise it is steered into the session as a late reply.
+     */
+    async lateAnswerQuestion(itemId, answers) {
+      const item = store.get(itemId)
+      if (!item || item.type !== 'question' || item.status !== 'resolved' || item.resolution?.kind !== 'expired') return { ok: false, error: 'not-expired' }
+      const questions = item.payload?.questions ?? []
+      const clean = cleanAnswers(questions, answers)
+      if (!clean) return { ok: false, error: 'bad-answer' }
+      if (isDefaultAnswer(questions, clean)) {
+        store.update(itemId, { resolution: { ...item.resolution, kind: 'confirmed', by: 'card', answers: clean } })
+        return { ok: true, sent: false }
+      }
+      const agent = guard(() => ctx.get?.('agents')?.get(item.sessionId))
+      const service = guard(() => ctx.get?.('userQuestions'))
+      if (!agent || typeof service?.answer !== 'function') return { ok: false, error: 'no-session' }
+      let accepted
+      try { accepted = await service.answer(agent, item.payload.callId, { answers: clean }) } catch (error) {
+        const code = error?.code
+        return { ok: false, error: code === 'REPLY_QUEUED' ? 'reply-queued' : code === 'BAD_ANSWER' ? 'bad-answer' : String(error?.message ?? error) }
+      }
+      if (!accepted) return { ok: false, error: 'not-pending' }
+      store.update(itemId, { resolution: { ...item.resolution, kind: 'late-answered', by: 'card', answers: clean } })
+      return { ok: true, sent: true }
     },
     decidePermission(itemId, decision) {
       const entry = pending.get(itemId)
