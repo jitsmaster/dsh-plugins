@@ -14,11 +14,11 @@ import { join } from 'node:path'
  * with the WAV duration + playbackMarginMs (playbackFallbackMs when the worker sent no duration).
  * When the worker keeps dying (more than maxRespawns exits within 60 s) every line gets its own process instead
  * (one line, then EOF). The child is never detached: a detached PowerShell with piped stdio exits silently on Windows.
- * speak() never rejects; it resolves { status:'done'|'failed'|'timeout'|'cancelled', ms, startMs? }. A worker that exits
- * unexpectedly after a line's start event resolves that line 'done' (cut short) and does not count as a worker death.
+ * speak() never rejects; it resolves { status:'done'|'cut'|'failed'|'timeout'|'cancelled', ms, startMs? }. 'cut' = the line was stopped early
+ * (the worker saw the stop flag, or exited unexpectedly after the line's start event) and does not count as a worker death.
  * cancel() (a barge-in): lines queued behind the head resolve 'cancelled' at once. Requests are already written to the
  * worker's stdin, so the worker is told through two files in the TTS state dir (the worker cannot read stdin while it
- * speaks): tts-voice-cancel.json {"before": <next request id>} makes it answer every not-yet-begun line below that id
+ * speaks): tts-voice-cancel-<worker PID>.json {"before": <next request id>} makes it answer every not-yet-begun line below that id
  * 'cancelled' without speaking, and tts-stop.flag cuts the line in flight (Invoke-KokoroTts polls it and keeps any flag
  * created after the call began). The worker itself is never killed.
  */
@@ -26,7 +26,10 @@ import { join } from 'node:path'
 const RESPAWN_WINDOW_MS = 60_000
 const PRIORITY_FLAG = 'tts-priority-pending.flag'
 const STOP_FLAG = 'tts-stop.flag'
-const CANCEL_MARKER = 'tts-voice-cancel.json'
+/** One cancel marker per worker process (named after its PID): hosts share the state dir and their request ids all restart at 1. */
+const cancelMarkerName = (pid) => 'tts-voice-cancel-' + pid + '.json'
+/** Windows PowerShell by absolute path: a bare name is looked up on PATH, where a writable directory could shadow it. */
+const POWERSHELL = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 
 /** The one voice of every voice-flow line (spec §0 D3); flow.js and service.js reuse it. */
 export const VOICE = Object.freeze({ gender: 'female', priority: 'High' })
@@ -51,10 +54,10 @@ export function createSpeakWorker({
   /** Starts one worker process; throws when spawn itself throws. */
   function start(single) {
     const t0 = now()
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
+    const child = spawn(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env,
     })
-    const w = { child, single, pending: new Map(), buf: '', gone: false, killedByUs: false, t0 }
+    const w = { child, single, pending: new Map(), buf: '', gone: false, killedByUs: false, t0, markerWritten: false }
     live.add(w)
     note('worker.spawn', { oneShot: single })
     child.stdin?.on?.('error', () => {}) // EPIPE after the worker died is handled by its 'exit'
@@ -88,7 +91,8 @@ export function createSpeakWorker({
     if (!req) return
     if (msg.event === 'start') return onStart(w, req, msg)
     if (msg.status === undefined) return
-    const result = { status: msg.status === 'done' || msg.status === 'cancelled' ? msg.status : 'failed', ms: Number(msg.ms) || 0 }
+    const known = msg.status === 'done' || msg.status === 'cancelled' || msg.status === 'cut'
+    const result = { status: known ? msg.status : 'failed', ms: Number(msg.ms) || 0 }
     if (req.startAt !== undefined) result.startMs = req.startAt - req.t0
     finish(w, req, result)
   }
@@ -121,14 +125,15 @@ export function createSpeakWorker({
     live.delete(w)
     note('worker.exit', { ...info, oneShot: w.single })
     if (w.killedByUs && w.ownsFlag) removePriorityFlag()
+    if (w.markerWritten) removeFile(join(stateDir, cancelMarkerName(w.child.pid)))
     // An unexpected exit after a line's 'start' event is a cut line (e.g. an external stop killed the process): it
-    // counts as done (spec §0 D2) and is not a crash, so it never counts toward the one-shot death limit.
+    // resolves 'cut' (spec §0 D2: the flow must not treat a half-heard line as heard) and is not a crash, so it never counts toward the one-shot death limit.
     let cut = false
     for (const req of [...w.pending.values()]) {
       const started = !w.killedByUs && req.startAt !== undefined
       cut ||= started
       const ms = now() - req.t0
-      finish(w, req, started ? { status: 'done', ms, startMs: req.startAt - req.t0 } : { status: 'failed', ms })
+      finish(w, req, started ? { status: 'cut', ms, startMs: req.startAt - req.t0 } : { status: 'failed', ms })
     }
     if (w !== worker) return
     worker = undefined
@@ -164,6 +169,14 @@ export function createSpeakWorker({
     kill(w, req.high)
   }
 
+  /** Best-effort removal of a state-dir file (a missing file is fine). */
+  function removeFile(path) {
+    const fail = (error) => {
+      if (error?.code !== 'ENOENT') note('worker.file-remove-failed', { error: String(error?.message ?? error) })
+    }
+    try { Promise.resolve(unlink(path)).catch(fail) } catch (error) { fail(error) }
+  }
+
   /** Best-effort: the flag may not exist (the line never got that far) or be locked; neither may break speaking. */
   function removePriorityFlag() {
     const fail = (error) => {
@@ -187,8 +200,10 @@ export function createSpeakWorker({
   function cancel() {
     let queued = 0
     let outstanding = false
+    const marked = []
     for (const w of [...live]) {
       outstanding ||= w.pending.size > 0
+      if (w.pending.size > 0) marked.push(w)
       for (const req of [...w.pending.values()].slice(1)) {
         if (req.startAt !== undefined) continue
         finish(w, req, { status: 'cancelled', ms: now() - req.t0 })
@@ -197,7 +212,12 @@ export function createSpeakWorker({
     }
     note('worker.cancel', { queued, outstanding })
     if (!outstanding) return
-    put(CANCEL_MARKER, JSON.stringify({ before: nextId }))
+    // Each worker with lines outstanding gets its own marker: "skip every line below this id".
+    for (const w of marked) {
+      if (!Number.isInteger(w.child.pid)) continue
+      w.markerWritten = true
+      put(cancelMarkerName(w.child.pid), JSON.stringify({ before: nextId }))
+    }
     put(STOP_FLAG, new Date(now()).toISOString())
   }
 

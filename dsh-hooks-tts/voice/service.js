@@ -5,6 +5,7 @@ import { createVoiceFlow } from './flow.js'
 import { createExecutor, readBack, resultText, toolPhrase, validateAction } from './actions.js'
 import { classifyAnswer } from './answers.js'
 import { VOICE } from './speaker.js'
+import { cleanTitle } from './sanitize.js'
 
 const CLOSED_LINE = 'That session closed. Cancelled.'
 /** How long a POST to the STT daemon may take before it counts as unavailable (it normally answers within ms). */
@@ -38,6 +39,7 @@ export function createVoiceService({
   ensureStt,
   record = () => {},
   requestTimeoutMs = STT_REQUEST_TIMEOUT_MS,
+  summaryOf,
 }) {
   let secret
   const agents = new Set()
@@ -49,15 +51,15 @@ export function createVoiceService({
   let lastTranscript
   let sttState
   let handles = [] // session handles as the decider last saw them: [{ handle, id }]
-  const approvals = createVoiceApprovals({ enabled })
+  const approvals = createVoiceApprovals({ enabled, summaryOf })
 
   const safe = (fn) => { try { return fn() } catch (e) { trace('voice: ' + String(e?.message ?? e)) } }
   const target = () => ({ selected, lastAlerted, lastActive })
 
-  /** A pending permission request in words, e.g. "permission: run command". */
+  /** A pending permission request in words, e.g. "permission: run command npm test" (the summary is untrusted data for the decider). */
   function pendingOf(id) {
     const p = approvals.peek({ sessionId: id })
-    return p ? 'permission: ' + toolPhrase(p.toolName) : null
+    return p ? 'permission: ' + toolPhrase(p.toolName) + (p.summary ? ' ' + p.summary : '') : null
   }
 
   /** Live sessions with stable handles s1..sN (the LLM only ever sees handles). */
@@ -73,7 +75,7 @@ export function createVoiceService({
     let slash = []
     if (def !== undefined) slash = safe(() => slashOf(def)) ?? []
     return {
-      sessions: list.map((s) => ({ handle: s.handle, title: s.title || 'session ' + s.handle.slice(1), selected: s.id === selected, lastAlerted: s.id === lastAlerted, pending: pendingOf(s.id) })),
+      sessions: list.map((s) => ({ handle: s.handle, title: cleanTitle(s.title) || 'session ' + s.handle.slice(1), selected: s.id === selected, lastAlerted: s.id === lastAlerted, pending: pendingOf(s.id) })),
       slash,
       target: target(),
     }

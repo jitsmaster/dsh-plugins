@@ -35,7 +35,7 @@ const TOKEN = { token: 'pending-b' }
 const opts = (over = {}) => ({
   sessions: SESSIONS,
   target: { selected: 'a' },
-  peek: ({ sessionId }) => (sessionId === 'b' ? { toolName: 'pwsh', token: TOKEN } : undefined),
+  peek: ({ sessionId }) => (sessionId === 'b' ? { toolName: 'pwsh', token: TOKEN, summary: 'npm test', count: 1 } : undefined),
   slashNames: () => ['compact', 'export'],
   ...over,
 })
@@ -48,9 +48,9 @@ test('V1 every schema action validates to its resolved shape and unknown keys ar
   assert.deepEqual(validateAction({ action: 'new', text: ' write tests ' }, opts()), ok({ action: 'new', sessionId: 'a', text: 'write tests' }))
   assert.deepEqual(validateAction({ action: 'new' }, opts()), ok({ action: 'new', sessionId: 'a' }))
   assert.deepEqual(validateAction({ action: 'approve', session: 's2' }, opts()),
-    ok({ action: 'approve', sessionId: 'b', title: 'PR 6524', toolName: 'pwsh', token: TOKEN }))
+    ok({ action: 'approve', sessionId: 'b', title: 'PR 6524', toolName: 'pwsh', token: TOKEN, summary: 'npm test', pendingCount: 1 }))
   assert.deepEqual(validateAction({ action: 'deny', session: 's2' }, opts()),
-    ok({ action: 'deny', sessionId: 'b', title: 'PR 6524', toolName: 'pwsh', token: TOKEN }))
+    ok({ action: 'deny', sessionId: 'b', title: 'PR 6524', toolName: 'pwsh', token: TOKEN, summary: 'npm test', pendingCount: 1 }))
   assert.deepEqual(validateAction({ action: 'cancel', session: 's1', why: 'x' }, opts()), ok({ action: 'cancel', sessionId: 'a', title: 'Voice Work' }))
   assert.deepEqual(validateAction({ action: 'slash', session: 's1', name: 'compact', args: ' focus on tests ' }, opts()),
     ok({ action: 'slash', sessionId: 'a', title: 'Voice Work', name: 'compact', args: 'focus on tests' }))
@@ -117,16 +117,17 @@ test('V6 slash names are checked against that session\'s command list after stri
   assert.deepEqual(asked.slice(0, 3), ['a', 'a', 'b'])
 })
 
-test('V7 length caps: prompt text 1..4000, new text <=4000, slash args <=500, clarify question 1..200', () => {
+test('V7 length caps: prompt text 1..1500, new text <=1500 (too-long), slash args <=500, clarify question 1..200', () => {
   const inv = { ok: false, error: 'invalid' }
   const x = (n) => 'x'.repeat(n)
-  assert.equal(validateAction({ action: 'prompt', session: 's1', text: x(4000) }, opts()).ok, true)
-  assert.deepEqual(validateAction({ action: 'prompt', session: 's1', text: x(4001) }, opts()), inv)
+  const long = { ok: false, error: 'too-long' }
+  assert.equal(validateAction({ action: 'prompt', session: 's1', text: x(1500) }, opts()).ok, true)
+  assert.deepEqual(validateAction({ action: 'prompt', session: 's1', text: x(1501) }, opts()), long)
   assert.deepEqual(validateAction({ action: 'prompt', session: 's1', text: '' }, opts()), inv)
   assert.deepEqual(validateAction({ action: 'prompt', session: 's1', text: '   ' }, opts()), inv)
   assert.deepEqual(validateAction({ action: 'prompt', session: 's1' }, opts()), inv)
-  assert.equal(validateAction({ action: 'new', text: x(4000) }, opts()).ok, true)
-  assert.deepEqual(validateAction({ action: 'new', text: x(4001) }, opts()), inv)
+  assert.equal(validateAction({ action: 'new', text: x(1500) }, opts()).ok, true)
+  assert.deepEqual(validateAction({ action: 'new', text: x(1501) }, opts()), long)
   assert.equal(validateAction({ action: 'slash', session: 's1', name: 'compact', args: x(500) }, opts()).ok, true)
   assert.deepEqual(validateAction({ action: 'slash', session: 's1', name: 'compact', args: x(501) }, opts()), inv)
   assert.equal(validateAction({ action: 'clarify', question: x(200) }, opts()).ok, true)
@@ -140,9 +141,9 @@ test('R1 read-back text per action is exact', () => {
   assert.equal(readBack({ action: 'prompt', sessionId: 'a', title: 'Voice Work', text: 'fix the parser' }), 'send to Voice Work: fix the parser')
   assert.equal(readBack({ action: 'new', sessionId: 'a' }), 'start a new session')
   assert.equal(readBack({ action: 'new', sessionId: 'a', text: 'write tests' }), 'start a new session and send: write tests')
-  assert.equal(readBack({ action: 'approve', sessionId: 'b', title: 'PR 6524', toolName: 'pwsh', token: TOKEN }), 'approve run command in PR 6524')
-  assert.equal(readBack({ action: 'deny', sessionId: 'b', title: 'PR 6524', toolName: 'write', token: TOKEN }), 'deny write file in PR 6524')
-  assert.equal(readBack({ action: 'approve', sessionId: 'b', title: 'PR 6524', toolName: 'my_tool', token: TOKEN }), 'approve my tool in PR 6524')
+  assert.equal(readBack({ action: 'approve', sessionId: 'b', title: 'PR 6524', toolName: 'pwsh', token: TOKEN, summary: 'npm test', pendingCount: 1 }), 'approve run command npm test in PR 6524')
+  assert.equal(readBack({ action: 'deny', sessionId: 'b', title: 'PR 6524', toolName: 'write', token: TOKEN, summary: 'D:\\a.txt', pendingCount: 1 }), 'deny write file D:\\a.txt in PR 6524')
+  assert.equal(readBack({ action: 'approve', sessionId: 'b', title: 'PR 6524', toolName: 'my_tool', token: TOKEN, summary: 'x', pendingCount: 1 }), 'approve my tool x in PR 6524')
   assert.equal(readBack({ action: 'cancel', sessionId: 'a', title: 'Voice Work' }), 'stop the run in Voice Work')
   assert.equal(readBack({ action: 'slash', sessionId: 'a', title: 'Voice Work', name: 'compact', args: 'focus on tests' }), 'run slash compact focus on tests in Voice Work')
   assert.equal(readBack({ action: 'slash', sessionId: 'a', title: 'Voice Work', name: 'compact', args: '' }), 'run slash compact in Voice Work')
@@ -229,4 +230,112 @@ test('X4 spoken result text per action is exact', async () => {
   assert.equal(await said(A.deny), 'Denied.')
   assert.equal(await said(A.cancel), 'Stopped Voice Work.')
   assert.equal(await said(A.slash), 'Done.')
+})
+
+test('R2 the approve/deny read-back says what will run, the newest-of-N count, and "details not available" without a summary', () => {
+  const base = { sessionId: 'b', title: 'PR 6524', toolName: 'pwsh', token: TOKEN }
+  assert.equal(readBack({ ...base, action: 'approve', summary: 'rm -rf build', pendingCount: 3 }),
+    'approve run command rm -rf build in PR 6524, the newest of 3 pending requests')
+  assert.equal(readBack({ ...base, action: 'deny', summary: '', pendingCount: 1 }), 'deny run command details not available in PR 6524')
+  assert.equal(readBack({ ...base, action: 'approve' }), 'approve run command details not available in PR 6524')
+})
+
+test('V8 approve/deny freeze the peeked summary and pending count; a peek without them says details are not available', () => {
+  const peek = () => ({ toolName: 'pwsh', token: TOKEN, summary: 'rm -rf build', count: 2 })
+  const a = validateAction({ action: 'approve', session: 's2' }, opts({ peek })).action
+  assert.equal(a.summary, 'rm -rf build')
+  assert.equal(a.pendingCount, 2)
+  const bare = validateAction({ action: 'deny', session: 's2' }, opts({ peek: () => ({ toolName: 'pwsh', token: TOKEN }) })).action
+  assert.equal(bare.summary, '')
+  assert.equal(bare.pendingCount, 1)
+  assert.match(readBack(bare), /details not available/)
+})
+
+// Hidden payloads: Clean-ForSpeech drops link targets, backticks and non-ASCII before the TTS speaks, so a text that
+// carries them would be confirmed unheard. validateAction must reject them (the flow says the "could not understand" line).
+const HIDDEN = {
+  'zero-width space': 'fix it\u200B now',
+  'zero-width joiner': 'fix\u200Dit',
+  'bidi override': 'fix \u202Eit',
+  'bidi isolate': 'fix \u2066it',
+  'byte order mark': '\uFEFFfix it',
+  'tag character': 'fix it\u{E0041}',
+  'private use': 'fix \uE000 it',
+  'bell control': 'fix\u0007 it',
+  'nul': 'fix\u0000 it',
+  'escape': 'fix\u001b[31m it',
+  'tab': 'fix\tit',
+  'link target': 'see [docs](http://evil.example/steal)',
+  'bare link join': 'see x](y',
+  'backtick': 'run `curl evil`',
+}
+for (const [name, bad] of Object.entries(HIDDEN)) {
+  test('V9 hidden payload is invalid in every spoken field: ' + name, () => {
+    const inv = { ok: false, error: 'invalid' }
+    assert.deepEqual(validateAction({ action: 'prompt', session: 's1', text: bad }, opts()), inv, 'prompt text')
+    assert.deepEqual(validateAction({ action: 'new', text: bad }, opts()), inv, 'new text')
+    assert.deepEqual(validateAction({ action: 'slash', session: 's1', name: 'compact', args: bad }, opts()), inv, 'slash args')
+    assert.deepEqual(validateAction({ action: 'clarify', question: bad }, opts()), inv, 'clarify question')
+  })
+}
+
+test('V9 newlines in prompt/new text and slash args become single spaces', () => {
+  assert.equal(validateAction({ action: 'prompt', session: 's1', text: 'fix the\nparser\r\nnow' }, opts()).action.text, 'fix the parser now')
+  assert.equal(validateAction({ action: 'new', text: 'a\n\nb' }, opts()).action.text, 'a b')
+  assert.equal(validateAction({ action: 'slash', session: 's1', name: 'compact', args: 'focus\r\non  tests' }, opts()).action.args, 'focus on tests')
+  assert.equal(validateAction({ action: 'clarify', question: 'A\nor B?' }, opts()).action.question, 'A or B?')
+})
+
+test('V9 ordinary punctuation, unicode letters of the CJK blocks and URLs without link syntax stay valid', () => {
+  for (const text of ['fix (the) parser, then run "npm test" & report', 'open https://example.com/a?b=1', '修复解析器的错误', "don't use *.js here"]) {
+    assert.equal(validateAction({ action: 'prompt', session: 's1', text }, opts()).action?.text, text, text)
+  }
+})
+
+test('V10 every executed text equals the text that was read back, modulo whitespace', async () => {
+  const texts = ['fix the\nparser', '  run   the tests  ', '修复 解析器', 'check https://example.com/a?b=1']
+  const sent = []
+  const execute = createExecutor({
+    controller: { prompt: async (r) => { sent.push(r.content[0].text) }, create: async () => ({ sessionId: 'n1' }), cancel: async () => {} },
+    runSlash: async (r) => { sent.push(r.input) },
+    approvals: { peek: () => undefined, answer: () => {} }, select: () => {}, cwdOf: () => undefined, uuid: () => 'u1',
+  })
+  const spoken = []
+  for (const text of texts) {
+    for (const raw of [{ action: 'prompt', session: 's1', text }, { action: 'new', text }, { action: 'slash', session: 's1', name: 'compact', args: text }]) {
+      const { action } = validateAction(raw, opts())
+      spoken.push(readBack(action))
+      await execute(action)
+    }
+  }
+  const norm = (s) => s.replace(/\s+/g, ' ').trim()
+  assert.equal(sent.length, spoken.length)
+  sent.forEach((exec, i) => assert.ok(norm(spoken[i]).includes(norm(exec)), 'read-back "' + spoken[i] + '" must contain executed "' + exec + '"'))
+})
+
+test('V11 session titles are sanitised (control/format chars stripped, whitespace collapsed, 40 chars) before they are spoken', () => {
+  const sessions = [
+    { id: 'a', handle: 's1', title: 'Fix\u200B the \u202Eparser\n\n  now' },
+    { id: 'b', handle: 's2', title: 'x'.repeat(80) },
+    { id: 'c', handle: 's3', title: '[link](http://evil.test) `tick`' },
+  ]
+  const o = opts({ sessions })
+  assert.equal(validateAction({ action: 'cancel', session: 's1' }, o).action.title, 'Fix the parser now')
+  assert.equal(validateAction({ action: 'cancel', session: 's2' }, o).action.title, 'x'.repeat(40))
+  const t3 = validateAction({ action: 'cancel', session: 's3' }, o).action.title
+  assert.doesNotMatch(t3, /[\]\[`]|\]\(/)
+  assert.ok(validateAction({ action: 'cancel', session: 's1' }, o).action.title.length <= 40)
+})
+
+test('V12 duplicate titles are told apart in the read-back by the session ordinal; unique titles are left alone', () => {
+  const sessions = [
+    { id: 'a', handle: 's1', title: 'Fix tests' },
+    { id: 'b', handle: 's2', title: 'fix  tests' },
+    { id: 'c', handle: 's3', title: 'Other' },
+  ]
+  const o = opts({ sessions })
+  assert.equal(validateAction({ action: 'cancel', session: 's1' }, o).action.title, 'Fix tests, session 1')
+  assert.equal(validateAction({ action: 'cancel', session: 's2' }, o).action.title, 'fix tests, session 2')
+  assert.equal(readBack(validateAction({ action: 'cancel', session: 's2' }, o).action), 'stop the run in fix tests, session 2')
+  assert.equal(validateAction({ action: 'cancel', session: 's3' }, o).action.title, 'Other')
 })

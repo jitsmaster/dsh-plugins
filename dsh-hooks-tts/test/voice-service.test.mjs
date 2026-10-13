@@ -428,3 +428,34 @@ test('SV11 a /listen that never answers ends the flow with Speech service unavai
   assert.equal(h.svc.busy(), false, 'the flow ended; read-outs are no longer suppressed')
   assert.deepEqual(spoken.map(([s]) => s), ['I heard: open the parser. Is that right?', 'Speech service unavailable. Cancelled.'])
 })
+
+test('SV9 a pending approval is summarised for the decider and frozen (summary + count) into a validated approve action', () => {
+  const h = make({ summaryOf: (req) => (req.callId === 'c1' ? 'rm -rf build' : undefined) })
+  h.svc.agentCreated('a1')
+  h.agents.set('a1', { title: 'Voice\u200B Work' })
+  h.svc.intercept({ agent: { id: 'a1' }, toolName: 'pwsh', callId: 'c1' }, () => new Promise(() => {}))
+  const ctx = h.svc.context()
+  assert.equal(ctx.sessions[0].title, 'Voice Work', 'titles are sanitised before the decider sees them')
+  assert.equal(ctx.sessions[0].pending, 'permission: run command rm -rf build')
+  const v = h.flow.deps.validate({ action: 'approve', session: 's1' })
+  assert.equal(v.ok, true)
+  assert.equal(v.action.summary, 'rm -rf build')
+  assert.equal(v.action.pendingCount, 1)
+  assert.equal(h.flow.deps.readBack(v.action), 'approve run command rm -rf build in Voice Work')
+})
+
+test('SV9 without a summaryOf the read-back says the details are not available', () => {
+  const h = make()
+  h.svc.agentCreated('a1')
+  h.svc.intercept({ agent: { id: 'a1' }, toolName: 'pwsh' }, () => new Promise(() => {}))
+  assert.equal(h.svc.context().sessions[0].pending, 'permission: run command')
+  const v = h.flow.deps.validate({ action: 'approve', session: 's1' })
+  assert.match(h.flow.deps.readBack(v.action), /details not available/)
+})
+
+test('SV10 the flow classifies answers step-aware: the read-back step takes only strict confirmation words', () => {
+  const h = make()
+  assert.equal(h.flow.deps.classify('ok', 'echo'), 'yes')
+  assert.equal(h.flow.deps.classify('ok', 'decision'), 'text')
+  assert.equal(h.flow.deps.classify('confirm', 'decision'), 'yes')
+})

@@ -889,3 +889,111 @@ test('F32 bare no at clarify is echoed as the answer', async () => {
   await h.speakDone()
   assert.equal(h.ctx().step, 'echo')
 })
+
+// --- Item 3: a line cut short (Ctrl+Alt+M) at echo/read-back was not fully heard: no mic, no execution.
+test('F36 a cut echo line says Cancelled. and ends: no mic opens, nothing is decided', async () => {
+  const h = harness()
+  h.capture('open the parser'); await tick()
+  await h.speakDone('cut')
+  assert.equal(h.listens.length, 0, 'the mic must not open after a half-heard echo')
+  assert.equal(h.lastSaid(), 'Cancelled.')
+  assert.equal(h.flow.active(), true, 'still active while the final line is spoken')
+  await h.speakDone()
+  assert.equal(h.state(), 'IDLE')
+  assert.equal(h.listens.length, 0)
+  assert.equal(h.decides.length, 0)
+})
+
+test('F36 a cut read-back line says Cancelled. and ends: no mic, no execution, even after a later yes', async () => {
+  const h = harness()
+  await toDecide(h)
+  await h.decideWith({ ok: true, raw: PROMPT })
+  await h.speakDone() // Deciding
+  const n = h.listens.length
+  await h.speakDone('cut') // read-back, cut
+  assert.equal(h.listens.length, n, 'the mic must not open after a half-heard read-back')
+  assert.equal(h.lastSaid(), 'Cancelled.')
+  await h.speakDone()
+  assert.equal(h.state(), 'IDLE')
+  h.answer('yes', { flow: 'voice', id: 'id1', turn: 1, step: 'decision' }); await tick()
+  assert.equal(h.executes.length, 0)
+})
+
+test('F36 a cut line is not retried (it would be spoken a second time)', async () => {
+  const h = harness()
+  h.capture('open the parser'); await tick()
+  const sent = h.speaks.length
+  await h.speakDone('cut')
+  assert.deepEqual(h.said().slice(sent), ['Cancelled.'])
+})
+
+test('F36 a cut Deciding line, clarify question, result line or end line behaves as before', async () => {
+  const d = harness()
+  await toDecide(d)
+  await d.decideWith({ ok: true, raw: PROMPT })
+  await d.speakDone('cut') // Deciding line cut: the flow goes on to the read-back
+  assert.match(d.lastSaid(), /^I will send to Voice Work: fix the parser/)
+  await d.speakDone(); await d.listenStarted()
+  assert.equal(d.ctx().step, 'decision')
+
+  const c = harness()
+  await toDecide(c)
+  await c.decideWith({ ok: true, raw: { action: 'clarify', question: 'Which one?' } })
+  await c.speakDone(); await c.speakDone('cut') // the question is cut: the clarify listen still opens
+  assert.equal(c.ctx().step, 'clarify')
+
+  const r = harness()
+  await toDecisionListen(r)
+  r.answer('yes'); await tick()
+  r.executes[0].resolve({}); await tick()
+  await r.speakDone('cut') // result line cut
+  assert.equal(r.state(), 'IDLE')
+  assert.equal(r.flow.active(), false)
+
+  const e = harness()
+  e.capture('  '); await tick()
+  await e.speakDone('cut')
+  assert.equal(e.state(), 'IDLE')
+})
+
+// --- Item 5: the read-back step asks for the strict confirmation set.
+test('F37 classify is told the step: echo at the echo step, decision at the read-back, clarify at clarify', async () => {
+  const steps = []
+  const h = harness({ classify: (text, step) => { steps.push(step); return fakeClassify(text) } })
+  await toEchoListen(h)
+  h.answer('yes'); await tick()
+  await h.decideWith({ ok: true, raw: PROMPT })
+  await h.speakDone(); await h.speakDone(); await h.listenStarted()
+  h.answer('yes'); await tick()
+  assert.deepEqual(steps, ['echo', 'decision'])
+  const c = harness({ classify: (text, step) => { steps.push('c:' + step); return fakeClassify(text) } })
+  await toClarifyListen(c)
+  c.answer('which'); await tick()
+  assert.equal(steps.at(-1), 'c:clarify')
+})
+
+// --- Item 2: an over-long prompt has its own spoken line.
+test('F38 a too-long action is cancelled with its own spoken line', async () => {
+  const h = harness({ validate: () => ({ ok: false, error: 'too-long' }) })
+  await toDecide(h)
+  await h.decideWith({ ok: true, raw: PROMPT })
+  await h.speakDone() // Deciding
+  await assertEnds(h, 'That is too long to confirm by voice. Cancelled.')
+  assert.equal(h.executes.length, 0)
+})
+
+// --- Item 7: logs carry no approval token / entry object.
+test('F39 execute.start and validate log only the action type, session id and bounded summary', async () => {
+  const token = { secret: 'entry-object', settle() {} }
+  const APPROVE = { action: 'approve', sessionId: 'b', title: 'PR 6524', toolName: 'pwsh', token, summary: 'rm -rf build', pendingCount: 1 }
+  const h = harness({ validate: () => ({ ok: true, action: { ...APPROVE } }) })
+  await toDecisionListen(h, { action: 'approve' })
+  h.answer('yes'); await tick()
+  const start = h.logs.find((l) => l.stage === 'execute.start')
+  assert.deepEqual(start.data.action, { action: 'approve', sessionId: 'b', summary: 'rm -rf build' })
+  const validated = h.logs.find((l) => l.stage === 'validate')
+  assert.deepEqual(validated.data.action, { action: 'approve', sessionId: 'b', summary: 'rm -rf build' })
+  const all = JSON.stringify(h.logs.map((l) => l.data), (k, v) => (typeof v === 'function' ? 'fn' : v))
+  assert.doesNotMatch(all, /entry-object|"token"|"toolName"/)
+  assert.equal(h.executes[0].action.token, token, 'the executor still gets the real action')
+})

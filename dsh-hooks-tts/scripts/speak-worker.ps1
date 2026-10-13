@@ -2,13 +2,15 @@
 # stdin:  one UTF-8 JSON request per line: {"id":n,"text":"...","gender":"female","priority":"High"}
 # stdout: JSON lines only: {"ready":true} once, then per request {"id":n,"event":"start","durationMs":n} right before
 #         playback (durationMs = WAV length, omitted when unknown; speaker.js times playback with it) and
-#         {"id":n,"status":"done"|"failed","ms":n}. EOF on stdin -> exit 0.
+#         {"id":n,"status":"done"|"cut"|"failed","ms":n}. EOF on stdin -> exit 0.
 # The voice flow is user-initiated, so tts-muted.flag is deliberately NOT checked; Ctrl+Alt+M (tts-stop.flag) still
 # cuts the current line short inside Invoke-KokoroTts. -NoPidFile keeps the worker's PID out of audio.pids, so the hotkey
-# never kills the worker itself (a cut line still reports "done").
+# never kills the worker itself (a cut line reports "cut").
 # Barge-in: while a line is spoken the worker cannot read stdin, so the plugin cancels the lines queued behind it with
-# <state dir>\tts-voice-cancel.json {"before":N}: a line with id < N that has not begun is answered
-# {"id":n,"status":"cancelled","ms":0} without synthesis or playback. The line in flight is cut through tts-stop.flag.
+# <state dir>\tts-voice-cancel-<this worker's PID>.json {"before":N}: a line with id < N that has not begun is answered
+# {"id":n,"status":"cancelled","ms":0} without synthesis or playback. The line in flight is cut through tts-stop.flag;
+# a line the stop flag ended early is answered {"id":n,"status":"cut",...} (the flow must not treat it as fully heard).
+# The marker is per worker: two DSH hosts share the state dir and their request ids both restart at 1.
 . (Join-Path $PSScriptRoot 'tts-client.ps1')
 
 function Write-WorkerLine([string]$Json) {
@@ -23,7 +25,7 @@ Remove-Item -Path (Join-Path $script:TtsStateDir 'tts-priority-pending.flag') -F
 # The cancel marker is only valid for the plugin session that wrote it; request ids restart at 1 with every plugin
 # start, so a marker older than this process (a previous session's, or one written before this worker was spawned)
 # would wrongly skip fresh lines. One written after this process started is kept.
-$script:CancelMarker = Join-Path $script:TtsStateDir 'tts-voice-cancel.json'
+$script:CancelMarker = Join-Path $script:TtsStateDir "tts-voice-cancel-$PID.json"
 try {
     $startedAt = (Get-Process -Id $PID).StartTime
     if ((Test-Path $script:CancelMarker) -and ((Get-Item $script:CancelMarker).LastWriteTime -lt $startedAt)) {
@@ -51,6 +53,7 @@ while ($true) {
     $workerReqId = $null
     $ok = $false
     $cancelled = $false
+    $script:TtsLastCut = $false
     try {
         $req = $line | ConvertFrom-Json
         $workerReqId = $req.id
@@ -70,7 +73,7 @@ while ($true) {
         $ok = $false
     }
     if ($null -eq $workerReqId) { continue }
-    $status = if ($cancelled) { 'cancelled' } elseif ($ok) { 'done' } else { 'failed' }
+    $status = if ($cancelled) { 'cancelled' } elseif ($ok -and $script:TtsLastCut) { 'cut' } elseif ($ok) { 'done' } else { 'failed' }
     Write-WorkerLine ('{"id":' + ($workerReqId | ConvertTo-Json -Compress) + ',"status":"' + $status + '","ms":' + [int]$sw.ElapsedMilliseconds + '}')
 }
 exit 0

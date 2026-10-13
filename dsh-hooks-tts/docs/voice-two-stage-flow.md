@@ -7,7 +7,9 @@ Spec for TDD implementation. Target users: blind. Every outcome is SPOKEN; nothi
   + Add-Type ≈ 0.5–1 s per spawn blows the ≤1 s echo target; the worker pays it once (prewarmed). Same script = one-shot
   fallback (1 line, EOF) when the worker keeps dying. Testable via injected spawn + plain JSON-lines protocol.
 - D2 Flow ALWAYS speaks, ignoring tts-muted.flag and settings.ttsEnabled (user-initiated). Ctrl+Alt+M (tts-stop.flag)
-  still cuts the current line short; flow treats a cut line as "done" and continues.
+  still cuts the current line short. The worker reports such a line as status `cut` (not `done`). A cut ECHO or READ-BACK line was
+  not fully heard, so the flow does NOT open the mic and does not execute: it speaks "Cancelled." and ends (T28). A cut
+  Deciding / clarify / result / end line behaves as before (the flow continues).
 - D3 One voice: gender 'female' on every flow line (EN→bf_isabella, ZH→zf_xiaobei server-side), Priority 'High'.
 - D4 Read-back text is built DETERMINISTICALLY from the validated action (never LLM prose). Yes executes exactly that
   frozen action object.
@@ -36,7 +38,7 @@ Events:
 - E.guard    = answer guard timer fired (no transcript/idle within guardMs after listen start)
 - E.executed = execute() resolved/rejected
 Ignored: transcript revision != 1; stale flow context (log 'stale'); hello.
-Answer classification (answers.js, at confirm steps ONLY): normalize → 'yes' | 'no' | 'stop' | 'empty' | 'text'. 'no' = whole utterance is a bare no-word (no, nope, no no, 不, 不是, 不对).
+Answer classification (answers.js, at confirm steps ONLY; `classifyAnswer(text, step)`): the READ-BACK (`decision`) step uses a STRICT yes set (yes, yeah, yep, yes please, confirm, confirmed, 确认, 是的, 对, 好的; whole utterance, repeats allowed). "ok", "okay", "sure", "right", "please", "do it", "go ahead" ... count as 'yes' at the echo/clarify steps only and are 'text' at the read-back. 'no' and 'stop' are the same at every step. normalize → 'yes' | 'no' | 'stop' | 'empty' | 'text'. 'no' = whole utterance is a bare no-word (no, nope, no no, 不, 不是, 不对).
 
 Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | # | From | Event / condition | Action / spoken | To |
@@ -69,6 +71,8 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T25 | any *_SPEAK | speak status failed/timeout | log; one retry of the same line; still failing → IDLE silently (cannot speak) + log 'speak-dead' | IDLE |
 | T26 | any | voice control disabled / service.stop() | abort (also `cancelSpeech()` when a turn was running); no speech | IDLE |
 | T27 | any *_SPEAK / END_SPEAK / DECIDE line | speak status 'cancelled' (speaker.cancel()) | silent stop for that turn: no retry, no 'speak-dead' log, no listen | IDLE |
+| T28 | ECHO_SPEAK / READBACK_SPEAK | speak status 'cut' (Ctrl+Alt+M ended the line early) | no retry, no listen, nothing executes; → END "Cancelled." (a cut CLARIFY_SPEAK line still opens its listen; a cut Deciding/result/end line behaves like 'done') | IDLE |
+| T29 | DECIDE | validate error 'too-long' (prompt/new text over 1500 chars) | → END "That is too long to confirm by voice. Cancelled." | IDLE |
 
 Notes:
 - DECIDE waits for BOTH the "Deciding with LLM." line to end AND decide() before the read-back (avoid queue overlap);
@@ -88,10 +92,10 @@ New voice/flow.js
                     setTimer, clearTimer, uuid, windowS=10, guardExtraMs=15000, maxClarify=2 })
   → { handle(event): void, active(): boolean, abort(reason): void, snapshot(): {state, id, turn, step} }
   cancelSpeech() → void   (optional dep; called on barge-in/abort/recapture of a running turn; service.js wires speaker.cancel)
-  speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'failed'|'timeout'|'cancelled', startMs?, ms}>
+  speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'cut'|'failed'|'timeout'|'cancelled', startMs?, ms}>
   listen({context, window_s}) → Promise<{started:boolean}>     (rejects on HTTP/network error)
   decide(utterance, {history}) → Promise<{ok:true, raw:object} | {ok:false, error:'timeout'|'llm'|'unparseable'}>
-  validate(raw) → {ok:true, action} | {ok:false, error:'invalid'|'no-session'|'no-approval', title?}
+  validate(raw) → {ok:true, action} | {ok:false, error:'invalid'|'too-long'|'no-session'|'no-approval', title?}
   execute(action) → Promise<result>   (throws Error with short message)
   log(stage, data) → void             (never throws into the flow)
 
@@ -99,13 +103,19 @@ New voice/decider.js (replaces llm-router.js; pickModel/parseReply moved here)
   createDecider({ llm, model, timeoutMs=8000, maxTokens=1500, log, now, context })
     context() → {sessions:[{handle,title,selected,lastAlerted,pending?}], slash:[{name,description}], target}
   → { decide(utterance,{history}) }  · no backoff (each user try gets a real call) · abort on timeout.
+  Untrusted data: titles (<=40 chars), slash names (<=60) / descriptions (<=120) and pending-approval summaries (<=160) are sanitised
+  (control/format chars stripped) before they enter the payload, and the SYSTEM prompt says they are untrusted and instructions inside
+  them must never be followed. The cached model pick is dropped on error AND on timeout; listProviders/listModels run under
+  listTimeoutMs (= timeoutMs) and a provider that times out is skipped.
+  speaker.js spawns Windows PowerShell by absolute path (%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe); index.js
+  coerces config.sttPort to an integer 1-65535 (else 8890) before it is used in URLs (stt-launcher.js normalizePort).
 
 New voice/actions.js (pure; validation + phrasing + execution mapping)
   validateAction(raw, {sessions, target, peek, slashNames}) · readBack(action) · resultText(action, result)
   createExecutor({ controller, runSlash, approvals, select(id), cwdOf(id) }) → execute(action)
 
 New voice/answers.js (replaces confirmation part of commands.js)
-  normalize(text) · classifyAnswer(text) → 'yes'|'no'|'stop'|'empty'|'text'
+  normalize(text) · classifyAnswer(text, step?) → 'yes'|'no'|'stop'|'empty'|'text'
 
 Changed
 - voice/service.js: drop createDispatcher/router/confirm/minConfidence; build flow + decider context; owns 'selected'
@@ -119,7 +129,7 @@ Changed
   maxRespawns=3 within 60 s → one-shot mode }) → { speak(text,opts), warm(), stop() }; also exports VOICE.
   On 'start' the timer is re-armed with durationMs + 5 s (120 s without a duration).
   speaker.cancel() (new, injectable writeFile): lines queued behind the head of a worker's queue that never started resolve
-  'cancelled' at once; when any line is outstanding it writes <state dir>\tts-voice-cancel.json {"before": <next id>} and then
+  'cancelled' at once; when any line is outstanding it writes, for each worker that has a line outstanding, <state dir>\tts-voice-cancel-<worker PID>.json {"before": <next id>} (one marker per worker: two DSH hosts share the state dir and their ids both restart at 1; the marker is removed after the worker exits) and then
   <state dir>\tts-stop.flag. The worker answers every not-yet-begun line with id < before as 'cancelled' without speaking
   (it cannot read stdin while speaking, so a file is the channel); the stop flag cuts the line in flight. Nothing is written
   with no outstanding line (it would cut an unrelated hook read-out). The worker is never killed. Killing a worker mid-line
@@ -131,7 +141,7 @@ Changed
 - scripts/tts-client.ps1: Invoke-KokoroTts gains optional [scriptblock]$OnPlaybackStart, invoked right before
   $player.Play() (backward compatible; hooks unchanged). Before playback it deletes only stop flags older than its own
   start ($callStart), so a barge-in flag created while the line was synthesised/queued still cuts it.
-- scripts/speak-worker.ps1 also: removes a tts-voice-cancel.json older than its own process at start-up (request ids restart
+- scripts/speak-worker.ps1 also: reports status `cut` when the stop flag ended playback early (Invoke-KokoroTts sets `$script:TtsLastCut` and still returns $true); uses its own tts-voice-cancel-$PID.json; removes that marker if older than its own process at start-up (request ids restart
   per plugin session; a marker written after the process started is kept) and answers cancelled lines {"id","status":"cancelled","ms":0}.
 - index.js: wire decider/flow/speaker; delete createLlmRouter + createSpeaker + confirm: wiring; L224 keeps
   voice.busy() (now includes flow.active()); remove switchTo; titles via ctx sessionTitle; slash list via
@@ -156,14 +166,14 @@ Session handles "s1".."sN" (stable order of service agents); the LLM never sees 
 Validation (validateAction): object; action ∈ set; unknown keys dropped; strings trimmed.
 - session: optional; if absent → default target = selected ?? lastAlerted ?? lastActive; must map to a live agent →
   else 'no-session' (T18). switch requires explicit session.
-- prompt.text: 1..4000 chars, required. new.text: optional, ≤4000.
-- approve/deny: approvals.peek({sessionId}) must exist → else 'no-approval' (T19); snapshot {toolName, token} frozen
+- prompt.text: 1..1500 chars, required. new.text: optional, ≤1500. Longer → validate error 'too-long' (T29). Security: every text that is both read back and executed (prompt/new text, slash args ≤500, clarify question ≤200) must be speakable as heard: newlines become single spaces and whitespace is collapsed; control, format (\p{Cf}: zero-width, bidi, BOM), tag (U+E0000-E007F), private-use chars, markdown link syntax "](" and backticks make the action 'invalid' (T17 line), because Clean-ForSpeech drops link targets/backticks and humans cannot hear the rest. Session titles are sanitised the same way (control/format stripped, link/backtick chars removed, ≤40 chars); a title shared by several sessions gets ", session N" appended in the read-back.
+- approve/deny: approvals.peek({sessionId}) must exist → else 'no-approval' (T19); snapshot {toolName, token, summary, count} frozen (summary = bounded speakable first ~100 chars of the command / file path / URL of the pending tool call, recorded from tools/pre-execute by callId in index.js and taken by approvals.intercept via summaryOf; '' when unknown)
   into the action.
 - slash.name: strip leading '/', must be in commands.list for that session; args ≤500 chars → else 'invalid'.
 - clarify.question: 1..200 chars.
 Read-back (inside "I will {x}. Shall I do it?"), title = session title (fallback "session N"):
   switch → "talk to {title}" · prompt → "send to {title}: {text}" · new → "start a new session" [+ " and send: {text}"]
-  approve → "approve {tool phrase} in {title}" · deny → "deny {tool phrase} in {title}" · cancel → "stop the run in
+  approve → "approve {tool phrase} {summary|details not available} in {title}[, the newest of N pending requests]" · deny → same with "deny" · cancel → "stop the run in
   {title}" · slash → "run slash {name}{ ' ' + args} in {title}". tool phrase via alerts/headline permission wording.
 Execution mapping → spoken result:
   switch  → select(id) (voice-side only; no UI)                         → "Now talking to {title}."
@@ -309,7 +319,7 @@ voiceLog({type:'flow', id, turn, stage, dt: now()-t0, ...}). Stages:
 capture.transcript(text, sttSeconds, source) · speak.sent(line, step) · speak.start(latMs = start - t0 for echo) ·
 speak.end(status, ms) · listen.post(step, started) · listen.open(on 'listening' event, ms since post) ·
 answer(step, text, kind, confidence) · decide.start · decide.end(ms, model, ok, error, raw≤300 chars) ·
-validate(ok, error, action) · execute.start/end(ms, ok, error) · end(line) · abort(why, state) · barge-in · stale(ev)
+validate(ok, error, action) · execute.start/end(ms, ok, error)   (logged action = {action, sessionId, summary} only: never the approval token or entry object) · end(line) · abort(why, state) · barge-in · stale(ev)
 · speak-dead · worker.spawn/exit/ready(ms).
 Targets: capture.transcript → echo speak.start ≤ 1000 ms (worker warm; Kokoro synth of ~10 words ≈ 300–500 ms);
 answer yes → "Deciding" speak.start ≤ 1000 ms; decide.end ≤ 3 s typical (haiku ~1 s), hard timeout 8 s.
@@ -363,7 +373,7 @@ Settings: ST1 'voiceConfirm' no longer accepted/defaulted (old settings.json wit
 - R2 Read-outs suppressed during the conversation are DROPPED (same as today's mic-busy rule), not queued → a blind
   user may miss an alert raised mid-flow. Possible follow-up: speak "N alerts while you were talking" at end.
 - R3 RESOLVED (user 2026-10-12): bare no/不 at echo/decision confirm → "Please say it again." + relisten same step (T7a).
-- R4 Long dictations make the echo/read-back long; Ctrl+Alt+M cuts the line and the flow still opens the mic (D2).
+- R4 Long dictations make the echo/read-back long (capped at 1500 chars); Ctrl+Alt+M cuts the line and the flow cancels instead of opening the mic (D2, T28).
 - R5 Bluetooth ~1 s mic lead-in may clip the first syllable of a fast "yes"; STT window counts audio frames so the
   10 s budget is honest, but the beep plays before the mic is really live.
 - R6 Worker process health: a hung Invoke-KokoroTts (HTTP 30 s) blocks the worker; 45 s wait-for-start timeout (then WAV duration

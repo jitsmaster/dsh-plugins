@@ -54,3 +54,27 @@ test('A6 repeated yes/no words count with or without a space; yes please and ple
   assert.equal(classifyAnswer('please send it to B'), 'text')
   assert.equal(classifyAnswer('是不是'), 'text')
 })
+
+test('A7 at the decision (read-back) step only strict confirmation words count as yes', () => {
+  for (const t of ['yes', 'Yes.', 'yeah', 'yep', 'yes please', 'Yes, please.', 'confirm', 'confirmed', '确认', '是的', '对', '好的', 'yes yes', '对对']) {
+    assert.equal(classifyAnswer(t, 'decision'), 'yes', t)
+  }
+  for (const t of ['ok', 'okay', 'sure', 'right', 'correct', 'please', 'do it', 'go ahead', 'ok please', 'yup', '好', '是', '确定', '没错', 'thats right']) {
+    assert.equal(classifyAnswer(t, 'decision'), 'text', t)
+  }
+})
+
+test('A7 the echo and clarify steps (and no step) keep the loose yes set', () => {
+  for (const step of ['echo', 'clarify', undefined]) {
+    for (const t of ['ok', 'okay', 'sure', 'right', 'please', 'do it', 'go ahead', 'yes']) assert.equal(classifyAnswer(t, step), 'yes', t + ' @ ' + step)
+  }
+})
+
+test('A7 no, stop and empty are classified the same at the decision step', () => {
+  assert.equal(classifyAnswer('no', 'decision'), 'no')
+  assert.equal(classifyAnswer('不对', 'decision'), 'no')
+  assert.equal(classifyAnswer('stop', 'decision'), 'stop')
+  assert.equal(classifyAnswer('取消', 'decision'), 'stop')
+  assert.equal(classifyAnswer(' . ', 'decision'), 'empty')
+  assert.equal(classifyAnswer('yes send it to B', 'decision'), 'text')
+})

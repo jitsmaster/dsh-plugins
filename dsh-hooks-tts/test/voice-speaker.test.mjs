@@ -29,8 +29,10 @@ const VOICE = { priority: 'High', gender: 'female' }
 const tick = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise(setImmediate) }
 const line = (id, text, gender = 'female', priority = 'High') => JSON.stringify({ id, text, gender, priority }) + '\n'
 
+let pids = 4000
 function fakeChild() {
   const child = new EventEmitter()
+  child.pid = ++pids
   child.input = ''
   child.ended = false
   child.killed = false
@@ -80,7 +82,8 @@ test('S1 one persistent worker serves many lines; each request is one JSON line 
   h.speaker.warm()
   assert.equal(h.spawns.length, 1)
   const { cmd, args, opts, child } = h.spawns[0]
-  assert.equal(cmd, 'powershell.exe')
+  // The absolute Windows PowerShell path (no PATH lookup of a bare name that a writable directory could shadow).
+  assert.equal(cmd, join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'))
   assert.deepEqual(args, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join('R', 'scripts', 'speak-worker.ps1')])
   assert.equal(opts.windowsHide, true)
   assert.notEqual(opts.detached, true)
@@ -254,7 +257,7 @@ test('S6 stop() kills the worker, fails its pending line and does not respawn', 
   assert.equal(h.spawns.length, 1, 'no respawn after stop()')
 })
 
-test('S7 a worker that exits after the line started playing (hotkey cut) resolves done and is not counted as a death', async () => {
+test('S7 a worker that exits after the line started playing (hotkey cut) resolves cut and is not counted as a death', async () => {
   const h = harness()
   for (let i = 0; i < 5; i++) {
     const p = h.speaker.speak('cut ' + i, VOICE)
@@ -264,7 +267,7 @@ test('S7 a worker that exits after the line started playing (hotkey cut) resolve
     await c.send({ id: i + 1, event: 'start' })
     h.t += 400
     await c.die(1)
-    assert.deepEqual(await peek(p), { status: 'done', startMs: 100, ms: 500 }, 'a cut line counts as done (D2)')
+    assert.deepEqual(await peek(p), { status: 'cut', startMs: 100, ms: 500 }, 'a line cut short is told apart from one played in full (D2)')
   }
   assert.equal(h.logs.some((l) => l.stage === 'worker.one-shot'), false, 'cut lines never force one-shot mode')
   h.speaker.speak('next', VOICE)
@@ -396,7 +399,9 @@ test('S6 stop() without a worker is a no-op', () => {
 //     begun with an id below that as 'cancelled' without speaking - and then
 // (3) writes <state dir>\tts-stop.flag, which Invoke-KokoroTts polls to cut the line in flight.
 // It writes nothing when no line is outstanding (the flag would cut an unrelated hook read-out) and never kills the worker.
-const CANCEL = join('SD', 'tts-voice-cancel.json')
+// One marker per worker process (named after the worker's PID): two DSH hosts share the state dir and their request ids
+// both restart at 1, so a shared marker would cancel the other host's lines.
+const CANCEL = (child) => join('SD', 'tts-voice-cancel-' + child.pid + '.json')
 const STOP = join('SD', 'tts-stop.flag')
 
 test('S10 cancel() resolves queued lines cancelled at once, leaves the line in flight, then writes the cancel marker and the stop flag', async () => {
@@ -411,7 +416,7 @@ test('S10 cancel() resolves queued lines cancelled at once, leaves the line in f
   assert.deepEqual(await peek(p2), { status: 'cancelled', ms: 70 })
   assert.deepEqual(await peek(p3), { status: 'cancelled', ms: 70 })
   assert.equal(await peek(p1), 'pending', 'the head line is already in the worker; the flag cuts it, its own status resolves it')
-  assert.deepEqual(h.writes.map(([p]) => p), [CANCEL, STOP], 'marker first, so a following queued line is skipped, then the cut')
+  assert.deepEqual(h.writes.map(([p]) => p), [CANCEL(c), STOP], 'marker first, so a following queued line is skipped, then the cut')
   assert.deepEqual(JSON.parse(h.writes[0][1]), { before: 4 })
   assert.equal(c.killed, false, 'the worker survives a cancel')
   await c.send({ id: 1, status: 'done', ms: 30 })
@@ -434,7 +439,7 @@ test('S10 cancel() leaves a started line alone but still cancels the lines queue
   assert.equal((await peek(p2)).status, 'cancelled')
   assert.equal(await peek(p1), 'pending')
   assert.deepEqual(h.timers.map((t) => t.ms), [9000], 'the started line keeps its playback timer')
-  assert.deepEqual(h.writes.map(([p]) => p), [CANCEL, STOP])
+  assert.deepEqual(h.writes.map(([p]) => p), [CANCEL(h.child()), STOP])
 })
 
 test('S10 cancel() with nothing outstanding writes nothing (an idle speaker must not cut another process)', async () => {
@@ -456,7 +461,7 @@ test('S10 the state dir of the cancel files follows DSH_TTS_STATE_DIR, else TEMP
   h.speaker.speak('x', VOICE)
   await tick()
   h.speaker.cancel()
-  assert.deepEqual(h.writes.map(([p]) => p), [join('T', 'dsh-tts', 'tts-voice-cancel.json'), join('T', 'dsh-tts', 'tts-stop.flag')])
+  assert.deepEqual(h.writes.map(([p]) => p), [join('T', 'dsh-tts', 'tts-voice-cancel-' + h.child().pid + '.json'), join('T', 'dsh-tts', 'tts-stop.flag')])
 })
 
 test('S10 a failing or rejecting writeFile never breaks cancel()', async () => {
@@ -479,4 +484,41 @@ test('S10 a cancelled status from the worker (it skipped the line) resolves the 
   await tick()
   await h.child().send({ id: 1, status: 'cancelled', ms: 2 })
   assert.deepEqual(await peek(p), { status: 'cancelled', ms: 2 })
+})
+
+test('S11 a worker status cut (the stop flag ended the line early) resolves the line cut', async () => {
+  const h = harness()
+  const p = h.speaker.speak('x', VOICE)
+  await tick()
+  await h.child().send({ id: 1, event: 'start', durationMs: 4000 })
+  await h.child().send({ id: 1, status: 'cut', ms: 900 })
+  assert.deepEqual(await peek(p), { status: 'cut', startMs: 0, ms: 900 })
+})
+
+test('S12 every worker gets its own cancel marker named after its PID; each is removed once its worker exited', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' }, maxRespawns: 0 })
+  h.speaker.speak('a', VOICE)
+  await tick()
+  const first = h.child()
+  h.speaker.cancel()
+  assert.deepEqual(h.writes.map(([p]) => p), [CANCEL(first), STOP])
+  await first.die(1) // unexpected exit: a respawn follows (and one-shot mode with maxRespawns 0)
+  await tick()
+  assert.ok(h.unlinks.includes(CANCEL(first)), 'the dead worker\'s marker is removed')
+  h.speaker.speak('b', VOICE)
+  await tick()
+  const second = h.child()
+  assert.notEqual(second.pid, first.pid)
+  h.writes.length = 0
+  h.speaker.cancel()
+  assert.deepEqual(h.writes.map(([p]) => p), [CANCEL(second), STOP], 'the next worker never reuses the previous marker')
+})
+
+test('S12 no marker is written for a worker that has nothing outstanding, and none is removed for it', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' } })
+  h.speaker.warm()
+  const c = h.child()
+  await c.die(1)
+  assert.deepEqual(h.unlinks, [])
+  assert.deepEqual(h.writes, [])
 })

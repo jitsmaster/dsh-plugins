@@ -28,7 +28,8 @@ import { buildHookBody, createAlerts } from './voice/alerts.js'
 import { createVoiceService } from './voice/service.js'
 import { createDecider } from './voice/decider.js'
 import { createSpeakWorker } from './voice/speaker.js'
-import { createSttLauncher } from './voice/stt-launcher.js'
+import { createSttLauncher, normalizePort } from './voice/stt-launcher.js'
+import { toolSummary } from './voice/headline.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
 
@@ -272,7 +273,8 @@ export function apply(ctx, baseConfig = {}) {
   const voiceAgents = new Map()
   const controllerOf = () => ctx.get('sessionController') ?? ctx.sessionController
   // Start the STT daemon together with DSH when voice control is on (config.sttAutoStart: false opts out).
-  const sttPort = config.sttPort ?? 8890
+  // The port is interpolated into URLs, so anything but an integer 1-65535 falls back to the default.
+  const sttPort = normalizePort(config.sttPort)
   const sttLauncher = config.sttAutoStart === false ? undefined : createSttLauncher({
     dir: config.sttDir ?? 'D:\\dev\\ai\\STT',
     configFile: config.sttConfig ?? 'config.example.toml',
@@ -288,6 +290,16 @@ export function apply(ctx, baseConfig = {}) {
     readLock: () => { try { return readFileSync(join(stateDir, 'stt-starting'), 'utf8') } catch { return undefined } },
     writeLock: (v) => { try { writeFileSync(join(stateDir, 'stt-starting'), String(v)) } catch { /* best effort */ } },
   })
+  // What each pending tool call will do (callId -> spoken summary of its command/path/URL), recorded before the approval
+  // request so a spoken approve/deny can say what is being approved. Bounded: the oldest entries are dropped.
+  const toolSummaries = new Map()
+  const noteToolInput = (exec) => {
+    try {
+      if (exec.callId === undefined) return
+      toolSummaries.set(exec.callId, toolSummary(exec.name, exec.arguments))
+      if (toolSummaries.size > 200) toolSummaries.delete(toolSummaries.keys().next().value)
+    } catch { /* best effort: the read-back then says the details are not available */ }
+  }
   const voiceLog = (entry) => {
     try {
       const file = join(stateDir, 'voice.log')
@@ -312,6 +324,7 @@ export function apply(ctx, baseConfig = {}) {
   })
   const voice = createVoiceService({
     speaker,
+    summaryOf: (req) => (req.callId === undefined ? undefined : toolSummaries.get(req.callId)),
     decide: (utterance, opts) => decider.decide(utterance, opts),
     cwdOf: (id) => voiceAgents.get(id)?.session?.header?.cwd,
     // Slash commands the target session offers (name + description only), for the decider and for validation.
@@ -375,6 +388,7 @@ export function apply(ctx, baseConfig = {}) {
   })
 
   ctx.on('tools/pre-execute', async (exec, next) => {
+    noteToolInput(exec)
     if (skip(exec.agent) || !hooks.PreToolUse) return next()
     const folded = await run('PreToolUse', toolQueries(exec.name), {
       tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId,

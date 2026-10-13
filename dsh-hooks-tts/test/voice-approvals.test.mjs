@@ -82,3 +82,28 @@ test('peek returns the latest pending request of a session with an identity toke
   assert.notEqual(p1.token, p2.token)
   assert.equal(a.peek({ sessionId: 'none' }), undefined)
 })
+
+test('peek carries the bounded summary of the request (from summaryOf) and how many requests the session has pending', () => {
+  const seen = []
+  const a = createVoiceApprovals({ enabled: () => true, summaryOf: (req) => { seen.push(req.callId); return 'rm -rf build' } })
+  const forever = () => new Promise(() => {})
+  a.intercept({ agent: { id: 's' }, toolName: 'pwsh', callId: 'c1' }, forever)
+  assert.deepEqual(seen, ['c1'])
+  assert.equal(a.peek({ sessionId: 's' }).summary, 'rm -rf build')
+  assert.equal(a.peek({ sessionId: 's' }).count, 1)
+  a.intercept({ agent: { id: 's' }, toolName: 'pwsh', callId: 'c2' }, forever)
+  a.intercept({ agent: { id: 'other' }, toolName: 'pwsh', callId: 'c3' }, forever)
+  assert.equal(a.peek({ sessionId: 's' }).count, 2, 'only requests of that session are counted')
+  assert.equal(a.peek({ sessionId: 'other' }).count, 1)
+})
+
+test('peek has no summary when the tool input is unknown, and a throwing summaryOf never breaks the request', async () => {
+  const none = createVoiceApprovals({ enabled: () => true })
+  none.intercept({ agent: { id: 's' }, toolName: 'pwsh' }, () => new Promise(() => {}))
+  assert.equal(none.peek({ sessionId: 's' }).summary, undefined)
+  const bad = createVoiceApprovals({ enabled: () => true, summaryOf: () => { throw new Error('boom') } })
+  const p = bad.intercept({ agent: { id: 's' }, toolName: 'pwsh' }, () => new Promise(() => {}))
+  assert.equal(bad.peek({ sessionId: 's' }).summary, undefined)
+  bad.answer({ sessionId: 's', decision: 'approve' })
+  assert.equal(await p, 'allowed-once')
+})

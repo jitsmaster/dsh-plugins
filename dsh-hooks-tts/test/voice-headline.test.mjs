@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { capWords, lastParagraph, permissionHeadline, questionHeadline, stopHeadline } from '../voice/headline.js'
+import { capWords, lastParagraph, permissionHeadline, questionHeadline, stopHeadline, toolSummary } from '../voice/headline.js'
 
 test('capWords collapses whitespace, caps with an ellipsis and tolerates non-text', () => {
   assert.equal(capWords('  a   b  c ', 5), 'a b c')
@@ -52,4 +52,38 @@ test('permission headline uses plain words for known tools and de-snakes unknown
   assert.equal(permissionHeadline({ toolName: 'pwsh' }), 'Approve run command?')
   assert.equal(permissionHeadline({ toolName: 'custom_tool-x' }), 'Approve custom tool x?')
   assert.equal(permissionHeadline({}), 'Approve tool?')
+})
+
+test('toolSummary: the command, file path or URL of the tool input, ready to be spoken', () => {
+  assert.equal(toolSummary('pwsh', { command: 'npm test' }), 'npm test')
+  assert.equal(toolSummary('bash', { command: 'ls -la' }), 'ls -la')
+  assert.equal(toolSummary('write', { file_path: 'D:\\proj\\a.txt', content: 'secret body' }), 'D:\\proj\\a.txt')
+  assert.equal(toolSummary('web_fetch', { url: 'https://example.com/a' }), 'https://example.com/a')
+  assert.equal(toolSummary('web_search', { query: 'node docs' }), 'node docs')
+  assert.equal(toolSummary('pwsh', JSON.stringify({ command: 'whoami' })), 'whoami', 'a JSON string input is parsed')
+})
+
+test('toolSummary is undefined when the input is unknown or has nothing to say', () => {
+  for (const input of [undefined, null, '', {}, 42]) assert.equal(toolSummary('pwsh', input), undefined, JSON.stringify(input))
+})
+
+test('toolSummary keeps the first 100 characters and says "and more" when it cut', () => {
+  const s = toolSummary('pwsh', { command: 'a'.repeat(250) })
+  assert.equal(s, 'a'.repeat(100) + ' and more')
+  assert.equal(toolSummary('pwsh', { command: 'b'.repeat(100) }), 'b'.repeat(100), 'exactly 100 is not cut')
+})
+
+test('toolSummary spells out what the speech cleaner would drop, so nothing is confirmed unheard', () => {
+  const s = toolSummary('pwsh', { command: 'rm -rf ~/x | tee a_b > o; echo `id` [x](http://evil.test)' })
+  for (const word of ['tilde', 'pipe', 'underscore', 'backtick']) assert.match(s, new RegExp(word), word)
+  assert.doesNotMatch(s, /[|~_`^*#]/, 'none of the characters Clean-ForSpeech drops is left')
+  assert.doesNotMatch(s, /\]\(/, 'no markdown link syntax is left')
+})
+
+test('toolSummary turns hidden characters into spoken warnings and collapses whitespace', () => {
+  const s = toolSummary('pwsh', { command: 'echo a\u200Bb\u202Ec\nd\u00e9' })
+  assert.match(s, /hidden character/)
+  assert.match(s, /unusual character/)
+  assert.doesNotMatch(s, /[\u0000-\u001f\u200b-\u200f\u202a-\u202e\u00e9]/)
+  assert.equal(toolSummary('pwsh', { command: '  a \r\n  b\t c ' }), 'a b c')
 })

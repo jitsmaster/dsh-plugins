@@ -32,6 +32,7 @@ const LINES = Object.freeze({
   noIdea: 'I could not work out what to do. Cancelled.',
   noSession: 'No session is known. Cancelled.',
   badAnswer: "I could not understand the LLM's answer. Cancelled.",
+  tooLong: 'That is too long to confirm by voice. Cancelled.',
 })
 
 /** decide() error kind → final line (T15–T17). Unknown kinds count as "LLM not available". */
@@ -43,6 +44,15 @@ const LLM_ERRORS = Object.freeze({
 
 /** Listen step → state-name prefix of its *_SPEAK / *_LISTEN pair. */
 const PREFIX = Object.freeze({ echo: 'ECHO', decision: 'READBACK', clarify: 'CLARIFY' })
+
+/**
+ * What may be logged of an action: its type, session and bounded summary only. The approval token is the live pending-request
+ * entry object, and prompt text / titles are not needed to debug the flow.
+ */
+function loggable(action) {
+  if (!action || typeof action !== 'object') return undefined
+  return { action: action.action, ...(action.sessionId !== undefined ? { sessionId: action.sessionId } : {}), ...(action.summary ? { summary: action.summary } : {}) }
+}
 
 const echoLine = (text) => 'I heard: ' + text + '. Is that right?'
 
@@ -153,7 +163,7 @@ export function createVoiceFlow({
   function answer(raw) {
     clearGuard()
     const text = String(raw ?? '').trim()
-    const kind = classify(text)
+    const kind = classify(text, s.step)
     note('answer', { step: s.step, text, kind })
     if (kind === 'stop') return void detach(end(LINES.cancelled))
     if (kind === 'empty') return void detach(end(LINES.noAnswer))
@@ -189,7 +199,8 @@ export function createVoiceFlow({
       if (Number.isFinite(r?.startMs)) note('speak.start', { step: s.step, latMs: sent + r.startMs - (from ?? sent) })
       note('speak.end', { status, ms: r?.ms })
       // 'cancelled' (barge-in/abort silenced the line) is final: retrying it would speak into the open mic.
-      if (status === 'done' || status === 'cancelled' || turn !== s.turn) return status
+      // 'cut' (the user silenced the line, Ctrl+Alt+M) is final as well: playing it again would defeat the silencing.
+      if (status === 'done' || status === 'cancelled' || status === 'cut' || turn !== s.turn) return status
     }
     return 'failed'
   }
@@ -211,7 +222,9 @@ export function createVoiceFlow({
     const turn = enter(prefix + '_SPEAK'); s.step = step
     const status = await speakOnce(line, turn, from)
     if (turn !== s.turn) return // barge-in / abort while speaking: no listen
-    if (status !== 'done') return lineFailed(status, line)
+    // A cut echo or read-back was not fully heard: no mic and nothing executes. A cut clarify question only asks again.
+    if (status === 'cut' && step !== 'clarify') { note('speak-cut', { line, step }); return end(LINES.cancelled) }
+    if (status !== 'done' && status !== 'cut') return lineFailed(status, line)
     await openListen(prefix + '_LISTEN', step)
   }
 
@@ -278,6 +291,7 @@ export function createVoiceFlow({
 
   function invalidLine(v) {
     if (v.error === 'no-session') return LINES.noSession
+    if (v.error === 'too-long') return LINES.tooLong
     if (v.error === 'no-approval') return v.title + ' has no pending permission request. Cancelled.'
     return LINES.badAnswer
   }
@@ -290,10 +304,10 @@ export function createVoiceFlow({
     const [d, said] = await Promise.all([safeDecide(), speakOnce(LINES.deciding, turn)])
     if (turn !== s.turn) return note('stale', { stage: 'decide' })
     note('decide.end', { ms: now() - t, model: d.model, ok: d.ok, error: d.error, raw: rawForLog(d.raw) })
-    if (said !== 'done') return lineFailed(said, LINES.deciding)
+    if (said !== 'done' && said !== 'cut') return lineFailed(said, LINES.deciding)
     if (!d.ok) return end(LLM_ERRORS[d.error] ?? LLM_ERRORS.llm)
     const v = safeValidate(d.raw)
-    note('validate', { ok: v.ok, error: v.error, action: v.action })
+    note('validate', { ok: v.ok, error: v.error, action: loggable(v.action) })
     if (!v.ok) return end(invalidLine(v))
     if (v.action.action === 'clarify') return clarify(v.action.question)
     s.action = Object.freeze(v.action)
@@ -311,7 +325,7 @@ export function createVoiceFlow({
   async function executeNow() {
     const turn = enter('EXECUTE'), action = s.action, t = now()
     const hold = s.hold = { capture: null, listening: false, wake: null, timer: null }
-    note('execute.start', { action })
+    note('execute.start', { action: loggable(action) })
     let line
     try {
       const result = await execute(action)
@@ -344,7 +358,7 @@ export function createVoiceFlow({
     note('end', { line })
     const status = await speakOnce(line, t)
     if (t !== s.turn) return
-    if (status !== 'done') return lineFailed(status, line)
+    if (status !== 'done' && status !== 'cut') return lineFailed(status, line)
     reset()
   }
 

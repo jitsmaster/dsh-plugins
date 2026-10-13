@@ -1,3 +1,5 @@
+import { cleanTitle, spokenSummary } from './sanitize.js'
+
 const QUESTION_WORDS = 15
 
 const TOOL_SPEECH = {
@@ -39,6 +41,25 @@ export function questionHeadline({ questions }) {
 }
 
 export function permissionHeadline({ toolName }) {
-  const what = TOOL_SPEECH[toolName] ?? String(toolName ?? 'tool').replace(/[_-]+/g, ' ')
+  const what = TOOL_SPEECH[toolName] ?? (cleanTitle(String(toolName ?? '')) || 'tool').replace(/[_-]+/g, ' ')
   return 'Approve ' + what + '?'
+}
+
+/** The input fields that say what a tool call will do, most telling first (command, file path, URL, query ...). */
+const SUMMARY_KEYS = ['command', 'cmd', 'script', 'file_path', 'filePath', 'path', 'url', 'query', 'prompt', 'task', 'description']
+
+/**
+ * What a pending tool call will do, as one bounded sentence fragment for the spoken approve/deny read-back: the first
+ * ~100 characters of its command / file path / URL (see sanitize.js spokenSummary). undefined when the input is unknown.
+ */
+export function toolSummary(toolName, input) {
+  let data = input
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data) } catch { return spokenSummary(data) }
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined
+  for (const key of SUMMARY_KEYS) {
+    if (typeof data[key] === 'string' && data[key].trim()) return spokenSummary(data[key])
+  }
+  return Object.keys(data).length ? spokenSummary(JSON.stringify(data)) : undefined
 }

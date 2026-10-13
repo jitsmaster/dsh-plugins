@@ -52,7 +52,10 @@ function Start-TtsServerIfDown {
     }
 }
 
+# Security: the link regex below is quadratic on hostile input (many '[' without a closing ')'), so the text is capped first.
+# Speech lines are short; 4000 characters is far above any real one.
 function Clean-ForSpeech([string]$text) {
+    if ($text.Length -gt 4000) { $text = $text.Substring(0, 4000) }
     $text = $text -replace '\*\*([^*]+)\*\*', '$1'
     $text = $text -replace '\*([^*]+)\*',     '$1'
     $text = $text -replace '`([^`]+)`',       '$1'
@@ -102,6 +105,9 @@ function Invoke-KokoroTts {
         [switch]$NoPidFile
     )
     $callStart = Get-Date
+    # Set when the stop flag (Ctrl+Alt+M, barge-in) ended playback early; speak-worker.ps1 reports it as status 'cut'.
+    # The function still returns $true for a cut line, so existing callers are unchanged.
+    $script:TtsLastCut = $false
     $dir = $script:TtsStateDir
     $flagPath = Join-Path $dir 'tts-priority-pending.flag'
     $stopFlagPath = Join-Path $dir 'tts-stop.flag'
@@ -170,6 +176,7 @@ function Invoke-KokoroTts {
             while ($sw.Elapsed.TotalSeconds -lt ($duration + 0.2)) {
                 if ($stopFlags | Where-Object { Test-Path $_ }) {
                     $player.Stop()
+                    $script:TtsLastCut = $true
                     foreach ($f in $stopFlags) { Remove-Item -Path $f -Force -ErrorAction SilentlyContinue }
                     break
                 }

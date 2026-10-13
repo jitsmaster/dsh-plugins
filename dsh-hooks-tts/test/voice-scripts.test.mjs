@@ -132,6 +132,7 @@ const PS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Fil
 
 /** wavMs = length of the audio every request gets; onRequest(dir) runs while the request is being "synthesised". */
 async function fakeTts({ wavMs = 50, onRequest } = {}) {
+  let wavLen = wavMs
   const spoken = []
   const dirRef = { dir: '' }
   const server = createServer((req, res) => {
@@ -142,7 +143,7 @@ async function fakeTts({ wavMs = 50, onRequest } = {}) {
       spoken.push(JSON.parse(body))
       onRequest?.(dirRef.dir)
       res.writeHead(200, { 'Content-Type': 'audio/wav' })
-      res.end(silentWav(wavMs))
+      res.end(silentWav(wavLen))
     })
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -154,7 +155,7 @@ async function fakeTts({ wavMs = 50, onRequest } = {}) {
     DSH_TTS_HOTKEY_DIR: dir,
     DSH_TTS_SERVER_SCRIPT: '',
   }
-  return { spoken, dir, env, close: () => server.close() }
+  return { spoken, dir, env, close: () => server.close(), setWavMs: (ms) => { wavLen = ms } }
 }
 
 /** Collects non-empty stdout lines; until(pred) waits (polling) for pred(lines), the stream end, or a timeout. */
@@ -329,7 +330,7 @@ test('SC6 speak-worker.ps1 answers cancelled, without speaking, for lines below 
   const out = collectLines(child.stdout)
   try {
     await out.until((l) => l.length >= 1)
-    writeFileSync(join(tts.dir, 'tts-voice-cancel.json'), JSON.stringify({ before: 3 }))
+    writeFileSync(join(tts.dir, 'tts-voice-cancel-' + child.pid + '.json'), JSON.stringify({ before: 3 }))
     for (const id of [1, 2, 3]) child.stdin.write(JSON.stringify({ id, text: 'line ' + id, gender: 'female', priority: 'High' }) + '\n', 'utf8')
     await out.until((l) => statusCount(l) >= 3)
   } finally {
@@ -344,11 +345,14 @@ test('SC6 speak-worker.ps1 answers cancelled, without speaking, for lines below 
   assert.deepEqual(msgs.filter((m) => m.event === 'start').map((m) => m.id), [3], 'no playback start for a cancelled line')
 })
 
-test('SC6 a tts-voice-cancel.json left by an earlier session (older than the worker) is removed at start-up and skips nothing', opts, async () => {
+test('SC6 a tts-voice-cancel-<pid>.json left by an earlier worker with the same PID (older than this worker) is removed at start-up and skips nothing', opts, async () => {
   const tts = await fakeTts()
-  const marker = join(tts.dir, 'tts-voice-cancel.json')
-  writeFileSync(marker, JSON.stringify({ before: 999 }))
   const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  const marker = join(tts.dir, 'tts-voice-cancel-' + child.pid + '.json')
+  // The worker needs a moment to start, so a marker written right now is NOT older than the process: backdate it.
+  writeFileSync(marker, JSON.stringify({ before: 999 }))
+  const old = new Date(Date.now() - 600_000)
+  utimesSync(marker, old, old)
   child.stderr.resume()
   const out = collectLines(child.stdout)
   try {
@@ -369,4 +373,72 @@ test('SC6 the scripts changed for the barge-in cut stay pure ASCII', () => {
   for (const f of ['speak-worker.ps1', 'tts-client.ps1']) {
     assert.equal(/[^\x00-\x7F]/.test(readFileSync(join(SCRIPTS, f), 'utf8')), false, f)
   }
+})
+
+test('SC6 a cancel marker of another worker (other PID) skips nothing in this worker', opts, async () => {
+  const tts = await fakeTts()
+  const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  try {
+    await out.until((l) => l.length >= 1)
+    writeFileSync(join(tts.dir, 'tts-voice-cancel-' + (child.pid + 1) + '.json'), JSON.stringify({ before: 99 }))
+    writeFileSync(join(tts.dir, 'tts-voice-cancel.json'), JSON.stringify({ before: 99 }))
+    for (const id of [1, 2]) child.stdin.write(JSON.stringify({ id, text: 'line ' + id, gender: 'female', priority: 'High' }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 2)
+  } finally {
+    child.stdin.end()
+    child.kill()
+    tts.close()
+  }
+  assert.deepEqual(out.lines.map((l) => JSON.parse(l)).filter((m) => 'status' in m).map((m) => m.status), ['done', 'done'])
+  assert.deepEqual(tts.spoken.map((s) => s.text), ['line 1', 'line 2'])
+})
+
+// --- Item 3: the worker tells a line cut short by the stop flag (Ctrl+Alt+M) from one played in full.
+test('SC7 speak-worker.ps1 answers cut when the stop flag ended the line early, done when it played to the end', opts, async () => {
+  const tts = await fakeTts({ wavMs: 6000, onRequest: (dir) => { if (tts.spoken.length === 1) writeFileSync(join(dir, 'tts-stop.flag'), 'hotkey') } })
+  const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  try {
+    await out.until((l) => l.length >= 1)
+    child.stdin.write(JSON.stringify({ id: 1, text: 'cut me', gender: 'female', priority: 'High' }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 1)
+    tts.setWavMs(300)
+    child.stdin.write(JSON.stringify({ id: 2, text: 'play me', gender: 'female', priority: 'High' }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 2)
+  } finally {
+    child.stdin.end()
+    child.kill()
+    tts.close()
+  }
+  const statuses = out.lines.map((l) => JSON.parse(l)).filter((m) => 'status' in m).map((m) => [m.id, m.status])
+  assert.deepEqual(statuses, [[1, 'cut'], [2, 'done']])
+})
+
+const r0 = { done: false }
+test('SC7 Invoke-KokoroTts still returns true for a cut line and records the cut in $script:TtsLastCut', opts, async () => {
+  const r = await runKokoro([
+    "$r = Invoke-KokoroTts -Text 'Cut line.' -Gender female -Priority High",
+    "[Console]::Out.WriteLine('RESULT=' + $r + ' CUT=' + $script:TtsLastCut)",
+    "$r = Invoke-KokoroTts -Text 'Full line.' -Gender female -Priority High",
+    "[Console]::Out.WriteLine('RESULT=' + $r + ' CUT=' + $script:TtsLastCut)",
+  ], { wavMs: 1500, onRequest: (dir) => { if (!r0.done) { r0.done = true; writeFileSync(join(dir, 'tts-stop.flag'), 'x') } } })
+  assert.deepEqual(r.out, ['RESULT=True CUT=True', 'RESULT=True CUT=False'])
+})
+
+// --- Item 2: Clean-ForSpeech has a quadratic link regex; its input is capped before cleaning.
+test('SC8 Clean-ForSpeech caps its input at 4000 characters before cleaning (bounded time on hostile text)', opts, async () => {
+  const r = await runKokoro([
+    "$long = '[' * 20000",
+    "$sw = [System.Diagnostics.Stopwatch]::StartNew()",
+    "$c = Clean-ForSpeech $long",
+    "[Console]::Out.WriteLine('LEN=' + $c.Length)",
+    "[Console]::Out.WriteLine('FAST=' + ($sw.Elapsed.TotalSeconds -lt 10))",
+    "[Console]::Out.WriteLine('SHORT=' + (Clean-ForSpeech 'plain words'))",
+  ])
+  assert.ok(Number(r.out.find((l) => l.startsWith('LEN='))?.slice(4)) <= 4000, r.out.join('|'))
+  assert.ok(r.out.includes('FAST=True'), r.out.join('|'))
+  assert.ok(r.out.includes('SHORT=plain words'), r.out.join('|'))
 })
