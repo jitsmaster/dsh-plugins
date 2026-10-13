@@ -4,16 +4,19 @@
  */
 
 const YES = ['yes', 'yeah', 'yep', 'yup', 'sure', 'ok', 'okay', 'correct', 'right', 'thats right', 'that is right',
-  'do it', 'go ahead', '是', '是的', '对', '对的', '好', '好的', '确认', '确定', '没错']
+  'do it', 'go ahead', 'please', 'please do', '是', '是的', '对', '对的', '好', '好的', '确认', '确定', '没错']
 const NO = ['no', 'nope', 'nah', '不', '不是', '不对', '不要', '否']
 const STOP = ['stop', 'cancel', 'abort', 'quit', 'never mind', 'nevermind', '取消', '停', '停止', '算了']
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-/** Matches one or more of the phrases, space-separated, filling the whole string ("yes", "yes yes", "yeah yes"). */
+/**
+ * Matches one or more of the phrases filling the whole string, with or without a space between repeats
+ * ("yes", "yes yes", "yes please", and "对对" / "好好" as STT writes Chinese repeats without spaces).
+ */
 function wholeOf(phrases) {
   const alt = phrases.map(escape).join('|')
-  return new RegExp('^(?:' + alt + ')(?: (?:' + alt + '))*$')
+  return new RegExp('^(?:' + alt + ')(?: ?(?:' + alt + '))*$')
 }
 
 const IS_YES = wholeOf(YES)

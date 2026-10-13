@@ -602,6 +602,32 @@ test('F31 bare no at decision says Please say it again. and relistens the decisi
   assert.equal(h.decides.length, 1, 'no new decide')
 })
 
+test('F33 speak.start logs playback latency: echo from the capture transcript, other lines from when they were sent', async () => {
+  let t = 1000
+  const h = harness({ now: () => t })
+  h.capture('open the parser'); await tick()
+  t = 1900
+  h.speaks.at(-1).resolve({ status: 'done', ms: 1500, startMs: 650 }); await tick()
+  const echoStart = h.logs.filter((l) => l.stage === 'speak.start')
+  assert.equal(echoStart.length, 1)
+  assert.equal(echoStart[0].data.step, 'echo')
+  assert.equal(echoStart[0].data.latMs, 650, 'echo latency = playback start - capture transcript time')
+  await h.listenStarted()
+  t = 5000
+  h.answer('yes'); await tick()
+  t = 6000
+  h.speaks.at(-1).resolve({ status: 'done', ms: 900, startMs: 300 }); await tick()
+  const starts = h.logs.filter((l) => l.stage === 'speak.start')
+  assert.equal(starts.length, 2)
+  assert.equal(starts[1].data.latMs, 300, 'Deciding latency = playback start - when it was sent')
+})
+
+test('F33 no speak.start is logged when the result carries no startMs', async () => {
+  const h = harness()
+  await toEchoListen(h)
+  assert.equal(h.stages().includes('speak.start'), false)
+})
+
 test('F32 bare no at clarify is echoed as the answer', async () => {
   const h = harness()
   await toClarifyListen(h, 'Do you mean Voice Work?')

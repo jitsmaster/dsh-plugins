@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -212,6 +212,8 @@ test('SC1 speak-worker.ps1 is pure ASCII, ignores tts-muted.flag, says ready, th
     ['I heard: fix 项目. Is that right?', 'female'],
     ['Deciding with LLM.', 'female'],
   ])
+  // The Ctrl+Alt+M hotkey kills every PID in audio.pids; the worker must never list itself there (only tts-stop.flag cuts it).
+  assert.equal(existsSync(join(tts.dir, 'audio.pids')), false, 'the worker never writes its PID to audio.pids')
 })
 
 async function runKokoro(lines) {
@@ -223,7 +225,7 @@ async function runKokoro(lines) {
   const out = collectLines(child.stdout)
   await new Promise((resolve) => child.on('close', resolve))
   tts.close()
-  return { spoken: tts.spoken, out: out.lines }
+  return { spoken: tts.spoken, out: out.lines, dir: tts.dir }
 }
 
 test('SC2 Invoke-KokoroTts without -OnPlaybackStart is unchanged', opts, async () => {
@@ -242,4 +244,19 @@ test('SC2 Invoke-KokoroTts -OnPlaybackStart runs the callback once before playba
   ])
   assert.deepEqual(r.out, ['PLAYBACK-START', 'RESULT=True'])
   assert.deepEqual(r.spoken, [{ text: 'Callback line.', voice_gender: 'female' }])
+})
+
+test('SC3 Invoke-KokoroTts -NoPidFile keeps its PID out of audio.pids; without it the PID is still recorded', opts, async () => {
+  const quiet = await runKokoro([
+    "$r = Invoke-KokoroTts -Text 'No pid line.' -Gender female -Priority High -NoPidFile",
+    "[Console]::Out.WriteLine('RESULT=' + $r)",
+  ])
+  assert.deepEqual(quiet.out, ['RESULT=True'])
+  assert.equal(existsSync(join(quiet.dir, 'audio.pids')), false, '-NoPidFile writes no audio.pids')
+  const plain = await runKokoro([
+    "$r = Invoke-KokoroTts -Text 'Pid line.' -Gender female -Priority High",
+    "[Console]::Out.WriteLine('RESULT=' + $r)",
+  ])
+  assert.deepEqual(plain.out, ['RESULT=True'])
+  assert.match(readFileSync(join(plain.dir, 'audio.pids'), 'utf8'), /^\d+\s*$/, 'existing callers still record their PID')
 })

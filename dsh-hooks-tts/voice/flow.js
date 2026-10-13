@@ -89,13 +89,14 @@ export function createVoiceFlow({
     note('capture.transcript', { text: ev.text, sttSeconds: ev.seconds, source: ev.source })
     const text = String(ev.text ?? '').trim()
     if (!text) return void detach(end(LINES.notCaught))
-    echo(text)
+    echo(text, s.t0)
   }
 
   /** T1/T7/T22: (re)start at the echo confirm with a new utterance; any frozen action is discarded. */
-  function echo(text) {
+  function echo(text, heardAt = now()) {
     s.utterance = text; s.action = null
-    detach(sayThenListen('ECHO', echoLine(text), 'echo'))
+    // Echo latency is measured from when the utterance was heard (the capture transcript time t0 for a capture).
+    detach(sayThenListen('ECHO', echoLine(text), 'echo', heardAt))
   }
 
   function answer(raw) {
@@ -122,13 +123,19 @@ export function createVoiceFlow({
 
   // ---- speaking & listening ----------------------------------------------------------------------------
 
-  /** One speak with one retry on failed/timeout (T25). Resolves the final status; never rejects. */
-  async function speakOnce(line, turn) {
+  /**
+   * One speak with one retry on failed/timeout (T25). Resolves the final status; never rejects.
+   * from = the time playback latency is measured against (§6 speak.start): the utterance time for an echo line,
+   * otherwise when the line was sent.
+   */
+  async function speakOnce(line, turn, from) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      const sent = now()
       note('speak.sent', { line, step: s.step, attempt })
       let r
       try { r = await speak(line, { ...VOICE }) } catch (e) { r = { status: 'failed', error: String(e?.message ?? e) } }
       const status = r?.status ?? 'failed'
+      if (Number.isFinite(r?.startMs)) note('speak.start', { step: s.step, latMs: sent + r.startMs - (from ?? sent) })
       note('speak.end', { status, ms: r?.ms })
       if (status === 'done' || turn !== s.turn) return status
     }
@@ -141,9 +148,9 @@ export function createVoiceFlow({
     clearGuard(); reset()
   }
 
-  async function sayThenListen(prefix, line, step) {
+  async function sayThenListen(prefix, line, step, from) {
     const turn = enter(prefix + '_SPEAK'); s.step = step
-    const status = await speakOnce(line, turn)
+    const status = await speakOnce(line, turn, from)
     if (turn !== s.turn) return // barge-in / abort while speaking: no listen
     if (status !== 'done') return dead(line)
     await openListen(prefix + '_LISTEN', step)

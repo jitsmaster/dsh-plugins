@@ -8,7 +8,8 @@ import { join } from 'node:path'
  *           replies  {"ready":true} | {"id","event":"start"} | {"id","status":"done"|"failed","ms"} on stdout.
  * When the worker keeps dying (more than maxRespawns exits within 60 s) every line gets its own process instead
  * (one line, then EOF). The child is never detached: a detached PowerShell with piped stdio exits silently on Windows.
- * speak() never rejects; it resolves { status:'done'|'failed'|'timeout', ms, startMs? }.
+ * speak() never rejects; it resolves { status:'done'|'failed'|'timeout', ms, startMs? }. A worker that exits unexpectedly
+ * after a line's start event resolves that line 'done' (cut short) and does not count as a worker death.
  */
 
 const RESPAWN_WINDOW_MS = 60_000
@@ -83,10 +84,18 @@ export function createSpeakWorker({
     w.gone = true
     live.delete(w)
     note('worker.exit', { ...info, oneShot: w.single })
-    for (const req of [...w.pending.values()]) finish(w, req, { status: 'failed', ms: now() - req.t0 })
+    // An unexpected exit after a line's 'start' event is a cut line (e.g. an external stop killed the process): it
+    // counts as done (spec §0 D2) and is not a crash, so it never counts toward the one-shot death limit.
+    let cut = false
+    for (const req of [...w.pending.values()]) {
+      const started = !w.killedByUs && req.startAt !== undefined
+      cut ||= started
+      const ms = now() - req.t0
+      finish(w, req, started ? { status: 'done', ms, startMs: req.startAt - req.t0 } : { status: 'failed', ms })
+    }
     if (w !== worker) return
     worker = undefined
-    if (!w.killedByUs) countDeath()
+    if (!w.killedByUs && !cut) countDeath()
   }
 
   /** The (maxRespawns + 1)th unexpected exit within 60 s switches to one-shot mode for good. */

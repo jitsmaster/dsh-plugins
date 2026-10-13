@@ -98,7 +98,7 @@ export function validateAction(raw, opts = {}) {
 }
 
 /** headline.js permission wording without its "Approve ...?" frame: pwsh -> "run command", my_tool -> "my tool". */
-const toolPhrase = (toolName) => permissionHeadline({ toolName }).replace(/^Approve /, '').replace(/\?$/, '')
+export const toolPhrase = (toolName) => permissionHeadline({ toolName }).replace(/^Approve /, '').replace(/\?$/, '')
 
 /** The x in "I will {x}. Shall I do it?" — built only from the validated action, never from LLM prose. */
 export function readBack(action) {

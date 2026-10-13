@@ -252,6 +252,33 @@ test('S6 stop() kills the worker, fails its pending line and does not respawn', 
   assert.equal(h.spawns.length, 1, 'no respawn after stop()')
 })
 
+test('S7 a worker that exits after the line started playing (hotkey cut) resolves done and is not counted as a death', async () => {
+  const h = harness()
+  for (let i = 0; i < 5; i++) {
+    const p = h.speaker.speak('cut ' + i, VOICE)
+    await tick()
+    const c = h.child()
+    h.t += 100
+    await c.send({ id: i + 1, event: 'start' })
+    h.t += 400
+    await c.die(1)
+    assert.deepEqual(await peek(p), { status: 'done', startMs: 100, ms: 500 }, 'a cut line counts as done (D2)')
+  }
+  assert.equal(h.logs.some((l) => l.stage === 'worker.one-shot'), false, 'cut lines never force one-shot mode')
+  h.speaker.speak('next', VOICE)
+  await tick()
+  assert.equal(h.child().ended, false, 'still a persistent worker')
+})
+
+test('S7 a worker exit before the start event still fails the line', async () => {
+  const h = harness()
+  const p = h.speaker.speak('x', VOICE)
+  await tick()
+  h.t += 50
+  await h.child().die(1)
+  assert.deepEqual(await peek(p), { status: 'failed', ms: 50 })
+})
+
 test('S6 stop() without a worker is a no-op', () => {
   const h = harness()
   assert.doesNotThrow(() => h.speaker.stop())

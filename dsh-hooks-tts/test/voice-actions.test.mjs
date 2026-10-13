@@ -18,6 +18,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createExecutor, readBack, resultText, validateAction } from '../voice/actions.js'
+import * as actionsModule from '../voice/actions.js'
+
+test('toolPhrase is exported for the service: headline wording without its Approve ...? frame', () => {
+  assert.equal(typeof actionsModule.toolPhrase, 'function')
+  assert.equal(actionsModule.toolPhrase('pwsh'), 'run command')
+  assert.equal(actionsModule.toolPhrase('my_tool'), 'my tool')
+})
 
 const SESSIONS = [
   { id: 'a', handle: 's1', title: 'Voice Work' },

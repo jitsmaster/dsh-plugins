@@ -44,3 +44,13 @@ test('A5 a bare no-word classifies as no; no followed by an instruction is text'
   assert.equal(classifyAnswer('no, send it to B'), 'text')
   assert.equal(classifyAnswer('不是，发给B'), 'text')
 })
+
+test('A6 repeated yes/no words count with or without a space; yes please and please are yes', () => {
+  for (const t of ['对对', '对 对', '好好', '好好好', '是是', '对对对。', 'yes please', 'Yes, please.', 'please', 'ok please']) {
+    assert.equal(classifyAnswer(t), 'yes', t)
+  }
+  for (const t of ['不不', '不对不对', 'no no']) assert.equal(classifyAnswer(t), 'no', t)
+  assert.equal(classifyAnswer('yes please send it to B'), 'text')
+  assert.equal(classifyAnswer('please send it to B'), 'text')
+  assert.equal(classifyAnswer('是不是'), 'text')
+})

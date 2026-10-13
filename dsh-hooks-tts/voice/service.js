@@ -2,9 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { buildEventsUrl, createVoiceClient } from './client.js'
 import { createVoiceApprovals } from './approvals.js'
 import { createVoiceFlow } from './flow.js'
-import { createExecutor, readBack, resultText, validateAction } from './actions.js'
+import { createExecutor, readBack, resultText, toolPhrase, validateAction } from './actions.js'
 import { classifyAnswer } from './answers.js'
-import { permissionHeadline } from './headline.js'
 
 const VOICE = Object.freeze({ priority: 'High', gender: 'female' })
 const CLOSED_LINE = 'That session closed. Cancelled.'
@@ -52,7 +51,7 @@ export function createVoiceService({
   /** A pending permission request in words, e.g. "permission: run command". */
   function pendingOf(id) {
     const p = approvals.peek({ sessionId: id })
-    return p ? 'permission: ' + permissionHeadline({ toolName: p.toolName }).replace(/^Approve /, '').replace(/\?$/, '') : null
+    return p ? 'permission: ' + toolPhrase(p.toolName) : null
   }
 
   /** Live sessions with stable handles s1..sN (the LLM only ever sees handles). */
@@ -136,6 +135,32 @@ export function createVoiceService({
     try { flow.handle(event) } catch (e) { trace('voice flow error: ' + String(e?.message ?? e)) }
   }
 
+  /** POSTs a GUI/STT control action (listen | finish | cancel) without a body. */
+  async function control(action) {
+    if (!['listen', 'finish', 'cancel'].includes(action)) throw new Error('unknown voice action ' + action)
+    if (!client) throw new Error('voice control is not running')
+    const res = await fetchImpl(`http://127.0.0.1:${port}/${action}`, { method: 'POST', headers: { Authorization: 'Bearer ' + secret } })
+    if (!res.ok) throw new Error(`STT service answered HTTP ${res.status}`)
+  }
+
+  /**
+   * The flow's frozen action targets a session that just closed: abort the flow and say so. While the flow waits on an
+   * answer (*_LISTEN) the STT mic window is still open, so it is cancelled first; otherwise the line would be spoken
+   * into it. A 'new' action only uses its session as the cwd source and stays valid (cwdOf falls back), so it is kept.
+   */
+  function abortForClosedSession(id) {
+    const snap = flow.snapshot()
+    const action = snap?.action
+    if (action?.sessionId !== id || action.action === 'new') return
+    const listening = String(snap.state ?? '').endsWith('_LISTEN')
+    flow.abort('session closed')
+    Promise.resolve()
+      .then(() => (listening ? control('cancel') : undefined))
+      .catch((e) => trace('voice: cancel listen failed: ' + String(e?.message ?? e)))
+      .then(() => speaker.speak(CLOSED_LINE, { ...VOICE }))
+      .catch(() => {})
+  }
+
   function startClient() {
     try {
       secret = readSecret()
@@ -176,12 +201,7 @@ export function createVoiceService({
       flow: flow.snapshot(),
       selected,
     }),
-    async control(action) {
-      if (!['listen', 'finish', 'cancel'].includes(action)) throw new Error('unknown voice action ' + action)
-      if (!client) throw new Error('voice control is not running')
-      const res = await fetchImpl(`http://127.0.0.1:${port}/${action}`, { method: 'POST', headers: { Authorization: 'Bearer ' + secret } })
-      if (!res.ok) throw new Error(`STT service answered HTTP ${res.status}`)
-    },
+    control,
     listen,
     context,
     // Read-outs stay quiet for the whole conversation, not just while the mic is open.
@@ -193,9 +213,7 @@ export function createVoiceService({
       if (lastAlerted === id) lastAlerted = undefined
       if (lastActive === id) lastActive = undefined
       if (selected === id) selected = undefined
-      if (flow.snapshot()?.action?.sessionId !== id) return
-      flow.abort('session closed')
-      Promise.resolve().then(() => speaker.speak(CLOSED_LINE, { ...VOICE })).catch(() => {})
+      abortForClosedSession(id)
     },
     noteAlert: (id) => { lastAlerted = id },
     // A session doing work is a valid target even if it was created before the plugin loaded.

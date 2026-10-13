@@ -88,7 +88,10 @@ function Invoke-KokoroTts {
         [double]$Speed = 0,
         [double]$PauseSeconds = 0,
         # Optional callback invoked once right before playback starts (the voice flow measures its latency with it).
-        [scriptblock]$OnPlaybackStart = $null
+        [scriptblock]$OnPlaybackStart = $null,
+        # Keep this process out of <hotDir>\audio.pids: a long-lived caller (speak-worker.ps1) must not be killed by the
+        # Ctrl+Alt+M hotkey; its playback is cut through the polled tts-stop.flag instead.
+        [switch]$NoPidFile
     )
     $dir = $script:TtsStateDir
     $flagPath = Join-Path $dir 'tts-priority-pending.flag'
@@ -142,7 +145,7 @@ function Invoke-KokoroTts {
         }
 
         # Record our PID only now that we hold the playback mutex, so the hotkey kills the speaker that is audible.
-        if ($stopFlags.Count -gt 1) { Set-Content -Path (Join-Path $hotDir 'audio.pids') -Value $PID }
+        if ($stopFlags.Count -gt 1 -and -not $NoPidFile) { Set-Content -Path (Join-Path $hotDir 'audio.pids') -Value $PID }
         foreach ($f in $stopFlags) { Remove-Item -Path $f -Force -ErrorAction SilentlyContinue }
         $stream = New-Object System.IO.MemoryStream(, $bytes)
         $player = New-Object System.Media.SoundPlayer

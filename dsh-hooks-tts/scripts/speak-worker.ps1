@@ -3,7 +3,8 @@
 # stdout: JSON lines only: {"ready":true} once, then per request {"id":n,"event":"start"} right before playback and
 #         {"id":n,"status":"done"|"failed","ms":n}. EOF on stdin -> exit 0.
 # The voice flow is user-initiated, so tts-muted.flag is deliberately NOT checked; Ctrl+Alt+M (tts-stop.flag) still
-# cuts the current line short inside Invoke-KokoroTts.
+# cuts the current line short inside Invoke-KokoroTts. -NoPidFile keeps the worker's PID out of audio.pids, so the hotkey
+# never kills the worker itself (a cut line still reports "done").
 . (Join-Path $PSScriptRoot 'tts-client.ps1')
 
 function Write-WorkerLine([string]$Json) {
@@ -29,7 +30,7 @@ while ($true) {
         $idJson = $workerReqId | ConvertTo-Json -Compress
         # Runs inside Invoke-KokoroTts right before playback; writes straight to stdout so nothing leaks into its result.
         $onStart = { [Console]::Out.WriteLine('{"id":' + $idJson + ',"event":"start"}'); [Console]::Out.Flush() }
-        $ok = [bool](Invoke-KokoroTts -Text (Clean-ForSpeech ([string]$req.text)) -Gender $gender -Priority $priority -OnPlaybackStart $onStart)
+        $ok = [bool](Invoke-KokoroTts -Text (Clean-ForSpeech ([string]$req.text)) -Gender $gender -Priority $priority -OnPlaybackStart $onStart -NoPidFile)
     } catch {
         Add-TtsLog 'tts-client-errors.log' "speak-worker: $($_.Exception.Message)"
         $ok = $false

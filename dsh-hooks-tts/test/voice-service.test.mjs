@@ -189,7 +189,8 @@ test('SV3 status exposes the flow snapshot and the selected voice target', () =>
 })
 
 test('SV4 agentDisposed clears the selected target and aborts a flow whose action targets it, saying so', async () => {
-  const h = make()
+  const seen = []
+  const h = make({ fetchImpl: okFetch(seen) })
   h.agents.set('a1', { title: 'Voice Work' }); h.agents.set('b2', { title: 'PR 6524' })
   h.svc.agentCreated('a1'); h.svc.agentCreated('b2')
   h.svc.reconcile(); h.sock().onopen({})
@@ -208,6 +209,66 @@ test('SV4 agentDisposed clears the selected target and aborts a flow whose actio
   assert.equal(h.flow.aborts.length, 1)
   assert.equal(h.svc.busy(), false)
   assert.deepEqual(h.spoken, [['That session closed. Cancelled.', VOICE]])
+})
+
+function disposeSetup(snap, fetchImpl) {
+  const h = make({ fetchImpl })
+  h.agents.set('a1', { title: 'Voice Work' })
+  h.svc.agentCreated('a1')
+  h.svc.reconcile(); h.sock().onopen({})
+  h.flow.active = true
+  h.flow.snap = snap
+  return h
+}
+
+test('SV6 agentDisposed during a *_LISTEN state cancels the STT listen before speaking', async () => {
+  const seen = []
+  let release
+  const gate = new Promise((r) => { release = r })
+  const h = disposeSetup(
+    { state: 'READBACK_LISTEN', id: 'f1', turn: 4, step: 'decision', action: Object.freeze({ action: 'cancel', sessionId: 'a1', title: 'Voice Work' }) },
+    async (url, init) => { seen.push({ url, init }); await gate; return { ok: true, status: 200, json: async () => ({}) } },
+  )
+  h.svc.agentDisposed('a1')
+  await tick()
+  assert.deepEqual(seen, [{ url: 'http://127.0.0.1:8890/cancel', init: { method: 'POST', headers: { Authorization: 'Bearer sekret' } } }])
+  assert.deepEqual(h.spoken, [], 'nothing is spoken into the still-open mic window')
+  release()
+  await tick()
+  assert.deepEqual(h.spoken, [['That session closed. Cancelled.', VOICE]])
+})
+
+test('SV6 agentDisposed outside a listen does not cancel STT; a failing cancel still speaks', async () => {
+  const seen = []
+  const h = disposeSetup(
+    { state: 'EXECUTE', id: 'f1', turn: 5, step: 'decision', action: Object.freeze({ action: 'cancel', sessionId: 'a1', title: 'Voice Work' }) },
+    okFetch(seen),
+  )
+  h.svc.agentDisposed('a1')
+  await tick()
+  assert.deepEqual(seen, [])
+  assert.deepEqual(h.spoken, [['That session closed. Cancelled.', VOICE]])
+  const g = disposeSetup(
+    { state: 'READBACK_LISTEN', id: 'f2', turn: 4, step: 'decision', action: Object.freeze({ action: 'cancel', sessionId: 'a1', title: 'Voice Work' }) },
+    async () => ({ ok: false, status: 500 }),
+  )
+  g.svc.agentDisposed('a1')
+  await tick(6)
+  assert.deepEqual(g.spoken, [['That session closed. Cancelled.', VOICE]])
+})
+
+test('SV7 agentDisposed leaves a frozen new action alone (its session is only the cwd source)', async () => {
+  const seen = []
+  const h = disposeSetup(
+    { state: 'READBACK_LISTEN', id: 'f1', turn: 4, step: 'decision', action: Object.freeze({ action: 'new', sessionId: 'a1', title: 'Voice Work', text: 'hi' }) },
+    okFetch(seen),
+  )
+  h.svc.agentDisposed('a1')
+  await tick()
+  assert.equal(h.flow.aborts.length, 0)
+  assert.deepEqual(h.spoken, [])
+  assert.deepEqual(seen, [])
+  assert.equal(h.svc.busy(), true)
 })
 
 test('SV4 stop() aborts the flow without speaking', () => {
