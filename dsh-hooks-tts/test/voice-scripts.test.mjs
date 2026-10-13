@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -130,20 +130,23 @@ test('the scripts stay pure ASCII and the Stop script no longer reads the respon
 // - -OnPlaybackStart is a [scriptblock] invoked once per call right before playback; Invoke-KokoroTts still returns $true.
 const PS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File']
 
-async function fakeTts() {
+/** wavMs = length of the audio every request gets; onRequest(dir) runs while the request is being "synthesised". */
+async function fakeTts({ wavMs = 50, onRequest } = {}) {
   const spoken = []
+  const dirRef = { dir: '' }
   const server = createServer((req, res) => {
     let body = ''
     req.setEncoding('utf8')
     req.on('data', (c) => { body += c })
     req.on('end', () => {
       spoken.push(JSON.parse(body))
+      onRequest?.(dirRef.dir)
       res.writeHead(200, { 'Content-Type': 'audio/wav' })
-      res.end(silentWav())
+      res.end(silentWav(wavMs))
     })
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const dir = mkdtempSync(join(tmpdir(), 'speak-'))
+  const dir = dirRef.dir = mkdtempSync(join(tmpdir(), 'speak-'))
   const env = {
     ...process.env,
     DSH_TTS_URL: `http://127.0.0.1:${server.address().port}/tts`,
@@ -234,8 +237,9 @@ test('SC4 speak-worker.ps1 removes a stale tts-priority-pending.flag (left by a 
   }
 })
 
-async function runKokoro(lines) {
-  const tts = await fakeTts()
+async function runKokoro(lines, { before, ...ttsOpts } = {}) {
+  const tts = await fakeTts(ttsOpts)
+  before?.(tts.dir)
   const file = join(tts.dir, 'call.ps1')
   writeFileSync(file, [". '" + join(SCRIPTS, 'tts-client.ps1') + "'", ...lines].join('\r\n'))
   const child = spawn('powershell.exe', [...PS, file], { env: tts.env })
@@ -277,4 +281,92 @@ test('SC3 Invoke-KokoroTts -NoPidFile keeps its PID out of audio.pids; without i
   ])
   assert.deepEqual(plain.out, ['RESULT=True'])
   assert.match(readFileSync(join(plain.dir, 'audio.pids'), 'utf8'), /^\d+\s*$/, 'existing callers still record their PID')
+})
+
+// --- Barge-in must cut a line that is still being synthesised / queued (finding: stale flow lines played into the open mic).
+// The STT daemon touches tts-stop.flag when it starts listening. Invoke-KokoroTts used to delete that flag just before
+// playback, so a flag created DURING synthesis was lost; now it removes only flags older than the call itself.
+const PLAY_MARK = "-OnPlaybackStart { $global:playAt = Get-Date }"
+const elapsedLines = [
+  "[Console]::Out.WriteLine('ELAPSED=' + [int]((Get-Date) - $global:playAt).TotalMilliseconds)",
+]
+const elapsedOf = (out) => Number(out.find((l) => l.startsWith('ELAPSED='))?.slice(8))
+
+test('SC5 a stop flag created while the line is being synthesised still cuts its playback', opts, async () => {
+  const r = await runKokoro([
+    "$r = Invoke-KokoroTts -Text 'Long stale line.' -Gender female -Priority High " + PLAY_MARK,
+    ...elapsedLines,
+    "[Console]::Out.WriteLine('RESULT=' + $r)",
+  ], { wavMs: 8000, onRequest: (dir) => writeFileSync(join(dir, 'tts-stop.flag'), 'barge-in') })
+  assert.ok(r.out.includes('RESULT=True'), r.out.join('|'))
+  assert.ok(elapsedOf(r.out) < 4000, 'cut at once instead of playing 8 s, took ' + elapsedOf(r.out) + ' ms')
+  assert.equal(existsSync(join(r.dir, 'tts-stop.flag')), false, 'the flag is consumed by the cut')
+})
+
+test('SC5 a stop flag left over from before the call is still deleted and the line plays in full', opts, async () => {
+  const r = await runKokoro([
+    "$r = Invoke-KokoroTts -Text 'Fresh line.' -Gender female -Priority High " + PLAY_MARK,
+    ...elapsedLines,
+    "[Console]::Out.WriteLine('RESULT=' + $r)",
+  ], {
+    wavMs: 1500,
+    before: (dir) => {
+      const flag = join(dir, 'tts-stop.flag')
+      writeFileSync(flag, 'old')
+      const old = new Date(Date.now() - 60_000)
+      utimesSync(flag, old, old)
+    },
+  })
+  assert.ok(r.out.includes('RESULT=True'), r.out.join('|'))
+  assert.ok(elapsedOf(r.out) >= 1200, 'a stale flag must not cut a new line, took ' + elapsedOf(r.out) + ' ms')
+  assert.equal(existsSync(join(r.dir, 'tts-stop.flag')), false, 'the stale flag was cleaned up')
+})
+
+test('SC6 speak-worker.ps1 answers cancelled, without speaking, for lines below the tts-voice-cancel.json marker; later lines are spoken', opts, async () => {
+  const tts = await fakeTts()
+  const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  try {
+    await out.until((l) => l.length >= 1)
+    writeFileSync(join(tts.dir, 'tts-voice-cancel.json'), JSON.stringify({ before: 3 }))
+    for (const id of [1, 2, 3]) child.stdin.write(JSON.stringify({ id, text: 'line ' + id, gender: 'female', priority: 'High' }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 3)
+  } finally {
+    child.stdin.end()
+    child.kill()
+    tts.close()
+  }
+  const msgs = out.lines.map((l) => JSON.parse(l))
+  const statuses = msgs.filter((m) => 'status' in m).map((m) => [m.id, m.status])
+  assert.deepEqual(statuses, [[1, 'cancelled'], [2, 'cancelled'], [3, 'done']])
+  assert.deepEqual(tts.spoken.map((s) => s.text), ['line 3'], 'cancelled lines never reach the TTS server')
+  assert.deepEqual(msgs.filter((m) => m.event === 'start').map((m) => m.id), [3], 'no playback start for a cancelled line')
+})
+
+test('SC6 a tts-voice-cancel.json left by an earlier session (older than the worker) is removed at start-up and skips nothing', opts, async () => {
+  const tts = await fakeTts()
+  const marker = join(tts.dir, 'tts-voice-cancel.json')
+  writeFileSync(marker, JSON.stringify({ before: 999 }))
+  const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  try {
+    await out.until((l) => l.length >= 1)
+    assert.equal(existsSync(marker), false, 'the stale marker is gone before the worker says ready')
+    child.stdin.write(JSON.stringify({ id: 1, text: 'first line', gender: 'female', priority: 'High' }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 1)
+  } finally {
+    child.stdin.end()
+    child.kill()
+    tts.close()
+  }
+  assert.deepEqual(out.lines.map((l) => JSON.parse(l)).filter((m) => 'status' in m).map((m) => m.status), ['done'])
+  assert.deepEqual(tts.spoken.map((s) => s.text), ['first line'])
+})
+
+test('SC6 the scripts changed for the barge-in cut stay pure ASCII', () => {
+  for (const f of ['speak-worker.ps1', 'tts-client.ps1']) {
+    assert.equal(/[^\x00-\x7F]/.test(readFileSync(join(SCRIPTS, f), 'utf8')), false, f)
+  }
 })

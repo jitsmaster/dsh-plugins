@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createVoiceService } from '../voice/service.js'
+import { createVoiceFlow } from '../voice/flow.js'
 
 const VOICE = { priority: 'High', gender: 'female' }
 const tick = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise(setImmediate) }
@@ -55,6 +56,7 @@ function make(extra = {}) {
       speak: async (text, opts) => { spoken.push([text, opts]); return { status: 'done', ms: 1 } },
       warm: () => { speakerCalls.push('warm') },
       stop: () => { speakerCalls.push('stop') },
+      cancel: () => { speakerCalls.push('cancel') },
     },
     decide: async () => ({ ok: false, error: 'llm' }),
     cwdOf: () => undefined,
@@ -151,7 +153,9 @@ test('SV2 the GUI control listen/finish/cancel still posts without a body, with 
   h.svc.reconcile()
   await h.svc.control('listen')
   await h.svc.control('finish')
-  assert.deepEqual(seen, [
+  // init is exactly { method, headers } plus the request-timeout signal (SV9); no body.
+  assert.ok(seen.every((s) => s.init.signal instanceof AbortSignal))
+  assert.deepEqual(seen.map(({ url, init: { signal, ...init } }) => ({ url, init })), [
     { url: 'http://127.0.0.1:8890/listen', init: { method: 'POST', headers: { Authorization: 'Bearer sekret' } } },
     { url: 'http://127.0.0.1:8890/finish', init: { method: 'POST', headers: { Authorization: 'Bearer sekret' } } },
   ])
@@ -231,7 +235,7 @@ test('SV6 agentDisposed during a *_LISTEN state cancels the STT listen before sp
   )
   h.svc.agentDisposed('a1')
   await tick()
-  assert.deepEqual(seen, [{ url: 'http://127.0.0.1:8890/cancel', init: { method: 'POST', headers: { Authorization: 'Bearer sekret' } } }])
+  assert.deepEqual(seen.map(({ url, init: { signal, ...init } }) => ({ url, init })), [{ url: 'http://127.0.0.1:8890/cancel', init: { method: 'POST', headers: { Authorization: 'Bearer sekret' } } }])
   assert.deepEqual(h.spoken, [], 'nothing is spoken into the still-open mic window')
   release()
   await tick()
@@ -349,4 +353,78 @@ test('an ensureStt failure never breaks reconcile', async () => {
   h.svc.reconcile()
   await new Promise((r) => setImmediate(r))
   assert.equal(h.svc.status().running, true)
+})
+
+test('SV9 the flow cancels speech through the speak worker (barge-in / abort silence queued and in-flight lines)', () => {
+  const h = make()
+  h.svc.reconcile()
+  assert.equal(typeof h.flow.deps.cancelSpeech, 'function')
+  h.flow.deps.cancelSpeech()
+  assert.deepEqual(h.speakerCalls.filter((c) => c === 'cancel'), ['cancel'])
+})
+
+test('SV9 cancelSpeech tolerates a speaker without cancel() and one that throws', () => {
+  const bare = make({ speaker: { speak: async () => ({ status: 'done', ms: 1 }), warm() {}, stop() {} } })
+  assert.doesNotThrow(() => bare.flow.deps.cancelSpeech())
+  const bad = make({ speaker: { speak: async () => ({ status: 'done', ms: 1 }), warm() {}, stop() {}, cancel() { throw new Error('x') } } })
+  assert.doesNotThrow(() => bad.flow.deps.cancelSpeech())
+})
+
+/** A fetch that never answers on its own: it only settles when its request signal aborts (like a stuck daemon). */
+const hangingFetch = (seen = []) => (url, init) => new Promise((_resolve, reject) => {
+  seen.push({ url, init })
+  const signal = init?.signal
+  if (!signal) return // no timeout wired: hangs forever, the test's own guard fails it
+  const abort = () => reject(signal.reason ?? new Error('aborted'))
+  if (signal.aborted) abort()
+  else signal.addEventListener('abort', abort, { once: true })
+})
+const withDeadline = (promise, ms = 1500) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('HUNG'), ms))])
+
+test('SV10 listen() gives up on a daemon that accepts the connection but never answers', async () => {
+  const seen = []
+  const h = make({ fetchImpl: hangingFetch(seen), requestTimeoutMs: 40 })
+  h.svc.reconcile()
+  const r = await withDeadline(h.svc.listen({ context: { flow: 'voice', id: 'x', turn: 1, step: 'echo' }, window_s: 10 }).then(() => 'resolved', (e) => 'rejected: ' + e.name))
+  assert.match(r, /^rejected: /)
+  assert.ok(seen[0].init.signal instanceof AbortSignal)
+})
+
+test('SV10 control() gives up on a daemon that never answers', async () => {
+  const h = make({ fetchImpl: hangingFetch(), requestTimeoutMs: 40 })
+  h.svc.reconcile()
+  for (const action of ['listen', 'finish', 'cancel']) {
+    const r = await withDeadline(h.svc.control(action).then(() => 'resolved', (e) => 'rejected: ' + e.name))
+    assert.match(r, /^rejected: /, action)
+  }
+})
+
+test('SV10 the default request timeout is 5000 ms for both listen() and control()', async (t) => {
+  const real = AbortSignal.timeout.bind(AbortSignal)
+  const asked = []
+  t.mock.method(AbortSignal, 'timeout', (ms) => { asked.push(ms); return real(ms) })
+  const seen = []
+  const h = make({ fetchImpl: okFetch(seen) })
+  h.svc.reconcile()
+  await h.svc.listen({ context: { flow: 'voice', id: 'x', turn: 1, step: 'echo' }, window_s: 10 })
+  await h.svc.control('finish')
+  assert.deepEqual(asked, [5000, 5000])
+  assert.equal(seen.length, 2)
+})
+
+test('SV11 a /listen that never answers ends the flow with Speech service unavailable. instead of hanging busy', async () => {
+  const spoken = []
+  const h = make({
+    fetchImpl: hangingFetch(),
+    requestTimeoutMs: 40,
+    createFlow: createVoiceFlow,
+    speaker: { speak: async (text, opts) => { spoken.push([text, opts]); return { status: 'done', ms: 1 } }, warm() {}, stop() {}, cancel() {} },
+  })
+  h.svc.reconcile(); h.sock().onopen({})
+  h.sock().onmessage({ data: JSON.stringify({ type: 'transcript', revision: 1, text: 'open the parser', context: null, source: 'hotkey', seconds: 1 }) })
+  await tick()
+  assert.equal(h.svc.busy(), true, 'the flow waits for the listen POST')
+  for (let i = 0; i < 100 && h.svc.busy(); i++) await new Promise((r) => setTimeout(r, 20))
+  assert.equal(h.svc.busy(), false, 'the flow ended; read-outs are no longer suppressed')
+  assert.deepEqual(spoken.map(([s]) => s), ['I heard: open the parser. Is that right?', 'Speech service unavailable. Cancelled.'])
 })

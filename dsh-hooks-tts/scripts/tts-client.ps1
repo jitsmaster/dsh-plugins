@@ -79,6 +79,13 @@ function Get-WavDurationSeconds([byte[]]$Bytes) {
     return $null
 }
 
+# Deletes a stop flag only when it is older than $Than. A flag created after the call began (a barge-in while the line
+# was still being synthesised or queued) must survive so it still cuts that line; older ones are leftovers.
+function Remove-StopFlagOlderThan([string]$Path, [datetime]$Than) {
+    $item = Get-Item -Path $Path -ErrorAction SilentlyContinue
+    if ($item -and $item.LastWriteTime -lt $Than) { Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue }
+}
+
 function Invoke-KokoroTts {
     param(
         [Parameter(Mandatory)][string]$Text,
@@ -94,6 +101,7 @@ function Invoke-KokoroTts {
         # Ctrl+Alt+M hotkey; its playback is cut through the polled tts-stop.flag instead.
         [switch]$NoPidFile
     )
+    $callStart = Get-Date
     $dir = $script:TtsStateDir
     $flagPath = Join-Path $dir 'tts-priority-pending.flag'
     $stopFlagPath = Join-Path $dir 'tts-stop.flag'
@@ -147,7 +155,7 @@ function Invoke-KokoroTts {
 
         # Record our PID only now that we hold the playback mutex, so the hotkey kills the speaker that is audible.
         if ($stopFlags.Count -gt 1 -and -not $NoPidFile) { Set-Content -Path (Join-Path $hotDir 'audio.pids') -Value $PID }
-        foreach ($f in $stopFlags) { Remove-Item -Path $f -Force -ErrorAction SilentlyContinue }
+        foreach ($f in $stopFlags) { Remove-StopFlagOlderThan $f $callStart }
         $stream = New-Object System.IO.MemoryStream(, $bytes)
         $player = New-Object System.Media.SoundPlayer
         $player.Stream = $stream

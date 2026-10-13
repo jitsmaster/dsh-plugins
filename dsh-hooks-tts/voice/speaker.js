@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs'
 import { unlink as unlinkFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,12 +14,19 @@ import { join } from 'node:path'
  * with the WAV duration + playbackMarginMs (playbackFallbackMs when the worker sent no duration).
  * When the worker keeps dying (more than maxRespawns exits within 60 s) every line gets its own process instead
  * (one line, then EOF). The child is never detached: a detached PowerShell with piped stdio exits silently on Windows.
- * speak() never rejects; it resolves { status:'done'|'failed'|'timeout', ms, startMs? }. A worker that exits unexpectedly
- * after a line's start event resolves that line 'done' (cut short) and does not count as a worker death.
+ * speak() never rejects; it resolves { status:'done'|'failed'|'timeout'|'cancelled', ms, startMs? }. A worker that exits
+ * unexpectedly after a line's start event resolves that line 'done' (cut short) and does not count as a worker death.
+ * cancel() (a barge-in): lines queued behind the head resolve 'cancelled' at once. Requests are already written to the
+ * worker's stdin, so the worker is told through two files in the TTS state dir (the worker cannot read stdin while it
+ * speaks): tts-voice-cancel.json {"before": <next request id>} makes it answer every not-yet-begun line below that id
+ * 'cancelled' without speaking, and tts-stop.flag cuts the line in flight (Invoke-KokoroTts polls it and keeps any flag
+ * created after the call began). The worker itself is never killed.
  */
 
 const RESPAWN_WINDOW_MS = 60_000
 const PRIORITY_FLAG = 'tts-priority-pending.flag'
+const STOP_FLAG = 'tts-stop.flag'
+const CANCEL_MARKER = 'tts-voice-cancel.json'
 
 /** The one voice of every voice-flow line (spec §0 D3); flow.js and service.js reuse it. */
 export const VOICE = Object.freeze({ gender: 'female', priority: 'High' })
@@ -26,11 +34,12 @@ export const VOICE = Object.freeze({ gender: 'female', priority: 'High' })
 export function createSpeakWorker({
   spawn, root, env, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now,
   requestTimeoutMs = 45_000, playbackMarginMs = 5_000, playbackFallbackMs = 120_000, maxRespawns = 3,
-  unlink = unlinkFile,
+  unlink = unlinkFile, writeFile = writeFileSync,
 }) {
   const script = join(root, 'scripts', 'speak-worker.ps1')
-  // Same state dir tts-client.ps1 uses for its High-priority flag.
-  const flagPath = join(env?.DSH_TTS_STATE_DIR || join(env?.TEMP || tmpdir(), 'dsh-tts'), PRIORITY_FLAG)
+  // Same state dir tts-client.ps1 uses for its High-priority flag and its stop flag.
+  const stateDir = env?.DSH_TTS_STATE_DIR || join(env?.TEMP || tmpdir(), 'dsh-tts')
+  const flagPath = join(stateDir, PRIORITY_FLAG)
   const live = new Set() // every running worker record (the persistent one plus one-shot processes)
   let worker // the persistent worker record, when one is running
   let nextId = 1
@@ -79,7 +88,7 @@ export function createSpeakWorker({
     if (!req) return
     if (msg.event === 'start') return onStart(w, req, msg)
     if (msg.status === undefined) return
-    const result = { status: msg.status === 'done' ? 'done' : 'failed', ms: Number(msg.ms) || 0 }
+    const result = { status: msg.status === 'done' || msg.status === 'cancelled' ? msg.status : 'failed', ms: Number(msg.ms) || 0 }
     if (req.startAt !== undefined) result.startMs = req.startAt - req.t0
     finish(w, req, result)
   }
@@ -163,6 +172,35 @@ export function createSpeakWorker({
     try { Promise.resolve(unlink(flagPath)).then(() => note('worker.flag-removed', {}), fail) } catch (error) { fail(error) }
   }
 
+  /** Best-effort file write (sync by default so the marker exists before the flag); neither failure mode may break voice. */
+  function put(name, content) {
+    const fail = (error) => note('worker.cancel-write-failed', { file: name, error: String(error?.message ?? error) })
+    try { Promise.resolve(writeFile(join(stateDir, name), content)).catch(fail) } catch (error) { fail(error) }
+  }
+
+  /**
+   * Barge-in: whatever the worker still has to say must not be heard (the mic is open). The head of each worker's queue
+   * is already in the worker, so it is left to resolve itself (cut by the flag, or skipped via the marker); every line
+   * behind it that never started resolves 'cancelled' now. Nothing is written when no line is outstanding: the stop flag
+   * would otherwise cut an unrelated read-out playing from a hook script.
+   */
+  function cancel() {
+    let queued = 0
+    let outstanding = false
+    for (const w of [...live]) {
+      outstanding ||= w.pending.size > 0
+      for (const req of [...w.pending.values()].slice(1)) {
+        if (req.startAt !== undefined) continue
+        finish(w, req, { status: 'cancelled', ms: now() - req.t0 })
+        queued++
+      }
+    }
+    note('worker.cancel', { queued, outstanding })
+    if (!outstanding) return
+    put(CANCEL_MARKER, JSON.stringify({ before: nextId }))
+    put(STOP_FLAG, new Date(now()).toISOString())
+  }
+
   function speak(text, opts = {}) {
     const id = nextId++
     const t0 = now()
@@ -190,6 +228,7 @@ export function createSpeakWorker({
 
   return {
     speak,
+    cancel,
     /** Prewarm the persistent worker (no audio). No-op in one-shot mode or when spawning fails. */
     warm() {
       if (oneShot) return

@@ -6,13 +6,18 @@
  * Turn discipline: every state entry bumps s.turn. Every await re-checks its captured turn afterwards, so a
  * barge-in, abort or re-capture silently drops pending speak/listen/decide/execute continuations. Listens carry
  * {flow:'voice', id, turn, step}; only an exact match with the current listen is consumed, anything else is stale.
- * Exception: a barge-in or capture during EXECUTE is held until the result line was spoken (the action ran either
- * way, so its outcome is always said); a held capture then starts the next conversation.
+ * Barge-in and abort also call cancelSpeech(), which silences queued and in-flight lines (the mic is open: a stale line
+ * must not play into it). A line that resolves 'cancelled' ends its turn silently (no retry, no speak-dead).
+ * Exception: a barge-in or capture during EXECUTE is held (the action ran either way, so its outcome is always said):
+ * the result line waits until the barge-in's listen has ended (transcript or idle) so it is not spoken into the open
+ * mic, is then spoken first, and a held capture then starts the next conversation.
  */
 
 import { VOICE } from './speaker.js'
 
 const LISTEN_RETRY_MS = 500
+/** Events of a barge-in/capture listen (context null) that are held while EXECUTE runs. */
+const HELD_EVENTS = new Set(['listening', 'transcript', 'idle', 'error'])
 const LOG_RAW_MAX = 300
 
 const LINES = Object.freeze({
@@ -51,7 +56,7 @@ export function failText(error) {
 export function createVoiceFlow({
   speak, listen, decide, validate, readBack, resultText, execute, classify,
   now = Date.now, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout,
-  uuid, windowS = 10, guardExtraMs = 15000, maxClarify = 2,
+  uuid, windowS = 10, guardExtraMs = 15000, maxClarify = 2, cancelSpeech,
 }) {
   const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0 }
 
@@ -65,7 +70,7 @@ export function createVoiceFlow({
 
   /** Runs a detached async step; an unexpected throw (e.g. a dep bug) ends the conversation instead of crashing. */
   function detach(promise) {
-    promise.catch((e) => { note('error', { message: String(e?.message ?? e) }); clearGuard(); s.hold = null; reset() })
+    promise.catch((e) => { note('error', { message: String(e?.message ?? e) }); clearGuard(); dropHold(); reset() })
   }
 
   const sleep = (ms) => new Promise((resolve) => setTimer(resolve, ms))
@@ -76,7 +81,7 @@ export function createVoiceFlow({
     if (!ev || typeof ev !== 'object') return
     const c = ev.context
     if (c && c.flow === 'voice' && !mine(c)) return note('stale', { ev: ev.type, c })
-    if (s.hold && c == null && (ev.type === 'listening' || ev.type === 'transcript')) return holdEvent(ev)
+    if (s.hold && c == null && HELD_EVENTS.has(ev.type)) return holdEvent(ev)
     if (ev.type === 'listening') return c == null ? (s.state !== 'IDLE' ? bargeIn() : undefined) : note('listen.open', { ms: now() - s.listenAt })
     if (ev.type === 'transcribing') return mine(c) ? rearmGuard() : undefined
     if (ev.type === 'transcript') {
@@ -104,12 +109,45 @@ export function createVoiceFlow({
     detach(sayThenListen('ECHO', echoLine(text), 'echo', heardAt))
   }
 
-  /** During EXECUTE: a barge-in waits for the result line; the latest capture is replayed after it (release). */
+  /**
+   * During EXECUTE: a barge-in opens the mic, so the result line waits until that listen ended (transcript, idle or
+   * error); the latest capture is replayed after the result line (release).
+   */
   function holdEvent(ev) {
-    if (ev.type === 'listening') return note('barge-in.held', { from: s.state })
-    if (ev.revision !== 1) return
-    s.hold.capture = ev
-    note('capture.held', { text: ev.text })
+    const hold = s.hold
+    if (ev.type === 'listening') {
+      hold.listening = true
+      return note('barge-in.held', { from: s.state })
+    }
+    if (ev.type === 'transcript') {
+      if (ev.revision !== 1) return
+      hold.capture = ev
+      note('capture.held', { text: ev.text })
+    }
+    hold.listening = false
+    hold.wake?.()
+  }
+
+  /** Resolves at once when no barge-in mic is open; else when it closed, the flow was aborted, or the guard time passed. */
+  function waitHeldListen(hold) {
+    if (!hold.listening) return Promise.resolve()
+    return new Promise((resolve) => {
+      const done = () => {
+        if (hold.timer != null) { clearTimer(hold.timer); hold.timer = null }
+        hold.wake = null
+        resolve()
+      }
+      hold.wake = done
+      // A listen end that never arrives must not swallow the result line (every outcome is spoken).
+      hold.timer = setTimer(() => { hold.timer = null; note('hold.timeout', {}); hold.listening = false; done() }, windowS * 1000 + guardExtraMs)
+    })
+  }
+
+  /** Drops the EXECUTE hold (abort/crash): its waiting result line is released and then discarded by its hold check. */
+  function dropHold() {
+    const hold = s.hold
+    s.hold = null
+    hold?.wake?.()
   }
 
   function answer(raw) {
@@ -150,7 +188,8 @@ export function createVoiceFlow({
       const status = r?.status ?? 'failed'
       if (Number.isFinite(r?.startMs)) note('speak.start', { step: s.step, latMs: sent + r.startMs - (from ?? sent) })
       note('speak.end', { status, ms: r?.ms })
-      if (status === 'done' || turn !== s.turn) return status
+      // 'cancelled' (barge-in/abort silenced the line) is final: retrying it would speak into the open mic.
+      if (status === 'done' || status === 'cancelled' || turn !== s.turn) return status
     }
     return 'failed'
   }
@@ -161,11 +200,18 @@ export function createVoiceFlow({
     clearGuard(); reset()
   }
 
+  /** A line that did not finish: 'cancelled' is a deliberate silence (no speak-dead), anything else means the speaker is dead. */
+  function lineFailed(status, line) {
+    if (status !== 'cancelled') return dead(line)
+    note('speak-cancelled', { line, state: s.state })
+    clearGuard(); reset()
+  }
+
   async function sayThenListen(prefix, line, step, from) {
     const turn = enter(prefix + '_SPEAK'); s.step = step
     const status = await speakOnce(line, turn, from)
     if (turn !== s.turn) return // barge-in / abort while speaking: no listen
-    if (status !== 'done') return dead(line)
+    if (status !== 'done') return lineFailed(status, line)
     await openListen(prefix + '_LISTEN', step)
   }
 
@@ -244,7 +290,7 @@ export function createVoiceFlow({
     const [d, said] = await Promise.all([safeDecide(), speakOnce(LINES.deciding, turn)])
     if (turn !== s.turn) return note('stale', { stage: 'decide' })
     note('decide.end', { ms: now() - t, model: d.model, ok: d.ok, error: d.error, raw: rawForLog(d.raw) })
-    if (said !== 'done') return dead(LINES.deciding)
+    if (said !== 'done') return lineFailed(said, LINES.deciding)
     if (!d.ok) return end(LLM_ERRORS[d.error] ?? LLM_ERRORS.llm)
     const v = safeValidate(d.raw)
     note('validate', { ok: v.ok, error: v.error, action: v.action })
@@ -264,7 +310,7 @@ export function createVoiceFlow({
   /** T21 → T23/T24: execute exactly the frozen action that was read back. */
   async function executeNow() {
     const turn = enter('EXECUTE'), action = s.action, t = now()
-    const hold = s.hold = { capture: null }
+    const hold = s.hold = { capture: null, listening: false, wake: null, timer: null }
     note('execute.start', { action })
     let line
     try {
@@ -275,7 +321,10 @@ export function createVoiceFlow({
       note('execute.end', { ms: now() - t, ok: false, error: String(e?.message ?? e) })
       line = failText(e)
     }
-    try { await end(line, turn) } finally { release(hold) }
+    try {
+      await waitHeldListen(hold) // never speak into a barge-in mic that is still open
+      if (s.hold === hold) await end(line, turn) // abort() cleared the hold: nothing is said
+    } finally { release(hold) }
   }
 
   /** The result line is done: replay a capture held during EXECUTE. Dropped when abort() cleared the hold. */
@@ -295,7 +344,7 @@ export function createVoiceFlow({
     note('end', { line })
     const status = await speakOnce(line, t)
     if (t !== s.turn) return
-    if (status !== 'done') return dead(line)
+    if (status !== 'done') return lineFailed(status, line)
     reset()
   }
 
@@ -306,8 +355,13 @@ export function createVoiceFlow({
 
   function abortTurn(why) {
     clearGuard()
-    if (s.state !== 'IDLE') note('abort', { why, state: s.state })
+    if (s.state !== 'IDLE') { note('abort', { why, state: s.state }); silence() }
     s.turn++; s.state = 'IDLE'
+  }
+
+  /** Cuts the line in flight and drops the queued ones; the speaker implementation decides how (best-effort). */
+  function silence() {
+    try { cancelSpeech?.() } catch (e) { note('cancel-speech.error', { message: String(e?.message ?? e) }) }
   }
 
   function enter(state) {
@@ -322,7 +376,7 @@ export function createVoiceFlow({
   return {
     handle,
     active: () => s.state !== 'IDLE',
-    abort: (why = 'abort') => { s.hold = null; abortTurn(why); reset() },
+    abort: (why = 'abort') => { dropHold(); abortTurn(why); reset() },
     snapshot: () => ({ state: s.state, id: s.id, turn: s.turn, step: s.step, utterance: s.utterance, clarifies: s.clarifies, action: s.action }),
   }
 }

@@ -7,6 +7,8 @@ import { classifyAnswer } from './answers.js'
 import { VOICE } from './speaker.js'
 
 const CLOSED_LINE = 'That session closed. Cancelled.'
+/** How long a POST to the STT daemon may take before it counts as unavailable (it normally answers within ms). */
+const STT_REQUEST_TIMEOUT_MS = 5000
 
 /** Short random id for voice requests and conversations. */
 const uuid8 = () => randomUUID().slice(0, 8)
@@ -35,6 +37,7 @@ export function createVoiceService({
   fetchImpl = globalThis.fetch,
   ensureStt,
   record = () => {},
+  requestTimeoutMs = STT_REQUEST_TIMEOUT_MS,
 }) {
   let secret
   const agents = new Set()
@@ -98,12 +101,18 @@ export function createVoiceService({
     } catch { /* logging must not break voice */ }
   }
 
+  // Reliability: a daemon that accepts the connection but never answers would leave the flow in *_LISTEN with no guard
+  // armed (the guard starts only once started:true came back), so every hook read-out would stay suppressed. The
+  // timeout makes fetch reject, which the flow reports as "Speech service unavailable. Cancelled." (T11).
+  const requestSignal = () => AbortSignal.timeout(requestTimeoutMs)
+
   async function listen({ context: ctx, window_s }) {
     if (!client) throw new Error('voice control is not running')
     const res = await fetchImpl(`http://127.0.0.1:${port}/listen`, {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' },
       body: JSON.stringify({ context: ctx, window_s }),
+      signal: requestSignal(),
     })
     if (!res.ok) throw new Error(`STT service answered HTTP ${res.status}`)
     let body
@@ -127,6 +136,8 @@ export function createVoiceService({
       uuid: uuid8,
     }),
     classify: classifyAnswer,
+    // Barge-in / abort: silence the speak worker (queued lines dropped, the line in flight cut).
+    cancelSpeech: () => safe(() => speaker?.cancel?.()),
     log,
     setTimer,
     clearTimer,
@@ -142,7 +153,7 @@ export function createVoiceService({
   async function control(action) {
     if (!['listen', 'finish', 'cancel'].includes(action)) throw new Error('unknown voice action ' + action)
     if (!client) throw new Error('voice control is not running')
-    const res = await fetchImpl(`http://127.0.0.1:${port}/${action}`, { method: 'POST', headers: { Authorization: 'Bearer ' + secret } })
+    const res = await fetchImpl(`http://127.0.0.1:${port}/${action}`, { method: 'POST', headers: { Authorization: 'Bearer ' + secret }, signal: requestSignal() })
     if (!res.ok) throw new Error(`STT service answered HTTP ${res.status}`)
   }
 

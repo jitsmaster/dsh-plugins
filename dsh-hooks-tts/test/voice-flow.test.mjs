@@ -28,7 +28,7 @@ const CLASSES = { yes: 'yes', '是的': 'yes', stop: 'stop', cancel: 'stop', '�
 const fakeClassify = (t) => (t.trim() === '' ? 'empty' : CLASSES[t.trim().toLowerCase()] ?? 'text')
 
 function harness(over = {}) {
-  const h = { speaks: [], listens: [], decides: [], executes: [], logs: [], timers: [], validated: [], readBacks: [], results: [] }
+  const h = { speaks: [], listens: [], decides: [], executes: [], logs: [], timers: [], validated: [], readBacks: [], results: [], cancels: 0 }
   let tid = 0, u = 0
   const deps = {
     speak: (text, opts) => { const d = deferred(); h.speaks.push({ text, opts, ...d }); return d.promise },
@@ -43,6 +43,7 @@ function harness(over = {}) {
     resultText: (a, r) => { h.results.push([a, r]); return r && r.stale ? 'That request changed. Nothing done.' : 'Sent to ' + a.title + '.' },
     execute: (a) => { const d = deferred(); h.executes.push({ action: a, ...d }); return d.promise },
     classify: fakeClassify,
+    cancelSpeech: () => { h.cancels++ },
     now: () => 1000,
     log: (stage, data) => { h.logs.push({ stage, data }) },
     setTimer: (fn, ms) => { const id = ++tid; h.timers.push({ id, fn, ms }); return id },
@@ -60,6 +61,7 @@ function harness(over = {}) {
   h.answer = (text, context = h.ctx(), revision = 1) => h.flow.handle({ type: 'transcript', revision, text, context })
   h.idle = (reason, context = h.ctx()) => h.flow.handle({ type: 'idle', reason, context })
   h.bargeIn = () => h.flow.handle({ type: 'listening', context: null })
+  h.heldIdle = (reason = 'no_speech') => h.flow.handle({ type: 'idle', reason, context: null })
   h.speakDone = async (status = 'done') => { h.speaks.at(-1).resolve({ status, ms: 100 }); await tick() }
   h.listenStarted = async (started = true) => { h.listens.at(-1).resolve({ started }); await tick() }
   h.decideWith = async (r) => { h.decides.at(-1).resolve(r); await tick() }
@@ -647,12 +649,110 @@ test('F34 a capture during EXECUTE still speaks the result line first, then echo
   assert.equal(h.ctx().step, 'echo')
 })
 
-test('F34 a bare barge-in during EXECUTE still speaks the result line, then goes idle', async () => {
+test('F34 execute finishing while the barge-in mic is still open holds the result line until the capture arrives', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  const n = h.speaks.length
+  h.executes[0].resolve({}); await tick()
+  assert.equal(h.speaks.length, n, 'nothing is spoken into the open mic')
+  assert.equal(h.state(), 'EXECUTE')
+  assert.equal(h.flow.active(), true)
+  assert.equal(h.cancels, 0, 'the hold does not cancel speech: no line is queued')
+  h.capture('second thing'); await tick()
+  assert.equal(h.speaks.length, n + 1)
+  assert.equal(h.lastSaid(), 'Sent to Voice Work.', 'the result line is spoken first')
+  assert.equal(h.state(), 'END_SPEAK')
+  await h.speakDone()
+  assert.equal(h.lastSaid(), 'I heard: second thing. Is that right?')
+  assert.equal(h.state(), 'ECHO_SPEAK')
+  await h.speakDone()
+  assert.equal(h.ctx().id, 'id2')
+  assert.equal(h.ctx().step, 'echo')
+})
+
+test('F34 a held capture that ends without speech (idle) still gets the result line spoken, then goes idle', async () => {
+  for (const reason of ['no_speech', 'too_short', 'cancelled', 'done']) {
+    const h = harness()
+    await toDecisionListen(h)
+    h.answer('yes'); await tick()
+    h.bargeIn(); await tick()
+    const before = h.speaks.length
+    h.executes[0].resolve({}); await tick()
+    const n = h.speaks.length
+    assert.equal(n, before, 'held while the mic is open')
+    h.heldIdle(reason); await tick()
+    assert.equal(h.speaks.length, n + 1, reason)
+    await assertEnds(h, 'Sent to Voice Work.')
+  }
+})
+
+test('F34 a held capture with an empty transcript still gets the result line, then I did not catch that.', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  h.executes[0].resolve({}); await tick()
+  h.capture('   '); await tick()
+  assert.equal(h.lastSaid(), 'Sent to Voice Work.')
+  await h.speakDone()
+  await assertEnds(h, 'I did not catch that.')
+})
+
+test('F34 an STT listen error during the hold also releases the result line', async () => {
   const h = harness()
   await toDecisionListen(h)
   h.answer('yes'); await tick()
   h.bargeIn(); await tick()
   h.executes[0].reject(new Error('controller offline')); await tick()
+  h.flow.handle({ type: 'error', message: 'decoder crashed', context: null }); await tick()
+  await assertEnds(h, 'That failed: controller offline.')
+})
+
+test('F34 a listen end that never arrives cannot swallow the result line: the answer-guard time releases it', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  const before = h.speaks.length
+  h.executes[0].resolve({}); await tick()
+  assert.equal(h.speaks.length, before, 'held while the mic is open')
+  await h.fire(25000)
+  await assertEnds(h, 'Sent to Voice Work.')
+})
+
+test('F34 the hold timer does not outlive the hold, and a result spoken in time leaves it unarmed', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  h.executes[0].resolve({}); await tick()
+  h.capture('second thing'); await tick()
+  assert.equal(h.timers.filter((t) => t.ms === 25000).length, 0)
+})
+
+test('F34 abort() while the result line waits for the held capture speaks nothing', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  h.executes[0].resolve({}); await tick()
+  const n = h.speaks.length
+  h.flow.abort('disabled'); await tick()
+  assert.equal(h.flow.active(), false)
+  h.capture('second thing'); await tick()
+  assert.equal(h.speaks.length, n + 1, 'only the fresh capture is echoed; the dropped result line is never spoken')
+  assert.equal(h.lastSaid(), 'I heard: second thing. Is that right?')
+})
+
+test('F34 a bare barge-in during EXECUTE still speaks the result line (once the mic window ended), then goes idle', async () => {
+  const h = harness()
+  await toDecisionListen(h)
+  h.answer('yes'); await tick()
+  h.bargeIn(); await tick()
+  h.executes[0].reject(new Error('controller offline')); await tick()
+  h.heldIdle('no_speech'); await tick()
   await assertEnds(h, 'That failed: controller offline.')
 })
 
@@ -666,6 +766,94 @@ test('F34 abort() during EXECUTE drops the result line and any held capture', as
   h.executes[0].resolve({}); await tick()
   assert.equal(h.speaks.length, n)
   assert.equal(h.flow.active(), false)
+})
+
+// --- cancelSpeech: a barge-in/abort silences the speak worker (finding: stale lines played into the open mic).
+test('F36 barge-in cancels queued and in-flight speech once, whichever line is being spoken', async () => {
+  const h = harness()
+  h.capture('open the parser'); await tick()
+  assert.equal(h.cancels, 0, 'nothing is cancelled when the flow starts')
+  h.bargeIn(); await tick()
+  assert.equal(h.cancels, 1)
+  const h2 = harness()
+  await toDecide(h2)
+  h2.bargeIn(); await tick()
+  assert.equal(h2.cancels, 1, 'the Deciding line is cut as well')
+  const h3 = harness()
+  await toDecisionListen(h3)
+  h3.bargeIn(); await tick()
+  assert.equal(h3.cancels, 1)
+})
+
+test('F36 a barge-in with no flow running cancels nothing; abort() cancels only an active flow', async () => {
+  const h = harness()
+  h.bargeIn(); await tick()
+  assert.equal(h.cancels, 0)
+  h.flow.abort('disabled')
+  assert.equal(h.cancels, 0, 'abort of an idle flow touches nothing')
+  h.capture('open the parser'); await tick()
+  h.flow.abort('session closed')
+  assert.equal(h.cancels, 1)
+  assert.equal(h.flow.active(), false)
+})
+
+test('F36 the capture that follows a barge-in speaks a fresh echo and does not cancel it', async () => {
+  const h = harness()
+  await toEchoListen(h)
+  h.bargeIn(); await tick()
+  assert.equal(h.cancels, 1)
+  h.capture('second thing'); await tick()
+  assert.equal(h.cancels, 1, 'the recapture of an idle flow cancels nothing')
+  assert.equal(h.lastSaid(), 'I heard: second thing. Is that right?')
+})
+
+test('F36 a capture that replaces a running turn without a barge-in event cancels that turn', async () => {
+  const h = harness()
+  h.capture('open the parser'); await tick()
+  h.capture('second thing'); await tick()
+  assert.equal(h.cancels, 1)
+  assert.equal(h.lastSaid(), 'I heard: second thing. Is that right?')
+})
+
+test('F36 a throwing cancelSpeech never breaks the flow', async () => {
+  const h = harness({ cancelSpeech: () => { throw new Error('boom') } })
+  h.capture('open the parser'); await tick()
+  assert.doesNotThrow(() => h.bargeIn())
+  assert.equal(h.flow.active(), false)
+  h.capture('again'); await tick()
+  assert.equal(h.lastSaid(), 'I heard: again. Is that right?')
+})
+
+test('F36 the flow works without a cancelSpeech dep', async () => {
+  const h = harness({ cancelSpeech: undefined })
+  h.capture('open the parser'); await tick()
+  assert.doesNotThrow(() => h.bargeIn())
+})
+
+test('F37 a speak that resolves cancelled is a silent stop: no retry, no speak-dead, no listen', async () => {
+  const h = harness()
+  h.capture('open the parser'); await tick()
+  await h.speakDone('cancelled')
+  assert.equal(h.speaks.length, 1, 'no retry of a cancelled line')
+  assert.equal(h.listens.length, 0)
+  assert.equal(h.flow.active(), false)
+  assert.ok(!h.stages().includes('speak-dead'))
+})
+
+test('F37 cancelled at the Deciding line and at a final line also end silently', async () => {
+  const h = harness()
+  await toDecide(h)
+  await h.decideWith({ ok: true, raw: PROMPT })
+  await h.speakDone('cancelled')
+  assert.equal(h.speaks.length, 2, 'no read-back, no retry')
+  assert.equal(h.flow.active(), false)
+  assert.ok(!h.stages().includes('speak-dead'))
+  const g = harness()
+  g.capture('  '); await tick()
+  await g.speakDone('cancelled')
+  assert.equal(g.speaks.length, 1)
+  assert.equal(g.flow.active(), false)
+  assert.ok(!g.stages().includes('speak-dead'))
 })
 
 test('F35 listen.open logs ms since the listen POST; decide.end logs the model and raw cut to 300 chars', async () => {

@@ -47,7 +47,7 @@ function fakeChild() {
 }
 
 function harness(over = {}) {
-  const h = { spawns: [], logs: [], timers: [], unlinks: [], t: 1000 }
+  const h = { spawns: [], logs: [], timers: [], unlinks: [], writes: [], t: 1000 }
   let tid = 0
   h.speaker = speakerModule.createSpeakWorker({
     spawn: (cmd, args, opts) => { const child = fakeChild(); h.spawns.push({ cmd, args, opts, child }); return child },
@@ -58,6 +58,7 @@ function harness(over = {}) {
     clearTimer: (id) => { h.timers = h.timers.filter((t) => t.id !== id) },
     now: () => h.t,
     unlink: (p) => { h.unlinks.push(p) }, // never touch the real priority flag from a test
+    writeFile: (p, c) => { h.writes.push([p, String(c)]) }, // nor the real stop flag / cancel marker
     ...over,
   })
   h.child = () => h.spawns.at(-1)?.child
@@ -386,4 +387,96 @@ test('S6 stop() without a worker is a no-op', () => {
   const h = harness()
   assert.doesNotThrow(() => h.speaker.stop())
   assert.equal(h.spawns.length, 0)
+})
+
+// --- cancel(): a barge-in must silence what the worker still has to say (finding: stale lines played into the open mic).
+// Shapes chosen: requests stay written at once (S1/S2), so queued lines cannot be recalled from stdin. cancel() therefore
+// (1) resolves every queued line (not the head, which is in flight in the worker) { status: 'cancelled' } at once,
+// (2) writes <state dir>\tts-voice-cancel.json {"before": <next request id>} - the worker answers every line it has not
+//     begun with an id below that as 'cancelled' without speaking - and then
+// (3) writes <state dir>\tts-stop.flag, which Invoke-KokoroTts polls to cut the line in flight.
+// It writes nothing when no line is outstanding (the flag would cut an unrelated hook read-out) and never kills the worker.
+const CANCEL = join('SD', 'tts-voice-cancel.json')
+const STOP = join('SD', 'tts-stop.flag')
+
+test('S10 cancel() resolves queued lines cancelled at once, leaves the line in flight, then writes the cancel marker and the stop flag', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' } })
+  const p1 = h.speaker.speak('in flight', VOICE)
+  const p2 = h.speaker.speak('queued one', VOICE)
+  const p3 = h.speaker.speak('queued two', VOICE)
+  await tick()
+  const c = h.child()
+  h.t += 70
+  h.speaker.cancel()
+  assert.deepEqual(await peek(p2), { status: 'cancelled', ms: 70 })
+  assert.deepEqual(await peek(p3), { status: 'cancelled', ms: 70 })
+  assert.equal(await peek(p1), 'pending', 'the head line is already in the worker; the flag cuts it, its own status resolves it')
+  assert.deepEqual(h.writes.map(([p]) => p), [CANCEL, STOP], 'marker first, so a following queued line is skipped, then the cut')
+  assert.deepEqual(JSON.parse(h.writes[0][1]), { before: 4 })
+  assert.equal(c.killed, false, 'the worker survives a cancel')
+  await c.send({ id: 1, status: 'done', ms: 30 })
+  assert.deepEqual(await peek(p1), { status: 'done', ms: 30 })
+  const p4 = h.speaker.speak('after the cancel', VOICE)
+  await tick()
+  assert.equal(c.input, line(1, 'in flight') + line(2, 'queued one') + line(3, 'queued two') + line(4, 'after the cancel'))
+  assert.equal(h.spawns.length, 1)
+  await c.send({ id: 4, status: 'done', ms: 5 })
+  assert.deepEqual(await peek(p4), { status: 'done', ms: 5 })
+})
+
+test('S10 cancel() leaves a started line alone but still cancels the lines queued behind it', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' } })
+  const p1 = h.speaker.speak('playing', VOICE)
+  const p2 = h.speaker.speak('queued', VOICE)
+  await tick()
+  await h.child().send({ id: 1, event: 'start', durationMs: 4000 })
+  h.speaker.cancel()
+  assert.equal((await peek(p2)).status, 'cancelled')
+  assert.equal(await peek(p1), 'pending')
+  assert.deepEqual(h.timers.map((t) => t.ms), [9000], 'the started line keeps its playback timer')
+  assert.deepEqual(h.writes.map(([p]) => p), [CANCEL, STOP])
+})
+
+test('S10 cancel() with nothing outstanding writes nothing (an idle speaker must not cut another process)', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' } })
+  assert.doesNotThrow(() => h.speaker.cancel())
+  h.speaker.warm()
+  h.speaker.cancel()
+  const p = h.speaker.speak('x', VOICE)
+  await tick()
+  await h.child().send({ id: 1, status: 'done', ms: 1 })
+  await peek(p)
+  h.speaker.cancel()
+  assert.deepEqual(h.writes, [])
+  assert.equal(h.spawns.length, 1)
+})
+
+test('S10 the state dir of the cancel files follows DSH_TTS_STATE_DIR, else TEMP\\dsh-tts', async () => {
+  const h = harness({ env: { TEMP: 'T' } })
+  h.speaker.speak('x', VOICE)
+  await tick()
+  h.speaker.cancel()
+  assert.deepEqual(h.writes.map(([p]) => p), [join('T', 'dsh-tts', 'tts-voice-cancel.json'), join('T', 'dsh-tts', 'tts-stop.flag')])
+})
+
+test('S10 a failing or rejecting writeFile never breaks cancel()', async () => {
+  const h = harness({ env: { DSH_TTS_STATE_DIR: 'SD' }, writeFile: () => { throw new Error('EPERM') } })
+  h.speaker.speak('a', VOICE)
+  const q = h.speaker.speak('b', VOICE)
+  await tick()
+  assert.doesNotThrow(() => h.speaker.cancel())
+  assert.equal((await peek(q)).status, 'cancelled')
+  const g = harness({ env: { DSH_TTS_STATE_DIR: 'SD' }, writeFile: async () => { throw new Error('EBUSY') } })
+  g.speaker.speak('a', VOICE)
+  await tick()
+  assert.doesNotThrow(() => g.speaker.cancel())
+  await tick()
+})
+
+test('S10 a cancelled status from the worker (it skipped the line) resolves the line cancelled', async () => {
+  const h = harness()
+  const p = h.speaker.speak('x', VOICE)
+  await tick()
+  await h.child().send({ id: 1, status: 'cancelled', ms: 2 })
+  assert.deepEqual(await peek(p), { status: 'cancelled', ms: 2 })
 })

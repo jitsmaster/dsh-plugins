@@ -43,7 +43,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 |---|------|-------------------|-----------------|----|
 | T1 | IDLE or any | E.capture, text non-empty | abort old turn; new id; utterance=text; history=[] ; speak "I heard: {text}. Is that right?" | ECHO_SPEAK |
 | T2 | IDLE or any | E.capture, text empty/whitespace | → END "I did not catch that." | IDLE |
-| T3 | any ≠ IDLE | E.bargein | turn++ (kills pending awaits); log barge-in; await the capture transcript (no speech: STT already cut audio) | IDLE(waiting) |
+| T3 | any ≠ IDLE | E.bargein | turn++ (kills pending awaits); `cancelSpeech()` (speaker.cancel(): queued lines resolve 'cancelled', the line in flight is cut, see §2); log barge-in; await the capture transcript | IDLE(waiting) |
 | T4 | ECHO_SPEAK | E.spoken | listen(step 'echo', 10 s) | ECHO_LISTEN |
 | T5 | ECHO_LISTEN | answer 'yes' | speak "Deciding with LLM." AND start decide() concurrently | DECIDE |
 | T6 | ECHO_LISTEN / READBACK_LISTEN / CLARIFY_LISTEN | answer 'stop' | → END "Cancelled." | IDLE |
@@ -52,7 +52,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T8 | any *_LISTEN | answer 'empty', idle no_speech/too_short/cancelled, E.guard | → END "No answer. Cancelled." | IDLE |
 | T9 | any *_LISTEN | idle error / E.error | → END "Speech recognition failed. Cancelled." | IDLE |
 | T10 | any *_SPEAK→listen | E.listenRes started:false | retry once after 500 ms; still false → END "The microphone is busy. Cancelled." | IDLE |
-| T11 | any *_SPEAK→listen | E.listenRes rejected (HTTP/network) | → END "Speech service unavailable. Cancelled." | IDLE |
+| T11 | any *_SPEAK→listen | E.listenRes rejected (HTTP/network, or no answer from the STT daemon within 5 s) | → END "Speech service unavailable. Cancelled." | IDLE |
 | T12 | DECIDE | decided action (valid, not clarify) AND "Deciding" line finished | action frozen; speak "I will {readBack}. Shall I do it?" | READBACK_SPEAK |
 | T13 | DECIDE | decided clarify, clarifies < 2 | clarifies++; history.push({utterance, question}); speak "{question}" | CLARIFY_SPEAK |
 | T14 | DECIDE | clarify and clarifies ≥ 2 | → END "I could not work out what to do. Cancelled." | IDLE |
@@ -64,10 +64,11 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T20 | READBACK_SPEAK / CLARIFY_SPEAK | E.spoken | listen(step 'decision' / 'clarify', 10 s) | *_LISTEN |
 | T21 | READBACK_LISTEN | answer 'yes' | execute(frozen action) | EXECUTE |
 | T22 | CLARIFY_LISTEN | answer 'text' or 'yes' | utterance = answer; speak echo (T1 wording) | ECHO_SPEAK |
-| T23 | EXECUTE | ok | → END resultText(action) | IDLE |
+| T23 | EXECUTE | ok | → END resultText(action); when a barge-in/capture mic is open (listening{context null} seen, no transcript/idle/error yet) the line is held until that listen ended (or windowS+15 s), then spoken first; a held capture is echoed after it (T1) | IDLE |
 | T24 | EXECUTE | throws / stale approval | → END "That failed: {short error}." / "That request changed. Nothing done." | IDLE |
 | T25 | any *_SPEAK | speak status failed/timeout | log; one retry of the same line; still failing → IDLE silently (cannot speak) + log 'speak-dead' | IDLE |
-| T26 | any | voice control disabled / service.stop() | abort; no speech | IDLE |
+| T26 | any | voice control disabled / service.stop() | abort (also `cancelSpeech()` when a turn was running); no speech | IDLE |
+| T27 | any *_SPEAK / END_SPEAK / DECIDE line | speak status 'cancelled' (speaker.cancel()) | silent stop for that turn: no retry, no 'speak-dead' log, no listen | IDLE |
 
 Notes:
 - DECIDE waits for BOTH the "Deciding with LLM." line to end AND decide() before the read-back (avoid queue overlap);
@@ -75,6 +76,8 @@ Notes:
 - Hotkey pressed DURING a flow listen → STT calls finish() (no new listen): ends the answer early; context kept → normal
   E.answer. Hotkey while mic closed → listening{context:null} → T3 then T1.
 - E.guard: guardMs = window_s*1000 + 15 s, re-armed on 'transcribing' of the current turn (long answers, slow decode).
+- EXECUTE hold: during EXECUTE a barge-in/capture (context null) is held, never spoken over. The result line waits for the held listen to end (transcript rev 1, idle or error with context null), is then spoken, and only afterwards the held capture is processed (echo). An empty held transcript or no-speech idle still gets the result line. If the listen end never arrives the same guard time (window_s*1000 + 15 s, logged 'hold.timeout') releases it. abort() drops the hold and the result line.
+- Barge-in silence: `listening{context null}` is also the STT's signal to create tts-stop.flag, but Invoke-KokoroTts used to delete that flag just before playback, so lines still synthesised/queued played into the open mic. Fixed by speaker.cancel() (below) and by Invoke-KokoroTts keeping flags newer than the start of its own call.
 - Echo re-entry from READBACK (T7) discards the frozen action.
 - 'yes' at CAPTURE (no flow context) is NOT special: it is echoed like any utterance.
 
@@ -84,7 +87,8 @@ New voice/flow.js
   createVoiceFlow({ speak, listen, decide, validate, readBack, resultText, execute, classify, now, log,
                     setTimer, clearTimer, uuid, windowS=10, guardExtraMs=15000, maxClarify=2 })
   → { handle(event): void, active(): boolean, abort(reason): void, snapshot(): {state, id, turn, step} }
-  speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'failed'|'timeout', startMs?, ms}>
+  cancelSpeech() → void   (optional dep; called on barge-in/abort/recapture of a running turn; service.js wires speaker.cancel)
+  speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'failed'|'timeout'|'cancelled', startMs?, ms}>
   listen({context, window_s}) → Promise<{started:boolean}>     (rejects on HTTP/network error)
   decide(utterance, {history}) → Promise<{ok:true, raw:object} | {ok:false, error:'timeout'|'llm'|'unparseable'}>
   validate(raw) → {ok:true, action} | {ok:false, error:'invalid'|'no-session'|'no-approval', title?}
@@ -107,20 +111,28 @@ Changed
 - voice/service.js: drop createDispatcher/router/confirm/minConfidence; build flow + decider context; owns 'selected'
   (voice target) alongside lastAlerted/lastActive/agents/titles; onEvent → flow.handle(event); new
   listen({context, window_s}) POSTs JSON body (Content-Type application/json); control('listen') from GUI unchanged
-  (no body → context null = CAPTURE); busy() = client.busy || flow.active(); agentDisposed clears selected and aborts
+  (no body → context null = CAPTURE); every POST to the STT daemon (listen/control) carries AbortSignal.timeout(5000) (requestTimeoutMs) so a daemon that never answers rejects → T11 instead of leaving the flow in *_LISTEN with no guard armed; busy() = client.busy || flow.active(); agentDisposed clears selected and aborts
   the flow if its frozen action targets that id ("That session closed. Cancelled."); reconcile() prewarms speaker when
   enabled, speaker.stop() when disabled; status() adds flow: flow.snapshot(), selected.
 - voice/speaker.js: replace createSpeaker with createSpeakWorker({ spawn, root, env, log, setTimer, clearTimer,
   requestTimeoutMs=45000 (head of queue → 'start' only), playbackMarginMs=5000, playbackFallbackMs=120000, unlink,
   maxRespawns=3 within 60 s → one-shot mode }) → { speak(text,opts), warm(), stop() }; also exports VOICE.
-  On 'start' the timer is re-armed with durationMs + 5 s (120 s without a duration). Killing a worker mid-line
+  On 'start' the timer is re-armed with durationMs + 5 s (120 s without a duration).
+  speaker.cancel() (new, injectable writeFile): lines queued behind the head of a worker's queue that never started resolve
+  'cancelled' at once; when any line is outstanding it writes <state dir>\tts-voice-cancel.json {"before": <next id>} and then
+  <state dir>\tts-stop.flag. The worker answers every not-yet-begun line with id < before as 'cancelled' without speaking
+  (it cannot read stdin while speaking, so a file is the channel); the stop flag cuts the line in flight. Nothing is written
+  with no outstanding line (it would cut an unrelated hook read-out). The worker is never killed. Killing a worker mid-line
   deletes <state dir>\tts-priority-pending.flag after it exited (its finally block never ran).
 - scripts/speak-worker.ps1 (new, pure ASCII): dot-source tts-client.ps1; emit {"ready":true}; loop: read UTF-8 stdin
   line → {id,text,gender,priority} → NO Test-TtsMuted → Invoke-KokoroTts -Text (Clean-ForSpeech text) -Gender
   -Priority -OnPlaybackStart { emit {"id",event:"start",durationMs} } → emit {"id","status":"done"|"failed","ms"};
   EOF → exit 0. At start-up (before ready) it removes a stale tts-priority-pending.flag.
 - scripts/tts-client.ps1: Invoke-KokoroTts gains optional [scriptblock]$OnPlaybackStart, invoked right before
-  $player.Play() (backward compatible; hooks unchanged).
+  $player.Play() (backward compatible; hooks unchanged). Before playback it deletes only stop flags older than its own
+  start ($callStart), so a barge-in flag created while the line was synthesised/queued still cuts it.
+- scripts/speak-worker.ps1 also: removes a tts-voice-cancel.json older than its own process at start-up (request ids restart
+  per plugin session; a marker written after the process started is kept) and answers cancelled lines {"id","status":"cancelled","ms":0}.
 - index.js: wire decider/flow/speaker; delete createLlmRouter + createSpeaker + confirm: wiring; L224 keeps
   voice.busy() (now includes flow.active()); remove switchTo; titles via ctx sessionTitle; slash list via
   ctx.get('commands').list(agent) for the target agent; cwdOf(id) = voiceAgents.get(id)?.session?.header?.cwd.
