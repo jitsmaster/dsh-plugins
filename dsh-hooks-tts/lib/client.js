@@ -154,6 +154,100 @@ window.__ModuleLoader__.load({
 		}
 		// ---- session groups: per-session "..." menu entries ----
 		// Group actions live in each Session row's menu (slot sidebar.workspaces.session.menu.item), not on the Usage page.
+		// window.prompt() is not implemented in the DSH Desktop (Electron) shell, so ask for text in a dialog instead.
+		// askText uses DSH's own Modal and Button primitives (the same look as the session Rename dialog); askTextPlain is the
+		// bare-DOM fallback for a shell that does not share those primitives. Both resolve to the entered text, or null when cancelled.
+		function askText(title, placeholder, confirmLabel) {
+			let UI = null, RootApi = null;
+			try { UI = require("@deepseek-ai/dsh-client-ui-primitives"); RootApi = require("react-dom/client"); } catch (_e) { /* fall back below */ }
+			if (!UI || !UI.Modal || !UI.Button || !RootApi || !RootApi.createRoot) return askTextPlain(title, placeholder);
+			return new Promise((resolve) => {
+				const host = document.createElement("div");
+				host.setAttribute("data-hooks-dialog", "");
+				document.body.append(host);
+				const root = RootApi.createRoot(host);
+				let settled = false;
+				const done = (value) => {
+					if (settled) return;
+					settled = true;
+					resolve(value);
+					setTimeout(() => { root.unmount(); host.remove(); }, 0); // never unmount from inside the dialog's own event handler
+				};
+				function NameDialog() {
+					const [draft, setDraft] = React.useState("");
+					const composing = React.useRef(false); // IME: the Enter that commits a composition must not submit
+					const ok = draft.trim() !== "";
+					const submit = () => { if (ok) done(draft.trim()); };
+					return h(UI.Modal, {
+						open: true, onClose: () => done(null), closeLabel: "Close", title,
+						footer: h(React.Fragment, null,
+							h(UI.Button, { variant: "outline", onClick: () => done(null) }, "Cancel"),
+							h(UI.Button, { variant: "primary", disabled: !ok, onClick: submit }, confirmLabel || "Create")),
+					},
+						h("input", {
+							type: "text", value: draft, placeholder: placeholder || "", "aria-label": title, "data-modal-autofocus": "",
+							style: { width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: "1px solid rgba(128,128,128,.5)", background: "transparent", color: "inherit", font: "inherit" },
+							onChange: (e) => setDraft(e.target.value),
+							onCompositionStart: () => { composing.current = true; },
+							onCompositionEnd: () => { composing.current = false; },
+							onKeyDown: (e) => { if (e.key === "Enter" && !composing.current) { e.preventDefault(); submit(); } },
+						}));
+				}
+				root.render(h(NameDialog));
+			});
+		}
+		function askTextPlain(title, placeholder) {
+			return new Promise((resolve) => {
+				const prevFocus = document.activeElement;
+				const overlay = document.createElement("div");
+				overlay.setAttribute("data-hooks-dialog", "");
+				overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);pointer-events:auto";
+				const box = document.createElement("form");
+				box.setAttribute("role", "dialog");
+				box.setAttribute("aria-modal", "true");
+				box.setAttribute("aria-label", title);
+				box.style.cssText = "background:#1c1c1f;color:#eee;border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:16px;min-width:300px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,.5);font:14px system-ui,sans-serif";
+				const label = document.createElement("div");
+				label.textContent = title;
+				label.style.cssText = "margin-bottom:10px;font-weight:600";
+				const input = document.createElement("input");
+				input.type = "text";
+				input.placeholder = placeholder || "";
+				input.style.cssText = "width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid rgba(128,128,128,.5);background:#111;color:inherit;font:inherit";
+				const row = document.createElement("div");
+				row.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:12px";
+				const mk = (text, type, primary) => {
+					const b = document.createElement("button");
+					b.type = type; b.textContent = text;
+					b.style.cssText = "padding:5px 12px;border-radius:6px;cursor:pointer;color:inherit;font:inherit;border:1px solid " + (primary ? "#30a46c" : "rgba(128,128,128,.4)") + ";background:" + (primary ? "rgba(48,164,108,.25)" : "transparent");
+					return b;
+				};
+				const cancel = mk("Cancel", "button", false);
+				const ok = mk("OK", "submit", true);
+				row.append(cancel, ok);
+				box.append(label, input, row);
+				overlay.append(box);
+				let done = false;
+				const finish = (value) => {
+					if (done) return;
+					done = true;
+					document.removeEventListener("keydown", onKey, true);
+					overlay.remove();
+					try { if (prevFocus && prevFocus.focus) prevFocus.focus(); } catch (_e) { /* focus is best effort */ }
+					resolve(value);
+				};
+				const onKey = (e) => {
+					if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(null); }
+					else e.stopPropagation(); // keep the menu/page shortcuts from seeing typing
+				};
+				document.addEventListener("keydown", onKey, true);
+				box.addEventListener("submit", (e) => { e.preventDefault(); finish(input.value); });
+				cancel.addEventListener("click", () => finish(null));
+				overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) finish(null); });
+				document.body.append(overlay);
+				setTimeout(() => input.focus(), 0);
+			});
+		}
 		function reportMoveError(err) { window.alert("Group change failed: " + (err && err.message || String(err))); }
 		async function sendMove(body) {
 			const res = await fetch(GROUPS_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -205,7 +299,7 @@ window.__ModuleLoader__.load({
 				current ? item("out", "Remove from group \u201c" + current.name + "\u201d", () => sendMove({ sessionId, groupId: null }), "out") : null,
 				...targets.map((g) => item(g.id, (current ? "Move to group \u201c" : "Add to group \u201c") + g.name + "\u201d", () => sendMove({ sessionId, groupId: g.id }), current ? "move" : "add")),
 				item("new", current ? "Move to new group\u2026" : "New group\u2026", async () => {
-					const name = window.prompt("Name for the new group");
+					const name = await askText("New group", "Group name", "Create");
 					if (name && name.trim()) await sendMove({ sessionId, newGroupName: name });
 				}, "add"),
 			];
