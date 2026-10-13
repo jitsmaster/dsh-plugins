@@ -24,6 +24,7 @@ import { installAskUserTuning } from './ask.js'
 import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
+import { createGroupPinner } from './pin-groups.js'
 import { buildHookBody, createAlerts } from './voice/alerts.js'
 import { createVoiceService } from './voice/service.js'
 import { createDecider } from './voice/decider.js'
@@ -182,6 +183,13 @@ export function apply(ctx, baseConfig = {}) {
   const alerts = createAlerts()
   const groups = createGroups(stateDir, { trace: (line) => ctx.logger.warn(`hooks-tts: ${line}`) })
   const handoffs = createHandoffTracker(stateDir)
+  // Pinning a session pins the rest of its group (the registry announces every pin change).
+  const groupPinner = createGroupPinner({
+    groups,
+    registry: () => ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry,
+    trace: (line) => ctx.logger.warn(`hooks-tts: ${line}`),
+  })
+  ctx.on('domain/changed', (change) => { void groupPinner.onChange(change) })
   // "Follow-up from handoff" spawns through the cap's machinery, installed further down (hence lazy).
   let contextCap
   startStatusService(ctx, config, stateDir, controller.signal, settings, worktrees, groups, { handoffs, followUp: (sessionId) => contextCap.followUp(sessionId), voice: () => voice })
