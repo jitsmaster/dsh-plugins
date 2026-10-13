@@ -175,22 +175,49 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
     const g = data.groups.find((x) => x.id === groupId)
     if (!g) return undefined
     if (!g.sessionIds.includes(sessionId)) {
-      for (const other of data.groups) if (other !== g) other.sessionIds = other.sessionIds.filter((id) => id !== sessionId)
+      const left = takeOut(sessionId, g)
       g.sessionIds.push(sessionId)
-      dropEmpty()
+      dropEmpty(left)
       save()
     }
     return clone(g)
   }
 
-  /** An automatic group with no member left carries no information: remove it. A group the user created by hand stays until they delete it. */
-  function dropEmpty() { data.groups = data.groups.filter((x) => x.manual || x.sessionIds.length > 0) }
+  /** Take `sessionId` out of every group but `keep`; returns the groups it left. */
+  function takeOut(sessionId, keep) {
+    const left = new Set()
+    for (const g of data.groups) {
+      if (g === keep || !g.sessionIds.includes(sessionId)) continue
+      g.sessionIds = g.sessionIds.filter((id) => id !== sessionId)
+      left.add(g)
+    }
+    return left
+  }
+
+  /**
+   * A group with nothing in it carries no information: remove it, hand-made or not. The one exception is a
+   * hand-made group nobody has joined yet (it was just created empty): it stays until a session joins and leaves, or
+   * the user deletes it. `left` holds the groups that just lost a member.
+   */
+  function dropEmpty(left = new Set()) { data.groups = data.groups.filter((x) => x.sessionIds.length > 0 || (x.manual && !left.has(x))) }
+
+  /** Drop members whose session no longer exists (`isKnown(id)` false); groups left empty are removed. True when something changed. */
+  function pruneMissing(isKnown) {
+    const left = new Set()
+    for (const g of data.groups) {
+      const keep = g.sessionIds.filter((id) => isKnown(id))
+      if (keep.length !== g.sessionIds.length) { g.sessionIds = keep; left.add(g) }
+    }
+    if (left.size === 0) return false
+    dropEmpty(left)
+    save()
+    return true
+  }
 
   /** Manual move: into group `groupId`, or out of every group when it is null. Throws on an unknown group. */
   function moveSession(sessionId, groupId) {
     if (groupId === null) {
-      for (const g of data.groups) g.sessionIds = g.sessionIds.filter((id) => id !== sessionId)
-      dropEmpty()
+      dropEmpty(takeOut(sessionId))
       save()
       return undefined
     }
@@ -201,16 +228,16 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
 
   /**
    * A new group with a user-chosen name. With a `sessionId` it holds that session (moved out of any other group);
-   * without one it starts empty. Only an empty-created group is kept when emptied (until deleted); one created around a session vanishes once empty like an automatic group.
+   * without one it starts empty and stays until a session joins it (or the user deletes it). Any group vanishes once its last session leaves.
    */
   function createGroup(name, sessionId, workspaceId) {
     const clean = clip(String(name ?? ''))
     if (!clean) throw new Error('a group needs a name')
     if (data.groups.length >= MAX_GROUPS && !data.groups.some((x) => x.sessionIds.length === 0)) throw new Error('too many groups')
-    if (sessionId !== undefined) for (const other of data.groups) other.sessionIds = other.sessionIds.filter((id) => id !== sessionId)
+    const left = sessionId === undefined ? new Set() : takeOut(sessionId)
     const group = { id: randomUUID(), workspaceId, name: clean, createdAt: now(), ...(sessionId === undefined ? { manual: true } : {}), sessionIds: sessionId === undefined ? [] : [sessionId] }
     data.groups.push(group)
-    dropEmpty()
+    dropEmpty(left)
     save()
     return clone(group)
   }
@@ -233,7 +260,7 @@ export function createGroups(stateDir, { now = Date.now, trace = () => {} } = {}
   /** Groups, optionally of one workspace. */
   const list = (workspaceId) => data.groups.filter((g) => workspaceId === undefined || g.workspaceId === workspaceId).map(clone)
 
-  return { ensureGroup, addToGroup, moveSession, createGroup, deleteGroup, backfillWorkspace, groupOf, list, saved: () => lastSaveOk, path }
+  return { ensureGroup, addToGroup, moveSession, createGroup, deleteGroup, pruneMissing, backfillWorkspace, groupOf, list, saved: () => lastSaveOk, path }
 }
 
 /**

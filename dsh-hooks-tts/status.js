@@ -255,8 +255,23 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     })
   }
 
+  // Every session that still exists: loaded ones plus those a workspace lists. Undefined while the registry has nothing
+  // to say (not ready yet), so a startup race never empties the groups.
+  const existingSessionIds = () => {
+    try {
+      const list = (ctx.get('workspaceRegistry') ?? ctx.workspaceRegistry)?.list() ?? []
+      if (list.length === 0) return undefined
+      const ids = new Set(agents.keys())
+      for (const w of list) for (const sid of w.sessionIds ?? []) ids.add(sid)
+      return ids
+    } catch { return undefined }
+  }
+
   // The /groups view, plus the sessions whose latest handoff note still exists (the menu offers "Follow-up from handoff").
   const groupsPayload = () => {
+    // Sessions deleted since the last look leave their groups; a group with nothing in it goes away.
+    const existing = existingSessionIds()
+    if (existing) groups?.pruneMissing(existing.has.bind(existing))
     let withHandoff = []
     try { withHandoff = handoffs?.withHandoff() ?? [] } catch { /* best effort */ }
     return { ...buildGroupsView(groups?.list() ?? [], liveSessions(), workspaceList()), handoffs: withHandoff }

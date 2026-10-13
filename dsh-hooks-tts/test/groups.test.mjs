@@ -124,10 +124,44 @@ test('deleteGroup removes only an empty group', () => {
   const g = groups.createGroup('Planning', undefined, 'ws1')
   groups.addToGroup(g.id, 's1')
   assert.throws(() => groups.deleteGroup(g.id), /not empty/)
-  groups.moveSession('s1', null)
-  groups.deleteGroup(g.id)
+  groups.moveSession('s1', null) // the group is emptied: it goes away on its own
+  assert.equal(groups.list().length, 0)
+  const empty = groups.createGroup('Unused', undefined, 'ws1')
+  groups.deleteGroup(empty.id)
   assert.equal(groups.list().length, 0)
   assert.throws(() => groups.deleteGroup('nope'), /unknown group/)
+})
+
+test('a hand-made group that loses its last session is removed, whichever way the session leaves', () => {
+  const groups = fresh()
+  const g = groups.createGroup('Planning', undefined, 'ws1')
+  const other = groups.createGroup('Other', undefined, 'ws1')
+  groups.addToGroup(g.id, 's1')
+  groups.moveSession('s1', other.id) // moved to another group
+  assert.deepEqual(groups.list().map((x) => x.id), [other.id])
+  groups.createGroup('Around', 's1', 'ws1') // a new group around the session takes it out of `other`
+  assert.equal(groups.list().some((x) => x.id === other.id), false)
+})
+
+test('pruneMissing: sessions that no longer exist leave their groups, and an emptied group is removed', () => {
+  const groups = fresh()
+  const a = groups.ensureGroup('s1', 'ws1', { title: 'Alpha work' })
+  groups.addToGroup(a.id, 's2')
+  const b = groups.ensureGroup('s3', 'ws1', { title: 'Beta work' })
+  const manual = groups.createGroup('Planning', undefined, 'ws1')
+  groups.addToGroup(manual.id, 's4')
+  assert.equal(groups.pruneMissing((id) => id === 's1'), true)
+  assert.deepEqual(groups.groupOf('s1').sessionIds, ['s1'])
+  assert.equal(groups.list().some((x) => x.id === b.id || x.id === manual.id), false)
+  assert.equal(groups.pruneMissing((id) => id === 's1'), false) // nothing left to prune
+  assert.equal(createGroups(groups.path.replace(/groups\.json$/, '')).list().length, 1) // persisted
+})
+
+test('pruneMissing keeps a hand-made group that was never populated', () => {
+  const groups = fresh()
+  const g = groups.createGroup('Planning', undefined, 'ws1')
+  assert.equal(groups.pruneMissing(() => false), false)
+  assert.equal(groups.list().some((x) => x.id === g.id), true)
 })
 
 test('applyMove: create an empty group in a known workspace; delete an empty group', () => {
@@ -145,8 +179,11 @@ test('applyMove: create an empty group in a known workspace; delete an empty gro
   assert.equal(applyMove(groups, { deleteGroupId: 'nope' }, none, () => true, workspaces).status, 404)
   groups.addToGroup(g.id, 's1')
   assert.equal(applyMove(groups, { deleteGroupId: g.id }, none, () => true, workspaces).status, 409)
-  groups.moveSession('s1', null)
-  assert.equal(applyMove(groups, { deleteGroupId: g.id }, none, () => true, workspaces).status, 200)
+  groups.moveSession('s1', null) // emptied: removed without a delete request
+  assert.equal(groups.list().length, 0)
+  assert.equal(applyMove(groups, { deleteGroupId: g.id }, none, () => true, workspaces).status, 404)
+  applyMove(groups, { newGroupName: 'Unused', workspaceId: 'ws1' }, none, () => true, workspaces)
+  assert.equal(applyMove(groups, { deleteGroupId: groups.list()[0].id }, none, () => true, workspaces).status, 200)
   assert.equal(groups.list().length, 0)
 })
 
