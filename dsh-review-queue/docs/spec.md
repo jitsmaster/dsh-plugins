@@ -31,6 +31,7 @@ The same queue is shown in two places:
 
 ## Card
 - Revision 2026-10-13 (b): auto-advance after an action, keyboard shortcuts, filter bar, draft persistence, risk warnings and Approve-all-identical on permission cards, supersede of older done items from the same session (Reopen from Resolved), markdown rendering of full replies, read-aloud stops with the overlay or when the item leaves the queue. See README.
+- Revision 2026-10-13 (c): when the waiting list goes from non-empty to empty while the overlay is open, it closes after 15 s unless an item is waiting again at that point (cancelled by a new item, a manual close or open-session; an overlay opened on an already empty queue stays).
 - Each card has a **task title** (completed items: LLM title from the user's request and the reply, fallback request/first sentence; question: header or question; permission: tool summary) and shows the session title and workspace under it (revision 2026-10-13).
 - **Send reply** is the primary button of a done card (Enter sends); **Reviewed** is secondary. **Read aloud** speaks the full message through the dsh-hooks-tts client; one read at a time, Stop kills it.
 Roomy, collapsed by default, expands for more detail, **Open session** button jumps to the session.

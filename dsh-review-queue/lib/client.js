@@ -13,6 +13,8 @@ window.__ModuleLoader__.load({
 		const API = "/review-queue";
 		const LS = { overlay: "dsh-review-queue.overlay", drafts: "dsh-review-queue.drafts" };
 		const WAIT_MS = 20000;
+		/** How long the overlay stays open after the last waiting item is gone. */
+		const EMPTY_CLOSE_MS = 15000;
 
 		// =====================================================================================
 		// Pure helpers (exported through exports.__test)
@@ -85,6 +87,12 @@ window.__ModuleLoader__.load({
 		const isSendKey = (e) => !!e && e.key === "Enter" && !e.shiftKey && !e.isComposing;
 		/** Heading of a card: the task title, else the session title. */
 		const cardTitle = (item) => (item && (item.title || item.sessionTitle)) || "Untitled";
+
+		/** What an incoming snapshot means for the auto-close: "arm" when the waiting list just went from non-empty to empty, "cancel" once something waits again. */
+		function emptiedAction(prevCount, nextCount) {
+			if (nextCount > 0) return "cancel";
+			return prevCount > 0 ? "arm" : undefined;
+		}
 
 		/** Id of the item to select once `id` leaves the list: the next one, else the previous one. */
 		function nextAfter(items, id) {
@@ -244,6 +252,26 @@ window.__ModuleLoader__.load({
 		const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l); }; };
 		const useStore = () => { useSyncExternalStore(subscribe, () => version); return state; };
 
+		let emptyTimer;
+		function cancelEmptyClose() { if (emptyTimer !== undefined) { clearTimeout(emptyTimer); emptyTimer = undefined; } }
+		/** The list just emptied while the overlay is open: close it after the grace period, unless something is waiting again by then. */
+		function armEmptyClose() {
+			cancelEmptyClose();
+			if (!state.overlay) return;
+			emptyTimer = setTimeout(() => {
+				emptyTimer = undefined;
+				if (state.overlay && state.snap && state.snap.open.length === 0) setOverlay(false);
+			}, EMPTY_CLOSE_MS);
+		}
+		/** Takes a fresh snapshot into the store and runs the empty-list auto-close. */
+		function applySnapshot(body) {
+			const prev = state.snap ? state.snap.open.length : undefined;
+			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now() });
+			const action = emptiedAction(prev, body.open.length);
+			if (action === "arm") armEmptyClose();
+			else if (action === "cancel") cancelEmptyClose();
+		}
+
 		let polling = false;
 		let stopped = false;
 		async function pollLoop() {
@@ -260,7 +288,7 @@ window.__ModuleLoader__.load({
 					fails = 0;
 					if (body.unchanged) { if (state.error) set({ error: null }); continue; }
 					since = body.snapshotId + "|" + (body.focusId || "") + "|" + (body.reading || "");
-					set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now() });
+					applySnapshot(body);
 					const kept = pruneSaved({ drafts: state.drafts, replies: state.replies }, body);
 					const gone = Object.keys(state.drafts).some((k) => !(k in kept.drafts)) || Object.keys(state.replies).some((k) => !(k in kept.replies));
 					if (gone) set(kept);
@@ -303,9 +331,9 @@ window.__ModuleLoader__.load({
 			if (state.snap && state.snap.reading) fetch(API + "/v1/stop", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
 		}
 		function openSession(item) {
-			if (hostApi.openSession) { stopReading(); hostApi.openSession(item.sessionId); set({ overlay: false }); storage.set(LS.overlay, "0"); }
+			if (hostApi.openSession) { stopReading(); hostApi.openSession(item.sessionId); cancelEmptyClose(); set({ overlay: false }); storage.set(LS.overlay, "0"); }
 		}
-		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
+		function setOverlay(on) { cancelEmptyClose(); if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
 
 		// =====================================================================================
 		// Styles
@@ -618,7 +646,7 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
 			stopped = false;
-			ctx.effect(() => { pollLoop(); return () => { stopped = true; }; }, "review-queue: polling");
+			ctx.effect(() => { pollLoop(); return () => { stopped = true; cancelEmptyClose(); }; }, "review-queue: polling");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
 			// order 1000: after every other utility, i.e. next to the right-sidebar (corner) button.
 			ctx.effect(() => ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({ name: "conversation.session.header.utilities", id: ANCHOR_ID, order: 1000, label: () => "Review queue" }, HeaderAnchor)), "review-queue: header button");
@@ -627,7 +655,7 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS };
+		exports.__test = { nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, EMPTY_CLOSE_MS, emptiedAction, applySnapshot, setOverlay, state };
 		return module.exports;
 	}
 });
