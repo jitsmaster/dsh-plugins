@@ -118,3 +118,56 @@ test('the fallback never has a title', async () => {
   const r = await createSummarizer({ llm: fakeLlm({ fail: true }) }).summarize('First.\n\nLast.')
   assert.equal(r.title, undefined)
 })
+
+// ---- RULE 1: the actionable verdict (hide a done item with nothing left for the user) ----
+const verdict = (reply, answer) => createSummarizer({ llm: fakeLlm({ reply: 'TITLE: Rename helper\nACTIONABLE: ' + answer + '\nSUMMARY: Renamed the helper. Tests pass.' }) }).summarize(reply, { request: 'rename it' })
+
+test('ACTIONABLE: no on a plain finished message is a hide verdict, and the line never leaks into the summary', async () => {
+  const r = await verdict('Done: renamed the helper, all 120 tests pass, committed.', 'no')
+  assert.equal(r.actionable, false)
+  assert.equal(r.text, 'Renamed the helper. Tests pass.')
+  assert.equal(r.title, 'Rename helper')
+})
+
+test('ACTIONABLE: yes, a missing line and an unreadable value all mean show', async () => {
+  assert.equal((await verdict('Done: renamed the helper, all 120 tests pass, committed.', 'yes')).actionable, true)
+  assert.equal((await createSummarizer({ llm: fakeLlm() }).summarize('x\n\ny')).actionable, undefined)
+  assert.equal((await verdict('Done: renamed the helper, committed.', 'maybe')).actionable, undefined)
+})
+
+test('the model says no but the message holds something for the user: it is shown (the guard overrides)', async () => {
+  const showing = [
+    'Pushed the fix; you need to restart DSH and test by voice.',
+    'I found two approaches, which do you want?',
+    'Build failed: missing dependency foo, so nothing was committed.',
+    'Please review the PR before I merge it.',
+    'Fixed the parser. Next step: add the docs, I did not get to them.',
+    'Tests pass. You can try it by hand with npm start.',
+    'Blocked on the missing API key.',
+    'Updated config. Let me know if you want the old behaviour back.',
+  ]
+  for (const reply of showing) assert.equal((await verdict(reply, 'no')).actionable, true, reply)
+})
+
+test('plain completions the model calls done are hidden', async () => {
+  const hiding = [
+    'Done: renamed the helper, all 120 tests pass, committed.',
+    'Fixed the typo in the README and committed it.',
+    'All 42 tests pass with 0 failures. Committed as abc1234.',
+    'Refactored the store module; no behaviour change. Committed and pushed.',
+  ]
+  for (const reply of hiding) assert.equal((await verdict(reply, 'no')).actionable, false, reply)
+})
+
+test('a failing, timing-out or absent model yields no verdict (so the item is shown)', async () => {
+  assert.equal((await createSummarizer({ llm: fakeLlm({ fail: true }) }).summarize('Done: all good.')).actionable, undefined)
+  assert.equal((await createSummarizer({ llm: fakeLlm({ hang: true }), timeoutMs: 20 }).summarize('Done: all good.')).actionable, undefined)
+  assert.equal((await createSummarizer({}).summarize('Done: all good.')).actionable, undefined)
+})
+
+test('the prompt asks for the verdict conservatively', async () => {
+  const seen = {}
+  await createSummarizer({ llm: fakeLlm({ seen }) }).summarize('x\n\ny')
+  assert.match(seen.req.system, /ACTIONABLE: yes or no/)
+  assert.match(seen.req.system, /when in doubt/i)
+})

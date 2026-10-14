@@ -6,6 +6,10 @@ A review queue for DeepSeek Harness (called the **Task list** on screen and by v
 - **Question**: an `ask_user_question` is open. Answer it from the card (pick an option or type your own). Questions with a timeout expire into *Resolved* with the recommended option taken. An expired question stays answerable from *Resolved* (*Answer now (late)*): picking the option the assistant already took is only recorded as confirmed; a different answer is steered into the session if it is still live.
 - **Permission**: a tool needs approval. *Approve* or *Deny* from the card.
 
+**Two filter rules.**
+- *Done messages with nothing for you are not listed.* The summary step also judges whether the message holds anything to follow up, decide or do by hand. A plain "renamed the helper, 120 tests pass, committed" is moved straight to *Resolved* ("Hidden: nothing for you to do", the tooltip shows its summary, *Reopen* brings it back, a log line records it). A question, a choice, a failure or blocker, a manual step, a request to review/approve/test or an open next step is never hidden: the model may only say no, a keyword/question-mark guard overrides it, and an unsure answer, a model failure or timeout all mean the item is shown. The card appears first and vanishes within a few seconds when the verdict is no.
+- *A question you answered in its own session leaves the list immediately.* The plugin watches that session: your reply to the question (or any plain message you send there), or the question's tool call returning, resolves the item as "Answered in the session" on the next snapshot, and an expired question answered there no longer offers a late answer. Answering from the card works as before; a question pending in another session stays. Details and edge cases: [docs/spec.md](docs/spec.md) ("Task-list filter rules").
+
 **Working through the queue:** the next card is selected automatically after you send, review, answer, approve or deny; keyboard `j`/`k` or ↑/↓ move, `r` reads aloud, `e` marks reviewed, `Shift+A` / `Shift+D` approve or deny (Shift so it cannot happen by accident), Esc closes. A filter bar (type chips and text search) appears once there are more than a few items. Unsent replies and half-picked answers survive a reload. Permission cards show the full command, warn about risky ones (recursive delete, force push, hard reset, git clean, piping a download into a shell, elevation, disk tools, writes outside the workspace) and offer *Approve all N identical* (same session, tool and command; never for a risky one). A newer result from the same session replaces its older unreviewed ones (they go to Resolved); *Reopen* in Resolved brings back a misclicked *Reviewed* or a replaced result. Full replies are shown as formatted text, and whether a reply's *Full reply* section (and a card's expanded state) is open is remembered per item across closing and reopening the overlay and across reloads, and reading aloud stops when you close the overlay, open a session, or the item leaves the queue.
 
 The queue is global, so it is an **overlay only** (the right sidebar is per session and is not used). A round-check button in the session header, just left of the right-sidebar button, opens it; Esc, the Close button or the button again closes it, and it closes by itself 15 seconds after the last waiting item is gone (only when the list went from non-empty to empty while it was open, and not if something is waiting again by then). *Open session* jumps to the item's session. **▶ Read aloud** on every card speaks the whole message (the full reply of a done item, not the summary; the question with its options; the permission with its reason) and becomes **■ Stop reading**; it uses the dsh-hooks-tts speech stack, so it follows the TTS mute switch (a muted voice is refused with a message), never overlaps an alert and the Ctrl+Alt+M hotkey stops it. Resolved items are kept for 7 days.
@@ -46,7 +50,7 @@ Served on the DSH web server under `/review-queue` (same host/origin fence and c
 | `/v1/read` | POST | `{id}` | Reads the item's whole message aloud (any item, open or resolved). Errors: `muted`, `no-speaker`, `nothing-to-read`, `not-found`. The snapshot's `reading` is the id being read. |
 | `/v1/stop` | POST | `{}` | Stops reading. |
 | `/v1/ui` | POST | `{cmd:'show'|'hide'}` | Asks every open browser to show or hide the overlay (voice uses it). `{ok:true, seq}`; anything else is 400 `bad-command`. See below. |
-| `/v1/reopen` | POST | `{id}` | Done items resolved as reviewed or superseded only (`not-reopenable` otherwise). |
+| `/v1/reopen` | POST | `{id}` | Done items resolved as reviewed, superseded or hidden as no-action only (`not-reopenable` otherwise). |
 | `/v1/approve-similar` | POST | `{id}` | Approves the permission request and identical open ones of the same session; `{ok, count}`; `risky` is refused. |
 | `/v1/focus` | POST | `{id}` or `{id:null}` | Shared selection (screen and voice follow it). |
 
@@ -58,7 +62,7 @@ Answers: 200 `{ok:true}`; 400 for bad input (`bad-answer`, `bad-decision`, `empt
 
 - Request body 64 KB; reply text 4000 characters; stored text per field 20,000 characters.
 - Resolved items are pruned after 7 days (hourly).
-- Summaries use the host's LLM service when available and fall back to the last paragraph of the reply.
+- Summaries use the host's LLM service when available and fall back to the last paragraph of the reply. The same call gives the `ACTIONABLE` verdict; without it nothing is ever hidden.
 
 ## Develop
 

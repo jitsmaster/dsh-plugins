@@ -337,3 +337,17 @@ test('a snapshot drops toggle choices of items that left the queue', () => {
   assert.deepEqual({ ...m.__test.state.expanded }, { a: true })
   assert.deepEqual({ ...m.__test.state.replyOpen }, { a: false })
 })
+
+test('resolutionText says what the session did to a question, and what was hidden as no-action', () => {
+  assert.equal(T.resolutionText({ resolution: { kind: 'answered', by: 'session', answers: [{ id: 'q', selected: ['B'] }] } }), 'Answered in the session: B')
+  assert.match(T.resolutionText({ resolution: { kind: 'no-action' } }), /^Hidden: nothing for you to do/)
+})
+
+test('only reviewed, replaced and hidden done items can be reopened', () => {
+  const r = (type, kind) => T.isReopenable({ type, resolution: { kind } })
+  assert.equal(r('completed', 'reviewed'), true)
+  assert.equal(r('completed', 'superseded'), true)
+  assert.equal(r('completed', 'no-action'), true)
+  assert.equal(r('completed', 'replied'), false)
+  assert.equal(r('question', 'no-action'), false)
+})

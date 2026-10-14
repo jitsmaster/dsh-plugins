@@ -129,12 +129,12 @@ export function createReviewQueue({ store, capture, controllerOf, speaker, now =
       if (was !== undefined) emit()
       return { ok: true }
     },
-    /** A misclicked Reviewed (or a result replaced by a newer one) goes back into the queue. */
+    /** A misclicked Reviewed, a result replaced by a newer one, or one hidden as needing no action goes back into the queue. */
     reopen(id) {
       const item = store.get(id)
       if (!item) return { ok: false, error: 'not-found' }
       const kind = item.resolution?.kind
-      if (item.type !== 'completed' || item.status !== 'resolved' || (kind !== 'reviewed' && kind !== 'superseded')) return { ok: false, error: 'not-reopenable' }
+      if (item.type !== 'completed' || item.status !== 'resolved' || (kind !== 'reviewed' && kind !== 'superseded' && kind !== 'no-action')) return { ok: false, error: 'not-reopenable' }
       return store.reopen(id) ? { ok: true } : { ok: false, error: 'not-reopenable' }
     },
     /** Approve this request and every identical open one of the same session; never a risky one. */

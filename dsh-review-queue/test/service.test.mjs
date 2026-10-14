@@ -376,3 +376,12 @@ test('the ui sequence is shared by queues of the same server run (a plugin reloa
   assert.equal(two.snapshot().ui.seq, seq)
   assert.equal(two.snapshot().ui.cmd, 'show')
 })
+
+test('a done item hidden as no-action can be reopened and is not counted while hidden', () => {
+  const { store, queue } = setup()
+  const a = store.add(completed())
+  store.resolve(a.id, { kind: 'no-action', by: 'auto' })
+  assert.equal(queue.count().total, 0)
+  assert.deepEqual(queue.reopen(a.id), { ok: true })
+  assert.equal(queue.count().total, 1)
+})

@@ -6,6 +6,7 @@
  */
 import { recommendedOf, lastParagraph, cleanText } from './speech.js'
 import { toolDetail } from './risk.js'
+import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
 
 const TOOL_ARG_KEYS = ['command', 'file_path', 'path', 'url', 'pattern', 'query']
 const MAX_NOTES = 200
@@ -73,7 +74,8 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
   const toolNotes = boundedMap(MAX_NOTES) // tool callId -> summary line
   const controller = new AbortController()
   const handlers = {}
-  const on = (name, fn) => { handlers[name] = fn; ctx.on(name, fn) }
+  const lateInFlight = new Set() // expired question items whose late answer from the card is being sent
+  const on = (name, fn, options) => { handlers[name] = fn; ctx.on(name, fn, options) }
 
   const titleOf = (agent) => {
     try { return ctx.get?.('sessionTitle')?.get(agent?.session)?.title } catch { return undefined }
@@ -130,6 +132,8 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
       pending.set(item.id, {
         type: 'question', questions: req.questions ?? [],
         answer: (answers) => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by: 'card', answers })); resolve({ answers }) }),
+        // The session handled it (a reply there, the call returned): the item leaves now, the request itself is still DSH's to settle.
+        handledElsewhere: (resolution) => { pending.delete(item.id); return guard(() => store.resolve(item.id, resolution), false) },
       })
       if (req.signal?.aborted) return void onAbort()
       req.signal?.addEventListener('abort', onAbort, { once: true })
@@ -194,14 +198,35 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
     // A newer result from the same session replaces its older unreviewed ones (they stay in Resolved, and can be reopened).
     const older = guard(() => store.list({ status: 'open' }).filter((o) => o.type === 'completed' && o.sessionId === agent.id && o.id !== item.id), [])
     let replaced = 0
-    for (const o of older) if (guard(() => store.resolve(o.id, { kind: 'superseded', by: 'newer' }), false)) replaced++
+    for (const o of older) if (guard(() => store.resolve(o.id, { kind: 'superseded', by: 'newer', newerId: item.id }), false)) replaced++
     if (replaced) guard(() => store.update(item.id, { earlier: replaced }))
     // The card is usable at once with the fallback; the model summary replaces it when it arrives.
     guard(() => store.update(item.id, { summary: lastParagraph(reply), summarySource: 'fallback' }))
     void summarizer.summarize(reply, { signal: controller.signal, request }).then((r) => {
       if (r?.text) guard(() => store.update(item.id, { summary: r.text, summarySource: r.source, ...(r.title ? { title: r.title } : {}) }))
+      if (typeof r?.actionable === 'boolean') guard(() => store.update(item.id, { actionable: r.actionable }))
+      if (r?.actionable === false) hideNoAction(item.id)
     }, () => {})
   })
+
+  /**
+   * Rule: a finished message with nothing for the user does not stay in the list. It is resolved (kind 'no-action'), so it
+   * is still found under Resolved with its summary, can be reopened, and a log line names it. Only while it is still open:
+   * an item the user already reviewed or replied to keeps that resolution. Items it had replaced come back, because the
+   * older message may be the one that needs the user.
+   */
+  function hideNoAction(id) {
+    guard(() => {
+      const item = store.get(id)
+      if (!store.resolve(id, { kind: 'no-action', by: 'auto' })) return
+      log('capture: hid done item "' + (item?.title || item?.sessionTitle || id) + '" (no action needed): ' + String(item?.summary ?? '').slice(0, 160))
+      let back = 0
+      for (const o of store.list({ status: 'resolved' })) {
+        if (o.type === 'completed' && o.sessionId === item.sessionId && o.resolution?.kind === 'superseded' && o.resolution.newerId === id && store.reopen(o.id)) back++
+      }
+      if (back) log('capture: brought back ' + back + ' earlier done item(s) the hidden one had replaced')
+    })
+  }
 
   // The user typed into the session again: its finished-work cards have been answered.
   on('agent/pre-step', async ({ agent, messages } = {}, next) => {
@@ -210,9 +235,41 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
       for (const item of store.list({ status: 'open' })) {
         if (item.type === 'completed' && item.sessionId === agent.id) store.resolve(item.id, { kind: 'replied', by: 'session' })
       }
+      // A question of that session the user answered there: a reply to it, or a plain message of their own.
+      for (const item of store.list({ status: 'open' })) {
+        if (item.type !== 'question' || item.sessionId !== agent.id) continue
+        const answered = messages.some((m) => (m?.source?.kind === 'user-question-reply' ? m.source.callId === item.key : isHumanMessage(m)))
+        if (answered) pending.get(item.id)?.handledElsewhere({ kind: 'answered', by: 'session' }) ?? store.resolve(item.id, { kind: 'answered', by: 'session' })
+      }
     })
     return next()
   })
+
+  // The session's own event feed is the reliable signal for a question: the reply that answers it, or the tool call returning.
+  on('session/event', (session, event) => {
+    guard(() => {
+      if (!session || !event) return
+      if (event.type === 'user/message' && event.data?.source?.kind === 'user-question-reply') settleQuestion(String(session.id), event.data.source.callId, { answers: replyAnswers(event.data.content) })
+      else if (event.type === 'tool/result') settleQuestion(String(session.id), event.data?.message?.toolCallId, { result: event.data.message })
+    })
+  }, { global: true })
+
+  /** Close the question item (open or expired) of this session and call id, once. */
+  function settleQuestion(sessionId, callId, { answers, result }) {
+    if (callId === undefined) return
+    const item = store.list().find((i) => i.type === 'question' && i.key === callId && i.sessionId === sessionId && (i.status === 'open' || (i.resolution?.kind === 'expired' && !lateInFlight.has(i.id))))
+    if (!item) return
+    if (item.status === 'open') {
+      if (result && isPendingResult(result.content)) {
+        pending.get(item.id)?.handledElsewhere({ kind: 'expired', assumed: (item.payload?.questions ?? []).map(recommendedOf).filter(Boolean) })
+      } else {
+        const a = answers?.length ? answers : replyAnswers(result?.content)
+        pending.get(item.id)?.handledElsewhere({ kind: 'answered', by: 'session', ...(a?.length ? { answers: a } : {}) })
+      }
+    } else if (answers) {
+      store.update(item.id, { resolution: { ...item.resolution, kind: 'answered', by: 'session', ...(answers.length ? { answers } : {}) } })
+    }
+  }
 
   on('agent/disposed', ({ agent } = {}) => {
     if (!agent) return
@@ -247,12 +304,15 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
       const service = guard(() => ctx.get?.('userQuestions'))
       if (!agent || typeof service?.answer !== 'function') return { ok: false, error: 'no-session' }
       let accepted
+      lateInFlight.add(itemId) // its reply reaching the session must not re-label the item before we record it
       try { accepted = await service.answer(agent, item.payload.callId, { answers: clean }) } catch (error) {
+        lateInFlight.delete(itemId)
         const code = error?.code
         return { ok: false, error: code === 'REPLY_QUEUED' ? 'reply-queued' : code === 'BAD_ANSWER' ? 'bad-answer' : String(error?.message ?? error) }
       }
-      if (!accepted) return { ok: false, error: 'not-pending' }
+      if (!accepted) { lateInFlight.delete(itemId); return { ok: false, error: 'not-pending' } }
       store.update(itemId, { resolution: { ...item.resolution, kind: 'late-answered', by: 'card', answers: clean } })
+      lateInFlight.delete(itemId)
       return { ok: true, sent: true }
     },
     decidePermission(itemId, decision) {

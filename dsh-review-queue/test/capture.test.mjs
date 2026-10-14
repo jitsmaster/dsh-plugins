@@ -333,3 +333,198 @@ test('a newer result from the same session replaces the older unreviewed ones', 
   assert.deepEqual({ kind: old.resolution.kind, by: old.resolution.by }, { kind: 'superseded', by: 'newer' })
   assert.equal(snap.open.find((i) => i.payload.reply === 'Other session.').earlier, undefined)
 })
+
+// ---- RULE 1: done items with nothing for the user are hidden at capture time ----
+const settle = () => new Promise((r) => setTimeout(r, 10))
+
+test('a no-action verdict moves the done item to Resolved with the verdict kept, and logs it', async () => {
+  const logs = []
+  const handlers = {}
+  const ctx = { on: (n, f) => { handlers[n] = f }, get: () => undefined }
+  let n = 0
+  const store = createStore({ now: () => 1000, uuid: () => 'h' + ++n })
+  installCapture(ctx, { store, log: (l) => logs.push(l), summarizer: { summarize: async () => ({ text: 'Renamed the helper.', title: 'Rename helper', source: 'llm', actionable: false }) } })
+  await handlers['agent/turn-stopping']({ agent: { id: 'a1', session: { deriveMessages: () => [{ role: 'user', content: 'rename it' }, { role: 'assistant', content: 'Done: renamed the helper, all 120 tests pass, committed.' }] } } })
+  await settle()
+  assert.equal(store.snapshot().open.length, 0)
+  const [r] = store.snapshot().resolved
+  assert.deepEqual({ kind: r.resolution.kind, by: r.resolution.by }, { kind: 'no-action', by: 'auto' })
+  assert.equal(r.actionable, false)
+  assert.equal(r.summary, 'Renamed the helper.')
+  assert.equal(r.title, 'Rename helper')
+  assert.ok(logs.some((l) => /hid|hidden/i.test(l) && /Rename helper/.test(l)), logs.join('|'))
+})
+
+for (const [label, summary] of [['actionable true', { text: 'Did it.', source: 'llm', actionable: true }], ['no verdict', { text: 'Did it.', source: 'llm' }], ['fallback', { text: 'Did it.', source: 'fallback' }]]) {
+  test('the item stays in the list with ' + label, async () => {
+    const { store, fire, agent } = setup({ summary })
+    await fire('agent/turn-stopping', { agent: agent('a1', 'Which one do you want?') })
+    await settle()
+    assert.equal(store.snapshot().open.length, 1)
+    assert.equal(store.snapshot().open[0].actionable, summary.actionable)
+  })
+}
+
+test('a summarizer that rejects leaves the item showing', async () => {
+  const { store, fire, agent } = setup()
+  const handlers = {}
+  void store; void fire; void agent
+  const ctx = { on: (n, f) => { handlers[n] = f }, get: () => undefined }
+  const st = createStore()
+  installCapture(ctx, { store: st, summarizer: { summarize: async () => { throw new Error('boom') } } })
+  await handlers['agent/turn-stopping']({ agent: { id: 'a', session: { deriveMessages: () => [{ role: 'assistant', content: 'ok' }] } } })
+  await settle()
+  assert.equal(st.snapshot().open.length, 1)
+})
+
+test('an item the user already reviewed or replied to before the verdict is left alone', async () => {
+  let verdict
+  const handlers = {}
+  const ctx = { on: (n, f) => { handlers[n] = f }, get: () => undefined }
+  const st = createStore({ now: () => 1 })
+  installCapture(ctx, { store: st, summarizer: { summarize: () => new Promise((r) => { verdict = r }) } })
+  const a = { id: 'a1', session: { deriveMessages: () => [{ role: 'assistant', content: 'Done.' }] } }
+  await handlers['agent/turn-stopping']({ agent: a })
+  // the user continues the session before the (slow) verdict arrives: nothing to hide, the resolution stays
+  await handlers['agent/pre-step']({ agent: a, messages: [{ role: 'user', content: 'next' }] }, async () => ({ kind: 'enter', messages: [] }))
+  verdict({ text: 's', source: 'llm', actionable: false })
+  await settle()
+  assert.equal(st.snapshot().resolved[0].resolution.kind, 'replied')
+})
+
+test('hiding the newer item brings back the older done items it had replaced', async () => {
+  const verdicts = [{ text: 'Needs a decision.', source: 'llm', actionable: true }, { text: 'Renamed.', source: 'llm', actionable: false }]
+  const handlers = {}
+  const ctx = { on: (n, f) => { handlers[n] = f }, get: () => undefined }
+  let t = 1000
+  const store = createStore({ now: () => ++t })
+  installCapture(ctx, { store, summarizer: { summarize: async () => verdicts.shift() } })
+  const turn = (reply) => handlers['agent/turn-stopping']({ agent: { id: 'a1', session: { deriveMessages: () => [{ role: 'assistant', content: reply }] } } })
+  await turn('Which port do you want?')
+  await settle()
+  await turn('Done: renamed it, tests pass.')
+  await settle()
+  const snap = store.snapshot()
+  assert.deepEqual(snap.open.map((i) => i.payload.reply), ['Which port do you want?'])
+  assert.equal(snap.open[0].earlier, undefined)
+  assert.equal(snap.resolved.find((i) => i.payload.reply === 'Done: renamed it, tests pass.').resolution.kind, 'no-action')
+})
+
+// ---- RULE 2: a question handled in its own session leaves the list at once ----
+const reply = (callId, answers, sessionId = 'a1') => ({ id: sessionId }, ({ type: 'user/message', data: { id: 'm1', source: { kind: 'user-question-reply', callId, outcome: 'answered' }, content: [{ type: 'text', text: JSON.stringify({ kind: 'answer_to_pending_question', callId, answers }) }] } }))
+const sessionEvent = (x, sessionId, event) => x.fire('session/event', { id: sessionId }, event)
+const toolResult = (callId, text) => ({ type: 'tool/result', data: { message: { toolCallId: callId, content: [{ type: 'text', text }] } } })
+const openQuestion = (x, { callId = 'c1', sessionId = 'a1' } = {}) => {
+  const p = x.fire('user-questions/request', { agent: x.agent(sessionId), questions: QUESTIONS, wait: { callId, timed: true } }, never)
+  return { p, id: x.store.snapshot().open.at(-1).id }
+}
+
+test('the user answering in the question\'s own session (a question reply) resolves the open item at once', async () => {
+  const x = setup()
+  const { id } = openQuestion(x)
+  sessionEvent(x, 'a1', reply('c1', [{ id: 'q1', selected: ['B'] }]))
+  const it = x.store.get(id)
+  assert.equal(it.status, 'resolved')
+  assert.deepEqual({ kind: it.resolution.kind, by: it.resolution.by }, { kind: 'answered', by: 'session' })
+  assert.deepEqual(it.resolution.answers, [{ id: 'q1', selected: ['B'] }])
+  assert.equal(x.capture.answerQuestion(id, [{ id: 'q1', selected: ['B'] }]).error, 'not-pending') // the card can no longer answer it
+})
+
+test('a tool result for the question call resolves the open item, whatever answered it', async () => {
+  const x = setup()
+  const { id } = openQuestion(x)
+  sessionEvent(x, 'a1', toolResult('c1', JSON.stringify({ answers: [{ id: 'q1', selected: ['A (Recommended)'] }] })))
+  assert.equal(x.store.get(id).resolution.kind, 'answered')
+  assert.equal(x.store.get(id).resolution.by, 'session')
+})
+
+test('a pending tool result means the wait timed out: the item expires with the recommended option', async () => {
+  const x = setup()
+  const { id } = openQuestion(x)
+  sessionEvent(x, 'a1', toolResult('c1', JSON.stringify({ pending: true, callId: 'c1' })))
+  assert.equal(x.store.get(id).resolution.kind, 'expired')
+  assert.deepEqual(x.store.get(id).resolution.assumed, ['A (Recommended)'])
+})
+
+test('another session, another call id, or an unrelated event leaves the question waiting', async () => {
+  const x = setup()
+  const { id } = openQuestion(x)
+  sessionEvent(x, 'other', reply('c1', [{ id: 'q1', selected: ['B'] }])) // same call id, different session
+  sessionEvent(x, 'a1', reply('c2', [{ id: 'q1', selected: ['B'] }])) // another question of the session
+  sessionEvent(x, 'a1', toolResult('c2', '{}'))
+  sessionEvent(x, 'a1', { type: 'user/message', data: { source: { kind: 'user' }, content: [] } }) // plain messages are the pre-step's business
+  sessionEvent(x, 'a1', { type: 'turn/end', data: { turn: 1 } })
+  assert.equal(x.store.get(id).status, 'open')
+})
+
+test('an expired question answered in the session is settled, so no late answer is offered', async () => {
+  const live = liveServices()
+  const x = await expired({ services: live.services })
+  sessionEvent(x, 'a1', reply('c1', [{ id: 'q1', selected: ['B'] }]))
+  const r = x.store.get(x.id).resolution
+  assert.deepEqual({ kind: r.kind, by: r.by }, { kind: 'answered', by: 'session' })
+  assert.deepEqual(r.assumed, ['A (Recommended)'])
+  assert.equal((await x.capture.lateAnswerQuestion(x.id, [{ id: 'q1', selected: ['B'] }])).error, 'not-expired')
+})
+
+test('a late answer sent from the card is not overwritten when its reply reaches the session first', async () => {
+  const calls = []
+  let x
+  const services = { agents: { get: (id) => ({ id }) }, userQuestions: { answer: async (agent, callId) => { calls.push(callId); sessionEvent(x, 'a1', reply('c1', [{ id: 'q1', selected: ['B'] }])); return true } } }
+  x = await expired({ services })
+  assert.deepEqual(await x.capture.lateAnswerQuestion(x.id, [{ id: 'q1', selected: ['B'] }]), { ok: true, sent: true })
+  assert.equal(x.store.get(x.id).resolution.kind, 'late-answered')
+  assert.equal(x.store.get(x.id).resolution.by, 'card')
+})
+
+test('answering from the card still works exactly as before and later session events change nothing', async () => {
+  const x = setup()
+  const { p, id } = openQuestion(x)
+  assert.equal(x.capture.answerQuestion(id, [{ id: 'q1', selected: ['B'] }]).ok, true)
+  assert.deepEqual(await p, { answers: [{ id: 'q1', selected: ['B'] }] })
+  sessionEvent(x, 'a1', toolResult('c1', JSON.stringify({ answers: [{ id: 'q1', selected: ['B'] }] })))
+  sessionEvent(x, 'a1', reply('c1', [{ id: 'q1', selected: ['A (Recommended)'] }]))
+  const r = x.store.get(id).resolution
+  assert.deepEqual({ kind: r.kind, by: r.by }, { kind: 'answered', by: 'card' })
+})
+
+test('a question the session resolved does not stop DSH from settling the request later', async () => {
+  const x = setup()
+  let release
+  const p = x.fire('user-questions/request', { agent: x.agent(), questions: QUESTIONS, wait: { callId: 'c1' } }, () => new Promise((r) => { release = r }))
+  await Promise.resolve() // next() is entered on a microtask
+  sessionEvent(x, 'a1', reply('c1', [{ id: 'q1', selected: ['B'] }]))
+  release({ answers: [{ id: 'q1', selected: ['B'] }] })
+  assert.deepEqual(await p, { answers: [{ id: 'q1', selected: ['B'] }] })
+  assert.equal(x.store.snapshot().resolved[0].resolution.by, 'session')
+})
+
+test('the user continuing the session with a plain message resolves its open questions, not other sessions\'', async () => {
+  const x = setup()
+  const mine = openQuestion(x)
+  const theirs = openQuestion(x, { callId: 'c9', sessionId: 'a2' })
+  await x.fire('agent/pre-step', { agent: x.agent(), messages: [{ role: 'user', source: { kind: 'user' }, content: 'use B please' }] }, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(x.store.get(mine.id).resolution.kind, 'answered')
+  assert.equal(x.store.get(mine.id).resolution.by, 'session')
+  assert.equal(x.store.get(theirs.id).status, 'open')
+})
+
+test('a step with no user message, an injected context message, or a reply to another question leaves the question waiting', async () => {
+  const x = setup()
+  const { id } = openQuestion(x)
+  const step = (messages) => x.fire('agent/pre-step', { agent: x.agent(), messages }, async () => ({ kind: 'enter', messages: [] }))
+  await step([])
+  await step([{ role: 'user', source: { kind: 'time-context' }, content: 'now' }])
+  await step([{ role: 'user', source: { kind: 'user-question-reply', callId: 'other', outcome: 'answered' }, content: 'x' }])
+  assert.equal(x.store.get(id).status, 'open')
+  await step([{ role: 'user', source: { kind: 'user-question-reply', callId: 'c1', outcome: 'answered' }, content: 'x' }])
+  assert.equal(x.store.get(id).status, 'resolved')
+})
+
+test('permission items are not touched by session events', async () => {
+  const x = setup()
+  void x.fire('approval/request', { agent: x.agent(), toolName: 'shell', callId: 'c1' }, never)
+  sessionEvent(x, 'a1', toolResult('c1', 'ok'))
+  await x.fire('agent/pre-step', { agent: x.agent(), messages: [{ role: 'user', source: { kind: 'user' }, content: 'hi' }] }, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(x.store.snapshot().open.length, 1)
+})

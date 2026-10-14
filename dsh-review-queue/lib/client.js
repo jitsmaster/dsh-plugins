@@ -63,10 +63,13 @@ window.__ModuleLoader__.load({
 			return (answers || []).map((a) => [...(a.selected || []), a.custom ? "“" + a.custom + "”" : ""].filter(Boolean).join(", ")).join(" · ");
 		}
 
+		/** Done items that left the list without the user acting on them can go back in. */
+		const isReopenable = (it) => !!(it && it.type === "completed" && it.resolution && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action"));
+
 		/** One line for a resolved item: what happened to it. */
 		function resolutionText(item) {
 			const r = item.resolution || {};
-			const where = r.by === "card" ? "here" : r.by === "screen" ? "on screen" : "";
+			const where = r.by === "card" ? "here" : r.by === "screen" ? "on screen" : r.by === "session" ? "in the session" : "";
 			switch (r.kind) {
 				case "answered": return "Answered" + (where ? " " + where : "") + (r.answers ? ": " + answerText(r.answers) : "");
 				case "late-answered": return "Answered late" + (r.answers ? ": " + answerText(r.answers) : "");
@@ -76,6 +79,7 @@ window.__ModuleLoader__.load({
 				case "denied": return "Denied" + (where ? " " + where : "");
 				case "reviewed": return "Reviewed";
 				case "superseded": return "Replaced by a newer result";
+				case "no-action": return "Hidden: nothing for you to do (judged from the message; Reopen if it was wrong)";
 				case "replied": return r.by === "session" ? "You continued the session" : "You replied";
 				case "session-ended": return "Session ended";
 				case "cancelled": return r.by === "restart" ? "Cancelled when the server restarted" : "Cancelled";
@@ -596,10 +600,10 @@ window.__ModuleLoader__.load({
 			const canOpen = resolvedOpenAction(it, !!hostApi.openSession) === "open";
 			const late = it.type === "question" && it.resolution && it.resolution.kind === "expired";
 			const open = !!st.lateOpen[it.id];
-			const reopenable = it.type === "completed" && it.resolution && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded");
+			const reopenable = isReopenable(it);
 			return h("div", { className: "rq-card rq-res" },
 				h("div", { className: "rq-card-h", title: canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : "default" }, onClick: canOpen ? (e) => { if (!isButtonClick(e && e.target)) openSession(it); } : undefined }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: canOpen ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
-				h("div", { className: "rq-sub" }, resolutionText(it)),
+				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? it.summary : undefined }, resolutionText(it)),
 				canOpen ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => openSession(it) }, "Open session ↗")) : null,
 				reopenable ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/reopen", { id: it.id }, it.id) }, "Reopen")) : null,
 				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
@@ -734,7 +738,7 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, EMPTY_CLOSE_MS, emptiedAction, applySnapshot, setOverlay, state };
+		exports.__test = { isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, EMPTY_CLOSE_MS, emptiedAction, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { act, errorText, openSession, resolvedOpenAction, isButtonClick });
 		return module.exports;

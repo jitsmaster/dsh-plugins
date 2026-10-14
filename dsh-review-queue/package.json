@@ -14,6 +14,8 @@
     "store.js",
     "speech.js",
     "summary.js",
+    "actionable.js",
+    "signals.js",
     "capture.js",
     "service.js",
     "server.js",
