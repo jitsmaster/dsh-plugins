@@ -43,13 +43,13 @@ export function recommendedOf(question) {
 const name = (item) => cleanText(item.sessionTitle, { maxWords: 8 }) || 'a session'
 const sentence = (text) => (/[.!?]$/.test(text) ? text : text + '.')
 
-/**
- * What the user hears for an item at a queue position: a short headline and the full text.
- * Position is the item's current place in the queue (oldest = 1).
- */
-export function spokenFor(item, position) {
+/** "Item 3." for a queue position; '' for none. The lead is spoken as a chunk of its own (see chunkForSpeech). */
+export const leadFor = (position) => (position ? 'Item ' + position + '.' : '')
+const withLead = (position, text, glue) => (position ? leadFor(position) + glue + text : text)
+
+/** The part of an item's speech that does not depend on its queue position: { headline, full } without the lead. */
+function bodyParts(item) {
   const who = name(item)
-  const lead = 'Item ' + position + '. '
   if (item.type === 'question') {
     const questions = item.payload?.questions ?? []
     const first = questions[0]
@@ -65,15 +65,25 @@ export function spokenFor(item, position) {
       })
       return [(questions.length > 1 ? 'Question ' + (i + 1) + ': ' : '') + cleanText(q.question, { maxChars: 1000 }), ...opts].join(' ')
     }).join(' ')
-    return { headline: lead + 'Question from ' + who + ': ' + head + count, full: lead + full }
+    return { headline: 'Question from ' + who + ': ' + head + count, full }
   }
   if (item.type === 'permission') {
     const what = cleanText(item.payload?.summary, { maxWords: 20 }) || cleanText(item.payload?.toolName, { maxWords: 4 }) || 'a tool'
-    return { headline: lead + 'Permission from ' + who + ': ' + what, full: lead + 'Permission request from ' + who + ': ' + what + '. Say approve or deny.' }
+    return { headline: 'Permission from ' + who + ': ' + what, full: 'Permission request from ' + who + ': ' + what + '. Say approve or deny.' }
   }
   const summary = cleanText(item.summary) || lastParagraph(item.payload?.reply)
   const firstSentence = cleanText(summary.split(/(?<=[.!?])\s/)[0] ?? '', { maxWords: 20 })
-  return { headline: lead + 'Done in ' + who + ': ' + (firstSentence || 'finished.'), full: lead + 'Done in ' + who + '. ' + cleanText(summary, { maxChars: 600 }) }
+  return { headline: 'Done in ' + who + ': ' + (firstSentence || 'finished.'), full: 'Done in ' + who + '. ' + cleanText(summary, { maxChars: 600 }) }
+}
+
+/**
+ * What the user hears for an item at a queue position: a short headline and the full text. Position is the item's
+ * current place in the queue (oldest = 1); without one there is no lead. `full` is the lead, a paragraph break and the
+ * `body`, so the lead is its own chunk and the body (and its chunks) is the same at every position.
+ */
+export function spokenFor(item, position) {
+  const { headline, full } = bodyParts(item)
+  return { lead: leadFor(position), body: full, headline: withLead(position, headline, ' '), full: withLead(position, full, '\n\n') }
 }
 
 const firstSentenceOf = (text) => text.split(/(?<=[.!?])\s/)[0] ?? ''
@@ -120,8 +130,14 @@ export function speakable(value) {
 /**
  * Cuts speech into pieces for the speaker: paragraph borders first, then sentences, packed up to `max` characters; the
  * first piece is held to `first` so playback starts early. A single over-long sentence is split at spaces.
+ * A leading "Item N." paragraph (the queue position) is a chunk of its own and the rest is chunked as if it were not
+ * there, so the body chunks are identical at every position (the speech cache then hits for them).
  */
-export function chunkForSpeech(text, { first = 260, max = 420 } = {}) {
+const LEAD_PARAGRAPH = /^\s*(Item \d+\.)[ \t]*\r?\n[ \t]*\r?\n/
+export function chunkForSpeech(text, opts = {}) {
+  const lead = LEAD_PARAGRAPH.exec(String(text ?? ''))
+  if (lead) return [lead[1], ...chunkForSpeech(String(text).slice(lead[0].length), opts)]
+  const { first = 260, max = 420 } = opts
   const units = []
   for (const paragraph of String(text ?? '').split(/\n\s*\n/)) {
     const flat = paragraph.replace(/\s+/g, ' ').trim()
@@ -151,21 +167,17 @@ export function chunkForSpeech(text, { first = 260, max = 420 } = {}) {
   return chunks
 }
 
-/** Everything a card says when its play button is pressed: the whole message, not the summary. */
+/**
+ * Everything a card says when its play button is pressed: the whole message, not the summary. With a position it starts
+ * with the "Item N." lead as a paragraph of its own; the rest does not depend on the position.
+ */
 export function fullTextFor(item, position) {
-  const text = fullTextAt(item, position || 0)
-  return position ? text : text.replace(/^Item \d+\. /, '')
-}
-
-function fullTextAt(item, position) {
-  const who = name(item)
-  const lead = 'Item ' + position + '. '
   if (item.type === 'permission') {
-    const base = spokenFor(item, position).full
+    const base = bodyParts(item).full
     const reason = cleanText(item.payload?.reason, { maxChars: 600 })
-    return reason ? base.replace(/ Say approve or deny\.$/, '') + ' Reason: ' + sentence(reason) + ' Say approve or deny.' : base
+    return withLead(position, reason ? base.replace(/ Say approve or deny\.$/, '') + ' Reason: ' + sentence(reason) + ' Say approve or deny.' : base, '\n\n')
   }
   if (item.type === 'question') return spokenFor(item, position).full
   const reply = speakable(item.payload?.reply) || cleanText(item.summary) || 'Finished.'
-  return lead + 'Done in ' + who + '. ' + sentence(titleFor(item)) + '\n\n' + reply
+  return withLead(position, 'Done in ' + name(item) + '. ' + sentence(titleFor(item)) + '\n\n' + reply, '\n\n')
 }

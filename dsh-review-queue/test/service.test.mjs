@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
 import { createReviewQueue } from '../service.js'
+import { chunkForSpeech, fullTextFor } from '../speech.js'
 
 function setup() {
   let t = 1000
@@ -241,4 +242,137 @@ test('reading stops by itself when the item being read leaves the queue; reading
   assert.equal(queue.snapshot().reading, b.id)
   assert.equal(stopped(), before)
   void speaker
+})
+
+// --- voice seams: count, first, readPosition, again, uiCommand ---
+
+const questionItem = () => ({ type: 'question', sessionId: 'sq', sessionTitle: 'Q', payload: { questions: [{ id: 'q', question: 'Pick?', options: [{ label: 'A' }, { label: 'B' }] }] } })
+const permissionItem = () => ({ type: 'permission', sessionId: 'sp', sessionTitle: 'P', payload: { toolName: 'shell', summary: 'shell: ls' } })
+
+test('count tallies the open items by type and ignores resolved ones', () => {
+  const { store, queue } = setup()
+  assert.deepEqual(queue.count(), { total: 0, byType: { question: 0, permission: 0, completed: 0 } })
+  const a = store.add(completed())
+  store.add(completed({ sessionId: 's2' }))
+  store.add(questionItem())
+  store.add(permissionItem())
+  assert.deepEqual(queue.count(), { total: 4, byType: { question: 1, permission: 1, completed: 2 } })
+  store.resolve(a.id, { kind: 'reviewed' })
+  assert.deepEqual(queue.count(), { total: 3, byType: { question: 1, permission: 1, completed: 1 } })
+})
+
+test('first is the oldest open item, or undefined for an empty queue', () => {
+  const { store, queue } = setup()
+  assert.equal(queue.first(), undefined)
+  const a = store.add(completed({ sessionTitle: 'Oldest' }))
+  store.add(completed({ sessionId: 's2' }))
+  assert.equal(queue.first().id, a.id)
+  assert.equal(queue.first().position, 1)
+  store.resolve(a.id, { kind: 'reviewed' })
+  assert.notEqual(queue.first().id, a.id)
+  assert.equal(queue.first().position, 1)
+})
+
+test('readPosition reads exactly what the play button reads for that position, and focuses the item', () => {
+  const { store, queue, spoken } = setupSpeak()
+  store.add(completed({ payload: { reply: 'One reply.' } }))
+  const b = store.add(questionItem())
+  store.add(permissionItem())
+  assert.deepEqual(queue.readPosition(2), { ok: true, id: b.id })
+  assert.deepEqual(spoken.at(-1), chunkForSpeech(fullTextFor(store.get(b.id), 2)))
+  assert.equal(spoken.at(-1)[0], 'Item 2.')
+  assert.equal(queue.getFocus(), b.id)
+  assert.equal(queue.snapshot().focusId, b.id)
+  assert.equal(queue.snapshot().reading, b.id)
+})
+
+test('readPosition: an empty queue is "empty", a position out of range is "no-item"', () => {
+  const { store, queue, spoken } = setupSpeak()
+  assert.deepEqual(queue.readPosition(1), { ok: false, error: 'empty' })
+  store.add(completed())
+  for (const n of [0, 2, -1, 1.5, NaN, undefined, '1']) assert.deepEqual(queue.readPosition(n), { ok: false, error: 'no-item' }, String(n))
+  assert.equal(spoken.length, 0)
+  assert.equal(queue.getFocus(), undefined)
+})
+
+test('readPosition passes a speaker failure on and works without a speaker', () => {
+  const { store, queue, speaker } = setupSpeak()
+  const a = store.add(completed())
+  speaker.result = { ok: false, error: 'muted' }
+  assert.deepEqual(queue.readPosition(1), { ok: false, error: 'muted' })
+  const bare = setup()
+  bare.store.add(completed())
+  assert.deepEqual(bare.queue.readPosition(1), { ok: false, error: 'no-speaker' })
+  void a
+})
+
+test('the body chunks of a read are the same at every position (the speech cache hits)', () => {
+  const { store, queue, spoken } = setupSpeak()
+  const older = store.add(completed({ payload: { reply: 'Older.' } }))
+  const b = store.add(completed({ sessionId: 's2', payload: { reply: 'Part one is here.\n\nPart two is here.' } }))
+  queue.read(b.id)
+  const atTwo = spoken.at(-1)
+  store.resolve(older.id, { kind: 'reviewed' })
+  queue.read(b.id)
+  const atOne = spoken.at(-1)
+  assert.equal(atTwo[0], 'Item 2.')
+  assert.equal(atOne[0], 'Item 1.')
+  assert.ok(atOne.length > 1)
+  assert.deepEqual(atOne.slice(1), atTwo.slice(1))
+})
+
+test('again re-reads the last item read, wherever the read started', () => {
+  const { store, queue, spoken } = setupSpeak()
+  const a = store.add(completed({ payload: { reply: 'A reply.' } }))
+  const b = store.add(completed({ sessionId: 's2', payload: { reply: 'B reply.' } }))
+  assert.deepEqual(queue.again(), { ok: false, error: 'nothing-read' })
+  queue.read(b.id)
+  assert.deepEqual(queue.again(), { ok: true, id: b.id })
+  assert.deepEqual(spoken.at(-1), chunkForSpeech(fullTextFor(store.get(b.id), 2)))
+  queue.readPosition(1)
+  assert.deepEqual(queue.again(), { ok: true, id: a.id })
+  assert.equal(spoken.length, 4)
+})
+
+test('again says "nothing-read" when the item left the queue; a failed read does not become the last read', () => {
+  const { store, queue, speaker } = setupSpeak()
+  const a = store.add(completed())
+  const b = store.add(completed({ sessionId: 's2' }))
+  queue.read(a.id)
+  speaker.result = { ok: false, error: 'muted' }
+  assert.deepEqual(queue.read(b.id), { ok: false, error: 'muted' })
+  speaker.result = undefined
+  assert.deepEqual(queue.again(), { ok: true, id: a.id })
+  store.resolve(a.id, { kind: 'reviewed' })
+  assert.deepEqual(queue.again(), { ok: false, error: 'nothing-read' })
+})
+
+test('uiCommand accepts show and hide only', () => {
+  const { queue } = setup()
+  for (const bad of [undefined, null, '', 'open', 'SHOW', 5, {}]) assert.deepEqual(queue.uiCommand(bad), { ok: false, error: 'bad-command' }, String(bad))
+})
+
+test('uiCommand bumps a sequence number the snapshot carries, and wakes listeners', () => {
+  const { queue } = setup()
+  let woke = 0
+  queue.onChange(() => { woke++ })
+  const before = queue.snapshot().ui
+  assert.equal(typeof before.seq, 'number')
+  const r1 = queue.uiCommand('show')
+  assert.deepEqual(r1, { ok: true, seq: before.seq + 1 })
+  assert.deepEqual(queue.snapshot().ui, { seq: before.seq + 1, cmd: 'show' })
+  assert.equal(woke, 1)
+  assert.deepEqual(queue.uiCommand('hide'), { ok: true, seq: before.seq + 2 })
+  assert.deepEqual(queue.snapshot().ui, { seq: before.seq + 2, cmd: 'hide' })
+  queue.uiCommand('nope')
+  assert.equal(queue.snapshot().ui.seq, before.seq + 2, 'a rejected command changes nothing')
+  assert.equal(woke, 2)
+})
+
+test('the ui sequence is shared by queues of the same server run (a plugin reload must not reset it)', () => {
+  const one = setup().queue
+  const seq = one.uiCommand('show').seq
+  const two = setup().queue
+  assert.equal(two.snapshot().ui.seq, seq)
+  assert.equal(two.snapshot().ui.cmd, 'show')
 })

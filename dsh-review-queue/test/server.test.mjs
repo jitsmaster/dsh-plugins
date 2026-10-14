@@ -154,3 +154,47 @@ test('POST /v1/reopen and /v1/approve-similar are routed', async () => {
   assert.equal(res.status, 200)
   assert.equal((await res.json()).count, 1)
 })
+
+test('POST /v1/ui show and hide land in the snapshot ui field; anything else is a 400', async () => {
+  const before = (await (await fetch(base + '/v1/snapshot')).json()).ui
+  const res = await post('/v1/ui', { cmd: 'show' })
+  assert.equal(res.status, 200)
+  assert.deepEqual(await res.json(), { ok: true, seq: before.seq + 1 })
+  assert.deepEqual((await (await fetch(base + '/v1/snapshot')).json()).ui, { seq: before.seq + 1, cmd: 'show' })
+  assert.equal((await post('/v1/ui', { cmd: 'hide' })).status, 200)
+  assert.deepEqual((await (await fetch(base + '/v1/snapshot')).json()).ui, { seq: before.seq + 2, cmd: 'hide' })
+  const bad = await post('/v1/ui', { cmd: 'explode' })
+  assert.equal(bad.status, 400)
+  assert.deepEqual(await bad.json(), { ok: false, error: 'bad-command' })
+  assert.equal((await post('/v1/ui', {})).status, 400)
+  assert.equal((await post('/v1/ui', { cmd: 'show' }, { 'content-type': 'text/plain' })).status, 415)
+  assert.equal((await post('/v1/ui', '{nope')).status, 400)
+  assert.equal((await fetch(base + '/v1/ui')).status, 405)
+})
+
+const tokenOf = (s) => s.snapshotId + '|' + (s.focusId ?? '') + '|' + (s.reading ?? '') + '|' + (s.ui?.seq ?? 0)
+
+test('a ui command wakes a waiting long poll, and the unchanged check does not swallow it', async () => {
+  const snap = await (await fetch(base + '/v1/snapshot')).json()
+  const pending = fetch(base + '/v1/snapshot?wait=5000&since=' + encodeURIComponent(tokenOf(snap))).then((r) => r.json())
+  await new Promise((r) => setTimeout(r, 30))
+  const started = Date.now()
+  assert.equal((await post('/v1/ui', { cmd: 'hide' })).status, 200)
+  const woke = await pending
+  assert.ok(Date.now() - started < 3000)
+  assert.equal(woke.unchanged, undefined)
+  assert.equal(woke.ui.cmd, 'hide')
+  assert.equal(woke.ui.seq, snap.ui.seq + 1)
+})
+
+test('a token that is behind the ui sequence gets a full snapshot at once; the current token is unchanged', async () => {
+  await post('/v1/ui', { cmd: 'show' })
+  const snap = await (await fetch(base + '/v1/snapshot')).json()
+  const stale = await (await fetch(base + '/v1/snapshot?since=' + encodeURIComponent(snap.snapshotId + '|||' + (snap.ui.seq - 1)))).json()
+  assert.equal(stale.unchanged, undefined)
+  assert.equal(stale.ui.seq, snap.ui.seq)
+  const old = await (await fetch(base + '/v1/snapshot?since=' + encodeURIComponent(snap.snapshotId + '|' + (snap.focusId ?? '') + '|' + (snap.reading ?? '')))).json()
+  assert.equal(old.unchanged, undefined, 'an old three-part token cannot know the ui sequence, so it gets a full snapshot')
+  const current = await (await fetch(base + '/v1/snapshot?since=' + encodeURIComponent(tokenOf(snap)))).json()
+  assert.deepEqual(current, { unchanged: true, snapshotId: snap.snapshotId })
+})

@@ -29,7 +29,7 @@ async function readJson(req) {
 }
 
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
-const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long'])
+const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command'])
 const outcome = (res, result) => {
   if (result?.ok) return send(res, 200, { ...result })
   send(res, BAD_INPUT.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed' })
@@ -46,6 +46,7 @@ export function createRouter({ queue, dev }) {
     '/v1/reply': (b) => queue.reply(String(b.id), b.text),
     '/v1/read': (b) => queue.read(String(b.id)),
     '/v1/stop': () => queue.stop(),
+    '/v1/ui': (b) => queue.uiCommand(b.cmd),
     '/v1/reopen': (b) => queue.reopen(String(b.id)),
     '/v1/approve-similar': (b) => queue.approveSimilar(String(b.id)),
     '/v1/focus': (b) => (queue.setFocus(b.id === null || b.id === undefined ? undefined : String(b.id)) ? { ok: true } : { ok: false, error: 'not-open' }),
@@ -53,12 +54,13 @@ export function createRouter({ queue, dev }) {
   if (dev) actions['/v1/dev/ask'] = (b) => dev.ask(b)
 
   async function snapshot(req, res, url) {
-    // The client sends "<snapshotId>|<focusId>|<readingId>"; missing parts mean "none".
+    // The client sends "<snapshotId>|<focusId>|<readingId>|<uiSeq>"; missing parts mean "none" (ui seq 0). A token from
+    // before the ui part existed therefore matches only while no ui command has been given, else it gets a full snapshot.
     const raw = url.searchParams.get('since') ?? undefined
-    const since = raw === undefined ? undefined : raw.split('|').concat(['', '']).slice(0, 3).join('|')
+    const since = raw === undefined ? undefined : raw.split('|').concat(['', '', '0']).slice(0, 4).map((p, i) => (i === 3 && p === '' ? '0' : p)).join('|')
     const wait = Math.min(Math.max(Number(url.searchParams.get('wait')) || 0, 0), MAX_WAIT_MS)
     const current = () => queue.snapshot()
-    const stamp = (s) => s.snapshotId + '|' + (s.focusId ?? '') + '|' + (s.reading ?? '')
+    const stamp = (s) => s.snapshotId + '|' + (s.focusId ?? '') + '|' + (s.reading ?? '') + '|' + (s.ui?.seq ?? 0)
     const unchanged = () => {
       if (since === undefined) return undefined
       const s = current()

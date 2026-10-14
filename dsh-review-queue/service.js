@@ -7,12 +7,19 @@ import { spokenFor, titleFor, fullTextFor, chunkForSpeech } from './speech.js'
 import { riskOf } from './risk.js'
 
 const MAX_REPLY = 4000
+const TYPES = ['question', 'permission', 'completed']
+
+// Show/hide commands for the browsers. Module-level so that re-creating the queue inside one server run (a plugin
+// reload) does not reset the sequence: a tab that already saw seq N would otherwise ignore every later command.
+let uiSeq = 0
+let uiCmd
 
 export function createReviewQueue({ store, capture, controllerOf, speaker, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   let focusId
   let reading // id of the item being read aloud
   let readOpen = false // the item being read was in the queue when reading started
   let readSeq = 0 // a read that was replaced or stopped must not clear the state of its successor
+  let lastReadId // the item the last successful read started on (for "read again")
   const listeners = new Set()
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* ignore */ } } }
 
@@ -43,6 +50,7 @@ export function createReviewQueue({ store, capture, controllerOf, speaker, now =
         serverNow: now(),
         focusId,
         reading,
+        ui: { seq: uiSeq, cmd: uiCmd },
         open: snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position), ...(item.type === 'permission' ? { risks: risksOf(item) } : {}) })),
         resolved: snap.resolved.map((item) => ({ ...item, title: titleFor(item) })),
       }
@@ -60,9 +68,44 @@ export function createReviewQueue({ store, capture, controllerOf, speaker, now =
       if (!result?.ok) return { ok: false, error: result?.error ?? 'no-speaker' }
       readSeq = token
       reading = id
+      lastReadId = id
       readOpen = item.status === 'open'
       emit()
       return { ok: true }
+    },
+    /** Open items only: how many wait in total and per type. */
+    count() {
+      const byType = Object.fromEntries(TYPES.map((t) => [t, 0]))
+      const open = store.snapshot().open
+      for (const item of open) if (item.type in byType) byType[item.type]++
+      return { total: open.length, byType }
+    },
+    /** The oldest open item (position 1), or undefined. */
+    first: () => store.snapshot().open[0],
+    /** Reads the open item at a 1-based queue position (what the card's play button reads) and focuses it. */
+    readPosition(n) {
+      const open = store.snapshot().open
+      if (!open.length) return { ok: false, error: 'empty' }
+      if (!Number.isInteger(n) || n < 1 || n > open.length) return { ok: false, error: 'no-item' }
+      const { id } = open[n - 1]
+      this.setFocus(id)
+      const result = this.read(id)
+      return result.ok ? { ok: true, id } : result
+    },
+    /** Reads the last item read once more, while it is still waiting. */
+    again() {
+      if (lastReadId === undefined || !openItem(lastReadId)) return { ok: false, error: 'nothing-read' }
+      const id = lastReadId
+      const result = this.read(id)
+      return result.ok ? { ok: true, id } : result
+    },
+    /** Asks every open browser to show or hide the overlay; each applies a given seq once. */
+    uiCommand(cmd) {
+      if (cmd !== 'show' && cmd !== 'hide') return { ok: false, error: 'bad-command' }
+      uiCmd = cmd
+      uiSeq++
+      emit()
+      return { ok: true, seq: uiSeq }
     },
     stop() {
       const was = reading

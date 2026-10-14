@@ -129,3 +129,46 @@ test('fullTextFor reads a question with its options and a permission with its re
   assert.match(p, /shell: ls/)
   assert.match(p, /Needs to list files/)
 })
+
+const bodyOf = (chunks) => chunks.slice(1)
+const itemsForLead = {
+  completed: { type: 'completed', sessionTitle: 'Proj', title: 'Move auth', payload: { reply: 'First part.\n\nSecond part. ' + 'More words here. '.repeat(40) } },
+  question: { type: 'question', sessionTitle: 'P', payload: { questions: [{ id: 'q', question: 'Pick?', options: [{ label: 'A (Recommended)' }, { label: 'B', description: 'Other' }] }] } },
+  permission: { type: 'permission', sessionTitle: 'P', payload: { summary: 'shell: ls', reason: 'Needs to list files' } },
+}
+
+for (const [kind, item] of Object.entries(itemsForLead)) {
+  test('the position lead is its own chunk and the ' + kind + ' body chunks are identical at every position', () => {
+    const at1 = chunkForSpeech(fullTextFor(item, 1))
+    const at4 = chunkForSpeech(fullTextFor(item, 4))
+    assert.equal(at1[0], 'Item 1.')
+    assert.equal(at4[0], 'Item 4.')
+    assert.ok(at1.length > 1)
+    assert.deepEqual(bodyOf(at1), bodyOf(at4))
+    assert.ok(bodyOf(at1).every((c) => !/^Item \d+\./.test(c)))
+  })
+
+  test('without a position the ' + kind + ' has no lead and the same body chunks as with one', () => {
+    const bare = chunkForSpeech(fullTextFor(item))
+    assert.deepEqual(bare, bodyOf(chunkForSpeech(fullTextFor(item, 2))))
+    assert.doesNotMatch(bare[0], /^Item/)
+    assert.doesNotMatch(spokenFor(item).full, /Item|undefined/)
+    assert.doesNotMatch(spokenFor(item).headline, /Item|undefined/)
+  })
+
+  test('spokenFor(' + kind + ').full is the lead and the body, apart from the position', () => {
+    const s = spokenFor(item, 3)
+    assert.equal(s.lead, 'Item 3.')
+    assert.equal(spokenFor(item, 9).body, s.body)
+    assert.equal(s.full, 'Item 3.\n\n' + s.body)
+    assert.match(s.headline, /^Item 3\. /)
+  })
+}
+
+test('the first body chunk keeps the early-start limit even after a lead chunk', () => {
+  const text = 'Item 1.\n\n' + 'word '.repeat(200)
+  const chunks = chunkForSpeech(text, { first: 50, max: 80 })
+  assert.equal(chunks[0], 'Item 1.')
+  assert.ok(chunks[1].length <= 50)
+  assert.ok(chunks.slice(2).every((c) => c.length <= 80))
+})
