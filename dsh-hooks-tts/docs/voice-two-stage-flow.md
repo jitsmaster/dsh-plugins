@@ -48,7 +48,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T1 | IDLE or any | E.capture, text non-empty | abort old turn; new id; utterance=text (NFKC-normalised, whitespace collapsed; must be speakable and ≤1500 chars, else → END "I could not repeat that back safely. Cancelled." / the T29 too-long line; the echo is exactly what decide() receives); history=[] ; speak "I heard: {text}. Is that right?" | ECHO_SPEAK |
 | T2 | IDLE or any | E.capture, text empty/whitespace | → END "I did not catch that." | IDLE |
 | T3 | any ≠ IDLE | E.bargein | turn++ (kills pending awaits); `cancelSpeech()` (speaker.cancel(): queued lines resolve 'cancelled', the line in flight is cut, see §2); log barge-in; await the capture transcript | IDLE(waiting) |
-| T4 | ECHO_SPEAK | E.spoken | listen(step 'echo', 10 s) | ECHO_LISTEN |
+| T4 | ECHO_SPEAK | E.spoken | listen(step 'echo', 30 s) | ECHO_LISTEN |
 | T5 | ECHO_LISTEN | answer 'yes' | play the singing-bowl chime (assets/bowl.wav; `decideChime` setting, best-effort) AND start decide() concurrently | DECIDE |
 | T6 | ECHO_LISTEN / READBACK_LISTEN / CLARIFY_LISTEN | answer 'stop' | → END "Cancelled." | IDLE |
 | T7a | ECHO_LISTEN / READBACK_LISTEN | answer 'no' (user-approved 2026-10-12) | speak "Please say it again." then listen again at the SAME step (utterance/action unchanged; turn++) | same *_SPEAK→*_LISTEN |
@@ -65,7 +65,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T17 | DECIDE | error unparseable / invalid schema | → END "I could not understand the LLM's answer. Cancelled." | IDLE |
 | T18 | DECIDE | valid shape but no target session resolvable | → END "No session is known. Cancelled." | IDLE |
 | T19 | DECIDE | approval action but nothing pending in target | → END "{title} has no pending permission request. Cancelled." | IDLE |
-| T20 | READBACK_SPEAK / CLARIFY_SPEAK | E.spoken | listen(step 'decision' / 'clarify', 10 s) | *_LISTEN |
+| T20 | READBACK_SPEAK / CLARIFY_SPEAK | E.spoken | listen(step 'decision' / 'clarify', 30 s) | *_LISTEN |
 | T21 | READBACK_LISTEN | answer 'yes' | execute(frozen action) | EXECUTE |
 | T22 | CLARIFY_LISTEN | answer 'text' or 'yes' | utterance = answer; speak echo (T1 wording) | ECHO_SPEAK |
 | T23 | EXECUTE | ok | → END resultText(action); when a barge-in/capture mic is open (listening{context null} seen, no transcript/idle/error yet) the line is held until that listen ended (or the guard time, 140 s), then spoken first; a held capture is echoed after it (T1) | IDLE |
@@ -84,7 +84,7 @@ Notes:
   decide() is NOT awaited before speaking (latency).
 - Hotkey pressed DURING a flow listen → STT calls finish() (no new listen): ends the answer early; context kept → normal
   E.answer. Hotkey while mic closed → listening{context:null} → T3 then T1.
-- E.guard: guardMs = window_s*1000 + 130 s = 140 s (must stay above the STT max_utterance_s of 120 s plus transcription time; window_s only bounds the wait for speech to begin), re-armed on 'transcribing' of the current turn (long answers, slow decode).
+- E.guard: guardMs = window_s*1000 + 110 s = 140 s (must stay above the STT max_utterance_s of 120 s plus transcription time; window_s only bounds the wait for speech to begin), re-armed on 'transcribing' of the current turn (long answers, slow decode).
 - EXECUTE hold: during EXECUTE a barge-in/capture (context null) is held, never spoken over. The result line waits for the held listen to end (transcript rev 1, idle or error with context null), is then spoken, and only afterwards the held capture is processed (echo). An empty held transcript or no-speech idle still gets the result line. If the listen end never arrives the same guard time (window_s*1000 + 130 s = 140 s, logged 'hold.timeout') releases it. abort() drops the hold and the result line.
 - Barge-in silence: `listening{context null}` is also the STT's signal to create tts-stop.flag, but Invoke-KokoroTts used to delete that flag just before playback, so lines still synthesised/queued played into the open mic. Fixed by speaker.cancel() (below) and by Invoke-KokoroTts keeping flags newer than the start of its own call.
 - Echo re-entry from READBACK (T7) discards the frozen action.
@@ -94,7 +94,7 @@ Notes:
 
 New voice/flow.js
   createVoiceFlow({ speak, listen, decide, validate, readBack, resultText, execute, classify, now, log,
-                    setTimer, clearTimer, uuid, windowS=10, guardExtraMs=130000, maxClarify=2, executeTimeoutMs=35000 })
+                    setTimer, clearTimer, uuid, windowS=30, guardExtraMs=110000, maxClarify=2, executeTimeoutMs=35000 })
   → { handle(event): void, active(): boolean, abort(reason): void, snapshot(): {state, id, turn, step} }
   cancelSpeech() → void   (optional dep; called on barge-in/abort/recapture of a running turn; service.js wires speaker.cancel)
   speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'cut'|'failed'|'timeout'|'cancelled'|'muted', startMs?, ms}>
@@ -337,7 +337,7 @@ Prewarm: speaker.warm() on reconcile when enabled (no warm-up audio).
 ## 7. Test plan (RED first; node --test, .mjs; all deps injected, fake timers/now)
 test/voice-flow.test.mjs (fakes: speak records {text,opts} resolves on demand; listen records calls; decide deferred)
 - F1 'echo is spoken before any decider call'                → speak[0]=="I heard: X. Is that right?", decide calls 0
-- F2 'listen is called only after the echo speak resolved'   → listen 0 until speak resolves; then {window_s:10, context}
+- F2 'listen is called only after the echo speak resolved'   → listen 0 until speak resolves; then {window_s:30, context}
 - F3 'yes at echo plays the bowl chime and starts decide in parallel' → decide called before the chime resolves (test/voice-flow-chime.test.mjs)
 - F4 'non-yes text at echo restarts at echo with the new text'
 - F5 'non-yes text at decision restarts at echo with the new text and drops the action'

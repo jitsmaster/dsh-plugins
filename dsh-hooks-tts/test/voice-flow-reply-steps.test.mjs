@@ -75,7 +75,7 @@ test('S2 a queue without prepareReply (an older object) leaves answer phrases to
   assert.deepEqual(h.said(), ['I heard: approve. Is that right?'])
 })
 
-test('S3 a confirm move: the line is spoken, then the confirm listen opens (step reply-confirm, window 10 s); active throughout', async () => {
+test('S3 a confirm move: the line is spoken, then the confirm listen opens (step reply-confirm, window 30 s); active throughout', async () => {
   const h = harness()
   h.capture('approve'); await tick()
   assert.deepEqual(h.said(), ['Confirm one. Yes?'])
@@ -85,7 +85,7 @@ test('S3 a confirm move: the line is spoken, then the confirm listen opens (step
   await h.speakDone()
   assert.equal(h.listens.length, 1)
   assert.equal(h.listens[0].arg.context.step, 'reply-confirm')
-  assert.equal(h.listens[0].arg.window_s, 10)
+  assert.equal(h.listens[0].arg.window_s, 30)
   assert.equal(h.state(), 'REPLY_CONFIRM_LISTEN')
 })
 
@@ -158,7 +158,7 @@ test('S8 an ask move without a line opens the answer listen at once: nothing spo
   assert.equal(h.state(), 'REPLY_ASK')
   assert.equal(h.step(), 'reply-ask')
   assert.equal(h.listens[0].arg.context.step, 'reply-ask')
-  assert.equal(h.listens[0].arg.window_s, 10)
+  assert.equal(h.listens[0].arg.window_s, 30)
   assert.ok(h.flow.active())
 })
 

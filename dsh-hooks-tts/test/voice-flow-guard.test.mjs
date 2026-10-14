@@ -1,6 +1,6 @@
 // The answer guard and the EXECUTE hold timer must never give up before the STT daemon does: its max_utterance_s is 120 s
-// (the STT project's config.example.toml) plus transcription time. window_s sent to STT (10 s) only bounds how long it waits for
-// speech to BEGIN; the plugin's total is windowS*1000 + guardExtraMs = 10 s + 130 s = 140 s.
+// (the STT project's config.example.toml) plus transcription time. window_s sent to STT (30 s) only bounds how long it waits for
+// speech to BEGIN; the plugin's total is windowS*1000 + guardExtraMs = 30 s + 110 s = 140 s.
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ANSWER_GUARD_EXTRA_MS, createVoiceFlow } from '../voice/flow.js'
@@ -43,14 +43,14 @@ function harness() {
 }
 
 test('G1 the guard total is 140 s and stays above the STT max utterance of 120 s', () => {
-  assert.equal(10_000 + ANSWER_GUARD_EXTRA_MS, 140_000)
-  assert.ok(10_000 + ANSWER_GUARD_EXTRA_MS > STT_MAX_UTTERANCE_MS)
+  assert.equal(30_000 + ANSWER_GUARD_EXTRA_MS, 140_000)
+  assert.ok(30_000 + ANSWER_GUARD_EXTRA_MS > STT_MAX_UTTERANCE_MS)
 })
 
-test('G2 window_s sent to STT stays 10 s: only the wait for speech to begin', async () => {
+test('G2 window_s sent to STT is 30 s: only the wait for speech to begin', async () => {
   const h = harness()
   h.flow.handle({ type: 'transcript', revision: 1, text: 'open the parser', context: null }); await tick()
-  assert.equal(h.listens[0].window_s, 10)
+  assert.equal(h.listens[0].window_s, 30)
 })
 
 test('G3 the answer guard does not fire at 25 s or 120 s, but does at 140 s', async () => {

@@ -2,7 +2,7 @@
 // Shapes chosen where the spec is open (implementer: follow these):
 // - createVoiceFlow deps exactly as §2; every dep is a fake here (classify is injected, the real answers.js is not used).
 // - The 500 ms retry wait after listen {started:false} (T10) uses the injected setTimer(fn, 500) (there is no sleep dep).
-// - The answer guard is setTimer(fn, windowS*1000 + guardExtraMs) = 140000 ms by default (10 s + 130 s: above the STT max utterance of 120 s), armed after listen resolves
+// - The answer guard is setTimer(fn, windowS*1000 + guardExtraMs) = 140000 ms by default (30 s + 110 s: above the STT max utterance of 120 s), armed after listen resolves
 //   {started:true}; cleared via clearTimer(id) on answer/idle/error; 'transcribing' with the current context clears and re-arms it.
 // - snapshot() exposes at least { state, id, turn, step } (state names as §1: IDLE, ECHO_SPEAK, ECHO_LISTEN, DECIDE, ...).
 // - log(stage, data): tests only check the stage names 'stale', 'barge-in', 'speak-dead'.
@@ -126,7 +126,7 @@ test('F2 listen is called only after the echo speak resolved', async () => {
   assert.equal(h.listens.length, 1)
   const { arg } = h.listens[0]
   assert.deepEqual(Object.keys(arg).sort(), ['context', 'window_s'])
-  assert.equal(arg.window_s, 10)
+  assert.equal(arg.window_s, 30)
   assert.equal(arg.context.flow, 'voice')
   assert.equal(arg.context.id, 'id1')
   assert.equal(arg.context.step, 'echo')
@@ -149,7 +149,7 @@ test('F3 yes at echo starts decide at once and speaks no "Deciding" line (the bo
   assert.equal(h.state(), 'READBACK_SPEAK')
   await h.speakDone()
   assert.equal(h.ctx().step, 'decision')
-  assert.equal(h.listens.at(-1).arg.window_s, 10)
+  assert.equal(h.listens.at(-1).arg.window_s, 30)
 })
 
 test('F4 non-yes text at echo restarts at echo with the new text', async () => {
@@ -569,7 +569,7 @@ test('F31 bare no at echo says Please say it again. and relistens the echo step 
   assert.equal(h.ctx().step, 'echo')
   assert.equal(h.ctx().id, old.id)
   assert.ok(h.ctx().turn > old.turn)
-  assert.equal(h.listens[1].arg.window_s, 10)
+  assert.equal(h.listens[1].arg.window_s, 30)
   await h.listenStarted()
   assert.equal(h.state(), 'ECHO_LISTEN')
   h.answer('yes'); await tick()

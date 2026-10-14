@@ -35,12 +35,14 @@ const REPLY_KINDS = new Set(['reply', 'approve', 'deny', 'option', 'recommended'
 const CLASSIFY_AS = Object.freeze({ [REPLY_STEPS.confirm]: 'decision' })
 /** An execute() that has not settled by then counts as failed ("That failed: timed out."), so a hung call cannot hold EXECUTE forever. */
 const EXECUTE_TIMEOUT_MS = 35_000
+/** How long STT waits for the user to START speaking in a plugin-opened answer window (the `window_s` sent to POST /listen; STT accepts up to 60). */
+export const LISTEN_WAIT_S = 30
 /**
- * Added to windowS (10 s: how long STT waits for speech to BEGIN) to give the answer guard and the EXECUTE hold timer 140 s in total.
+ * Added to windowS (LISTEN_WAIT_S = 30 s: how long STT waits for speech to BEGIN) to give the answer guard and the EXECUTE hold timer 140 s in total.
  * The plugin must never give up before the STT daemon does: this total has to stay above STT's `max_utterance_s` (120 s, the STT
  * project's config.example.toml) plus the transcription time. Raise it together with that setting.
  */
-export const ANSWER_GUARD_EXTRA_MS = 130_000
+export const ANSWER_GUARD_EXTRA_MS = 110_000
 
 const LINES = Object.freeze({
   notCaught: 'I did not catch that.',
@@ -89,7 +91,7 @@ export function failText(error) {
 export function createVoiceFlow({
   speak, listen, decide, validate, readBack, resultText, execute, classify,
   now = Date.now, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout,
-  uuid, windowS = 10, guardExtraMs = ANSWER_GUARD_EXTRA_MS, maxClarify = 2, cancelSpeech, executeTimeoutMs = EXECUTE_TIMEOUT_MS,
+  uuid, windowS = LISTEN_WAIT_S, guardExtraMs = ANSWER_GUARD_EXTRA_MS, maxClarify = 2, cancelSpeech, executeTimeoutMs = EXECUTE_TIMEOUT_MS,
   onIdle = () => {}, // the conversation just ended (reset to IDLE): the service uses it to replay held alerts at once
   chime, // optional () → Promise<{status}>: the singing-bowl strike played while decide() runs (best-effort, see playChime). Absent: that step is silent
   queue, // optional task-list fast path: { match(text) → intent | undefined, run(intent) → { outcome, line?, silence? }, stop() }

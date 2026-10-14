@@ -78,7 +78,7 @@ test('R1 "reply to the first item" prepares the reply and opens the dictation li
   assert.equal(h.listens.length, 1)
   assert.equal(h.state(), 'REPLY_DICTATE')
   assert.equal(h.step(), 'reply-dictate')
-  assert.equal(h.listens[0].arg.window_s, 10)
+  assert.equal(h.listens[0].arg.window_s, 30)
   assert.equal(h.listens[0].arg.context.flow, 'voice')
   assert.equal(h.listens[0].arg.context.step, 'reply-dictate')
   assert.ok(h.flow.active(), 'held alerts wait while the dictation is open')
