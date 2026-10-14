@@ -20,3 +20,13 @@ test('ST1 an old settings.json with voiceConfirm still loads; voiceConfirm is ne
   assert.equal(got.warnPercent, 70)
   assert.equal('voiceConfirm' in got, false, 'not exposed')
 })
+
+test('ST2 decideChime defaults to true, a config default or a saved boolean overrides it, anything else throws', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'settings-'))
+  assert.equal(createSettings(dir, {}).get().decideChime, true)
+  assert.equal(createSettings(dir, { decideChime: false }).get().decideChime, false, 'the config default')
+  const s = createSettings(dir, {})
+  assert.equal(s.set({ decideChime: false }).decideChime, false)
+  assert.equal(createSettings(dir, { decideChime: true }).get().decideChime, false, 'a saved value wins over the config default')
+  assert.throws(() => s.set({ decideChime: 'no' }), /decideChime must be true or false/)
+})

@@ -13,6 +13,9 @@
         # Read-outs are played by the persistent speak worker, with the WAVs cached in <state dir>/tts-cache (no PowerShell
         # process per alert). false goes back to running the launcher scripts of hooks.json.
         # ttsAlertsViaWorker: false
+        # Voice control: a short singing-bowl sound plays while the LLM decides, instead of the spoken "Deciding with LLM.". false makes
+        # that step silent. DEFAULT only (like the settings below): a value saved in ~/.dsh/tts/settings.json wins; re-read at every decision.
+        # decideChime: true
         skipSubagents: true
         # --- Obsidian session-start note (optional; the hook does nothing unless set) ---
         # obsidianVault: C:\path\to\your\vault

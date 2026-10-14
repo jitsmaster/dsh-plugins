@@ -44,7 +44,6 @@ export const ANSWER_GUARD_EXTRA_MS = 130_000
 
 const LINES = Object.freeze({
   notCaught: 'I did not catch that.',
-  deciding: 'Deciding with LLM.',
   sayAgain: 'Please say it again.',
   cancelled: 'Cancelled.',
   noAnswer: 'No answer. Cancelled.',
@@ -92,6 +91,7 @@ export function createVoiceFlow({
   now = Date.now, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout,
   uuid, windowS = 10, guardExtraMs = ANSWER_GUARD_EXTRA_MS, maxClarify = 2, cancelSpeech, executeTimeoutMs = EXECUTE_TIMEOUT_MS,
   onIdle = () => {}, // the conversation just ended (reset to IDLE): the service uses it to replay held alerts at once
+  chime, // optional () → Promise<{status}>: the singing-bowl strike played while decide() runs (best-effort, see playChime). Absent: that step is silent
   queue, // optional task-list fast path: { match(text) → intent | undefined, run(intent) → { outcome, line?, silence? }, stop() }
 }) {
   const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0, decideAc: null, reply: null }
@@ -379,7 +379,23 @@ export function createVoiceFlow({
     return LINES.badAnswer
   }
 
-  /** T5 → T12..T19. The "Deciding" line and decide() run in parallel; the next line waits for both. */
+  /**
+   * The bowl strike that tells the user the LLM is deciding. Best-effort and silent on any trouble: a chime that fails, is muted, cut,
+   * has no player or throws is skipped, never retried (a second bowl is noise) and never ends the flow (unlike a spoken line).
+   */
+  async function playChime() {
+    if (!chime) return 'none'
+    note('chime.sent')
+    let status
+    try { status = (await chime())?.status ?? 'failed' } catch (e) {
+      note('chime.error', { message: String(e?.message ?? e) })
+      return 'failed'
+    }
+    note('chime.end', { status })
+    return status
+  }
+
+  /** T5 → T12..T19. The bowl chime and decide() run in parallel; the next line waits for both (a failed chime counts as done). */
   async function decideNow() {
     const turn = enter('DECIDE')
     note('decide.start', { utterance: s.utterance })
@@ -387,15 +403,14 @@ export function createVoiceFlow({
     // A barge-in or abort during the decision aborts the model call too (abortTurn), instead of letting it run to its timeout.
     const ac = new AbortController()
     s.decideAc = ac
-    let d, said
+    let d
     try {
-      ;[d, said] = await Promise.all([safeDecide(ac.signal), speakOnce(LINES.deciding, turn)])
+      ;[d] = await Promise.all([safeDecide(ac.signal), playChime()])
     } finally {
       if (s.decideAc === ac) s.decideAc = null // also when a step rejects: a stale controller must not outlive its decision
     }
     if (turn !== s.turn) return note('stale', { stage: 'decide' })
     note('decide.end', { ms: now() - t, model: d.model, ok: d.ok, error: d.error, raw: rawForLog(d.raw) })
-    if (said !== 'done' && said !== 'cut') return lineFailed(said, LINES.deciding)
     if (!d.ok) return end(LLM_ERRORS[d.error] ?? LLM_ERRORS.llm)
     const v = safeValidate(d.raw)
     note('validate', { ok: v.ok, error: v.error, action: loggable(v.action) })

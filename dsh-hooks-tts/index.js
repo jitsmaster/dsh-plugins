@@ -191,7 +191,7 @@ export function apply(ctx, baseConfig = {}) {
     await Promise.allSettled([...pending])
   }, 'hooks-tts: abort running hooks')
 
-  const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens })
+  const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens, decideChime: typeof config.decideChime === 'boolean' ? config.decideChime : undefined })
   const worktrees = createWorktreeTracker(stateDir)
   const alerts = createAlerts()
   const groups = createGroups(stateDir, { trace: (line) => ctx.logger.warn(`hooks-tts: ${line}`) })
@@ -411,6 +411,8 @@ export function apply(ctx, baseConfig = {}) {
     record: voiceLog,
     ensureStt: sttLauncher ? async () => { const r = await sttLauncher.ensure(); if (r === 'started') ctx.logger.info('hooks-tts: started the STT service'); return r } : undefined,
     enabled: voiceControlOn,
+    // The singing bowl played while the LLM decides (instead of a spoken line); read per decision, no restart. Default on.
+    decideChime: () => settings.get().decideChime !== false,
     readSecret: () => readFileSync(join(stateDir, 'stt-secret'), 'utf8').trim(),
     port: sttPort,
     titleOf: (id) => { try { return ctx.get('sessionTitle')?.get(voiceAgents.get(id)?.session)?.title } catch { return undefined } },

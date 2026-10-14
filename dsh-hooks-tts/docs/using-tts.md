@@ -36,6 +36,7 @@ Details worth knowing:
 - Short phrases are cached as WAV files in `~/.dsh/tts/tts-cache`, so a repeated line starts without a server round trip.
 - Alerts raised while a voice-control conversation is running are held and replayed afterwards (a held alert's position is recomputed when it plays).
 - Subagent sessions do not speak (`skipSubagents: true`).
+- **Voice control: a bowl, not a line.** After you confirm what you said ("yes" to "I heard: ..."), a short, soft singing-bowl strike (about 1.8 s) plays while the LLM works out the action; it used to be the spoken "Deciding with LLM.". The next line (the read-back) waits for both the bowl and the decision. The bowl is best-effort: it follows the mute flag and stops when the mic opens, and if it cannot play (muted, no audio) it is just skipped and the conversation carries on. Turn it off with `decideChime` (below); the step is then silent.
 - Chinese text is spoken by the server's Chinese model; any Chinese character in a line sends the whole line to it.
 
 ## Controls
@@ -62,6 +63,8 @@ Set in `~/.dsh/tts/config.local.json` (wins over [cordis.patch.yml](../cordis.pa
 | `skipSubagents` | Do not speak for subagents | `true` |
 
 Runtime toggle (page, no restart): **TTS hooks** (`ttsEnabled`, default on).
+
+Runtime setting in `~/.dsh/tts/settings.json` (no restart, read at every decision; a default can also be given in `cordis.patch.yml`): `decideChime` (default `true`): play the singing bowl while the LLM decides during a voice-control conversation; `false` makes that step silent (no spoken line either).
 
 ## Files and logs
 

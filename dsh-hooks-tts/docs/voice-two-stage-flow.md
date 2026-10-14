@@ -11,7 +11,7 @@ Spec for TDD implementation. Target users: blind. Every outcome is SPOKEN; nothi
   'speak-dead', logged 'speak-muted'). That also covers a line cut by Ctrl+Alt+M / the mute toggle: the "Cancelled." that
   follows the cut comes back `muted`, so it is not spoken aloud. Ctrl+Alt+M (tts-stop.flag) cuts the current line short. The worker reports such a line as status `cut` (not `done`). A cut ECHO or READ-BACK line was
   not fully heard, so the flow does NOT open the mic and does not execute: it speaks "Cancelled." and ends (T28). A cut
-  Deciding / clarify / result / end line behaves as before (the flow continues).
+  Clarify / result / end line behaves as before; the former "Deciding with LLM." line is now the singing-bowl chime (see T5) (the flow continues).
 - D3 One voice: gender 'female' on every flow line (EN→bf_isabella, ZH→zf_xiaobei server-side), Priority 'High'.
 - D4 Read-back text is built DETERMINISTICALLY from the validated action (never LLM prose). Yes executes exactly that
   frozen action object.
@@ -49,7 +49,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T2 | IDLE or any | E.capture, text empty/whitespace | → END "I did not catch that." | IDLE |
 | T3 | any ≠ IDLE | E.bargein | turn++ (kills pending awaits); `cancelSpeech()` (speaker.cancel(): queued lines resolve 'cancelled', the line in flight is cut, see §2); log barge-in; await the capture transcript | IDLE(waiting) |
 | T4 | ECHO_SPEAK | E.spoken | listen(step 'echo', 10 s) | ECHO_LISTEN |
-| T5 | ECHO_LISTEN | answer 'yes' | speak "Deciding with LLM." AND start decide() concurrently | DECIDE |
+| T5 | ECHO_LISTEN | answer 'yes' | play the singing-bowl chime (assets/bowl.wav; `decideChime` setting, best-effort) AND start decide() concurrently | DECIDE |
 | T6 | ECHO_LISTEN / READBACK_LISTEN / CLARIFY_LISTEN | answer 'stop' | → END "Cancelled." | IDLE |
 | T7a | ECHO_LISTEN / READBACK_LISTEN | answer 'no' (user-approved 2026-10-12) | speak "Please say it again." then listen again at the SAME step (utterance/action unchanged; turn++) | same *_SPEAK→*_LISTEN |
 | T7 | ECHO_LISTEN / READBACK_LISTEN | answer 'text' | utterance=text (history kept) ; speak echo of text (as T1 wording) | ECHO_SPEAK |
@@ -57,7 +57,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T9 | any *_LISTEN | idle error / E.error | → END "Speech recognition failed. Cancelled." | IDLE |
 | T10 | any *_SPEAK→listen | E.listenRes started:false | retry once after 500 ms; still false → END "The microphone is busy. Cancelled." | IDLE |
 | T11 | any *_SPEAK→listen | E.listenRes rejected (HTTP/network, or no answer from the STT daemon within 5 s) | → END "Speech service unavailable. Cancelled." | IDLE |
-| T12 | DECIDE | decided action (valid, not clarify) AND "Deciding" line finished | action frozen; speak "I will {readBack}. Shall I do it?" | READBACK_SPEAK |
+| T12 | DECIDE | decided action (valid, not clarify) AND the chime attempt finished (a failed, muted or missing chime counts as done) | action frozen; speak "I will {readBack}. Shall I do it?" | READBACK_SPEAK |
 | T13 | DECIDE | decided clarify, clarifies < 2 | clarifies++; history.push({utterance, question}); speak "{question}" | CLARIFY_SPEAK |
 | T14 | DECIDE | clarify and clarifies ≥ 2 | → END "I could not work out what to do. Cancelled." | IDLE |
 | T15 | DECIDE | error timeout | → END "The LLM did not answer in time. Cancelled." | IDLE |
@@ -80,7 +80,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T29a | DECIDE | validate error 'not-approvable' (approve whose summary is cut, unavailable, hides characters, or is of an unknown tool; deny is unaffected) | → END "That request is too long or unclear to approve by voice. Answer it on screen." | IDLE |
 
 Notes:
-- DECIDE waits for BOTH the "Deciding with LLM." line to end AND decide() before the read-back (avoid queue overlap);
+- DECIDE waits for BOTH the bowl chime attempt to end AND decide() before the read-back (avoid queue overlap). The chime is never a spoken line and never ends the flow: failed, muted, cut or no player = skipped, not retried; `decideChime` false or no `chime` dep = silent step;
   decide() is NOT awaited before speaking (latency).
 - Hotkey pressed DURING a flow listen → STT calls finish() (no new listen): ends the answer early; context kept → normal
   E.answer. Hotkey while mic closed → listening{context:null} → T3 then T1.
@@ -282,7 +282,7 @@ function createVoiceFlow(deps) {
 
   async function decideNow() {
     const turn = enter('DECIDE'); log('decide.start')
-    const said = speakOnce('Deciding with LLM.')          // NOT awaited before decide starts
+    const chimed = playChime()                          // the bowl WAV through the speaker (best-effort), NOT awaited before decide starts
     const decided = decide(s.utterance, { history: s.history })
     const [d] = await Promise.all([decided, said])
     if (turn !== s.turn) return log('stale', {stage:'decide'})
@@ -321,7 +321,7 @@ function createVoiceFlow(deps) {
 }
 ```
 Notes: enter() bumps turn at every state → events of an old listen (e.g. after T7) are stale by construction;
-idle{done} after an answer is stale too (END_SPEAK bumped turn). decide() errors wait for the "Deciding" line (Promise.all).
+idle{done} after an answer is stale too (END_SPEAK bumped turn). decide() errors wait for the bowl chime attempt (Promise.all).
 
 ## 6. Latency & logging
 voiceLog({type:'flow', id, turn, stage, dt: now()-t0, ...}). Stages:
@@ -331,14 +331,14 @@ answer(step, text, kind, confidence) · decide.start · decide.end(ms, model, ok
 validate(ok, error, action) · execute.start/end(ms, ok, error)   (logged action = {action, sessionId, summary} only: never the approval token or entry object) · end(line) · abort(why, state) · barge-in · stale(ev)
 · speak-dead · worker.spawn/exit/ready(ms).
 Targets: capture.transcript → echo speak.start ≤ 1000 ms (worker warm; Kokoro synth of ~10 words ≈ 300–500 ms);
-answer yes → "Deciding" speak.start ≤ 1000 ms; decide.end ≤ 3 s typical (haiku ~1 s), hard timeout 8 s.
+answer yes → bowl chime.sent immediately (no spoken line); decide.end ≤ 3 s typical (haiku ~1 s), hard timeout 8 s.
 Prewarm: speaker.warm() on reconcile when enabled (no warm-up audio).
 
 ## 7. Test plan (RED first; node --test, .mjs; all deps injected, fake timers/now)
 test/voice-flow.test.mjs (fakes: speak records {text,opts} resolves on demand; listen records calls; decide deferred)
 - F1 'echo is spoken before any decider call'                → speak[0]=="I heard: X. Is that right?", decide calls 0
 - F2 'listen is called only after the echo speak resolved'   → listen 0 until speak resolves; then {window_s:10, context}
-- F3 'yes at echo speaks Deciding and starts decide in parallel' → decide called before 'Deciding' resolves
+- F3 'yes at echo plays the bowl chime and starts decide in parallel' → decide called before the chime resolves (test/voice-flow-chime.test.mjs)
 - F4 'non-yes text at echo restarts at echo with the new text'
 - F5 'non-yes text at decision restarts at echo with the new text and drops the action'
 - F6 'yes at decision executes exactly the read-back action' → execute arg === frozen action used in read-back

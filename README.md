@@ -83,7 +83,7 @@ Defaults live in [`dsh-hooks-tts/cordis.patch.yml`](dsh-hooks-tts/cordis.patch.y
 | `skipSubagents` | Don't run hooks for subagents | `true` |
 | `refreshIntervalMs`, `sessionBudgetTokens`, `weeklyBudgetTokens` | Status widget sampling and budgets | 30 s / 30M / 200M |
 
-Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tts/settings.json`, re-read on every step): `contextCapTokens`, `warnPercent`, `ttsEnabled`, `autoResumeHandoff`, `handoffAhead`, `pollPrComments`, `alwaysFullAccess`. A saved value wins over the config default.
+Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tts/settings.json`, re-read on every step): `contextCapTokens`, `warnPercent`, `ttsEnabled`, `autoResumeHandoff`, `handoffAhead`, `pollPrComments`, `alwaysFullAccess`, `decideChime` (voice control: singing bowl while the LLM decides, default on). A saved value wins over the config default.
 
 ### Verify
 

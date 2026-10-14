@@ -10,6 +10,8 @@
 //   punctuation, cut to at most 80 chars.
 // - speak status 'done' = success; 'failed' | 'timeout' = failure (T25: one retry of the same line, then silent IDLE).
 // - The validated action is frozen with Object.freeze (same object passed to readBack and execute).
+// - This harness passes no chime dep (the decideChime-off case): the decision step speaks nothing. The bowl chime has its own
+//   tests in voice-flow-chime.test.mjs.
 // - T7a "Please say it again." is spoken with the same voice opts, then listen reopens at the same step with a new turn.
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -88,14 +90,12 @@ async function toDecide(h, text) {
 async function toDecisionListen(h, raw = PROMPT, text) {
   await toDecide(h, text)
   await h.decideWith({ ok: true, raw })
-  await h.speakDone() // "Deciding with LLM."
   await h.speakDone() // read-back
   await h.listenStarted()
 }
 async function toClarifyListen(h, question = 'Which session, Voice Work or PR 6524?') {
   await toDecide(h)
   await h.decideWith({ ok: true, raw: { action: 'clarify', question } })
-  await h.speakDone() // "Deciding with LLM."
   await h.speakDone() // question
   await h.listenStarted()
 }
@@ -136,17 +136,15 @@ test('F2 listen is called only after the echo speak resolved', async () => {
   assert.equal(h.flow.snapshot().step, 'echo')
 })
 
-test('F3 yes at echo speaks Deciding and starts decide in parallel; read-back waits for both', async () => {
+test('F3 yes at echo starts decide at once and speaks no "Deciding" line (the bowl chime: voice-flow-chime.test.mjs); the read-back follows the decision', async () => {
   const h = harness()
   await toDecide(h)
-  assert.equal(h.lastSaid(), 'Deciding with LLM.')
-  assert.equal(h.decides.length, 1, 'decide started while the Deciding line is still playing')
+  assert.deepEqual(h.said(), ['I heard: open the parser. Is that right?'], 'nothing is spoken while the LLM decides')
+  assert.equal(h.decides.length, 1)
   assert.equal(h.decides[0].utterance, 'open the parser')
   assert.deepEqual(h.decides[0].opts, { history: [] })
   assert.equal(h.state(), 'DECIDE')
   await h.decideWith({ ok: true, raw: PROMPT })
-  assert.equal(h.speaks.length, 2, 'no read-back before the Deciding line ended')
-  await h.speakDone()
   assert.equal(h.lastSaid(), 'I will send to Voice Work: fix the parser. Shall I do it?')
   assert.equal(h.state(), 'READBACK_SPEAK')
   await h.speakDone()
@@ -255,7 +253,7 @@ test('F11 every line uses gender female and priority High', async () => {
   const h2 = harness()
   h2.capture('  '); await tick()
   const all = [...h.speaks, ...h2.speaks]
-  assert.equal(all.length, 5)
+  assert.equal(all.length, 4)
   for (const s of all) assert.deepEqual(s.opts, VOICE, s.text)
 })
 
@@ -284,8 +282,7 @@ test('F13 decide result after barge-in is ignored', async () => {
   assert.ok(h.stages().includes('barge-in'))
   assert.equal(h.flow.active(), false)
   await h.decideWith({ ok: true, raw: PROMPT })
-  await h.speakDone() // the old "Deciding" line ends
-  assert.equal(h.speaks.length, 2, 'no read-back after barge-in')
+  assert.equal(h.speaks.length, 1, 'no read-back after barge-in')
   assert.equal(h.validated.length, 0)
   assert.equal(h.listens.length, 1)
   assert.ok(h.stages().includes('stale'))
@@ -404,12 +401,10 @@ for (const [error, line] of [
   ['llm', 'The LLM is not available. Cancelled.'],
   ['unparseable', "I could not understand the LLM's answer. Cancelled."],
 ]) {
-  test('F22 decide error ' + error + ' waits for the Deciding line then says: ' + line, async () => {
+  test('F22 decide error ' + error + ' says: ' + line, async () => {
     const h = harness()
     await toDecide(h)
     await h.decideWith({ ok: false, error })
-    assert.equal(h.speaks.length, 2, 'nothing spoken over the Deciding line')
-    await h.speakDone()
     assert.equal(h.validated.length, 0)
     await assertEnds(h, line)
   })
@@ -426,7 +421,6 @@ for (const [invalid, line] of [
     await toDecide(h)
     const raw = { action: 'approve', invalid }
     await h.decideWith({ ok: true, raw })
-    await h.speakDone()
     assert.equal(h.validated[0], raw)
     await assertEnds(h, line)
   })
@@ -439,14 +433,12 @@ test('F24 a third clarify ends with I could not work out what to do. Cancelled.'
   await h.speakDone(); await h.listenStarted()
   h.answer('yes'); await tick()
   await h.decideWith({ ok: true, raw: { action: 'clarify', question: 'Send or switch?' } })
-  await h.speakDone()
   assert.equal(h.lastSaid(), 'Send or switch?', 'second clarify is still asked')
   await h.speakDone(); await h.listenStarted()
   h.answer('send'); await tick()
   await h.speakDone(); await h.listenStarted()
   h.answer('yes'); await tick()
   await h.decideWith({ ok: true, raw: { action: 'clarify', question: 'Really?' } })
-  await h.speakDone()
   assert.ok(!h.said().includes('Really?'))
   await assertEnds(h, 'I could not work out what to do. Cancelled.')
 })
@@ -493,7 +485,6 @@ test('F27 clarify question is spoken, its answer is echoed, and history reaches 
   const h = harness()
   await toDecide(h)
   await h.decideWith({ ok: true, raw: { action: 'clarify', question: 'Which session, Voice Work or PR 6524?' } })
-  await h.speakDone()
   assert.equal(h.lastSaid(), 'Which session, Voice Work or PR 6524?')
   assert.equal(h.state(), 'CLARIFY_SPEAK')
   await h.speakDone()
@@ -618,11 +609,12 @@ test('F33 speak.start logs playback latency: echo from the capture transcript, o
   await h.listenStarted()
   t = 5000
   h.answer('yes'); await tick()
+  await h.decideWith({ ok: true, raw: PROMPT })
   t = 6000
   h.speaks.at(-1).resolve({ status: 'done', ms: 900, startMs: 300 }); await tick()
   const starts = h.logs.filter((l) => l.stage === 'speak.start')
   assert.equal(starts.length, 2)
-  assert.equal(starts[1].data.latMs, 300, 'Deciding latency = playback start - when it was sent')
+  assert.equal(starts[1].data.latMs, 300, 'read-back latency = playback start - when it was sent')
 })
 
 test('F33 no speak.start is logged when the result carries no startMs', async () => {
@@ -844,12 +836,12 @@ test('F37 a speak that resolves cancelled is a silent stop: no retry, no speak-d
   assert.ok(!h.stages().includes('speak-dead'))
 })
 
-test('F37 cancelled at the Deciding line and at a final line also end silently', async () => {
+test('F37 cancelled at the read-back line and at a final line also end silently', async () => {
   const h = harness()
   await toDecide(h)
   await h.decideWith({ ok: true, raw: PROMPT })
   await h.speakDone('cancelled')
-  assert.equal(h.speaks.length, 2, 'no read-back, no retry')
+  assert.equal(h.speaks.length, 2, 'the cancelled read-back is not retried')
   assert.equal(h.flow.active(), false)
   assert.ok(!h.stages().includes('speak-dead'))
   const g = harness()
@@ -874,7 +866,6 @@ test('F35 listen.open logs ms since the listen POST; decide.end logs the model a
   h.answer('yes'); await tick()
   const raw = { ...PROMPT, text: 'x'.repeat(400) }
   await h.decideWith({ ok: true, raw, model: 'claude-haiku-4-5' })
-  await h.speakDone() // decide.end is logged once the "Deciding" line has ended too
   const end = h.logs.find((l) => l.stage === 'decide.end')
   assert.equal(end.data.model, 'claude-haiku-4-5')
   assert.equal(typeof end.data.raw, 'string')
@@ -909,7 +900,6 @@ test('F36 a cut read-back line says Cancelled. and ends: no mic, no execution, e
   const h = harness()
   await toDecide(h)
   await h.decideWith({ ok: true, raw: PROMPT })
-  await h.speakDone() // Deciding
   const n = h.listens.length
   await h.speakDone('cut') // read-back, cut
   assert.equal(h.listens.length, n, 'the mic must not open after a half-heard read-back')
@@ -928,15 +918,7 @@ test('F36 a cut line is not retried (it would be spoken a second time)', async (
   assert.deepEqual(h.said().slice(sent), ['Cancelled.'])
 })
 
-test('F36 a cut Deciding line, clarify question, result line or end line behaves as before', async () => {
-  const d = harness()
-  await toDecide(d)
-  await d.decideWith({ ok: true, raw: PROMPT })
-  await d.speakDone('cut') // Deciding line cut: the flow goes on to the read-back
-  assert.match(d.lastSaid(), /^I will send to Voice Work: fix the parser/)
-  await d.speakDone(); await d.listenStarted()
-  assert.equal(d.ctx().step, 'decision')
-
+test('F36 a cut clarify question, result line or end line behaves as before', async () => {
   const c = harness()
   await toDecide(c)
   await c.decideWith({ ok: true, raw: { action: 'clarify', question: 'Which one?' } })
@@ -978,7 +960,6 @@ test('F38 a too-long action is cancelled with its own spoken line', async () => 
   const h = harness({ validate: () => ({ ok: false, error: 'too-long' }) })
   await toDecide(h)
   await h.decideWith({ ok: true, raw: PROMPT })
-  await h.speakDone() // Deciding
   await assertEnds(h, 'That is too long to confirm by voice. Cancelled.')
   assert.equal(h.executes.length, 0)
 })
@@ -1063,7 +1044,6 @@ test('F1 validate receives the confirmed utterance, so CJK in an action is only 
   const h = harness({ validate: (raw, o) => { seen.push(o); return { ok: true, action: { ...raw } } } })
   await toDecide(h, 'fix the parser')
   await h.decideWith({ ok: true, raw: PROMPT })
-  await h.speakDone() // Deciding
   assert.deepEqual(seen, [{ utterance: 'fix the parser' }])
 })
 
@@ -1079,12 +1059,12 @@ test('R3 a muted line is a silent stop: logged, no retry, no listen, no speak-de
   assert.ok(!h.stages().includes('speak-dead'))
 })
 
-test('R3 muted at the Deciding line and at a final line also end silently', async () => {
+test('R3 muted at the read-back line and at a final line also end silently', async () => {
   const h = harness()
   await toDecide(h)
   await h.decideWith({ ok: true, raw: PROMPT })
   await h.speakDone('muted')
-  assert.equal(h.speaks.length, 2, 'no read-back, no retry')
+  assert.equal(h.speaks.length, 2, 'the muted read-back is not retried')
   assert.equal(h.flow.active(), false)
   assert.ok(!h.stages().includes('speak-dead'))
   const g = harness()
