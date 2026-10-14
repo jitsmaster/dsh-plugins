@@ -25,7 +25,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/store.test.mjs test/speech.test.mjs test/reader.test.mjs test/risk.test.mjs test/summary.test.mjs test/capture.test.mjs test/service.test.mjs test/service-voice-nav.test.mjs test/server.test.mjs test/index.test.mjs test/client.test.mjs"
+    "test": "node --test test/store.test.mjs test/speech.test.mjs test/reader.test.mjs test/risk.test.mjs test/summary.test.mjs test/capture.test.mjs test/service.test.mjs test/service-voice-nav.test.mjs test/server.test.mjs test/index.test.mjs test/client.test.mjs test/client-resolved-open.test.mjs test/server-unknown-action.test.mjs"
   },
   "dsh": {
     "bundle": {

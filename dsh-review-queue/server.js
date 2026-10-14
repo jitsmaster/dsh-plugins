@@ -87,7 +87,9 @@ export function createRouter({ queue, dev }) {
         return await snapshot(req, res, url)
       }
       const action = actions[url.pathname]
-      if (!action) return send(res, 404, { error: 'not-found' })
+      // An unknown route is not a missing item (that is a 409 'not-found' from the service): a client newer than this server
+      // must be able to tell "I do not know this action" from "that item is gone".
+      if (!action) return send(res, 404, { error: 'unknown-action' })
       if (req.method !== 'POST') return send(res, 405, { error: 'method' })
       const body = await readJson(req)
       if (!body.value) return send(res, body.status, { error: 'bad-request' })

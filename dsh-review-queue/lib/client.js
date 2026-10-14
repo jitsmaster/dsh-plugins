@@ -11,7 +11,7 @@ window.__ModuleLoader__.load({
 		const ANCHOR_ID = "review-queue";
 		// Same origin as the page: the plugin registers /review-queue on the Host web server.
 		const API = "/review-queue";
-		const LS = { overlay: "dsh-review-queue.overlay", drafts: "dsh-review-queue.drafts" };
+		const LS = { overlay: "dsh-review-queue.overlay", drafts: "dsh-review-queue.drafts", toggles: "dsh-review-queue.toggles" };
 		const WAIT_MS = 20000;
 		/** How long the overlay stays open after the last waiting item is gone. */
 		const EMPTY_CLOSE_MS = 15000;
@@ -148,6 +148,21 @@ window.__ModuleLoader__.load({
 			return { drafts, replies };
 		}
 
+		/** Whether the "Full reply" section of a done card is open: the user's last choice, else open for a short reply and closed for a long one. */
+		function detailsOpen(replyOpen, item) {
+			const v = replyOpen && replyOpen[item.id];
+			if (typeof v === "boolean") return v;
+			return ((item.payload && item.payload.reply) || "").length < 1500;
+		}
+
+		/** Expand / "Full reply" choices worth keeping: booleans for items still in the queue (open or resolved). */
+		function pruneToggles(saved, snap) {
+			const live = new Set([...(snap ? snap.open : []), ...(snap ? snap.resolved : [])].map((i) => i.id));
+			const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+			const keep = (src) => { const out = {}; for (const [id, v] of Object.entries(obj(src))) if (live.has(id) && typeof v === "boolean") out[id] = v; return out; };
+			return { expanded: keep(saved && saved.expanded), reply: keep(saved && saved.reply) };
+		}
+
 		/** Inline markdown -> tokens. Only http(s) links stay links; anything else keeps just its text. */
 		function mdInline(text) {
 			const out = [];
@@ -201,6 +216,22 @@ window.__ModuleLoader__.load({
 			return out;
 		}
 
+		/**
+		 * Voice show/hide of the overlay: what to do with the snapshot's `ui` ({ seq, cmd }) given the last seq this tab has
+		 * seen (undefined before its first snapshot). The first snapshot only records the seq; a command acts only when its seq
+		 * is newer; a lower seq (the server restarted) just resyncs. Returns { seen, action: "show" | "hide" | undefined }.
+		 */
+		function uiStep(seen, ui) {
+			const seq = ui && typeof ui.seq === "number" && isFinite(ui.seq) ? ui.seq : undefined;
+			if (seen === undefined) return { seen: seq === undefined ? 0 : seq, action: undefined };
+			if (seq === undefined || seq === seen) return { seen, action: undefined };
+			if (seq < seen) return { seen: seq, action: undefined };
+			return { seen: seq, action: ui.cmd === "show" || ui.cmd === "hide" ? ui.cmd : undefined };
+		}
+
+		/** The long-poll token: what this tab has already seen. The server answers "unchanged" only while all four parts still match. */
+		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0);
+
 		const TYPE = { question: "Question", permission: "Permission", completed: "Done" };
 		const typeLabel = (t) => TYPE[t] || t;
 		const recommended = (q, label) => /\(recommended\)/i.test(label);
@@ -222,9 +253,17 @@ window.__ModuleLoader__.load({
 				return { drafts: obj(j && j.drafts), replies: obj(j && j.replies) };
 			} catch (_e) { return { drafts: {}, replies: {} }; }
 		}
+		function loadToggles() {
+			try {
+				const j = JSON.parse(storage.get(LS.toggles) || "null");
+				const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+				return { expanded: obj(j && j.expanded), reply: obj(j && j.reply) };
+			} catch (_e) { return { expanded: {}, reply: {} }; }
+		}
 		const saved = loadSaved();
+		const savedToggles = loadToggles();
 		const state = {
-			snap: null, error: null, skew: 0, expanded: {}, drafts: saved.drafts, replies: saved.replies, busy: {}, errors: {},
+			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
 		};
 		const listeners = new Set();
@@ -237,9 +276,15 @@ window.__ModuleLoader__.load({
 				storage.set(LS.drafts, JSON.stringify(keep));
 			}, 300);
 		}
+		let toggleTimer;
+		function scheduleToggleSave() {
+			clearTimeout(toggleTimer);
+			toggleTimer = setTimeout(() => storage.set(LS.toggles, JSON.stringify({ expanded: state.expanded, reply: state.replyOpen })), 300);
+		}
 		function set(patch) {
 			Object.assign(state, patch);
 			if ("drafts" in patch || "replies" in patch) scheduleSave();
+			if ("expanded" in patch || "replyOpen" in patch) scheduleToggleSave();
 			version++;
 			listeners.forEach((l) => l());
 		}
@@ -267,6 +312,8 @@ window.__ModuleLoader__.load({
 		function applySnapshot(body) {
 			const prev = state.snap ? state.snap.open.length : undefined;
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now() });
+			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen }, body);
+			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply))) set({ expanded: tog.expanded, replyOpen: tog.reply });
 			const action = emptiedAction(prev, body.open.length);
 			if (action === "arm") armEmptyClose();
 			else if (action === "cancel") cancelEmptyClose();
@@ -287,14 +334,15 @@ window.__ModuleLoader__.load({
 					const body = await res.json();
 					fails = 0;
 					if (body.unchanged) { if (state.error) set({ error: null }); continue; }
-					since = body.snapshotId + "|" + (body.focusId || "") + "|" + (body.reading || "");
+					since = sinceOf(body);
 					applySnapshot(body);
+					applyUi(body.ui);
 					const kept = pruneSaved({ drafts: state.drafts, replies: state.replies }, body);
 					const gone = Object.keys(state.drafts).some((k) => !(k in kept.drafts)) || Object.keys(state.replies).some((k) => !(k in kept.replies));
 					if (gone) set(kept);
 				} catch (e) {
 					fails++;
-					if (!stopped) set({ error: "Review queue unreachable (" + String((e && e.message) || e) + "). Is dsh-review-queue loaded? Restart DSH after installing it." });
+					if (!stopped) set({ error: "Task list unreachable (" + String((e && e.message) || e) + "). Is dsh-review-queue loaded? Restart DSH after installing it." });
 					await new Promise((r) => setTimeout(r, Math.min(10000, 1000 * fails)));
 				}
 			}
@@ -310,7 +358,7 @@ window.__ModuleLoader__.load({
 			let error;
 			try {
 				const res = await fetch(API + path, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-				if (!res.ok) { const j = await res.json().catch(() => ({})); error = ERRORS[j.error] || "Could not do that (" + (j.error || "HTTP " + res.status) + ")."; }
+				if (!res.ok) { const j = await res.json().catch(() => ({})); error = errorText(res.status, j); }
 			} catch (e) { error = "Request failed: " + String((e && e.message) || e); }
 			set({ busy: { ...state.busy, [id]: false }, errors: { ...state.errors, [id]: error } });
 			if (!error && advance) set({ selected: nextId || null });
@@ -324,14 +372,38 @@ window.__ModuleLoader__.load({
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
 		};
 
+		const OLD_SERVER = "The Task list server is older than this page and does not know this action. Restart DSH.";
+		/** The words for a failed action. An unknown route is HTTP 404 (new servers say "unknown-action", an OLD server that lacks the
+		 *  route says "not-found", so any 404 counts); a missing item is a 409 "not-found" and keeps its own text. */
+		function errorText(status, body) {
+			const code = body && typeof body === "object" ? body.error : undefined;
+			if (code === "unknown-action" || status === 404) return OLD_SERVER;
+			if (typeof code === "string" && Object.prototype.hasOwnProperty.call(ERRORS, code)) return ERRORS[code];
+			return "Could not do that (" + (code || "HTTP " + status) + ").";
+		}
+
 		// Host capabilities captured in apply(); absent on a DSH without the workspace API, which just hides the button.
 		const hostApi = { openSession: undefined };
 		/** Reading aloud ends with the overlay: whoever closes it or jumps to a session does not want to keep listening. */
 		function stopReading() {
 			if (state.snap && state.snap.reading) fetch(API + "/v1/stop", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
 		}
+		/** Go to the item's session and close the overlay. The host can refuse (the session is gone): then the overlay stays open
+		 *  and the card says so. The host call may be sync (throws) or async (rejects). */
 		function openSession(item) {
-			if (hostApi.openSession) { stopReading(); hostApi.openSession(item.sessionId); cancelEmptyClose(); set({ overlay: false }); storage.set(LS.overlay, "0"); }
+			if (!hostApi.openSession) return;
+			const failed = () => set({ errors: { ...state.errors, [item.id]: "That session no longer exists." } });
+			const done = () => { stopReading(); cancelEmptyClose(); set({ overlay: false }); storage.set(LS.overlay, "0"); };
+			let result;
+			try { result = hostApi.openSession(item.sessionId); } catch (e) { failed(); return; }
+			if (result && typeof result.then === "function") result.then(done, failed); else done();
+		}
+		let uiSeen; // the last ui command seq this tab has seen; undefined until its first snapshot
+		/** A show/hide command from the server (voice): goes through setOverlay, like the header button, so it is stored too. */
+		function applyUi(ui) {
+			const step = uiStep(uiSeen, ui);
+			uiSeen = step.seen;
+			if (step.action) setOverlay(step.action === "show");
 		}
 		function setOverlay(on) { cancelEmptyClose(); if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
 
@@ -481,7 +553,7 @@ window.__ModuleLoader__.load({
 			return h(React.Fragment, null,
 				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.summary || "Finished."),
 				full ? h(React.Fragment, null,
-					item.payload && item.payload.reply ? h("details", { open: item.payload.reply.length < 1500 }, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-replybox" }, h(Md, { text: item.payload.reply }))) : null,
+					item.payload && item.payload.reply ? h("details", { open: detailsOpen(st.replyOpen, item), onToggle: (e) => { const now = !!e.currentTarget.open; if (now !== detailsOpen(state.replyOpen, item)) set({ replyOpen: { ...state.replyOpen, [item.id]: now } }); } }, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-replybox" }, h(Md, { text: item.payload.reply }))) : null,
 					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (reply.trim() && !busy) send(); } } })) : null,
 				h("div", { className: "rq-row" },
 					full ? h("button", { className: "rq-btn pri", disabled: busy || !reply.trim(), onClick: send }, "Send reply") : null,
@@ -514,14 +586,21 @@ window.__ModuleLoader__.load({
 					hostApi.openSession ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
 		}
 
+		/** A resolved card can jump to its session when the host can open sessions and the item knows one (also after session-ended: the host may still refuse). */
+		function resolvedOpenAction(it, hostHasOpen) { return hostHasOpen && it && typeof it.sessionId === "string" && it.sessionId ? "open" : "none"; }
+		/** True when a click landed on (or inside) a button, link or form control: those keep their own action. */
+		function isButtonClick(target) { return !!(target && typeof target.closest === "function" && target.closest("button, a, input, textarea, select, summary")); }
+
 		function ResolvedCard({ it }) {
 			const st = useStore();
+			const canOpen = resolvedOpenAction(it, !!hostApi.openSession) === "open";
 			const late = it.type === "question" && it.resolution && it.resolution.kind === "expired";
 			const open = !!st.lateOpen[it.id];
 			const reopenable = it.type === "completed" && it.resolution && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded");
 			return h("div", { className: "rq-card rq-res" },
-				h("div", { className: "rq-card-h" }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
+				h("div", { className: "rq-card-h", title: canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : "default" }, onClick: canOpen ? (e) => { if (!isButtonClick(e && e.target)) openSession(it); } : undefined }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: canOpen ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
 				h("div", { className: "rq-sub" }, resolutionText(it)),
+				canOpen ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => openSession(it) }, "Open session ↗")) : null,
 				reopenable ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/reopen", { id: it.id }, it.id) }, "Reopen")) : null,
 				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
 				late && open ? h(QuestionBody, { item: it, full: true, path: "/v1/late-answer", sendLabel: "Send late answer" }) : null,
@@ -563,7 +642,7 @@ window.__ModuleLoader__.load({
 		function Head({ snap, extra }) {
 			const st = useStore();
 			const n = snap ? snap.open.length : 0;
-			return h("div", { className: "rq-head" }, h("h2", null, "Review"), h("span", { className: "rq-count" }, n),
+			return h("div", { className: "rq-head" }, h("h2", null, "Task list"), h("span", { className: "rq-count" }, n),
 				h("span", { className: "rq-grow" }),
 				h("button", { className: "rq-link", onClick: () => set({ showResolved: !st.showResolved }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
 				extra);
@@ -578,7 +657,7 @@ window.__ModuleLoader__.load({
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : h("div", { className: "rq-empty" }, snap ? none : "Loading…");
 			const extra = h("button", { className: "rq-link", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Review queue" }, h(Head, { snap, extra }), banner, h(FilterBar, { snap }),
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), banner, h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
@@ -619,7 +698,7 @@ window.__ModuleLoader__.load({
 			ensureStyle();
 			const st = useStore();
 			const n = st.snap ? st.snap.open.length : 0;
-			return h("span", { className: "rq rq-hwrap" }, h("button", { className: "rq-hbtn" + (st.overlay ? " on" : ""), "data-rq": "anchor", title: st.overlay ? "Close the review queue" : "Open the review queue (" + n + " waiting)", "aria-label": "Review queue", "aria-expanded": st.overlay, onClick: () => setOverlay(!st.overlay) },
+			return h("span", { className: "rq rq-hwrap" }, h("button", { className: "rq-hbtn" + (st.overlay ? " on" : ""), "data-rq": "anchor", title: st.overlay ? "Close the task list" : "Open the task list (" + n + " waiting)", "aria-label": "Task list", "aria-expanded": st.overlay, onClick: () => setOverlay(!st.overlay) },
 				"✔", n > 0 ? h("span", { className: "b" }, n > 99 ? "99+" : n) : null));
 		}
 
@@ -649,13 +728,15 @@ window.__ModuleLoader__.load({
 			ctx.effect(() => { pollLoop(); return () => { stopped = true; cancelEmptyClose(); }; }, "review-queue: polling");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
 			// order 1000: after every other utility, i.e. next to the right-sidebar (corner) button.
-			ctx.effect(() => ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({ name: "conversation.session.header.utilities", id: ANCHOR_ID, order: 1000, label: () => "Review queue" }, HeaderAnchor)), "review-queue: header button");
+			ctx.effect(() => ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({ name: "conversation.session.header.utilities", id: ANCHOR_ID, order: 1000, label: () => "Task list" }, HeaderAnchor)), "review-queue: header button");
 		}
 
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, EMPTY_CLOSE_MS, emptiedAction, applySnapshot, setOverlay, state };
+		exports.__test = { nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, EMPTY_CLOSE_MS, emptiedAction, applySnapshot, setOverlay, state };
+		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
+		Object.assign(exports.__test, { act, errorText, openSession, resolvedOpenAction, isButtonClick });
 		return module.exports;
 	}
 });

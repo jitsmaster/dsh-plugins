@@ -208,10 +208,10 @@ test('mdBlocks finds headings, paragraphs, lists, quotes and fenced code', () =>
 
 // --- the overlay closes itself 15 s after the waiting list empties ---
 
-function loadWithTimers(overlayOn) {
+function loadWithTimers(overlayOn, extraStore = {}) {
   const timers = []
   let registered
-  const store = overlayOn ? { 'dsh-review-queue.overlay': '1' } : {}
+  const store = { ...(overlayOn ? { 'dsh-review-queue.overlay': '1' } : {}), ...extraStore }
   const sandbox = {
     window: { __ModuleLoader__: { load: (r) => { registered = r } }, localStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v } } },
     console, setInterval, clearInterval, fetch: async () => { throw new Error('offline') },
@@ -224,7 +224,7 @@ function loadWithTimers(overlayOn) {
   const closeTimers = () => timers.filter((t) => t.ms === m.__test.EMPTY_CLOSE_MS)
   const live = () => closeTimers().filter((t) => !t.cancelled && !t.fired)
   const fire = () => { for (const t of live()) { t.fired = true; t.fn() } }
-  return { m, store, closeTimers, live, fire }
+  return { m, store, timers, closeTimers, live, fire }
 }
 const snapOf = (n) => ({ snapshotId: 's' + n, open: Array.from({ length: n }, (_, i) => ({ id: 'i' + i })), resolved: [] })
 
@@ -297,4 +297,43 @@ test('the timer re-checks the list: if an item came back between polls the overl
   fire()
   assert.equal(m.__test.state.overlay, true)
   assert.equal(live().length, 0)
+})
+
+// --- the "Full reply" and expand toggles survive closing and reopening the list ---
+
+test('detailsOpen: an explicit choice wins, else short replies start open and long ones closed', () => {
+  const short = { id: 'a', payload: { reply: 'ok' } }
+  const long = { id: 'b', payload: { reply: 'x'.repeat(1500) } }
+  assert.equal(T.detailsOpen({}, short), true)
+  assert.equal(T.detailsOpen({}, long), false)
+  assert.equal(T.detailsOpen({ a: false }, short), false, 'a closed choice stays closed')
+  assert.equal(T.detailsOpen({ b: true }, long), true, 'an open choice stays open')
+  assert.equal(T.detailsOpen(undefined, short), true)
+})
+
+test('pruneToggles keeps boolean choices for items still in the queue only', () => {
+  const snap = { open: [{ id: 'a' }], resolved: [{ id: 'b' }] }
+  assert.deepEqual(T.pruneToggles({ expanded: { a: true, gone: true, b: 'x' }, reply: { b: false, gone: false, a: 1 } }, snap), { expanded: { a: true }, reply: { b: false } })
+  assert.deepEqual(T.pruneToggles(undefined, snap), { expanded: {}, reply: {} })
+  assert.deepEqual(T.pruneToggles({ expanded: 5, reply: null }, snap), { expanded: {}, reply: {} })
+})
+
+test('toggle choices are saved to localStorage and loaded again on the next start', () => {
+  const first = loadWithTimers(false)
+  first.m.__test.set({ replyOpen: { a: false }, expanded: { a: true } })
+  const save = first.timers.filter((t) => !t.cancelled && t.ms === 300)
+  assert.ok(save.length >= 1, 'a debounced save is scheduled')
+  for (const t of save) t.fn()
+  assert.deepEqual(JSON.parse(first.store['dsh-review-queue.toggles']), { expanded: { a: true }, reply: { a: false } })
+
+  const second = loadWithTimers(false, { 'dsh-review-queue.toggles': first.store['dsh-review-queue.toggles'] })
+  assert.deepEqual({ ...second.m.__test.state.replyOpen }, { a: false })
+  assert.deepEqual({ ...second.m.__test.state.expanded }, { a: true })
+})
+
+test('a snapshot drops toggle choices of items that left the queue', () => {
+  const { m } = loadWithTimers(false, { 'dsh-review-queue.toggles': JSON.stringify({ expanded: { a: true, gone: true }, reply: { a: false, gone: true } }) })
+  m.__test.applySnapshot({ snapshotId: 's', open: [{ id: 'a' }], resolved: [] })
+  assert.deepEqual({ ...m.__test.state.expanded }, { a: true })
+  assert.deepEqual({ ...m.__test.state.replyOpen }, { a: false })
 })
