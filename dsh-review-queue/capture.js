@@ -5,6 +5,7 @@
  * Nothing here may break the host: every handler falls through to next() when anything goes wrong.
  */
 import { recommendedOf, lastParagraph, cleanText } from './speech.js'
+import { toolDetail } from './risk.js'
 
 const TOOL_ARG_KEYS = ['command', 'file_path', 'path', 'url', 'pattern', 'query']
 const MAX_NOTES = 200
@@ -89,7 +90,10 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
   on('tools/pre-execute', async (exec, next) => {
     guard(() => {
       if (exec?.name === 'ask_user_question' && Number.isInteger(exec.arguments?.timeout) && exec.arguments.timeout > 0) timeouts.set(exec.callId, exec.arguments.timeout)
-      else if (exec?.callId) toolNotes.set(exec.callId, summarizeTool(exec.name, exec.arguments))
+      else if (exec?.callId) {
+        const path = [exec.arguments?.file_path, exec.arguments?.path].find((v) => typeof v === 'string' && v)
+        toolNotes.set(exec.callId, { summary: summarizeTool(exec.name, exec.arguments), detail: toolDetail(exec.name, exec.arguments), path })
+      }
     })
     return next()
   })
@@ -144,7 +148,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
       const note = req.callId === undefined ? undefined : toolNotes.get(req.callId)
       item = store.add({
         type: 'permission', ...baseOf(agent), key: req.callId,
-        payload: { toolName: req.toolName, summary: note ?? summarizeTool(req.toolName), reason: typeof req.reason === 'string' ? req.reason : undefined, callId: req.callId },
+        payload: { toolName: req.toolName, summary: note?.summary ?? summarizeTool(req.toolName), ...(note?.detail ? { detail: note.detail } : {}), ...(note?.path ? { path: note.path } : {}), reason: typeof req.reason === 'string' ? req.reason : undefined, callId: req.callId },
       })
     } catch (error) { log('capture: ' + error); return next() }
     return new Promise((resolve, reject) => {
@@ -187,6 +191,11 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
     if (!reply) return
     const item = guard(() => store.add({ type: 'completed', ...baseOf(agent), payload: { reply, ...(request ? { request } : {}) } }))
     if (!item) return
+    // A newer result from the same session replaces its older unreviewed ones (they stay in Resolved, and can be reopened).
+    const older = guard(() => store.list({ status: 'open' }).filter((o) => o.type === 'completed' && o.sessionId === agent.id && o.id !== item.id), [])
+    let replaced = 0
+    for (const o of older) if (guard(() => store.resolve(o.id, { kind: 'superseded', by: 'newer' }), false)) replaced++
+    if (replaced) guard(() => store.update(item.id, { earlier: replaced }))
     // The card is usable at once with the fallback; the model summary replaces it when it arrives.
     guard(() => store.update(item.id, { summary: lastParagraph(reply), summarySource: 'fallback' }))
     void summarizer.summarize(reply, { signal: controller.signal, request }).then((r) => {

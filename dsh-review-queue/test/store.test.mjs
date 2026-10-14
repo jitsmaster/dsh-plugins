@@ -139,3 +139,19 @@ test('resolveSession ends every open item of one session', () => {
   store.resolveSession('a', { kind: 'session-ended' })
   assert.deepEqual(store.snapshot().open.map((i) => i.sessionId), ['b'])
 })
+
+test('reopen puts a resolved item back in the queue in its old place', () => {
+  let t = 0
+  const store = createStore({ now: () => ++t, uuid: () => 'u' + t })
+  const a = store.add({ type: 'completed', sessionId: 's', payload: {} })
+  const b = store.add({ type: 'completed', sessionId: 's', payload: {} })
+  store.resolve(a.id, { kind: 'reviewed' })
+  assert.deepEqual(store.snapshot().open.map((i) => i.id), [b.id])
+  assert.equal(store.reopen(a.id), true)
+  const snap = store.snapshot()
+  assert.deepEqual(snap.open.map((i) => i.id), [a.id, b.id])
+  assert.equal(snap.open[0].resolution, undefined)
+  assert.equal(snap.open[0].resolvedAt, undefined)
+  assert.equal(store.reopen(a.id), false)
+  assert.equal(store.reopen('nope'), false)
+})

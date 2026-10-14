@@ -78,6 +78,16 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       changed()
       return true
     },
+    /** Put a resolved item back in the queue, in its old place (a misclicked Reviewed). */
+    reopen(id) {
+      const item = items.get(id)
+      if (!item || item.status !== 'resolved') return false
+      item.status = 'open'
+      delete item.resolvedAt
+      delete item.resolution
+      changed()
+      return true
+    },
     /** Move an open item to resolved, once. */
     resolve(id, resolution) {
       const item = items.get(id)

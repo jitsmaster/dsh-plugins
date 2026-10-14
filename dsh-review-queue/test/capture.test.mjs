@@ -305,3 +305,31 @@ test('the summarizer is given the request, and a turn without a user message sti
   assert.equal(st.snapshot().open[0].payload.request, undefined)
   void store; void fire; void agent
 })
+
+test('a permission item keeps the full command and the path of the tool call', async () => {
+  const { store, fire, agent } = setup()
+  const a = agent('a1')
+  const long = 'git commit -m "' + 'x'.repeat(300) + '"'
+  await fire('tools/pre-execute', { name: 'shell', callId: 'c9', arguments: { command: long } }, async () => ({}))
+  void fire('approval/request', { agent: a, toolName: 'shell', callId: 'c9' }, never)
+  const [item] = store.snapshot().open
+  assert.equal(item.payload.detail, long)
+  assert.ok(item.payload.summary.length < long.length)
+  await fire('tools/pre-execute', { name: 'write', callId: 'c10', arguments: { file_path: 'D:/x/a.md', content: 'hi' } }, async () => ({}))
+  void fire('approval/request', { agent: a, toolName: 'write', callId: 'c10' }, never)
+  assert.equal(store.snapshot().open[1].payload.path, 'D:/x/a.md')
+})
+
+test('a newer result from the same session replaces the older unreviewed ones', async () => {
+  const { store, fire, agent } = setup()
+  await fire('agent/turn-stopping', { agent: agent('a1', 'First result.') })
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Second result.') })
+  await fire('agent/turn-stopping', { agent: agent('a2', 'Other session.') })
+  const snap = store.snapshot()
+  assert.deepEqual(snap.open.map((i) => i.payload.reply), ['Second result.', 'Other session.'])
+  const newest = snap.open.find((i) => i.payload.reply === 'Second result.')
+  assert.equal(newest.earlier, 1)
+  const old = snap.resolved.find((i) => i.payload.reply === 'First result.')
+  assert.deepEqual({ kind: old.resolution.kind, by: old.resolution.by }, { kind: 'superseded', by: 'newer' })
+  assert.equal(snap.open.find((i) => i.payload.reply === 'Other session.').earlier, undefined)
+})

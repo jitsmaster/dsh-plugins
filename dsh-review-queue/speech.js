@@ -89,7 +89,7 @@ export function titleFor(item) {
   }
   return cleanText(item.title, { maxWords: 12 })
     || cleanText(item.payload?.request, { maxWords: 10 })
-    || cleanText(firstSentenceOf(cleanText(item.payload?.reply)), { maxWords: 10 })
+    || cleanText(firstSentenceOf(cleanText(String(item.payload?.reply ?? '').split(/\r?\n\s*\r?\n/).find((p) => p.trim()))), { maxWords: 10 })
     || 'Finished'
 }
 

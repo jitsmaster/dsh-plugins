@@ -141,3 +141,16 @@ test('POST /v1/read reports a muted voice and unknown items as 409', async () =>
   speakerResult = undefined
   assert.equal((await post('/v1/read', { id: 'nope' })).status, 409)
 })
+
+test('POST /v1/reopen and /v1/approve-similar are routed', async () => {
+  const item = completed()
+  store.resolve(item.id, { kind: 'reviewed', by: 'card' })
+  assert.equal((await post('/v1/reopen', { id: item.id })).status, 200)
+  const again = await post('/v1/reopen', { id: item.id })
+  assert.equal(again.status, 409)
+  assert.deepEqual(await again.json(), { ok: false, error: 'not-reopenable' })
+  const p = store.add({ type: 'permission', sessionId: 'sx', workspace: 'D:/p', payload: { toolName: 'shell', summary: 'shell: ls', detail: 'ls' } })
+  const res = await post('/v1/approve-similar', { id: p.id })
+  assert.equal(res.status, 200)
+  assert.equal((await res.json()).count, 1)
+})

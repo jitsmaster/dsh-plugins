@@ -31,7 +31,7 @@ async function readJson(req) {
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
 const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long'])
 const outcome = (res, result) => {
-  if (result?.ok) return send(res, 200, { ok: true })
+  if (result?.ok) return send(res, 200, { ...result })
   send(res, BAD_INPUT.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed' })
 }
 
@@ -46,6 +46,8 @@ export function createRouter({ queue, dev }) {
     '/v1/reply': (b) => queue.reply(String(b.id), b.text),
     '/v1/read': (b) => queue.read(String(b.id)),
     '/v1/stop': () => queue.stop(),
+    '/v1/reopen': (b) => queue.reopen(String(b.id)),
+    '/v1/approve-similar': (b) => queue.approveSimilar(String(b.id)),
     '/v1/focus': (b) => (queue.setFocus(b.id === null || b.id === undefined ? undefined : String(b.id)) ? { ok: true } : { ok: false, error: 'not-open' }),
   }
   if (dev) actions['/v1/dev/ask'] = (b) => dev.ask(b)

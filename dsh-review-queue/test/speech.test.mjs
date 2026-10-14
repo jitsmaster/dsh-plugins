@@ -78,6 +78,7 @@ test('titleFor: a completed item prefers the model title, then the request, then
   assert.equal(titleFor({ type: 'completed', title: 'Move auth out', payload: { request: 'please do x', reply: 'r' } }), 'Move auth out')
   assert.equal(titleFor({ type: 'completed', payload: { request: 'Fix the login bug in the auth module today please and then run all tests', reply: 'Done.' } }), 'Fix the login bug in the auth module today please...')
   assert.equal(titleFor({ type: 'completed', payload: { reply: 'Refactored auth. Tests pass.' } }), 'Refactored auth.')
+  assert.equal(titleFor({ type: 'completed', payload: { reply: '# Login refactor\n\nI moved the code.' } }), 'Login refactor')
   assert.equal(titleFor({ type: 'completed', payload: {} }), 'Finished')
 })
 
