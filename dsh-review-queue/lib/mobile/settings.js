@@ -5,7 +5,7 @@
  */
 import { html, useState, useEffect } from './vendor/preact-htm.js'
 import { getCore, getPushPrefs, setPushPrefs, getDeviceId, setDeviceId, pushKey, pushSubscribe, pushUnsubscribe, pushTest, pushSettings, pushDevices } from './api.js'
-import { PUSH_TYPES, urlBase64ToUint8Array, validateQuietHours, buildSubscribePayload } from './push-client.js'
+import { PUSH_TYPES, urlBase64ToUint8Array, validateQuietHours, buildSubscribePayload, notificationStatus } from './push-client.js'
 
 const zone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' } }
 const supported = () => typeof navigator !== 'undefined' && 'serviceWorker' in navigator && typeof PushManager !== 'undefined' && typeof Notification !== 'undefined'
@@ -79,14 +79,15 @@ export function SettingsView() {
 
   const age = (ts) => (ts ? getCore().fmtAge(Date.now() - ts) : 'never')
   const mine = getDeviceId()
+  const status = notificationStatus({ supported: supported(), permission, subscribed: !!sub })
   return html`<div class="settings">
     <section>
       <h3>Notifications</h3>
-      ${!supported() ? html`<div class="sub">This browser cannot receive push notifications. Install the app from Chrome on Android (menu, Install app).</div>` : html`<div>
-        <div class="sub">${sub ? 'On for this phone.' : permission === 'denied' ? 'Blocked in the browser settings for this site.' : 'Off. Notifications say only the type and how many items wait; the details stay in the app.'}</div>
+      ${status.state === 'unsupported' ? html`<div class="sub">${status.text}</div>` : html`<div>
+        <div class="sub">${status.text}</div>
         <div class="row">
           ${sub
-            ? html`<button class="btn" disabled=${busy} onClick=${disable}>Turn off</button><button class="btn pri" disabled=${busy} onClick=${sendTest}>Send test</button>`
+            ? html`<button class="btn" disabled=${busy} onClick=${disable}>Turn off</button><button class="btn pri" disabled=${busy || permission === 'denied'} onClick=${sendTest}>Send test</button>`
             : html`<button class="btn pri" disabled=${busy || permission === 'denied'} onClick=${enable}>Turn on notifications</button>`}
         </div></div>`}
       ${note ? html`<div class=${note.ok ? 'resolution ok' : 'err'} role="status">${note.text}</div>` : null}

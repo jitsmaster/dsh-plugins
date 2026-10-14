@@ -68,3 +68,18 @@ export function buildSubscribePayload({ subscription, settings, userAgent, tz })
   const s = normalizeSettings(settings, tz)
   return { subscription: { endpoint: sub.endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } }, name: s.name || defaultDeviceName(userAgent), types: s.types, quiet: s.quiet }
 }
+
+/**
+ * What the Settings tab says about notifications. A subscription that outlived a revoked permission is "blocked", not "on":
+ * the phone is still registered but Android shows nothing.
+ * @param {{ supported: boolean, permission: string, subscribed: boolean }} s
+ * @returns {{ state: 'unsupported' | 'on' | 'blocked' | 'off', text: string }}
+ */
+export function notificationStatus({ supported, permission, subscribed }) {
+  if (!supported) return { state: 'unsupported', text: 'This browser cannot receive push notifications. Install the app from Chrome on Android (menu, Install app).' }
+  if (permission === 'denied') {
+    return { state: 'blocked', text: subscribed ? 'Blocked in the browser settings for this site. This phone is still registered but cannot show notifications.' : 'Blocked in the browser settings for this site.' }
+  }
+  if (subscribed) return { state: 'on', text: 'On for this phone.' }
+  return { state: 'off', text: 'Off. Notifications say only the type and how many items wait; the details stay in the app.' }
+}
