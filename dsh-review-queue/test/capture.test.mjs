@@ -279,3 +279,29 @@ test('late answers refuse anything that is not an expired question, bad answers,
   const z = await expired({ services: queued.services })
   assert.equal((await z.capture.lateAnswerQuestion(z.id, [{ id: 'q1', selected: ['B'] }])).error, 'reply-queued')
 })
+
+test('the last user message of the turn is kept as the request and the model title is stored', async () => {
+  const { store, fire, agent } = setup({ summary: { text: 'Did it.', title: 'Fix the login', source: 'llm' } })
+  const a = agent('a1', 'Refactored auth.')
+  a.session.deriveMessages = () => [{ role: 'user', content: 'older' }, { role: 'assistant', content: 'x' }, { role: 'user', content: [{ type: 'text', text: 'Please fix the login bug' }] }, { role: 'assistant', content: [{ type: 'text', text: 'Refactored auth.' }] }]
+  await fire('agent/turn-stopping', { agent: a })
+  const [item] = store.snapshot().open
+  assert.equal(item.payload.request, 'Please fix the login bug')
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(store.get(item.id).title, 'Fix the login')
+})
+
+test('the summarizer is given the request, and a turn without a user message still works', async () => {
+  const seen = []
+  const { store, fire, agent } = setup()
+  // swap in a recording summarizer through a fresh setup
+  const handlers = {}
+  const ctx = { on: (n, f) => { handlers[n] = f }, get: () => undefined, logger: { warn() {}, info() {} } }
+  const st = createStore({ now: () => 1, uuid: () => 'z1' })
+  installCapture(ctx, { store: st, summarizer: { summarize: async (reply, opts) => { seen.push(opts.request); return { text: 's', source: 'llm' } } } })
+  await handlers['agent/turn-stopping']({ agent: { id: 'a', session: { deriveMessages: () => [{ role: 'assistant', content: 'only reply' }] } } })
+  await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(seen, [''])
+  assert.equal(st.snapshot().open[0].payload.request, undefined)
+  void store; void fire; void agent
+})

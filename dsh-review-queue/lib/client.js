@@ -80,6 +80,11 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		/** Enter sends a reply; Shift+Enter is a new line and Enter during IME composition belongs to the IME. */
+		const isSendKey = (e) => !!e && e.key === "Enter" && !e.shiftKey && !e.isComposing;
+		/** Heading of a card: the task title, else the session title. */
+		const cardTitle = (item) => (item && (item.title || item.sessionTitle)) || "Untitled";
+
 		const TYPE = { question: "Question", permission: "Permission", completed: "Done" };
 		const typeLabel = (t) => TYPE[t] || t;
 		const recommended = (q, label) => /\(recommended\)/i.test(label);
@@ -118,7 +123,7 @@ window.__ModuleLoader__.load({
 					const body = await res.json();
 					fails = 0;
 					if (body.unchanged) { if (state.error) set({ error: null }); continue; }
-					since = body.snapshotId + "|" + (body.focusId || "");
+					since = body.snapshotId + "|" + (body.focusId || "") + "|" + (body.reading || "");
 					set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now() });
 				} catch (e) {
 					fails++;
@@ -144,6 +149,7 @@ window.__ModuleLoader__.load({
 			"bad-answer": "That answer does not match the question.", "empty": "Type something first.", "too-long": "That is too long.",
 			"no-controller": "Cannot reach the session right now.", "not-completed": "That only applies to finished work.",
 			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so a late answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
+			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.",
 		};
 
 		// Host capabilities captured in apply(); absent on a DSH without the workspace API, which just hides the button.
@@ -260,14 +266,15 @@ window.__ModuleLoader__.load({
 			const st = useStore();
 			const busy = st.busy[item.id];
 			const reply = st.replies[item.id] || "";
+			const send = async () => { if (await act("/v1/reply", { id: item.id, text: reply }, item.id)) set({ replies: { ...state.replies, [item.id]: "" } }); };
 			return h(React.Fragment, null,
 				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.summary || "Finished."),
 				full ? h(React.Fragment, null,
 					item.payload && item.payload.reply ? h("details", null, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-pre" }, item.payload.reply)) : null,
-					h("textarea", { className: "rq-ta", placeholder: "Reply to this session…", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }) })) : null,
+					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (reply.trim() && !busy) send(); } } })) : null,
 				h("div", { className: "rq-row" },
-					h("button", { className: "rq-btn pri", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id) }, "Reviewed"),
-					full ? h("button", { className: "rq-btn", disabled: busy || !reply.trim(), onClick: async () => { if (await act("/v1/reply", { id: item.id, text: reply }, item.id)) set({ replies: { ...state.replies, [item.id]: "" } }); } }, "Send reply") : null));
+					full ? h("button", { className: "rq-btn pri", disabled: busy || !reply.trim(), onClick: send }, "Send reply") : null,
+					h("button", { className: "rq-btn", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id) }, "Reviewed")));
 		}
 
 		function Card({ item, forceFull, selected, onSelect }) {
@@ -276,20 +283,23 @@ window.__ModuleLoader__.load({
 			const full = forceFull || !!st.expanded[item.id];
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
 			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : CompletedBody;
+			const reading = !!(st.snap && st.snap.reading === item.id);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },
 				h("div", { className: "rq-card-h", onClick: toggle },
 					h("span", { className: "rq-pos" }, "#" + item.position),
 					h("span", { className: "rq-chip " + item.type }, typeLabel(item.type)),
-					h("span", { className: "rq-title", title: item.sessionTitle }, item.sessionTitle || "Untitled session"),
+					h("span", { className: "rq-title", title: cardTitle(item) }, cardTitle(item)),
 					h("span", { className: "rq-meta" },
 						left !== undefined ? h("span", { className: "rq-left" + (left < 30000 ? " soon" : ""), title: "Time left before this question expires" }, fmtLeft(left)) : null,
 						h("span", null, fmtAge(now - item.createdAt)),
 						!forceFull ? h("span", { "aria-hidden": true }, full ? "▾" : "▸") : null)),
-				full && item.workspace ? h("div", { className: "rq-sub" }, item.workspace) : null,
+				item.sessionTitle || (full && item.workspace) ? h("div", { className: "rq-sub" }, [item.sessionTitle, full ? item.workspace : ""].filter(Boolean).join(" · ")) : null,
 				h(Body, { item, full }),
 				st.errors[item.id] ? h("div", { className: "rq-err" }, st.errors[item.id]) : null,
-				h("div", { className: "rq-row" }, hostApi.openSession ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
+				h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn rq-play", disabled: st.busy[item.id], title: reading ? "Stop reading" : "Read the whole message aloud", "aria-pressed": reading, onClick: () => (reading ? act("/v1/stop", {}, item.id) : act("/v1/read", { id: item.id }, item.id)) }, reading ? "■ Stop reading" : "▶ Read aloud"),
+					hostApi.openSession ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
 		}
 
 		function ResolvedCard({ it }) {
@@ -297,7 +307,7 @@ window.__ModuleLoader__.load({
 			const late = it.type === "question" && it.resolution && it.resolution.kind === "expired";
 			const open = !!st.lateOpen[it.id];
 			return h("div", { className: "rq-card rq-res" },
-				h("div", { className: "rq-card-h" }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title" }, it.sessionTitle || "Untitled session"), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
+				h("div", { className: "rq-card-h" }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
 				h("div", { className: "rq-sub" }, resolutionText(it)),
 				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
 				late && open ? h(QuestionBody, { item: it, full: true, path: "/v1/late-answer", sendLabel: "Send late answer" }) : null,
@@ -330,8 +340,8 @@ window.__ModuleLoader__.load({
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h("button", { key: it.id, className: "rq-row-i" + (sel && sel.id === it.id ? " sel" : ""), onClick: () => set({ selected: it.id }) },
-							h("span", { className: "rq-row" }, h("span", { className: "rq-pos" }, "#" + it.position), h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title" }, it.sessionTitle || "Untitled session")),
-							h("span", { className: "rq-sub rq-clamp" }, it.spoken ? it.spoken.headline.replace(/^Item \d+\.\s*/, "") : ""))) : h("div", { className: "rq-empty" }, "Nothing waiting on you.")),
+							h("span", { className: "rq-row" }, h("span", { className: "rq-pos" }, "#" + it.position), h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title" }, cardTitle(it))),
+							h("span", { className: "rq-sub rq-clamp" }, it.sessionTitle || ""))) : h("div", { className: "rq-empty" }, "Nothing waiting on you.")),
 						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : null),
 						h("div", { className: "rq-narrow" }, list)));
 		}
@@ -389,7 +399,7 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS };
+		exports.__test = { isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS };
 		return module.exports;
 	}
 });

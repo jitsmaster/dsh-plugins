@@ -5,7 +5,7 @@ import { createStore } from '../store.js'
 import { createReviewQueue } from '../service.js'
 import { createRouter } from '../server.js'
 
-let server, base, store, queue, calls
+let server, base, store, queue, calls, speakerResult
 before(async () => {
   let n = 0
   store = createStore({ uuid: () => 'i' + ++n })
@@ -15,7 +15,9 @@ before(async () => {
     decidePermission: (id, d) => { calls.push([d, id]); return { ok: true } },
     lateAnswerQuestion: async (id, answers) => { calls.push(['late', id, answers]); return answers.length ? { ok: true, sent: true } : { ok: false, error: 'bad-answer' } },
   }
-  queue = createReviewQueue({ store, capture, controllerOf: () => ({ prompt: async () => ({}) }) })
+  let endSpeech
+  const speaker = { speak: (chunks, opts) => { if (speakerResult) return speakerResult; endSpeech = opts.onEnd; return { ok: true } }, stop: () => { const e = endSpeech; endSpeech = undefined; e?.() } }
+  queue = createReviewQueue({ store, capture, controllerOf: () => ({ prompt: async () => ({}) }), speaker })
   const serve = createRouter({ queue, dev: undefined })
   server = createServer((req, res) => serve(req, res))
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
@@ -114,4 +116,28 @@ test('POST /v1/late-answer reaches the queue; bad input is 400, a vanished quest
   assert.equal((await post('/v1/late-answer', { id: 'x', answers: [{ id: 'q', selected: ['B'] }] })).status, 200)
   assert.deepEqual(calls.at(-1), ['late', 'x', [{ id: 'q', selected: ['B'] }]])
   assert.equal((await post('/v1/late-answer', { id: 'x', answers: [] })).status, 400)
+})
+
+test('POST /v1/read and /v1/stop drive the reader; reading shows up in the snapshot and wakes the long poll', async () => {
+  const item = completed({ payload: { reply: 'Read me.' } })
+  const before = await (await fetch(base + '/v1/snapshot')).json()
+  const pending = fetch(base + '/v1/snapshot?wait=5000&since=' + encodeURIComponent(before.snapshotId + '|' + (before.focusId ?? '') + '|' + (before.reading ?? ''))).then((r) => r.json())
+  await new Promise((r) => setTimeout(r, 30))
+  const res = await post('/v1/read', { id: item.id })
+  assert.equal(res.status, 200)
+  const snap = await pending
+  assert.equal(snap.reading, item.id)
+  const stop = await post('/v1/stop', {})
+  assert.equal(stop.status, 200)
+  assert.equal((await (await fetch(base + '/v1/snapshot')).json()).reading, undefined)
+})
+
+test('POST /v1/read reports a muted voice and unknown items as 409', async () => {
+  const item = completed()
+  speakerResult = { ok: false, error: 'muted' }
+  const muted = await post('/v1/read', { id: item.id })
+  assert.equal(muted.status, 409)
+  assert.deepEqual(await muted.json(), { ok: false, error: 'muted' })
+  speakerResult = undefined
+  assert.equal((await post('/v1/read', { id: 'nope' })).status, 409)
 })

@@ -84,3 +84,37 @@ test('the model pick is cached between summaries', async () => {
   await s.summarize('a'); await s.summarize('b')
   assert.equal(listed, 1)
 })
+
+test('a TITLE and SUMMARY answer yields both; a plain answer yields no title', async () => {
+  const s = createSummarizer({ llm: fakeLlm({ reply: 'TITLE: Move auth out of the controller\nSUMMARY: Moved auth. Tests pass.' }) })
+  const r = await s.summarize('I did a lot.\n\nFinal paragraph.')
+  assert.equal(r.title, 'Move auth out of the controller')
+  assert.equal(r.text, 'Moved auth. Tests pass.')
+  assert.equal(r.source, 'llm')
+  const plain = await createSummarizer({ llm: fakeLlm() }).summarize('x\n\ny')
+  assert.equal(plain.title, undefined)
+  assert.equal(plain.text, 'Moved auth out. Tests pass.')
+})
+
+test('the title is cleaned and capped, and a title with no summary falls back for the text', async () => {
+  const long = 'TITLE: ' + 'word '.repeat(40) + '\nSUMMARY: Done.'
+  const r = await createSummarizer({ llm: fakeLlm({ reply: long }) }).summarize('a\n\nb')
+  assert.ok(r.title.split(' ').length <= 13)
+  const only = await createSummarizer({ llm: fakeLlm({ reply: 'TITLE: Just a title' }) }).summarize('a\n\nlast one')
+  assert.equal(only.title, 'Just a title')
+  assert.equal(only.text, 'last one')
+})
+
+test('the user request is sent as untrusted context for the title', async () => {
+  const seen = {}
+  await createSummarizer({ llm: fakeLlm({ seen }) }).summarize('the reply text', { request: 'Please fix the login bug' })
+  const text = seen.req.messages[0].content[0].text
+  assert.match(text, /Please fix the login bug/)
+  assert.match(text, /the reply text/)
+  assert.match(seen.req.system, /TITLE/)
+})
+
+test('the fallback never has a title', async () => {
+  const r = await createSummarizer({ llm: fakeLlm({ fail: true }) }).summarize('First.\n\nLast.')
+  assert.equal(r.title, undefined)
+})

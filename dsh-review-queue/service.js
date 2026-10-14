@@ -3,12 +3,14 @@
  * own except the focused item; items live in the store and pending requests in capture.
  */
 import { randomUUID } from 'node:crypto'
-import { spokenFor } from './speech.js'
+import { spokenFor, titleFor, fullTextFor, chunkForSpeech } from './speech.js'
 
 const MAX_REPLY = 4000
 
-export function createReviewQueue({ store, capture, controllerOf, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, speaker, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   let focusId
+  let reading // id of the item being read aloud
+  let readSeq = 0 // a read that was replaced or stopped must not clear the state of its successor
   const listeners = new Set()
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* ignore */ } } }
 
@@ -30,8 +32,32 @@ export function createReviewQueue({ store, capture, controllerOf, now = Date.now
         ...snap,
         serverNow: now(),
         focusId,
-        open: snap.open.map((item) => ({ ...item, spoken: spokenFor(item, item.position) })),
+        reading,
+        open: snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position) })),
+        resolved: snap.resolved.map((item) => ({ ...item, title: titleFor(item) })),
       }
+    },
+    /** Reads the whole message of an item aloud (not its summary). */
+    read(id) {
+      const item = store.get(id)
+      if (!item) return { ok: false, error: 'not-found' }
+      if (!speaker) return { ok: false, error: 'no-speaker' }
+      const position = store.snapshot().open.find((i) => i.id === id)?.position
+      const token = readSeq + 1
+      const result = speaker.speak(chunkForSpeech(fullTextFor(item, position)), {
+        onEnd: () => { if (readSeq === token && reading === id) { reading = undefined; emit() } },
+      })
+      if (!result?.ok) return { ok: false, error: result?.error ?? 'no-speaker' }
+      readSeq = token
+      reading = id
+      emit()
+      return { ok: true }
+    },
+    stop() {
+      readSeq++
+      try { speaker?.stop() } catch { /* nothing to stop */ }
+      if (reading !== undefined) { reading = undefined; emit() }
+      return { ok: true }
     },
     onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
     answer: (id, answers) => capture.answerQuestion(id, answers),

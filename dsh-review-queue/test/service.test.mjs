@@ -114,3 +114,73 @@ test('lateAnswer delegates to capture for an expired question', async () => {
   assert.deepEqual(await queue.lateAnswer('i1', [{ id: 'q', selected: ['B'] }]), { ok: true, sent: true })
   assert.deepEqual(calls.at(-1), ['late', 'i1', [{ id: 'q', selected: ['B'] }]])
 })
+
+function setupSpeak() {
+  const spoken = []
+  let stopped = 0
+  let end
+  const speaker = {
+    speak: (chunks, opts) => { spoken.push(chunks); end = opts.onEnd; return speaker.result ?? { ok: true } },
+    stop: () => { stopped++; end?.() },
+    result: undefined,
+  }
+  let n = 0
+  let t = 1000
+  const store = createStore({ now: () => ++t, uuid: () => 'r' + ++n })
+  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => undefined, now: () => 5000, speaker })
+  return { store, queue, spoken, speaker, finish: () => end?.(), stopped: () => stopped }
+}
+
+test('snapshot gives every item a title and reports what is being read', () => {
+  const { store, queue } = setupSpeak()
+  const a = store.add(completed({ title: 'Move auth', payload: { reply: 'Full reply text.' } }))
+  assert.equal(queue.snapshot().open[0].title, 'Move auth')
+  assert.equal(queue.snapshot().reading, undefined)
+  assert.deepEqual(queue.read(a.id), { ok: true })
+  assert.equal(queue.snapshot().reading, a.id)
+})
+
+test('read speaks the full reply in chunks, not the summary, and the state clears when speech ends', () => {
+  const { store, queue, spoken, finish } = setupSpeak()
+  const a = store.add(completed({ summary: 'SHORT', payload: { reply: 'Part one is here.\n\nPart two is here.' } }))
+  let changes = 0
+  queue.onChange(() => { changes++ })
+  assert.deepEqual(queue.read(a.id), { ok: true })
+  const text = spoken[0].join(' ')
+  assert.match(text, /Part one is here\./)
+  assert.match(text, /Part two is here\./)
+  assert.doesNotMatch(text, /SHORT/)
+  assert.ok(changes >= 1)
+  finish()
+  assert.equal(queue.snapshot().reading, undefined)
+})
+
+test('reading another item switches; stop clears; unknown ids and speaker failures are reported', () => {
+  const { store, queue, speaker, stopped } = setupSpeak()
+  const a = store.add(completed({ payload: { reply: 'A reply.' } }))
+  const b = store.add(completed({ payload: { reply: 'B reply.' } }))
+  queue.read(a.id)
+  queue.read(b.id)
+  assert.equal(queue.snapshot().reading, b.id)
+  assert.deepEqual(queue.stop(), { ok: true })
+  assert.equal(queue.snapshot().reading, undefined)
+  assert.ok(stopped() >= 1)
+  assert.deepEqual(queue.read('nope'), { ok: false, error: 'not-found' })
+  speaker.result = { ok: false, error: 'muted' }
+  assert.deepEqual(queue.read(a.id), { ok: false, error: 'muted' })
+  assert.equal(queue.snapshot().reading, undefined)
+})
+
+test('without a speaker, read says so', () => {
+  const { store, queue } = setup()
+  const a = store.add(completed())
+  assert.deepEqual(queue.read(a.id), { ok: false, error: 'no-speaker' })
+  assert.deepEqual(queue.stop(), { ok: true })
+})
+
+test('an item that left the queue can still be read (a resolved card)', () => {
+  const { store, queue } = setupSpeak()
+  const a = store.add(completed({ payload: { reply: 'Old reply.' } }))
+  store.resolve(a.id, { kind: 'reviewed' })
+  assert.deepEqual(queue.read(a.id), { ok: true })
+})

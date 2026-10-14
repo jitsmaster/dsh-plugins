@@ -25,6 +25,9 @@ const textOf = (content) => {
   return content.map((part) => (part?.type === 'text' && typeof part.text === 'string' ? part.text : '')).join('')
 }
 
+/** The request that started a finished turn is kept (capped) as context for its title. */
+const MAX_REQUEST = 2000
+
 const isTimeout = (reason) => reason?.code === 'ASK_TIMED_OUT'
 
 /** Bounded map: the oldest entry goes when it is full. */
@@ -175,17 +178,19 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
 
   on('agent/turn-stopping', async ({ agent } = {}) => {
     if (!agent || children.has(agent.id)) return
+    let request = ''
     const reply = guard(() => {
-      const assistant = agent.session.deriveMessages().filter((m) => m.role === 'assistant')
-      return textOf(assistant.at(-1)?.content).trim()
+      const messages = agent.session.deriveMessages()
+      request = textOf(messages.filter((m) => m.role === 'user').at(-1)?.content).trim().slice(0, MAX_REQUEST)
+      return textOf(messages.filter((m) => m.role === 'assistant').at(-1)?.content).trim()
     }, '')
     if (!reply) return
-    const item = guard(() => store.add({ type: 'completed', ...baseOf(agent), payload: { reply } }))
+    const item = guard(() => store.add({ type: 'completed', ...baseOf(agent), payload: { reply, ...(request ? { request } : {}) } }))
     if (!item) return
     // The card is usable at once with the fallback; the model summary replaces it when it arrives.
     guard(() => store.update(item.id, { summary: lastParagraph(reply), summarySource: 'fallback' }))
-    void summarizer.summarize(reply, { signal: controller.signal }).then((r) => {
-      if (r?.text) guard(() => store.update(item.id, { summary: r.text, summarySource: r.source }))
+    void summarizer.summarize(reply, { signal: controller.signal, request }).then((r) => {
+      if (r?.text) guard(() => store.update(item.id, { summary: r.text, summarySource: r.source, ...(r.title ? { title: r.title } : {}) }))
     }, () => {})
   })
 

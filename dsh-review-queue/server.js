@@ -44,17 +44,19 @@ export function createRouter({ queue, dev }) {
     '/v1/deny': (b) => queue.deny(String(b.id)),
     '/v1/reviewed': (b) => queue.markReviewed(String(b.id)),
     '/v1/reply': (b) => queue.reply(String(b.id), b.text),
+    '/v1/read': (b) => queue.read(String(b.id)),
+    '/v1/stop': () => queue.stop(),
     '/v1/focus': (b) => (queue.setFocus(b.id === null || b.id === undefined ? undefined : String(b.id)) ? { ok: true } : { ok: false, error: 'not-open' }),
   }
   if (dev) actions['/v1/dev/ask'] = (b) => dev.ask(b)
 
   async function snapshot(req, res, url) {
-    // The client sends "<snapshotId>|<focusId>"; a bare snapshot id means "no focus".
+    // The client sends "<snapshotId>|<focusId>|<readingId>"; missing parts mean "none".
     const raw = url.searchParams.get('since') ?? undefined
-    const since = raw !== undefined && !raw.includes('|') ? raw + '|' : raw
+    const since = raw === undefined ? undefined : raw.split('|').concat(['', '']).slice(0, 3).join('|')
     const wait = Math.min(Math.max(Number(url.searchParams.get('wait')) || 0, 0), MAX_WAIT_MS)
     const current = () => queue.snapshot()
-    const stamp = (s) => s.snapshotId + '|' + (s.focusId ?? '')
+    const stamp = (s) => s.snapshotId + '|' + (s.focusId ?? '') + '|' + (s.reading ?? '')
     const unchanged = () => {
       if (since === undefined) return undefined
       const s = current()

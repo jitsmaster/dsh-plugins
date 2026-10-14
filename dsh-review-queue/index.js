@@ -3,19 +3,25 @@
  * questions, permission requests) into one queue and serves it to the browser half (lib/client.js: a sidebar tab and
  * a full-screen overlay) under /review-queue on the Host web server.
  *
- * Config (all optional): `stateDir` (where queue.json lives), `dev` (true, or env DSH_REVIEW_QUEUE_DEV=1, enables the
+ * Config (all optional): `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
+ * sibling plugin folder), `voice` ('male' default, or 'female') for the play button, `dev` (true, or env DSH_REVIEW_QUEUE_DEV=1, enables the
  * /v1/dev/ask route that creates fake questions, permissions and completions for testing the UI).
  */
+import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createStore } from './store.js'
 import { createSummarizer } from './summary.js'
 import { installCapture, cancelStalePending } from './capture.js'
 import { createReviewQueue } from './service.js'
+import { createReader } from './reader.js'
 import { createRouter, PREFIX } from './server.js'
 
 export const name = 'review-queue'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** Atomic-ish JSON file: write a temp file, then rename over the target. */
 function fileIo(file) {
@@ -44,11 +50,21 @@ export function apply(ctx, config = {}) {
   })
   const capture = installCapture(ctx, { store, summarizer, log })
   const controllerOf = () => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } }
-  const queue = createReviewQueue({ store, capture, controllerOf })
+  // The play button speaks through the sibling dsh-hooks-tts plugin's TTS client (same server, mute switch and stop hotkey).
+  const reader = createReader({
+    spawn,
+    script: join(HERE, 'scripts', 'read-aloud.ps1'),
+    clientScript: resolve(config.ttsClient ?? join(HERE, '..', 'dsh-hooks-tts', 'scripts', 'tts-client.ps1')),
+    powershell: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    stateDir: process.env.DSH_TTS_STATE_DIR || join(process.env.TEMP || tmpdir(), 'dsh-tts'),
+    gender: config.voice === 'female' ? 'female' : 'male',
+    log,
+  })
+  const queue = createReviewQueue({ store, capture, controllerOf, speaker: reader })
 
   const pruneTimer = setInterval(() => store.prune(), 3600_000)
   pruneTimer.unref?.()
-  ctx.effect?.(() => () => { clearInterval(pruneTimer); capture.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => () => { clearInterval(pruneTimer); capture.dispose(); reader.stop() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.

@@ -96,3 +96,24 @@ test('resolutionText names late answers and confirmations', () => {
   assert.match(T.resolutionText({ resolution: { kind: 'late-answered', by: 'card', answers: [{ id: 'q', selected: ['B'] }] } }), /^Answered late: B/)
   assert.match(T.resolutionText({ resolution: { kind: 'confirmed', by: 'card', answers: [{ id: 'q', selected: ['A'] }] } }), /^Confirmed the recommended option: A/)
 })
+
+test('isSendKey: Enter sends, Shift+Enter and IME composition do not', () => {
+  assert.equal(T.isSendKey({ key: 'Enter', shiftKey: false, isComposing: false }), true)
+  assert.equal(T.isSendKey({ key: 'Enter', shiftKey: true }), false)
+  assert.equal(T.isSendKey({ key: 'Enter', isComposing: true }), false)
+  assert.equal(T.isSendKey({ key: 'a' }), false)
+})
+
+test('cardTitle prefers the task title and falls back to the session title', () => {
+  assert.equal(T.cardTitle({ title: 'Move auth', sessionTitle: 'Session' }), 'Move auth')
+  assert.equal(T.cardTitle({ sessionTitle: 'Session' }), 'Session')
+  assert.equal(T.cardTitle({}), 'Untitled')
+})
+
+test('the done card makes Send reply the primary button and Reviewed a plain one', () => {
+  const src = readFileSync(file, 'utf8')
+  const body = src.slice(src.indexOf('function CompletedBody'), src.indexOf('function Card('))
+  assert.match(body, /className: "rq-btn pri"[^\n]*"Send reply"/)
+  assert.match(body, /className: "rq-btn"[^\n]*"Reviewed"/)
+  assert.doesNotMatch(body, /rq-btn pri[^\n]*"Reviewed"/)
+})

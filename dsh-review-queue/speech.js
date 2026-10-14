@@ -75,3 +75,97 @@ export function spokenFor(item, position) {
   const firstSentence = cleanText(summary.split(/(?<=[.!?])\s/)[0] ?? '', { maxWords: 20 })
   return { headline: lead + 'Done in ' + who + ': ' + (firstSentence || 'finished.'), full: lead + 'Done in ' + who + '. ' + cleanText(summary, { maxChars: 600 }) }
 }
+
+const firstSentenceOf = (text) => text.split(/(?<=[.!?])\s/)[0] ?? ''
+
+/** A short name for the task an item stands for (shown as the card heading, beside the session title). */
+export function titleFor(item) {
+  if (item.type === 'question') {
+    const first = item.payload?.questions?.[0]
+    return cleanText(first?.header, { maxWords: 10 }) || cleanText(first?.question, { maxWords: 10 }) || 'Question'
+  }
+  if (item.type === 'permission') {
+    return cleanText(item.payload?.summary, { maxWords: 10 }) || cleanText(item.payload?.toolName, { maxWords: 4 }) || 'Permission request'
+  }
+  return cleanText(item.title, { maxWords: 12 })
+    || cleanText(item.payload?.request, { maxWords: 10 })
+    || cleanText(firstSentenceOf(cleanText(item.payload?.reply)), { maxWords: 10 })
+    || 'Finished'
+}
+
+const MAX_SPEAKABLE = 20_000
+
+/**
+ * A reply as speech: paragraphs kept (they become pauses and chunk borders), markdown noise and hidden characters
+ * dropped, code blocks replaced by a short note (reading code aloud is noise). Capped at 20,000 characters.
+ */
+export function speakable(value) {
+  if (typeof value !== 'string') return ''
+  let text = value.normalize('NFKC').replace(/\r\n|\r/g, '\n')
+    .replace(/```[\s\S]*?(```|$)/g, '\n\n(code block omitted)\n\n')
+  text = text.split('\n').map((line) => line
+    .replace(/\t/g, ' ')
+    .replace(UNSAFE, '')
+    .replace(/^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[ ]{2,}/g, ' ')
+    .trim()).join('\n')
+  text = text.replace(/\n{3,}/g, '\n\n').trim()
+  return text.length > MAX_SPEAKABLE ? text.slice(0, MAX_SPEAKABLE).trimEnd() + '...' : text
+}
+
+/**
+ * Cuts speech into pieces for the speaker: paragraph borders first, then sentences, packed up to `max` characters; the
+ * first piece is held to `first` so playback starts early. A single over-long sentence is split at spaces.
+ */
+export function chunkForSpeech(text, { first = 260, max = 420 } = {}) {
+  const units = []
+  for (const paragraph of String(text ?? '').split(/\n\s*\n/)) {
+    const flat = paragraph.replace(/\s+/g, ' ').trim()
+    if (!flat) continue
+    units.push(...flat.split(/(?<=[.!?:;])\s+/).map((s, i, all) => ({ s, end: i === all.length - 1 })))
+  }
+  const chunks = []
+  let cur = ''
+  const limit = () => (chunks.length === 0 ? first : max)
+  const flush = () => { if (cur) { chunks.push(cur); cur = '' } }
+  for (const { s, end } of units) {
+    let rest = s
+    while (rest.length > limit()) {
+      flush()
+      const room = limit()
+      let cut = rest.lastIndexOf(' ', room)
+      if (cut <= 0) cut = room
+      chunks.push(rest.slice(0, cut).trim())
+      rest = rest.slice(cut).trim()
+    }
+    if (!rest) continue
+    if (cur && cur.length + 1 + rest.length > limit()) flush()
+    cur = cur ? cur + ' ' + rest : rest
+    if (end) flush() // a paragraph never shares a piece with the next one
+  }
+  flush()
+  return chunks
+}
+
+/** Everything a card says when its play button is pressed: the whole message, not the summary. */
+export function fullTextFor(item, position) {
+  const text = fullTextAt(item, position || 0)
+  return position ? text : text.replace(/^Item \d+\. /, '')
+}
+
+function fullTextAt(item, position) {
+  const who = name(item)
+  const lead = 'Item ' + position + '. '
+  if (item.type === 'permission') {
+    const base = spokenFor(item, position).full
+    const reason = cleanText(item.payload?.reason, { maxChars: 600 })
+    return reason ? base.replace(/ Say approve or deny\.$/, '') + ' Reason: ' + sentence(reason) + ' Say approve or deny.' : base
+  }
+  if (item.type === 'question') return spokenFor(item, position).full
+  const reply = speakable(item.payload?.reply) || cleanText(item.summary) || 'Finished.'
+  return lead + 'Done in ' + who + '. ' + sentence(titleFor(item)) + '\n\n' + reply
+}
