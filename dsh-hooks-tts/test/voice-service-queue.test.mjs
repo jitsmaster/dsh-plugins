@@ -41,6 +41,8 @@ function make({ reviewQueue, real = true, ...extra } = {}) {
     controller: { cancel: async () => {}, create: async () => ({}), fork: async () => ({}), rename: async () => ({}), selectModel: async () => ({}), prompt: async () => {} },
     runSlash: async () => {},
     speaker: { speak: async (text, opts) => { spoken.push([text, opts]); return { status: 'done', ms: 1 } }, warm() {}, stop() {}, cancel() {} },
+    // The echo opens a listen: without a stub it would hit a real port and its refusal ("Speech service unavailable") could land inside the assertions.
+    fetchImpl: async () => ({ ok: true, json: async () => ({ started: true }) }),
     decide: async () => ({ ok: false, error: 'llm' }),
     createFlow: (deps) => { box.deps = deps; return real ? createVoiceFlow(deps) : { handle() {}, active: () => false, abort() {}, snapshot: () => ({ state: 'IDLE' }) } },
     ...(reviewQueue !== undefined ? { reviewQueue } : {}),
@@ -135,4 +137,83 @@ test('SQ10 a queue call that throws is spoken as a failure and the flow ends', a
   await tick()
   assert.deepEqual(h.spoken.map((s) => s[0]), ['That failed: store is locked.'])
   assert.equal(h.svc.busy(), false)
+})
+
+// ---- slice 5: reply by voice, end to end through the service with the real flow and runner ----
+
+function replyQueue(over = {}) {
+  const calls = []
+  const state = { open: [{ id: 'd1', type: 'completed', sessionId: 's1', createdAt: 1, seq: 1, title: 'Fix parser', payload: { reply: 'All done.' }, position: 1 }], snapshotId: 'e:1' }
+  const q = fakeQueue({
+    snapshot: () => ({ snapshotId: state.snapshotId, open: state.open }),
+    count: () => ({ total: state.open.length, byType: {} }),
+    reply: async (id, text) => { calls.push(['reply', id, text]); state.open = state.open.filter((i) => i.id !== id); return { ok: true } },
+    ...over,
+  })
+  q.state = state
+  q.replyCalls = calls
+  return q
+}
+
+/** A service whose /listen answers started:true and records the flow contexts, so the test can answer them. */
+function makeReply(reviewQueue) {
+  const contexts = []
+  const fetchImpl = async (url, opts) => { contexts.push(JSON.parse(opts.body).context); return { ok: true, json: async () => ({ started: true }) } }
+  const h = make({ reviewQueue: () => reviewQueue, fetchImpl })
+  h.answer = async (text) => { h.send({ type: 'transcript', revision: 1, text, context: contexts.at(-1) }); await tick() }
+  h.contexts = contexts
+  return h
+}
+
+test('SQ11 end to end: reply to the first item -> dictate -> read-back -> yes sends through the card service call', async () => {
+  const q = replyQueue()
+  const h = makeReply(q)
+  h.send({ type: 'transcript', revision: 1, text: 'Reply to the first item.', context: null })
+  await tick()
+  assert.deepEqual(h.spoken, [], 'no echo and no line before the dictation')
+  assert.equal(h.contexts.at(-1).step, 'reply-dictate')
+  await h.answer('add unit tests')
+  assert.deepEqual(h.spoken.map((s) => s[0]), ['Send to Fix parser: add unit tests. Say yes to send, or say the prompt again to replace it.'])
+  assert.equal(h.contexts.at(-1).step, 'reply-confirm')
+  await h.answer('yes')
+  assert.deepEqual(q.replyCalls, [['reply', 'd1', 'add unit tests']])
+  assert.equal(h.spoken.at(-1)[0], 'Task Fix parser, reply sent. Nothing waiting.')
+  assert.equal(h.svc.busy(), false)
+})
+
+test('SQ12 end to end: the first item is a question -> one spoken line, no dictation', async () => {
+  const q = replyQueue()
+  q.state.open = [{ id: 'q1', type: 'question', sessionId: 's2', createdAt: 1, seq: 1, title: 'Pick one', payload: {}, position: 1 }]
+  const h = makeReply(q)
+  h.send({ type: 'transcript', revision: 1, text: 'reply to the first item', context: null })
+  await tick()
+  assert.deepEqual(h.spoken.map((s) => s[0]), ['Voice reply works on done items only. Answer it on screen.'])
+  assert.equal(h.contexts.length, 0)
+  assert.deepEqual(q.replyCalls, [])
+})
+
+test('SQ13 end to end: the item left the queue while the user dictated -> "That item changed. Nothing done."', async () => {
+  const q = replyQueue()
+  const h = makeReply(q)
+  h.send({ type: 'transcript', revision: 1, text: 'reply to the first item', context: null })
+  await tick()
+  await h.answer('add unit tests')
+  q.state.open = []; q.state.snapshotId = 'e:2'
+  await h.answer('yes')
+  assert.deepEqual(q.replyCalls, [])
+  assert.equal(h.spoken.at(-1)[0], 'That item changed. Nothing done.')
+})
+
+test('SQ14 end to end: an empty task list says Nothing waiting and a throwing service is a failure line', async () => {
+  const empty = replyQueue(); empty.state.open = []
+  const a = makeReply(empty)
+  a.send({ type: 'transcript', revision: 1, text: 'reply to the first item', context: null })
+  await tick()
+  assert.deepEqual(a.spoken.map((s) => s[0]), ['Nothing waiting.'])
+  const broken = replyQueue({ snapshot: () => { throw new Error('store is locked') } })
+  const b = makeReply(broken)
+  b.send({ type: 'transcript', revision: 1, text: 'reply to the first item', context: null })
+  await tick()
+  assert.deepEqual(b.spoken.map((s) => s[0]), ['That failed: store is locked.'])
+  assert.equal(b.svc.busy(), false)
 })

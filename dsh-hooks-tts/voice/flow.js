@@ -15,17 +15,21 @@
  * Task-list fast path (optional `queue` dependency, dsh-review-queue/docs/voice-task-list.md): a capture that IS a read-only
  * task-list command (queue.match(text) → intent) runs at once, with no echo, no LLM and no "yes", then speaks its outcome line
  * (or nothing) and ends. A listening{context:null} (hotkey / GUI capture) stops the queue reader so it never speaks into the open mic.
+ * The reply intent (queue.prepareReply present) starts the voice reply instead: REPLY_DICTATE -> REPLY_CONFIRM -> EXECUTE (flow-reply.js).
  */
 
 import { VOICE } from './speaker.js'
 import { speakableUtterance } from './sanitize.js'
+import { createReplyStep, REPLY_STEPS } from './flow-reply.js'
 
 const LISTEN_RETRY_MS = 500
 /** Events of a barge-in/capture listen (context null) that are held while EXECUTE runs. */
 const HELD_EVENTS = new Set(['listening', 'transcript', 'idle', 'error'])
 const LOG_RAW_MAX = 300
-/** The task-list intents the flow runs itself; anything else the matcher returns (reply, for now) takes the normal echo path. */
+/** The read-only task-list intents the flow runs itself; reply starts the voice reply when the queue can prepare one; anything else takes the normal echo path. */
 const FAST_KINDS = new Set(['show', 'hide', 'count', 'read', 'next', 'again', 'stop', 'open'])
+/** The step whose answers are classified with another step's rules: the reply read-back is as strict as the action read-back. */
+const CLASSIFY_AS = Object.freeze({ [REPLY_STEPS.confirm]: 'decision' })
 /** An execute() that has not settled by then counts as failed ("That failed: timed out."), so a hung call cannot hold EXECUTE forever. */
 const EXECUTE_TIMEOUT_MS = 35_000
 
@@ -81,7 +85,7 @@ export function createVoiceFlow({
   onIdle = () => {}, // the conversation just ended (reset to IDLE): the service uses it to replay held alerts at once
   queue, // optional task-list fast path: { match(text) → intent | undefined, run(intent) → { outcome, line?, silence? }, stop() }
 }) {
-  const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0, decideAc: null }
+  const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0, decideAc: null, reply: null }
 
   const ctxFor = (step) => ({ flow: 'voice', id: s.id, turn: s.turn, step })
   const mine = (c) => !!c && c.flow === 'voice' && c.id === s.id && c.turn === s.turn && c.step === s.step
@@ -95,6 +99,12 @@ export function createVoiceFlow({
   function detach(promise) {
     promise.catch((e) => { note('error', { message: String(e?.message ?? e) }); clearGuard(); dropHold(); reset() })
   }
+
+  // The voice reply steps (flow-reply.js) run on the flow's own primitives; created here, used by capture() and answer().
+  const replyStep = queue && createReplyStep({
+    queue, note, now,
+    io: { s, lines: LINES, failText, enter, end, reset, clearGuard, sayThenListen, openListen, withTimeout, beginHold, settleHeld },
+  })
 
   const sleep = (ms) => new Promise((resolve) => setTimer(resolve, ms))
 
@@ -120,12 +130,12 @@ export function createVoiceFlow({
 
   function capture(ev) {
     abortTurn('recapture')
-    s.id = uuid(); s.history = []; s.clarifies = 0; s.action = null; s.t0 = now()
+    s.id = uuid(); s.history = []; s.clarifies = 0; s.action = null; s.reply = null; s.t0 = now()
     note('capture.transcript', { text: ev.text, sttSeconds: ev.seconds, source: ev.source })
     const text = String(ev.text ?? '').trim()
     if (!text) return void detach(end(LINES.notCaught))
     const intent = matchQueue(text)
-    if (intent) return void detach(runQueue(intent))
+    if (intent) return void detach(intent.kind === 'reply' ? replyStep.start(intent) : runQueue(intent))
     echo(text, s.t0)
   }
 
@@ -136,7 +146,8 @@ export function createVoiceFlow({
     if (!queue) return undefined
     try {
       const intent = queue.match(text)
-      return intent && FAST_KINDS.has(intent.kind) ? intent : undefined
+      if (!intent) return undefined
+      return FAST_KINDS.has(intent.kind) || (intent.kind === 'reply' && typeof queue.prepareReply === 'function') ? intent : undefined
     } catch (e) {
       note('queue.error', { phase: 'match', message: String(e?.message ?? e) })
       return undefined
@@ -223,8 +234,9 @@ export function createVoiceFlow({
   function answer(raw) {
     clearGuard()
     const text = String(raw ?? '').trim()
-    const kind = classify(text, s.step)
+    const kind = classify(text, CLASSIFY_AS[s.step] ?? s.step)
     note('answer', { step: s.step, text, kind })
+    if (s.step === REPLY_STEPS.dictate || s.step === REPLY_STEPS.confirm) return void detach(replyStep.answer(s.step, kind, text))
     if (kind === 'stop') return void detach(end(LINES.cancelled))
     if (kind === 'empty') return void detach(end(LINES.noAnswer))
     // T7a: a bare "no" at a confirm step asks again at the same step; utterance/action stay as they are.
@@ -394,7 +406,7 @@ export function createVoiceFlow({
   /** T21 → T23/T24: execute exactly the frozen action that was read back. */
   async function executeNow() {
     const turn = enter('EXECUTE'), action = s.action, t = now()
-    const hold = s.hold = { capture: null, listening: false, wake: null, timer: null }
+    const hold = beginHold()
     note('execute.start', { action: loggable(action) })
     let line
     try {
@@ -405,9 +417,22 @@ export function createVoiceFlow({
       note('execute.end', { ms: now() - t, ok: false, error: String(e?.message ?? e) })
       line = failText(e)
     }
+    await settleHeld(turn, hold, line)
+  }
+
+  /** Starts the EXECUTE hold: a barge-in or capture meanwhile is held, the action's outcome is always said. */
+  function beginHold() {
+    s.hold = { capture: null, listening: false, wake: null, timer: null }
+    return s.hold
+  }
+
+  /** Says the action's outcome (none: silence) once no barge-in mic is open, then replays a held capture. */
+  async function settleHeld(turn, hold, line) {
     try {
       await waitHeldListen(hold) // never speak into a barge-in mic that is still open
-      if (s.hold === hold) await end(line, turn) // abort() cleared the hold: nothing is said
+      if (s.hold !== hold) return // abort() cleared the hold: nothing is said
+      if (line) await end(line, turn)
+      else { clearGuard(); reset() }
     } finally { release(hold) }
   }
 
@@ -450,7 +475,7 @@ export function createVoiceFlow({
     clearGuard()
     s.decideAc?.abort(); s.decideAc = null
     if (s.state !== 'IDLE') { note('abort', { why, state: s.state }); silence() }
-    s.turn++; s.state = 'IDLE'
+    s.turn++; s.state = 'IDLE'; s.reply = null
   }
 
   /** Cuts the line in flight and drops the queued ones; the speaker implementation decides how (best-effort). */
@@ -464,7 +489,7 @@ export function createVoiceFlow({
   }
 
   function reset() {
-    s.state = 'IDLE'; s.id = null; s.step = null; s.action = null; s.utterance = ''; s.history = []; s.clarifies = 0
+    s.state = 'IDLE'; s.id = null; s.step = null; s.action = null; s.utterance = ''; s.history = []; s.clarifies = 0; s.reply = null
     try { onIdle() } catch { /* a listener must never break the flow */ }
   }
 
