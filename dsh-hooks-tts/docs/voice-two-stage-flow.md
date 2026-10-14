@@ -68,7 +68,7 @@ Transitions (spoken text exact; "→ END(x)" = speak x then IDLE):
 | T20 | READBACK_SPEAK / CLARIFY_SPEAK | E.spoken | listen(step 'decision' / 'clarify', 10 s) | *_LISTEN |
 | T21 | READBACK_LISTEN | answer 'yes' | execute(frozen action) | EXECUTE |
 | T22 | CLARIFY_LISTEN | answer 'text' or 'yes' | utterance = answer; speak echo (T1 wording) | ECHO_SPEAK |
-| T23 | EXECUTE | ok | → END resultText(action); when a barge-in/capture mic is open (listening{context null} seen, no transcript/idle/error yet) the line is held until that listen ended (or windowS+15 s), then spoken first; a held capture is echoed after it (T1) | IDLE |
+| T23 | EXECUTE | ok | → END resultText(action); when a barge-in/capture mic is open (listening{context null} seen, no transcript/idle/error yet) the line is held until that listen ended (or the guard time, 140 s), then spoken first; a held capture is echoed after it (T1) | IDLE |
 | T24 | EXECUTE | throws / stale approval | → END "That failed: {short error}." / "That request changed. Nothing done." | IDLE |
 | T24a | EXECUTE | execute() has not settled after executeTimeoutMs (default 35 s, injectable) | → END "That failed: timed out." (a later result is dropped; any held capture is released after that line) | IDLE |
 | T25 | any *_SPEAK | speak status failed/timeout | log; one retry of the same line; still failing → IDLE silently (cannot speak) + log 'speak-dead' | IDLE |
@@ -84,8 +84,8 @@ Notes:
   decide() is NOT awaited before speaking (latency).
 - Hotkey pressed DURING a flow listen → STT calls finish() (no new listen): ends the answer early; context kept → normal
   E.answer. Hotkey while mic closed → listening{context:null} → T3 then T1.
-- E.guard: guardMs = window_s*1000 + 15 s, re-armed on 'transcribing' of the current turn (long answers, slow decode).
-- EXECUTE hold: during EXECUTE a barge-in/capture (context null) is held, never spoken over. The result line waits for the held listen to end (transcript rev 1, idle or error with context null), is then spoken, and only afterwards the held capture is processed (echo). An empty held transcript or no-speech idle still gets the result line. If the listen end never arrives the same guard time (window_s*1000 + 15 s, logged 'hold.timeout') releases it. abort() drops the hold and the result line.
+- E.guard: guardMs = window_s*1000 + 130 s = 140 s (must stay above the STT max_utterance_s of 120 s plus transcription time; window_s only bounds the wait for speech to begin), re-armed on 'transcribing' of the current turn (long answers, slow decode).
+- EXECUTE hold: during EXECUTE a barge-in/capture (context null) is held, never spoken over. The result line waits for the held listen to end (transcript rev 1, idle or error with context null), is then spoken, and only afterwards the held capture is processed (echo). An empty held transcript or no-speech idle still gets the result line. If the listen end never arrives the same guard time (window_s*1000 + 130 s = 140 s, logged 'hold.timeout') releases it. abort() drops the hold and the result line.
 - Barge-in silence: `listening{context null}` is also the STT's signal to create tts-stop.flag, but Invoke-KokoroTts used to delete that flag just before playback, so lines still synthesised/queued played into the open mic. Fixed by speaker.cancel() (below) and by Invoke-KokoroTts keeping flags newer than the start of its own call.
 - Echo re-entry from READBACK (T7) discards the frozen action.
 - 'yes' at CAPTURE (no flow context) is NOT special: it is echoed like any utterance.
@@ -94,7 +94,7 @@ Notes:
 
 New voice/flow.js
   createVoiceFlow({ speak, listen, decide, validate, readBack, resultText, execute, classify, now, log,
-                    setTimer, clearTimer, uuid, windowS=10, guardExtraMs=15000, maxClarify=2, executeTimeoutMs=35000 })
+                    setTimer, clearTimer, uuid, windowS=10, guardExtraMs=130000, maxClarify=2, executeTimeoutMs=35000 })
   → { handle(event): void, active(): boolean, abort(reason): void, snapshot(): {state, id, turn, step} }
   cancelSpeech() → void   (optional dep; called on barge-in/abort/recapture of a running turn; service.js wires speaker.cancel)
   speak(text,{priority:'High', gender:'female'}) → Promise<{status:'done'|'cut'|'failed'|'timeout'|'cancelled'|'muted', startMs?, ms}>

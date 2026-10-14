@@ -241,7 +241,7 @@ test('S14 "cancel" or silence at an ask / confirm step ends cleanly; a silent wi
   assert.equal(q.said().at(-1), 'No answer. Cancelled.')
   const g = harness({ queue: { prepareReply: async () => ({ ok: true, frozen: FROZEN, move: ASK }) } })
   g.capture('reply to the first item'); await tick(); await g.listenStarted()
-  await g.fire(25000)
+  await g.fire(140000)
   assert.equal(g.said().at(-1), 'No answer. Cancelled.')
 })
 

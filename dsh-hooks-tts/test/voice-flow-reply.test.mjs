@@ -248,7 +248,7 @@ test('R11 no dictation (empty transcript, no speech, guard timeout) ends with "N
   await quiet.toDictate(); await quiet.idle('no_speech')
   assert.deepEqual(quiet.said(), ['No answer. Cancelled.'])
   const guard = harness()
-  await guard.toDictate(); await guard.fire(25_000)
+  await guard.toDictate(); await guard.fire(140_000)
   assert.deepEqual(guard.said(), ['No answer. Cancelled.'])
   const confirmQuiet = harness()
   await confirmQuiet.toConfirm(); await confirmQuiet.idle('too_short')

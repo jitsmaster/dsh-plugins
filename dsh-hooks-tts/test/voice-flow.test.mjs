@@ -2,7 +2,7 @@
 // Shapes chosen where the spec is open (implementer: follow these):
 // - createVoiceFlow deps exactly as §2; every dep is a fake here (classify is injected, the real answers.js is not used).
 // - The 500 ms retry wait after listen {started:false} (T10) uses the injected setTimer(fn, 500) (there is no sleep dep).
-// - The answer guard is setTimer(fn, windowS*1000 + guardExtraMs) = 25000 ms by default, armed after listen resolves
+// - The answer guard is setTimer(fn, windowS*1000 + guardExtraMs) = 140000 ms by default (10 s + 130 s: above the STT max utterance of 120 s), armed after listen resolves
 //   {started:true}; cleared via clearTimer(id) on answer/idle/error; 'transcribing' with the current context clears and re-arms it.
 // - snapshot() exposes at least { state, id, turn, step } (state names as §1: IDLE, ECHO_SPEAK, ECHO_LISTEN, DECIDE, ...).
 // - log(stage, data): tests only check the stage names 'stale', 'barge-in', 'speak-dead'.
@@ -349,21 +349,21 @@ test('F18 guard timeout ends with No answer. Cancelled.; transcribing re-arms it
   const h = harness()
   h.capture('open the parser'); await tick()
   await h.speakDone()
-  assert.equal(h.timers.filter((t) => t.ms === 25000).length, 0, 'guard armed only after listen started')
+  assert.equal(h.timers.filter((t) => t.ms === 140000).length, 0, 'guard armed only after listen started')
   await h.listenStarted()
-  const guards = h.timers.filter((t) => t.ms === 25000)
+  const guards = h.timers.filter((t) => t.ms === 140000)
   assert.equal(guards.length, 1)
   h.flow.handle({ type: 'transcribing', context: h.ctx() }); await tick()
-  const rearmed = h.timers.filter((t) => t.ms === 25000)
+  const rearmed = h.timers.filter((t) => t.ms === 140000)
   assert.equal(rearmed.length, 1)
   assert.notEqual(rearmed[0].id, guards[0].id)
-  await h.fire(25000)
+  await h.fire(140000)
   await assertEnds(h, 'No answer. Cancelled.')
 
   const h2 = harness()
   await toEchoListen(h2)
   h2.answer('yes'); await tick()
-  assert.equal(h2.timers.filter((t) => t.ms === 25000).length, 0, 'answer clears the guard')
+  assert.equal(h2.timers.filter((t) => t.ms === 140000).length, 0, 'answer clears the guard')
 })
 
 test('F19 idle error or error event ends with Speech recognition failed. Cancelled.', async () => {
@@ -719,7 +719,7 @@ test('F34 a listen end that never arrives cannot swallow the result line: the an
   const before = h.speaks.length
   h.executes[0].resolve({}); await tick()
   assert.equal(h.speaks.length, before, 'held while the mic is open')
-  await h.fire(25000)
+  await h.fire(140000)
   await assertEnds(h, 'Sent to Voice Work.')
 })
 
@@ -730,7 +730,7 @@ test('F34 the hold timer does not outlive the hold, and a result spoken in time 
   h.bargeIn(); await tick()
   h.executes[0].resolve({}); await tick()
   h.capture('second thing'); await tick()
-  assert.equal(h.timers.filter((t) => t.ms === 25000).length, 0)
+  assert.equal(h.timers.filter((t) => t.ms === 140000).length, 0)
 })
 
 test('F34 abort() while the result line waits for the held capture speaks nothing', async () => {
