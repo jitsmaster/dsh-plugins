@@ -31,9 +31,9 @@ const NUM = `(?:${Object.keys(TENS).join('|')}) (?:${UNITS.slice(0, 9).join('|')
 const ORD = `(?:${ORDINALS.join('|')}|\\d{1,3}(?:st|nd|rd|th))`
 const NOUN = '(?:item|task|thing|entry|one)'
 /** The task list under any of its names. */
-const LIST = '(?:(?:the|my|our) )?(?:task list|tasks|queue|review queue|review list|to do list|todo list)'
+const LIST = '(?:(?:the|my|our) )?(?:task ?lists?|tasks|queue|review queue|review list|to do list|todo list)(?: (?:screen|panel|window|view|overlay|sidebar))?'
 
-const FILLER_LEAD = /^(?:(?:hey|hi|ok|okay|please|kindly|(?:can|could|would|will) you|i would like you to|id like you to|i want you to|lets|go ahead and) )+/
+const FILLER_LEAD = /^(?:(?:hey|hi|ok|okay|no|well|so|please|kindly|(?:can|could|would|will) you|i would like you to|id like you to|i want you to|i need you to|i want to|i wanna|i need to|lets|go ahead and) )+/
 const FILLER_TRAIL = /(?: (?:please|thanks|thank you|now|for me))+$/
 
 const numberOf = (word) => {
@@ -54,7 +54,7 @@ const IT = '(?:it|that|this|that one|the item|that item|the last one|the last it
 
 /** [kind, pattern, (match) => result]. First match wins; patterns are anchored to the whole normalised utterance. */
 const RULES = [
-  ['show', new RegExp(`^(?:show(?: me)?|open|display|bring up|pull up|view) ${LIST}$`), () => ({ kind: 'show' })],
+  ['show', new RegExp(`^(?:show(?: me)?|see|open|display|bring up|pull up|view) ${LIST}$`), () => ({ kind: 'show' })],
   ['hide', new RegExp(`^(?:hide|close|dismiss) ${LIST}$`), () => ({ kind: 'hide' })],
   ['count', new RegExp(`^(?:(?:can you |could you )?(?:please )?tell me )?how many (?:(?:items|tasks|things|reviews|entries)(?: are| do i have| i have| do i have waiting)?|are)(?: (?:waiting|pending|left|there))?(?: (?:in|on) ${LIST})?(?: (?:waiting|pending|left))?$`), () => ({ kind: 'count' })],
   ['count', new RegExp(`^(?:whats|what is|what are) (?:in|on) ${LIST}$`), () => ({ kind: 'count' })],
@@ -72,7 +72,8 @@ const RULES = [
 
 /** Lower-case, NFKC, hidden characters gone, punctuation to spaces, filler removed. */
 function clean(text) {
-  const plain = String(text).normalize('NFKC').replace(/[\p{Cc}\p{Cf}]/gu, (c) => (/\s/.test(c) ? ' ' : ''))
+  // The recogniser sometimes writes a glossary-style camelCase word ("showTaskList"): split it into words before lower-casing.
+  const plain = String(text).normalize('NFKC').replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2').replace(/[\p{Cc}\p{Cf}]/gu, (c) => (/\s/.test(c) ? ' ' : ''))
   // "task-list" / "to-do" read as separate words; the apostrophe in "what's" / "item's" is dropped by normalize (so "items session").
   const norm = normalize(plain)
   // Words are counted before the filler is stripped, so a pile of "please" is not a command either.

@@ -153,3 +153,27 @@ test('the matcher result is a fresh plain object', () => {
   a.n = 9
   assert.deepEqual(matchQueueCommand('read item two'), { kind: 'read', n: 2 })
 })
+
+test('show/hide: what the recogniser really produced (voice.log 2026-10-13): camelCase glossary word, "screen", spoken lead-ins', () => {
+  for (const text of [
+    'showTaskList', 'ShowTaskList.', 'show TaskList',
+    'I want you to show me the task list screen', 'I want you to show me the task list screen.',
+    'No, I want you to show me the task list.', 'no show me the task list', 'well, show the task list', 'so show the task list',
+    'I want to see the task list', 'I need you to show the task list', 'show me the task list screen', 'show the task list panel',
+    'show the review queue window', 'open the task list view', 'show the tasklist', 'show the task lists',
+  ]) {
+    const kind = matchQueueCommand(text)?.kind
+    assert.equal(kind, 'show', JSON.stringify(text) + ' -> ' + kind)
+  }
+  for (const text of ['hideTaskList', 'I want you to hide the task list screen', 'No, hide the task list.', 'hide the task list panel', 'close the task list window', 'I want to hide the task list']) {
+    const kind = matchQueueCommand(text)?.kind
+    assert.equal(kind, 'hide', JSON.stringify(text) + ' -> ' + kind)
+  }
+})
+
+test('show/hide: the wider tolerance still never matches a real prompt', () => {
+  for (const text of [
+    'show the task list in the UI', 'I want you to add a task list screen to the app', 'No, I want you to fix the task list screen',
+    'show the screen', 'hide the screen', 'no', 'I want you to', 'show me the task list screen and then delete it', 'showTaskList in the sidebar component',
+  ]) assert.equal(matchQueueCommand(text), undefined, JSON.stringify(text))
+})
