@@ -1,4 +1,5 @@
 import { spokenName, spokenSummaryInfo } from './sanitize.js'
+import { say } from './reply-common.js'
 
 const QUESTION_WORDS = 15
 
@@ -43,21 +44,35 @@ export function lastParagraph(text) {
     : lines.join(' ')
 }
 
-/** "Done on: Session: <title>; Workspace: <name>. <last paragraph>", leaving out whatever is not known. */
-export function stopHeadline({ session, workspace, summary }) {
+/**
+ * "Item three, " for a task-list position (number as a word up to twenty, like the rest of the voice lines); '' when there is no
+ * usable position (not a positive whole number), so the headline is the old one.
+ */
+const itemLead = (position) => (Number.isInteger(position) && position > 0 ? 'Item ' + say(position) + ', ' : '')
+
+/**
+ * "Done on: Session: <title>; Workspace: <name>. <last paragraph>", leaving out whatever is not known. With a task-list position:
+ * "Item three, done in <workspace>. <last paragraph>" (the session title stands in when there is no workspace).
+ */
+export function stopHeadline({ session, workspace, summary, position }) {
+  const lead = itemLead(position)
+  if (lead) return lead + 'done' + (workspace || session ? ' in ' + (workspace || session) : '') + '.' + (summary ? ' ' + summary : '')
   const where = [session && 'Session: ' + session, workspace && 'Workspace: ' + workspace].filter(Boolean).join('; ')
   return 'Done' + (where ? ' on: ' + where : '') + '.' + (summary ? ' ' + summary : '')
 }
 
-export function questionHeadline({ questions }) {
+export function questionHeadline({ questions, position }) {
+  const lead = itemLead(position)
   const first = (Array.isArray(questions) ? questions : [])
     .map((q) => q?.question)
     .find((q) => typeof q === 'string' && q.trim())
+  if (lead) return lead + (first ? 'question: ' + capWords(first, QUESTION_WORDS) : 'question.')
   return first ? 'Question: ' + capWords(first, QUESTION_WORDS) : 'Question.'
 }
 
-export function permissionHeadline({ toolName }) {
-  return 'Approve ' + toolWords(toolName) + '?'
+export function permissionHeadline({ toolName, position }) {
+  const lead = itemLead(position)
+  return lead ? lead + 'approve ' + toolWords(toolName) + '?' : 'Approve ' + toolWords(toolName) + '?'
 }
 
 /**

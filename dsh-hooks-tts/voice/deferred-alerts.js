@@ -80,7 +80,7 @@ export const questionAlertRelevant = (item, state) => relevantAs('question', ite
 /** Whether a held alert is still worth speaking: permission and question alerts can go stale, every other kind is relevant. */
 export const alertRelevant = (item, state) => permissionAlertRelevant(item, state) && questionAlertRelevant(item, state)
 
-export function createDeferredAlerts({ busy, enabled = () => true, relevant = () => true, play, now = Date.now, max = 5, maxAgeMs = 90_000, maxBodyBytes = HELD_BODY_MAX_BYTES, playTimeoutMs = 20_000, log = () => {} }) {
+export function createDeferredAlerts({ busy, enabled = () => true, relevant = () => true, play, now = Date.now, max = 5, maxAgeMs = 90_000, maxBodyBytes = HELD_BODY_MAX_BYTES, playTimeoutMs = 20_000, refresh, log = () => {} }) {
   let queue = [] // { item, at }
   let flushing // the running flush, if any
 
@@ -111,7 +111,10 @@ export function createDeferredAlerts({ busy, enabled = () => true, relevant = ()
       let stillRelevant = true
       try { stillRelevant = relevant(item) !== false } catch { /* cannot tell: better a late alert than a lost one */ }
       if (!stillRelevant) { note({ type: 'alert', stage: 'dropped-stale' }); continue }
-      await launch(item)
+      // Last look before speaking: the item's queue position may have changed while the flow ran (refresh re-renders the headline).
+      let toPlay = item
+      if (refresh) { try { toPlay = refresh(item) ?? item } catch (error) { note({ type: 'alert', stage: 'refresh-failed', error: String(error?.message ?? error) }) } }
+      await launch(toPlay)
     }
   }
 

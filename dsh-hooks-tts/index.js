@@ -28,7 +28,8 @@ import { createGroupPinner } from './pin-groups.js'
 import { alertRelevant, createDeferredAlerts, permissionIsPending, questionIsPending } from './voice/deferred-alerts.js'
 import { createPendingQuestions } from './voice/pending-questions.js'
 import { createVoiceLog } from './voice/log.js'
-import { buildHookBody, createAlerts, isAskTool } from './voice/alerts.js'
+import { alertLocator, buildHookBody, createAlerts, isAskTool } from './voice/alerts.js'
+import { queuePositionOf, refreshHeldAlert } from './voice/alert-position.js'
 import { createVoiceService } from './voice/service.js'
 import { createDecider } from './voice/decider.js'
 import { createSpeakWorker } from './voice/speaker.js'
@@ -180,6 +181,8 @@ export function apply(ctx, baseConfig = {}) {
 
   const controller = new AbortController()
   const pending = new Set()
+  // The dsh-review-queue service (task-list voice commands and the queue position in alerts); resolved per call and guarded: the plugin may not be installed.
+  const reviewQueueOf = () => { try { return ctx.get('reviewQueue') ?? undefined } catch { return undefined } }
   ctx.effect(() => async () => {
     controller.abort()
     await Promise.allSettled([...pending])
@@ -233,8 +236,10 @@ export function apply(ctx, baseConfig = {}) {
     // Only a TTS hook that will really run gets a headline, so a session is numbered when it is first spoken for.
     const noAlerts = { headlineFor: () => undefined }
     let plainBody, ttsBody
+    // A headline alert says the item's task-list position when the item is already in the list (no position: the old headline).
+    const locator = alertLocator(event, { agentId: agent?.id, payload })
     const bodyFor = (isTts) => (isTts
-      ? (ttsBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts }))
+      ? (ttsBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts, position: locator ? queuePositionOf(reviewQueueOf, locator) : undefined }))
       : (plainBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts: noAlerts })))
     // The session an alert is raised for becomes the voice target ("lastAlerted") when the alert arrives live. A held alert does not:
     // it may still be deduped, evicted or expired, so it is noted only when it is really replayed (see play below).
@@ -254,6 +259,8 @@ export function apply(ctx, baseConfig = {}) {
         // No read-outs while the mic is open: the alert is held and spoken once the voice conversation is over.
         if (action === 'hold') {
           const held = { hook, body: bodyFor(true), cwd, env, sessionId: agent?.id, event }
+          // Replay re-renders the headline for the position the item has by then (see refresh below); only small strings are kept for it.
+          if (locator) { held.locator = locator; held.headlineAt = alerts.headlineMaker(event, { cwd, sessionTitle, payload }) }
           // Noted now: whether voice control tracks this request, so a later "no longer pending" really means it was answered.
           if (event === 'PermissionRequest') held.tracked = permissionIsPending(held, voice.status().pendingApprovals)
           // Same for an ask_user_question alert: pending now (tools/pre-execute noted the call), so a later "gone" means it was answered.
@@ -367,7 +374,7 @@ export function apply(ctx, baseConfig = {}) {
   const voice = createVoiceService({
     onIdle: flushSoon,
     // The dsh-review-queue service (task-list voice commands); resolved per call and guarded: the plugin may not be installed.
-    reviewQueue: () => { try { return ctx.get('reviewQueue') ?? undefined } catch { return undefined } },
+    reviewQueue: reviewQueueOf,
     speaker,
     summaryOf: (req) => toolSummaries.lookup(req),
     decide: (utterance, opts) => decider.decide(utterance, opts),
@@ -409,6 +416,8 @@ export function apply(ctx, baseConfig = {}) {
     // request voice never tracked there is no way to tell, so it counts as relevant. A Stop alert is always replayed.
     relevant: (item) => { const status = voice.status(); return alertRelevant(item, { voiceOn: status.running, pending: status.pendingApprovals, pendingQuestions: pendingQuestions.list() }) },
     log: voiceLog,
+    // A held alert says the queue position its item has when it is replayed, not the one it had when it was held; an item that left the list gets the old headline.
+    refresh: (item) => refreshHeldAlert(item, (locator) => queuePositionOf(reviewQueueOf, locator)),
     // Replaying makes the alert's session the voice target (an alert that was deduped, evicted or expired never gets here).
     // Returns the launcher's promise: the queue starts the next held alert only after this one's launcher has finished.
     play: ({ hook, body, cwd, env, sessionId }) => {
