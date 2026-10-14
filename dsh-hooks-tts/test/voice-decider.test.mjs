@@ -240,3 +240,120 @@ test('D10 a hung listProviders also gives way to the list timeout (default = tim
   hang = false
   assert.equal((await decider.decide('x', { history: [] })).ok, true)
 })
+
+
+test('O4 the models of all providers are listed in parallel', async () => {
+  const gates = []
+  const started = []
+  const llm = {
+    ...fakeLlm('{"action":"cancel"}'),
+    listModels: (p) => new Promise((resolve) => { started.push(p); gates.push(() => resolve([{ provider: p, id: p === 'claude' ? 'claude-haiku-4-5' : 'big', name: p }])) }),
+  }
+  const p = createDecider({ llm, context: CTX }).decide('x', { history: [] })
+  await flush()
+  assert.deepEqual(started, ['claude', 'other'], 'both providers were asked before either answered')
+  for (const open of gates) open()
+  assert.equal((await p).ok, true)
+})
+
+test('O4 provider order still decides which of two equally preferred models wins', async () => {
+  const llm = fakeLlm('{"action":"cancel"}', { models: { claude: [{ id: 'a-mini', name: 'a' }], other: [{ id: 'b-mini', name: 'b' }] } })
+  await createDecider({ llm, context: CTX }).decide('x', { history: [] })
+  assert.equal(llm.calls[0].config.model, 'a-mini')
+})
+
+test('O5 a failing model call keeps the picked model: the next request does not list the providers again', async () => {
+  let providerCalls = 0
+  let attempts = 0
+  const good = fakeLlm('{"action":"cancel"}')
+  const llm = {
+    ...good,
+    listProviders: () => { providerCalls++; return good.listProviders() },
+    prepareCall: async (config, signal) => { attempts++; if (attempts <= 2) throw new Error('offline'); return good.prepareCall(config, signal) },
+  }
+  const decider = createDecider({ llm, context: CTX })
+  assert.equal((await decider.decide('x', { history: [] })).error, 'llm')
+  assert.equal((await decider.decide('x', { history: [] })).error, 'llm')
+  assert.equal((await decider.decide('x', { history: [] })).ok, true)
+  assert.equal(providerCalls, 1)
+})
+
+test('O5 three failed calls in a row pick the model again (it may have been removed)', async () => {
+  let providerCalls = 0
+  const good = fakeLlm('{"action":"cancel"}')
+  const llm = {
+    ...good,
+    listProviders: () => { providerCalls++; return good.listProviders() },
+    prepareCall: async () => { throw new Error('gone') },
+  }
+  const decider = createDecider({ llm, context: CTX })
+  for (let i = 0; i < 4; i++) await decider.decide('x', { history: [] })
+  assert.equal(providerCalls, 2)
+})
+
+test('O5 a pick that found no model is not cached', async () => {
+  let providerCalls = 0
+  const llm = { listProviders: () => { providerCalls++; return [{ id: 'p' }] }, listModels: async () => [], prepareCall: async () => { throw new Error('x') } }
+  const decider = createDecider({ llm, context: CTX })
+  await decider.decide('x', { history: [] })
+  await decider.decide('x', { history: [] })
+  assert.equal(providerCalls, 2)
+})
+
+test('O6 an aborted signal stops the model call at once and resolves aborted without logging an llm error', async () => {
+  const logs = []
+  let streamSignal
+  const llm = {
+    listProviders: () => [{ id: 'p' }],
+    listModels: async () => [{ provider: 'p', id: 'm' }],
+    prepareCall: async () => ({ config: {}, stream: (o) => (async function* () { streamSignal = o.signal; await new Promise((_, rej) => o.signal.addEventListener('abort', () => rej(new Error('aborted')))) })() }),
+  }
+  const ac = new AbortController()
+  const p = createDecider({ llm, context: CTX, log: (l) => logs.push(l) }).decide('x', { history: [], signal: ac.signal })
+  await flush()
+  ac.abort()
+  assert.deepEqual(await p, { ok: false, error: 'aborted' })
+  assert.equal(streamSignal.aborted, true)
+  // The only line is the plain outcome; an abort reported as a model failure would add 'decider: aborted' (the error message) and 'decider: llm in N ms'.
+  assert.deepEqual(logs.map((l) => l.replace(/\d+ ms/, 'N ms')), ['decider: aborted in N ms'])
+})
+
+test('O6 a signal that is already aborted never calls the model', async () => {
+  const llm = fakeLlm('{"action":"cancel"}')
+  const ac = new AbortController()
+  ac.abort()
+  assert.deepEqual(await createDecider({ llm, context: CTX }).decide('x', { history: [], signal: ac.signal }), { ok: false, error: 'aborted' })
+  assert.equal(llm.calls.length, 0)
+})
+
+
+test('O11 a late failure of an older request never drops the pick a newer request made', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let providerCalls = 0
+  let calls = 0
+  const good = fakeLlm('{"action":"cancel"}')
+  const llm = {
+    ...good,
+    listProviders: () => { providerCalls++; return good.listProviders() },
+    prepareCall: async (config, signal) => {
+      calls++
+      if (calls <= 2) return { config: {}, stream: (o) => (async function* () { await new Promise((_, rej) => o.signal.addEventListener('abort', () => rej(new Error('aborted')))) })() }
+      return good.prepareCall(config, signal)
+    },
+  }
+  const decider = createDecider({ llm, context: CTX })
+  const a = decider.decide('a', { history: [] })
+  await flush()
+  t.mock.timers.tick(1000)
+  const b = decider.decide('b', { history: [] })
+  await flush()
+  t.mock.timers.tick(7000) // a times out and forgets the pick
+  await flush()
+  assert.equal((await a).error, 'timeout')
+  assert.equal((await decider.decide('c', { history: [] })).ok, true) // picks again (providerCalls 2)
+  t.mock.timers.tick(1000) // b times out: its pick is no longer the cached one
+  await flush()
+  assert.equal((await b).error, 'timeout')
+  assert.equal((await decider.decide('d', { history: [] })).ok, true)
+  assert.equal(providerCalls, 2, 'd used the pick c made')
+})

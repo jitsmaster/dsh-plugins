@@ -66,3 +66,24 @@ test('F2b the approval request\'s reason is read after the summary, and a missin
   assert.doesNotThrow(() => bad.note(exec('s1', 'pwsh', 'c1', {})))
   assert.equal(bad.lookup(req('s1', 'pwsh', 'c1')), undefined)
 })
+
+
+test('O1 with voice off (enabled() false) nothing is summarised, hashed or stored', () => {
+  let summarised = 0
+  let on = false
+  const s = createToolSummaries({ enabled: () => on, summarise: () => { summarised++; return { text: 'x', complete: true } } })
+  s.note(exec('s1', 'pwsh', 'c1', { command: 'ls' }))
+  assert.equal(summarised, 0)
+  assert.equal(s.size(), 0)
+  assert.equal(s.lookup(req('s1', 'pwsh', 'c1')), undefined)
+  on = true
+  s.note(exec('s1', 'pwsh', 'c2', { command: 'ls' }))
+  assert.equal(summarised, 1)
+  assert.equal(s.size(), 1)
+})
+
+test('O1 a throwing enabled() never throws out of note()', () => {
+  const s = createToolSummaries({ enabled: () => { throw new Error('boom') } })
+  assert.doesNotThrow(() => s.note(exec('s1', 'pwsh', 'c1', { command: 'ls' })))
+  assert.equal(s.size(), 0)
+})

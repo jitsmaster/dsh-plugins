@@ -10,6 +10,10 @@ import { cleanTitle } from './sanitize.js'
 const CLOSED_LINE = 'That session closed. Cancelled.'
 /** How long a POST to the STT daemon may take before it counts as unavailable (it normally answers within ms). */
 const STT_REQUEST_TIMEOUT_MS = 5000
+/** Minimum time between two ensureStt calls (the launcher's own start throttle is separate). */
+const STT_RETRY_MS = 30_000
+/** After a result other than 'running' (down, starting, failed) the next probe comes sooner. */
+const STT_RETRY_DOWN_MS = 10_000
 
 /** Short random id for voice requests and conversations. */
 const uuid8 = () => randomUUID().slice(0, 8)
@@ -40,6 +44,8 @@ export function createVoiceService({
   record = () => {},
   requestTimeoutMs = STT_REQUEST_TIMEOUT_MS,
   summaryOf,
+  now = Date.now,
+  onIdle, // called when voice may just have stopped being busy (mic closed, flow ended): see notifyIdle
 }) {
   let secret
   const agents = new Set()
@@ -50,8 +56,14 @@ export function createVoiceService({
   let error
   let lastTranscript
   let sttState
+  let sttBusy = false // an ensureStt call is in flight
+  let sttNextAt = 0 // earliest time of the next ensureStt call
   let handles = [] // session handles as the decider last saw them: [{ handle, id }]
   const approvals = createVoiceApprovals({ enabled, summaryOf })
+
+  /** busy() is false now: tell the owner (it replays the alerts held while voice was busy). A listener's failure never reaches the flow or the client. */
+  const notifyIdle = () => { if (onIdle && !busy()) safe(() => onIdle()) }
+  const busy = () => (client?.busy ?? false) || flow.active()
 
   const safe = (fn) => { try { return fn() } catch (e) { trace('voice: ' + String(e?.message ?? e)) } }
   const target = () => ({ selected, lastAlerted, lastActive })
@@ -145,6 +157,7 @@ export function createVoiceService({
     setTimer,
     clearTimer,
     uuid: uuid8,
+    onIdle: notifyIdle,
   })
 
   const onEvent = (event) => {
@@ -188,7 +201,7 @@ export function createVoiceService({
       error = String(e?.message ?? e)
       return
     }
-    client = createVoiceClient({ url: buildEventsUrl({ port, token: secret }), WebSocketImpl, setTimer, clearTimer, onEvent })
+    client = createVoiceClient({ url: buildEventsUrl({ port, token: secret }), WebSocketImpl, setTimer, clearTimer, onEvent, onBusy: (b) => { if (!b) notifyIdle() } })
     client.start()
   }
 
@@ -200,8 +213,12 @@ export function createVoiceService({
         if (flow.active()) flow.abort('disabled')
         safe(() => speaker?.stop())
       }
-      if (on && ensureStt && client?.state !== 'connected') {
+      // Throttled: reconcile runs every 5 s, and a TCP probe of a daemon that is down (or still starting) that often is waste.
+      if (!on) sttNextAt = 0
+      else if (ensureStt && client?.state !== 'connected' && !sttBusy && now() >= sttNextAt) {
+        sttBusy = true
         Promise.resolve().then(ensureStt).then((r) => { sttState = r }, (e) => { sttState = 'failed: ' + (e?.message ?? e) })
+          .finally(() => { sttBusy = false; sttNextAt = now() + (sttState === 'running' ? STT_RETRY_MS : STT_RETRY_DOWN_MS) })
       }
       if (on && !client) startClient()
       else if (!on && client) {
@@ -224,7 +241,7 @@ export function createVoiceService({
     listen,
     context,
     // Read-outs stay quiet for the whole conversation, not just while the mic is open.
-    busy: () => (client?.busy ?? false) || flow.active(),
+    busy,
     intercept: (req, next) => approvals.intercept(req, next),
     agentCreated: (id) => { agents.add(id) },
     agentDisposed: (id) => {

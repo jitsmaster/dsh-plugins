@@ -1,7 +1,7 @@
 /**
  * Stage two of the voice flow: turns ONE confirmed utterance into ONE raw action object using a small fast model
  * through DSH's own LLM service. The result is still unvalidated (see actions.js validateAction).
- * decide() resolves { ok:true, raw, model } or { ok:false, error:'timeout'|'llm'|'unparseable', model? } and never rejects;
+ * decide() resolves { ok:true, raw, model } or { ok:false, error:'timeout'|'llm'|'unparseable'|'aborted', model? } and never rejects;
  * model is the model that answered (logged by the flow as decide.end, spec §6).
  */
 
@@ -44,13 +44,15 @@ function within(promise, ms) {
 
 async function pickModel(llm, override, listTimeoutMs) {
   if (override?.provider && override?.model) return override
-  const all = []
   // A hung listing must not hang the pick for good: providers are listed under a timeout, and a provider that times out is skipped.
-  for (const p of await within(Promise.resolve().then(() => llm.listProviders()), listTimeoutMs)) {
+  // The providers are asked in parallel (the slowest one, not their sum, bounds the pick); the provider order is kept.
+  const providers = await within(Promise.resolve().then(() => llm.listProviders()), listTimeoutMs)
+  const listed = await Promise.all(providers.map(async (p) => {
     try {
-      for (const m of await within(Promise.resolve().then(() => llm.listModels(p.id)), listTimeoutMs)) all.push({ provider: p.id, model: m.id, name: m.id + ' ' + (m.name ?? '') })
-    } catch { /* a provider that cannot list its models is skipped */ }
-  }
+      return (await within(Promise.resolve().then(() => llm.listModels(p.id)), listTimeoutMs)).map((m) => ({ provider: p.id, model: m.id, name: m.id + ' ' + (m.name ?? '') }))
+    } catch { return [] /* a provider that cannot list its models is skipped */ }
+  }))
+  const all = listed.flat()
   for (const re of PREFER) {
     const hit = all.find((m) => re.test(m.name))
     if (hit) return hit
@@ -87,15 +89,23 @@ function payload(utterance, history, ctx = {}) {
   })
 }
 
+/** This many failed model calls in a row make the next request pick the model again (it may have been removed). */
+const REPICK_AFTER_FAILURES = 3
+
 export function createDecider({ llm, model: override, timeoutMs = 8000, listTimeoutMs = timeoutMs, maxTokens = 1500, log = () => {}, now = Date.now, context = () => ({}) } = {}) {
   let chosen
+  let failures = 0
+  // Forgets the pick only while it is still the one the caller used: a late failure of an older request must not drop a newer pick.
+  const forget = (mine) => { if (chosen === mine) { chosen = undefined; failures = 0 } }
 
   /** Streams the model's whole reply text; throws on any failure to call it. */
-  async function call(utterance, history, signal) {
+  async function call(utterance, history, signal, used) {
     if (!llm) throw new Error('no LLM service')
     chosen ??= pickModel(llm, override, listTimeoutMs)
-    const m = await chosen
-    if (!m) throw new Error('no model available')
+    const mine = used.pick = chosen
+    let m
+    try { m = await mine } catch (error) { forget(mine); throw error } // a failed pick is never cached
+    if (!m) { forget(mine); throw new Error('no model available') }
     const prepared = await llm.prepareCall({ provider: m.provider, model: m.model, maxTokens }, signal)
     let out = ''
     for await (const chunk of prepared.stream({
@@ -110,33 +120,45 @@ export function createDecider({ llm, model: override, timeoutMs = 8000, listTime
   }
 
   return {
-    async decide(utterance, { history = [] } = {}) {
+    async decide(utterance, { history = [], signal } = {}) {
       const started = now()
+      if (signal?.aborted) return done({ ok: false, error: 'aborted' }, started)
       const ac = new AbortController()
+      // The caller's signal (a barge-in, an abort) stops the model call and releases the decision at once.
+      let onCallerAbort
+      const callerAbort = new Promise((resolve) => {
+        onCallerAbort = () => { ac.abort(); resolve({ aborted: true }) }
+        signal?.addEventListener('abort', onCallerAbort, { once: true })
+      })
       let timer
       // The global setTimeout is looked up per call so test mock timers drive it; firing aborts the model call.
       const deadline = new Promise((resolve) => {
         timer = setTimeout(() => { ac.abort(); resolve({ timedOut: true }) }, timeoutMs)
       })
-      const work = call(utterance, history, ac.signal).then((r) => r, (error) => ({ error }))
+      const used = {} // the pick this request used (set by call)
+      const work = call(utterance, history, ac.signal, used).then((r) => r, (error) => ({ error }))
       try {
-        const r = await Promise.race([work, deadline])
+        const r = await Promise.race([work, deadline, callerAbort])
+        if (r.aborted) return done({ ok: false, error: 'aborted' }, started)
         if (r.timedOut) {
           // The cached pick may be the hung call itself: forget it so the next request resolves the model again.
-          chosen = undefined
+          forget(used.pick)
           return done({ ok: false, error: 'timeout' }, started)
         }
         if (r.error) {
-          // No backoff: the next request re-resolves the model and really calls it again.
-          chosen = undefined
+          // No backoff: the next request really calls the model again. The pick is kept (a dropped connection is no reason to list
+          // every provider again) until several calls in a row failed.
+          if (chosen === used.pick && ++failures >= REPICK_AFTER_FAILURES) forget(used.pick)
           log('decider: ' + (r.error?.message ?? r.error))
           return done({ ok: false, error: 'llm' }, started)
         }
+        if (chosen === used.pick) failures = 0
         const raw = parseReply(r.out)
         if (!raw) log('decider: unparseable reply from ' + r.model + ': ' + r.out.slice(0, 120))
         return done(raw ? { ok: true, raw } : { ok: false, error: 'unparseable' }, started, r.model)
       } finally {
         clearTimeout(timer)
+        signal?.removeEventListener('abort', onCallerAbort)
       }
     },
   }

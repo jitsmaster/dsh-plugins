@@ -120,3 +120,31 @@ test('F2c peek carries whether the summary is complete: only an explicit { text,
   assert.equal(make({ complete: true }).complete, false, 'no text, nothing to approve')
   assert.equal(make({ complete: true }).summary, undefined)
 })
+
+
+test('O7 the abort listener is removed once the request settles, however it settles', async () => {
+  for (const how of ['gui', 'voice', 'error']) {
+    const v = createVoiceApprovals({ enabled: () => true })
+    const added = []
+    const removed = []
+    const signal = { aborted: false, addEventListener: (t, f) => added.push([t, f]), removeEventListener: (t, f) => removed.push([t, f]) }
+    const gui = deferred()
+    const p = v.intercept({ agent: { id: 'a' }, toolName: 'x', signal }, () => (how === 'error' ? Promise.reject(new Error('x')) : gui.promise))
+    assert.equal(added.length, 1, how)
+    if (how === 'gui') gui.resolve('allowed-once')
+    if (how === 'voice') v.answer({ sessionId: 'a', decision: 'approve' })
+    await p.catch(() => {})
+    assert.deepEqual(removed, added, how)
+  }
+})
+
+
+test('O7 a next() that throws synchronously leaves nothing behind: no pending entry, no abort listener', async () => {
+  const v = createVoiceApprovals({ enabled: () => true })
+  const added = []
+  const removed = []
+  const signal = { aborted: false, addEventListener: (t, f) => added.push([t, f]), removeEventListener: (t, f) => removed.push([t, f]) }
+  await assert.rejects(v.intercept({ agent: { id: 'a' }, toolName: 'x', signal }, () => { throw new Error('sync boom') }), /sync boom/)
+  assert.equal(v.pendingCount(), 0)
+  assert.deepEqual(removed, added)
+})

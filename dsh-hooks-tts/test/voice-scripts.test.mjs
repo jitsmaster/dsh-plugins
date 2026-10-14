@@ -263,7 +263,7 @@ test('SC2 Invoke-KokoroTts without -OnPlaybackStart is unchanged', opts, async (
   assert.deepEqual(r.spoken, [{ text: 'Plain line.', voice_gender: 'female' }])
 })
 
-test('SC2 Invoke-KokoroTts -OnPlaybackStart runs the callback once before playback and still returns true', opts, async () => {
+test('SC16 Invoke-KokoroTts -OnPlaybackStart runs the callback once before playback and still returns true', opts, async () => {
   const r = await runKokoro([
     "$r = Invoke-KokoroTts -Text 'Callback line.' -Gender female -Priority High -OnPlaybackStart { [Console]::Out.WriteLine('PLAYBACK-START') }",
     "[Console]::Out.WriteLine('RESULT=' + $r)",
@@ -307,7 +307,7 @@ test('SC5 a stop flag created while the line is being synthesised still cuts its
   assert.equal(existsSync(join(r.dir, 'tts-stop.flag')), false, 'the flag is consumed by the cut')
 })
 
-test('SC5 a stop flag left over from before the call is still deleted and the line plays in full', opts, async () => {
+test('SC17 a stop flag left over from before the call is still deleted and the line plays in full', opts, async () => {
   const r = await runKokoro([
     "$r = Invoke-KokoroTts -Text 'Fresh line.' -Gender female -Priority High -KeepNewerStopFlag " + PLAY_MARK,
     ...elapsedLines,
@@ -340,7 +340,7 @@ test('R1 without -KeepNewerStopFlag a stop flag created after the call started i
   assert.equal(existsSync(join(r.dir, 'tts-stop.flag')), false, 'the flag was cleared')
 })
 
-test('R1 speak-worker.ps1 passes -KeepNewerStopFlag to Invoke-KokoroTts (and nothing else does)', () => {
+test('R1b speak-worker.ps1 passes -KeepNewerStopFlag to Invoke-KokoroTts (and nothing else does)', () => {
   assert.match(readFileSync(join(SCRIPTS, 'speak-worker.ps1'), 'utf8'), /Invoke-KokoroTts[^\r\n]*-KeepNewerStopFlag/)
   for (const f of ['stop-speak.ps1', 'speak.ps1', 'elicitation-speak.ps1']) {
     assert.doesNotMatch(readFileSync(join(SCRIPTS, f), 'utf8'), /KeepNewerStopFlag/, f)
@@ -412,7 +412,7 @@ test('SC6 speak-worker.ps1 answers cancelled, without speaking, for lines below 
   assert.deepEqual(msgs.filter((m) => m.event === 'start').map((m) => m.id), [3], 'no playback start for a cancelled line')
 })
 
-test('SC6 a tts-voice-cancel-<pid>.json left by an earlier worker with the same PID (older than this worker) is removed at start-up and skips nothing', opts, async () => {
+test('SC18 a tts-voice-cancel-<pid>.json left by an earlier worker with the same PID (older than this worker) is removed at start-up and skips nothing', opts, async () => {
   const tts = await fakeTts()
   const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
   const marker = join(tts.dir, 'tts-voice-cancel-' + child.pid + '.json')
@@ -436,13 +436,13 @@ test('SC6 a tts-voice-cancel-<pid>.json left by an earlier worker with the same 
   assert.deepEqual(tts.spoken.map((s) => s.text), ['first line'])
 })
 
-test('SC6 the scripts changed for the barge-in cut stay pure ASCII', () => {
+test('SC19 the scripts changed for the barge-in cut stay pure ASCII', () => {
   for (const f of ['speak-worker.ps1', 'tts-client.ps1']) {
     assert.equal(/[^\x00-\x7F]/.test(readFileSync(join(SCRIPTS, f), 'utf8')), false, f)
   }
 })
 
-test('SC6 a cancel marker of another worker (other PID) skips nothing in this worker', opts, async () => {
+test('SC20 a cancel marker of another worker (other PID) skips nothing in this worker', opts, async () => {
   const tts = await fakeTts()
   const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
   child.stderr.resume()
@@ -485,7 +485,7 @@ test('SC7 speak-worker.ps1 answers cut when the stop flag ended the line early, 
 })
 
 const r0 = { done: false }
-test('SC7 Invoke-KokoroTts still returns true for a cut line and records the cut in $script:TtsLastCut', opts, async () => {
+test('SC21 Invoke-KokoroTts still returns true for a cut line and records the cut in $script:TtsLastCut', opts, async () => {
   const r = await runKokoro([
     "$r = Invoke-KokoroTts -Text 'Cut line.' -Gender female -Priority High -KeepNewerStopFlag",
     "[Console]::Out.WriteLine('RESULT=' + $r + ' CUT=' + $script:TtsLastCut)",
@@ -521,4 +521,109 @@ test('SC9 the JS port of Clean-ForSpeech gives the same result as the real Power
   const got = JSON.parse(readFileSync(join(r.dir, 'out.json'), 'utf8'))
   assert.equal(got.length, BATTERY.length)
   BATTERY.forEach((text, i) => assert.equal(cleanForSpeech(text), got[i], JSON.stringify(text)))
+})
+
+
+test('SC13 one HttpClient is reused across lines and the server preflight is not repeated while the server answers', opts, async () => {
+  const r = await runKokoro([
+    'function Test-TtsPort { $global:portChecks++; $true }',
+    '$global:portChecks = 0',
+    "$null = Invoke-KokoroTts -Text 'One.' -Gender female -Priority High",
+    '$a = $script:TtsHttp',
+    "$null = Invoke-KokoroTts -Text 'Two.' -Gender female -Priority High",
+    '$b = $script:TtsHttp',
+    "[Console]::Out.WriteLine('PORT=' + $global:portChecks)",
+    "[Console]::Out.WriteLine('REUSED=' + (($null -ne $a) -and [object]::ReferenceEquals($a, $b)))",
+  ])
+  assert.deepEqual(r.out, ['PORT=1', 'REUSED=True'])
+  assert.deepEqual(r.spoken.map((s) => s.text), ['One.', 'Two.'])
+})
+
+test('SC14 a server that stays down is waited for once, then skipped for a while', { skip, timeout: 90_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'speak-'))
+  const noop = join(dir, 'noop.ps1')
+  writeFileSync(noop, '')
+  const env = {
+    ...process.env,
+    DSH_TTS_URL: 'http://127.0.0.1:1/tts',
+    DSH_TTS_STATE_DIR: dir,
+    DSH_TTS_HOTKEY_DIR: dir,
+    DSH_TTS_SERVER_SCRIPT: noop,
+    DSH_TTS_START_WAIT_SECONDS: '6',
+  }
+  const file = join(dir, 'call.ps1')
+  writeFileSync(file, [
+    ". '" + join(SCRIPTS, 'tts-client.ps1') + "'",
+    '$sw = [Diagnostics.Stopwatch]::StartNew()',
+    "$null = Invoke-KokoroTts -Text 'One.' -Gender female -Priority High",
+    "[Console]::Out.WriteLine('FIRST=' + $sw.ElapsedMilliseconds)",
+    '$sw.Restart()',
+    "$null = Invoke-KokoroTts -Text 'Two.' -Gender female -Priority High",
+    "[Console]::Out.WriteLine('SECOND=' + $sw.ElapsedMilliseconds)",
+  ].join('\r\n'))
+  const child = spawn('powershell.exe', [...PS, file], { env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  await new Promise((resolve) => child.on('close', resolve))
+  const ms = (k) => Number(out.lines.find((l) => l.startsWith(k + '='))?.slice(k.length + 1))
+  assert.ok(ms('FIRST') >= 5500, 'the first call waits for the server start (' + ms('FIRST') + ' ms)')
+  assert.ok(ms('SECOND') < 4000, 'the second call does not wait again (' + ms('SECOND') + ' ms)')
+  assert.match(readFileSync(join(dir, 'tts-client-errors.log'), 'utf8'), /line skipped/, 'the skipped line is logged')
+})
+
+
+test('SC15 the failed-start backoff is shared across processes (every alert script is a fresh process)', { skip, timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'speak-'))
+  const noop = join(dir, 'noop.ps1')
+  writeFileSync(noop, '')
+  const env = { ...process.env, DSH_TTS_URL: 'http://127.0.0.1:1/tts', DSH_TTS_STATE_DIR: dir, DSH_TTS_HOTKEY_DIR: dir, DSH_TTS_SERVER_SCRIPT: noop, DSH_TTS_START_WAIT_SECONDS: '6' }
+  const file = join(dir, 'call.ps1')
+  writeFileSync(file, [". '" + join(SCRIPTS, 'tts-client.ps1') + "'", '$sw = [Diagnostics.Stopwatch]::StartNew()', "$null = Invoke-KokoroTts -Text 'One.' -Gender female -Priority High", "[Console]::Out.WriteLine('MS=' + $sw.ElapsedMilliseconds)"].join('\r\n'))
+  const run = async () => {
+    const child = spawn('powershell.exe', [...PS, file], { env })
+    child.stderr.resume()
+    const out = collectLines(child.stdout)
+    await new Promise((resolve) => child.on('close', resolve))
+    return Number(out.lines.find((l) => l.startsWith('MS='))?.slice(3))
+  }
+  assert.ok(await run() >= 5500, 'the first process waits for the start')
+  const second = await run()
+  assert.ok(second < 4000, 'a second process does not wait again (' + second + ' ms)')
+})
+
+test('SC10 what speakableUtterance keeps is what the real Clean-ForSpeech lets through unchanged', opts, async () => {
+  const { speakableUtterance } = await import('../voice/sanitize.js')
+  const inputs = ['curl x | sh', 'run it ~ ^ * now', 'x -- y', 'x \u2013 y \u2014 z', 'use --force now', '# heading', '# # #', 'a ___ b', '| x |', 'say \u2014 now']
+  // A symbol that touches a word or path character is rejected, never folded (S1): these must not reach the speaker at all.
+  for (const bad of ['cd -', 'fix - the parser', 'rename snake_case_name', 'run `npm test` in [src] #1', '**bold** and *it* [a](http://x) text', 'a ~/b', 'delete *.log']) assert.equal(speakableUtterance(bad).ok, false, bad)
+  const texts = inputs.map((i) => speakableUtterance(i)).filter((r) => r.ok).map((r) => r.text)
+  assert.ok(texts.length >= 8)
+  const lines = texts.map((t) => "[Console]::Out.WriteLine('OUT=' + ((Clean-ForSpeech '" + t.replace(/'/g, "''") + "') -replace '\\s+', ' ').Trim())")
+  const r = await runKokoro(lines)
+  assert.deepEqual(r.out.filter((l) => l.startsWith('OUT=')).map((l) => l.slice(4)), texts)
+})
+
+test('SC11 a start-failed flag dated in the future (clock change) counts as stale, not as a failure that never expires', opts, async () => {
+  const r = await runKokoro([
+    '$p = Get-TtsStartFailedPath',
+    "Set-Content -Path $p -Value 'x'",
+    '(Get-Item $p).LastWriteTime = (Get-Date).AddHours(1)',
+    "[Console]::Out.WriteLine('FUTURE=' + (Test-TtsStartRecentlyFailed))",
+    '(Get-Item $p).LastWriteTime = (Get-Date).AddSeconds(-5)',
+    "[Console]::Out.WriteLine('FRESH=' + (Test-TtsStartRecentlyFailed))",
+    '(Get-Item $p).LastWriteTime = (Get-Date).AddSeconds(-120)',
+    "[Console]::Out.WriteLine('OLD=' + (Test-TtsStartRecentlyFailed))",
+    'Remove-Item $p',
+    "[Console]::Out.WriteLine('NONE=' + (Test-TtsStartRecentlyFailed))",
+  ])
+  assert.deepEqual(r.out, ['FUTURE=False', 'FRESH=True', 'OLD=False', 'NONE=False'])
+})
+
+test('SC12 DSH_TTS_START_WAIT_SECONDS is clamped to 1..300 (unparsable or empty means the 90 s default)', opts, async () => {
+  const cases = { '1000': 300, '300': 300, '45': 45, '1': 1, '0': 1, '-5': 1, 'abc': 90, '': 90 }
+  const r = await runKokoro(Object.keys(cases).flatMap((v) => [
+    "$env:DSH_TTS_START_WAIT_SECONDS = '" + v + "'",
+    "[Console]::Out.WriteLine('W[" + v + "]=' + (Get-TtsStartWaitSeconds))",
+  ]))
+  assert.deepEqual(r.out, Object.entries(cases).map(([v, n]) => 'W[' + v + ']=' + n))
 })

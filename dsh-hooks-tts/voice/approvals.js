@@ -39,20 +39,26 @@ export function createVoiceApprovals({ enabled = () => false, summaryOf } = {}) 
       return new Promise((resolve, reject) => {
         const entry = { sessionId: req.agent?.id, toolName: req.toolName, ...summarise(req) }
         let done = false
+        // The request's signal can outlive the approval: the listener must go when the approval settles, or it piles up.
+        const onAbort = () => settle('cancelled')
         const settle = (outcome) => {
           if (done) return
           done = true
           drop(entry)
+          req.signal?.removeEventListener('abort', onAbort)
           resolve(outcome)
         }
         entry.settle = settle
         waiting.push(entry)
-        req.signal?.addEventListener('abort', () => settle('cancelled'), { once: true })
         if (req.signal?.aborted) return settle('cancelled')
-        Promise.resolve(next()).then(settle, (error) => {
+        req.signal?.addEventListener('abort', onAbort, { once: true })
+        let result
+        try { result = Promise.resolve(next()) } catch (error) { result = Promise.reject(error) } // a synchronous throw leaves nothing behind either
+        result.then(settle, (error) => {
           if (done) return
           done = true
           drop(entry)
+          req.signal?.removeEventListener('abort', onAbort)
           reject(error)
         })
       })

@@ -4,6 +4,56 @@ New-Item -ItemType Directory -Force -Path $script:TtsStateDir | Out-Null
 
 function Test-TtsMuted { Test-Path (Join-Path $script:TtsStateDir 'tts-muted.flag') }
 
+# State kept across calls, so a long-lived caller (speak-worker.ps1) does not repeat per-line work: the shared HttpClient, the
+# one-time assembly load, when the server was last seen up, when the hotkey was last checked. (A failed server start is
+# remembered in the state dir instead: every alert script is a fresh process.)
+$script:TtsHttp = $null
+$script:TtsHttpWarm = $false   # the client has completed a request, so a pooled connection may exist
+$script:TtsNetLoaded = $false
+$script:TtsServerOkAt = $null
+$script:TtsHotkeyCheckedAt = $null
+$script:TtsServerTrustSeconds = 30
+$script:TtsStartRetrySeconds = 60
+
+function Get-TtsStartFailedPath { Join-Path $script:TtsStateDir 'tts-start-failed.flag' }
+
+# True when a server start failed less than $script:TtsStartRetrySeconds ago (in any process: the flag file's mtime).
+# A negative age (the clock was set back, or the file is dated in the future) is stale: otherwise the backoff would never expire.
+function Test-TtsStartRecentlyFailed {
+    $item = Get-Item -Path (Get-TtsStartFailedPath) -ErrorAction SilentlyContinue
+    if (-not $item) { return $false }
+    $age = ((Get-Date) - $item.LastWriteTime).TotalSeconds
+    return [bool]($age -ge 0 -and $age -lt $script:TtsStartRetrySeconds)
+}
+
+# How long to wait for a started server: DSH_TTS_START_WAIT_SECONDS clamped to 1..300 seconds (unparsable or empty: 90). An env
+# value is untrusted enough that 0 must not skip the wait's purpose and a huge value must not hold the mutex (and every hook) for hours.
+function Get-TtsStartWaitSeconds {
+    $waitSeconds = 0
+    if (-not [int]::TryParse($env:DSH_TTS_START_WAIT_SECONDS, [ref]$waitSeconds)) { return 90 }
+    return [Math]::Min(300, [Math]::Max(1, $waitSeconds))
+}
+
+function Set-TtsServerUp {
+    $script:TtsServerOkAt = Get-Date
+    Remove-Item -Path (Get-TtsStartFailedPath) -Force -ErrorAction SilentlyContinue
+}
+
+function Get-TtsHttpClient {
+    if (-not $script:TtsNetLoaded) { Add-Type -AssemblyName System.Net.Http; $script:TtsNetLoaded = $true }
+    if (-not $script:TtsHttp) {
+        $script:TtsHttp = New-Object System.Net.Http.HttpClient
+        $script:TtsHttp.Timeout = [TimeSpan]::FromSeconds(30)
+    }
+    return $script:TtsHttp
+}
+
+# A pooled connection the server closed while idle fails the next request: throw the client away so the retry opens a new one.
+function Remove-TtsHttpClient {
+    if ($script:TtsHttp) { $script:TtsHttp.Dispose(); $script:TtsHttp = $null }
+    $script:TtsHttpWarm = $false
+}
+
 function Add-TtsLog([string]$File, [string]$Line) {
     Add-Content -Path (Join-Path $script:TtsStateDir $File) -Value "$(Get-Date -Format o) $Line"
 }
@@ -17,6 +67,9 @@ function Test-TtsPort {
 # Keep the Ctrl+Alt+M stop-hotkey listener alive alongside the TTS server: start it if it is not running.
 # Prefers the TtsStopHotkey scheduled task, falls back to launching the exe directly.
 function Start-TtsHotkeyIfDown {
+    # Checked at most once a minute: a process lookup per spoken line is wasted work.
+    if ($script:TtsHotkeyCheckedAt -and ((Get-Date) - $script:TtsHotkeyCheckedAt).TotalSeconds -lt 60) { return }
+    $script:TtsHotkeyCheckedAt = Get-Date
     try {
         $hotDir = if ($env:DSH_TTS_HOTKEY_DIR) { $env:DSH_TTS_HOTKEY_DIR } else { Join-Path $env:USERPROFILE '.claude' }
         $exe = Join-Path $hotDir 'tts-stop-hotkey.exe'
@@ -32,24 +85,36 @@ function Start-TtsHotkeyIfDown {
 
 # If the Kokoro server is not listening, launch it (DSH_TTS_SERVER_SCRIPT) and wait for the port.
 # A named mutex keeps concurrent hook runs from launching it twice.
+# A server seen up in the last $script:TtsServerTrustSeconds is not probed again, and a start that did not bring it up is not
+# repeated (nor waited for) for $script:TtsStartRetrySeconds: otherwise every line would block for the full wait while it is down.
+# Returns $false only when the server is known to be down (a start just failed): the caller then skips the request.
 function Start-TtsServerIfDown {
     Start-TtsHotkeyIfDown
-    if (Test-TtsPort) { return }
-    $script = $env:DSH_TTS_SERVER_SCRIPT
-    if (-not $script -or -not (Test-Path $script)) { return }
+    if ($script:TtsServerOkAt -and ((Get-Date) - $script:TtsServerOkAt).TotalSeconds -lt $script:TtsServerTrustSeconds) { return $true }
+    if (Test-TtsPort) { Set-TtsServerUp; return $true }
+    $script:TtsServerOkAt = $null
+    $serverScript = $env:DSH_TTS_SERVER_SCRIPT
+    if (-not $serverScript -or -not (Test-Path $serverScript)) { return $true }
+    if (Test-TtsStartRecentlyFailed) { return $false }
+    $waitSeconds = Get-TtsStartWaitSeconds
     $m = New-Object System.Threading.Mutex($false, 'Global\KokoroTtsStart')
     $got = $false
     try {
         try { $got = $m.WaitOne([TimeSpan]::FromSeconds(120)) } catch [System.Threading.AbandonedMutexException] { $got = $true }
-        if (-not $got -or (Test-TtsPort)) { return }
-        Add-TtsLog 'tts-client-errors.log' "server down; starting $script"
-        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script
-        $deadline = (Get-Date).AddSeconds(90)
+        if (-not $got) { return $true }
+        if (Test-TtsPort) { Set-TtsServerUp; return $true }
+        # Another process may have tried, and failed, while this one waited for the mutex.
+        if (Test-TtsStartRecentlyFailed) { return $false }
+        Add-TtsLog 'tts-client-errors.log' "server down; starting $serverScript"
+        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $serverScript
+        $deadline = (Get-Date).AddSeconds($waitSeconds)
         while ((Get-Date) -lt $deadline -and -not (Test-TtsPort)) { Start-Sleep -Seconds 2 }
+        if (Test-TtsPort) { Set-TtsServerUp } else { Set-Content -Path (Get-TtsStartFailedPath) -Value (Get-Date -Format o) -Force }
     } finally {
         if ($got) { $m.ReleaseMutex() }
         $m.Dispose()
     }
+    return ($null -ne $script:TtsServerOkAt)
 }
 
 # Security: the link regex below is quadratic on hostile input (many '[' without a closing ')'), so the text is capped first.
@@ -122,21 +187,45 @@ function Invoke-KokoroTts {
     if (-not $hotDir -and (Test-Path (Join-Path $env:USERPROFILE '.claude\tts-stop-hotkey.exe'))) { $hotDir = Join-Path $env:USERPROFILE '.claude' }
     $stopFlags = @($stopFlagPath)
     if ($hotDir -and (Test-Path $hotDir)) { $stopFlags += (Join-Path $hotDir 'tts-stop.flag') }
-    $client = $null; $stream = $null
+    $stream = $null; $player = $null; $content = $null; $response = $null
     $mutex = New-Object System.Threading.Mutex($false, 'Global\KokoroTtsPlayback')
     $acquired = $false; $setFlag = $false
     try {
         # Synthesize immediately; only PLAYBACK is serialized so nothing overlaps audibly.
-        Add-Type -AssemblyName System.Net.Http
-        Start-TtsServerIfDown
+        $null = Get-TtsHttpClient
+        if (-not (Start-TtsServerIfDown)) {
+            Add-TtsLog 'tts-client-errors.log' 'server is down and its last start failed; line skipped'
+            return $false
+        }
         $request = @{ text = $Text; voice_gender = $Gender }
         if ($Speed -gt 0) { $request.speed = $Speed }
         if ($PauseSeconds -gt 0) { $request.pause_s = $PauseSeconds }
         $body = $request | ConvertTo-Json -Compress
-        $content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, 'application/json')
-        $client = New-Object System.Net.Http.HttpClient
-        $client.Timeout = [TimeSpan]::FromSeconds(30)
-        $response = $client.PostAsync($script:TtsUrl, $content).Result
+        for ($attempt = 1; $attempt -le 2 -and -not $response; $attempt++) {
+            try {
+                $content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, 'application/json')
+                $response = (Get-TtsHttpClient).PostAsync($script:TtsUrl, $content).Result
+                $script:TtsHttpWarm = $true
+            } catch {
+                $failure = $_
+                # Possibly a connection the server closed while idle: a fresh client gets one more try, but only for a transport
+                # error on a warm client (one that has completed a request, so a pooled connection may exist). A timeout (hung
+                # server) or a failure on a cold client (server down) is not retried. Either way the server is no longer trusted,
+                # and the retry first makes sure it is up.
+                $timedOut = $false; $transport = $false
+                for ($e = $failure.Exception; $e; $e = $e.InnerException) {
+                    if ($e -is [System.OperationCanceledException]) { $timedOut = $true }
+                    if ($e -is [System.Net.Http.HttpRequestException] -or $e -is [System.IO.IOException]) { $transport = $true }
+                }
+                $retry = $script:TtsHttpWarm -and $attempt -lt 2 -and $transport -and -not $timedOut
+                Remove-TtsHttpClient
+                $script:TtsServerOkAt = $null
+                if ($retry -and -not (Start-TtsServerIfDown)) { $retry = $false }
+                if (-not $retry) { throw $failure }
+            } finally {
+                if ($content) { $content.Dispose(); $content = $null }
+            }
+        }
         if (-not $response.IsSuccessStatusCode) {
             Add-TtsLog 'tts-client-errors.log' "HTTP $([int]$response.StatusCode) from $($script:TtsUrl)"
             return $false
@@ -197,8 +286,9 @@ function Invoke-KokoroTts {
         Add-TtsLog 'tts-client-errors.log' "$($_.Exception.GetType().FullName): $($_.Exception.Message)"
         return $false
     } finally {
+        if ($player) { $player.Dispose() }
         if ($stream) { $stream.Dispose() }
-        if ($client) { $client.Dispose() }
+        if ($response) { $response.Dispose() }
         if ($acquired) { $mutex.ReleaseMutex() }
         $mutex.Dispose()
         if ($setFlag) { Remove-Item -Path $flagPath -Force -ErrorAction SilentlyContinue }

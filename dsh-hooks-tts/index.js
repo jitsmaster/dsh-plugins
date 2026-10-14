@@ -13,7 +13,7 @@
  */
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,7 +25,10 @@ import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
 import { createGroupPinner } from './pin-groups.js'
-import { buildHookBody, createAlerts } from './voice/alerts.js'
+import { alertRelevant, createDeferredAlerts, permissionIsPending, questionIsPending } from './voice/deferred-alerts.js'
+import { createPendingQuestions } from './voice/pending-questions.js'
+import { createVoiceLog } from './voice/log.js'
+import { buildHookBody, createAlerts, isAskTool } from './voice/alerts.js'
 import { createVoiceService } from './voice/service.js'
 import { createDecider } from './voice/decider.js'
 import { createSpeakWorker } from './voice/speaker.js'
@@ -36,6 +39,10 @@ import { installHoldTitles } from './hold.js'
 
 export const name = 'hooks-tts'
 
+/** Longest shutdown waits for the last voice.log lines. */
+const LOG_FLUSH_TIMEOUT_MS = 2000
+/** Quiet time after voice stops being busy before the held alerts are replayed (the mic often reopens at once). */
+const FLUSH_DEBOUNCE_MS = 300
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const SOURCE = { kind: `plugin:${name}` } // producer-owned kind (format v4 rejects the retired kind: 'plugin')
 
@@ -209,10 +216,15 @@ export function apply(ctx, baseConfig = {}) {
   ctx.on('subagent/end', (info) => { children.delete(info.id) })
   const skip = agent => skipSubagents && agent && children.has(agent.id)
 
+  /** A TTS hook (the detached speak launcher): these are switched together from the sidebar and held while a voice flow runs. */
+  const isTtsHook = (hook) => Boolean(hook.args?.some(a => /detach-launcher\.ps1$/.test(a)))
+
   /**
    * Run every matching hook for `event`. Async hooks are fired and tracked but not
    * awaited. Returns the folded decision/context of the synchronous hooks.
    */
+  /** What happens to a TTS hook right now: 'off' (read-outs switched off), 'hold' (the mic is open: spoken after the conversation) or 'play'. */
+  const ttsAction = () => (!settings.get().ttsEnabled ? 'off' : voice.busy() ? 'hold' : 'play')
   async function run(event, queries, payload, agent, signal) {
     const cwd = agent?.session?.header?.cwd
     const env = { ...baseEnv, CLAUDE_PROJECT_DIR: cwd ?? baseEnv.CLAUDE_PROJECT_DIR ?? process.cwd() }
@@ -224,14 +236,31 @@ export function apply(ctx, baseConfig = {}) {
     const bodyFor = (isTts) => (isTts
       ? (ttsBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts }))
       : (plainBody ??= buildHookBody({ event, agent, cwd, sessionTitle, payload, alerts: noAlerts })))
-    if (agent?.id && (event === 'Stop' || event === 'PermissionRequest' || (event === 'PreToolUse' && /^(ask_user_question|AskUserQuestion)$/.test(payload?.tool_name ?? '')))) voice.noteAlert(agent.id)
+    // The session an alert is raised for becomes the voice target ("lastAlerted") when the alert arrives live. A held alert does not:
+    // it may still be deduped, evicted or expired, so it is noted only when it is really replayed (see play below).
+    const isAlertEvent = event === 'Stop' || event === 'PermissionRequest' || (event === 'PreToolUse' && isAskTool(payload?.tool_name))
+    if (agent?.id && isAlertEvent) {
+      const heldBack = (hooks[event] ?? []).some((group) => matchesAny(group.matcher, queries) && group.hooks.some(isTtsHook)) && ttsAction() === 'hold'
+      if (!heldBack) voice.noteAlert(agent.id)
+    }
     const folded = { decision: undefined, reason: undefined, context: [] }
     for (const group of hooks[event] ?? []) {
       if (!matchesAny(group.matcher, queries)) continue
       for (const hook of group.hooks) {
         // TTS hooks (the detached speak launchers) are switched together from the sidebar.
-        const isTts = Boolean(hook.args?.some(a => /detach-launcher\.ps1$/.test(a)))
-        if (isTts && (!settings.get().ttsEnabled || voice.busy())) continue // no read-outs while the mic is open
+        const isTts = isTtsHook(hook)
+        const action = isTts ? ttsAction() : 'play'
+        if (action === 'off') continue
+        // No read-outs while the mic is open: the alert is held and spoken once the voice conversation is over.
+        if (action === 'hold') {
+          const held = { hook, body: bodyFor(true), cwd, env, sessionId: agent?.id, event }
+          // Noted now: whether voice control tracks this request, so a later "no longer pending" really means it was answered.
+          if (event === 'PermissionRequest') held.tracked = permissionIsPending(held, voice.status().pendingApprovals)
+          // Same for an ask_user_question alert: pending now (tools/pre-execute noted the call), so a later "gone" means it was answered.
+          if (event === 'PreToolUse' && isAskTool(payload?.tool_name)) { held.question = true; held.callId = payload.tool_use_id; held.tracked = questionIsPending(held, pendingQuestions.list()) }
+          deferredAlerts.defer(held)
+          continue
+        }
         const opts = {
           cwd, env, defaultTimeoutMs,
           signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
@@ -301,14 +330,14 @@ export function apply(ctx, baseConfig = {}) {
   })
   // What each pending tool call will do, recorded before the approval request so a spoken approve/deny can say what is being
   // approved. Security: keyed by session + tool + call id with an argument hash, dropped when the call settles (voice/tool-summaries.js).
-  const toolSummaries = createToolSummaries()
-  const voiceLog = (entry) => {
-    try {
-      const file = join(stateDir, 'voice.log')
-      try { if (statSync(file).size > 1_000_000) renameSync(file, file + '.1') } catch { /* no log yet */ }
-      appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n')
-    } catch { /* best effort */ }
-  }
+  // Voice off: nothing is read back, so no call is summarised or hashed. settings.get() is mtime-cached (one stat per call, the file
+  // is only re-read when it changed), so the flag is read live: the same switch the voice service uses. A call already pending when
+  // voice is switched on has no summary, so voice cannot approve it (fails safe; the GUI still can).
+  const voiceControlOn = () => settings.get().voiceControl === true
+  const toolSummaries = createToolSummaries({ enabled: voiceControlOn })
+  // Buffered, asynchronous: logging never blocks the event loop.
+  const voiceLogger = createVoiceLog({ file: join(stateDir, 'voice.log') })
+  const voiceLog = (entry) => voiceLogger.write(entry)
   // Resolved per call and guarded: reading a service the plugin did not inject can throw, and that must never abort apply().
   const llmService = () => { try { return ctx.get('llm') ?? ctx.llm } catch { return undefined } }
   const lazyLlm = {
@@ -324,7 +353,19 @@ export function apply(ctx, baseConfig = {}) {
     log: (line) => { voiceLog({ type: 'decider', line }); ctx.logger.info(`hooks-tts: ${line}`) },
     context: () => voice.context(),
   })
+  // ask_user_question calls waiting for an answer (a held Question alert is stale once its call is answered).
+  const pendingQuestions = createPendingQuestions()
+  // Held alerts are replayed shortly after voice stops being busy (mic closed / flow ended), not only on the 5 s tick below. Debounced:
+  // the mic often closes and reopens within moments (a clarify), and flush() itself re-checks busy().
+  let idleTimer
+  let voiceStopped = false
+  const flushSoon = () => {
+    if (idleTimer || voiceStopped) return
+    idleTimer = setTimeout(() => { idleTimer = undefined; void deferredAlerts.flush() }, FLUSH_DEBOUNCE_MS)
+    idleTimer.unref?.()
+  }
   const voice = createVoiceService({
+    onIdle: flushSoon,
     speaker,
     summaryOf: (req) => toolSummaries.lookup(req),
     decide: (utterance, opts) => decider.decide(utterance, opts),
@@ -337,7 +378,7 @@ export function apply(ctx, baseConfig = {}) {
     },
     record: voiceLog,
     ensureStt: sttLauncher ? async () => { const r = await sttLauncher.ensure(); if (r === 'started') ctx.logger.info('hooks-tts: started the STT service'); return r } : undefined,
-    enabled: () => settings.get().voiceControl === true,
+    enabled: voiceControlOn,
     readSecret: () => readFileSync(join(stateDir, 'stt-secret'), 'utf8').trim(),
     port: sttPort,
     titleOf: (id) => { try { return ctx.get('sessionTitle')?.get(voiceAgents.get(id)?.session)?.title } catch { return undefined } },
@@ -358,11 +399,34 @@ export function apply(ctx, baseConfig = {}) {
     },
     trace: (line) => ctx.logger.info(`hooks-tts: ${line}`),
   })
-  const voiceTimer = setInterval(() => { try { voice.reconcile() } catch (error) { ctx.logger.warn(`hooks-tts: voice reconcile failed: ${String(error)}`) } }, 5000)
+  // Alerts held back while a voice flow ran (see the TTS branch of run()).
+  const deferredAlerts = createDeferredAlerts({
+    busy: () => voice.busy(),
+    enabled: () => settings.get().ttsEnabled,
+    // A permission or question alert is stale once its request was answered (by voice or in the GUI) while the flow ran; with voice off or a
+    // request voice never tracked there is no way to tell, so it counts as relevant. A Stop alert is always replayed.
+    relevant: (item) => { const status = voice.status(); return alertRelevant(item, { voiceOn: status.running, pending: status.pendingApprovals, pendingQuestions: pendingQuestions.list() }) },
+    log: voiceLog,
+    // Replaying makes the alert's session the voice target (an alert that was deduped, evicted or expired never gets here).
+    // Returns the launcher's promise: the queue starts the next held alert only after this one's launcher has finished.
+    play: ({ hook, body, cwd, env, sessionId }) => {
+      if (sessionId) voice.noteAlert(sessionId)
+      const job = runCommand(hook, body, { cwd, env, defaultTimeoutMs, signal: controller.signal })
+      const tracked = job.finally(() => pending.delete(tracked))
+      tracked.catch(() => {})
+      pending.add(tracked)
+      return tracked
+    },
+  })
+  const voiceTimer = setInterval(() => {
+    try { voice.reconcile() } catch (error) { ctx.logger.warn(`hooks-tts: voice reconcile failed: ${String(error)}`) }
+    void deferredAlerts.flush() // never rejects; plays the held alerts one after another
+  }, 5000)
   voiceTimer.unref?.()
-  ctx.effect(() => () => { clearInterval(voiceTimer); voice.stop() }, 'hooks-tts: stop voice control')
+  // Returns the flush promise so shutdown awaits the last log lines, but only for LOG_FLUSH_TIMEOUT_MS: a stalled disk must not hang it.
+  ctx.effect(() => () => { voiceStopped = true; clearInterval(voiceTimer); clearTimeout(idleTimer); deferredAlerts.clear(); voice.stop(); return voiceLogger.flushWithin(LOG_FLUSH_TIMEOUT_MS) }, 'hooks-tts: stop voice control')
   ctx.on('agent/created', ({ agent }) => { if (!skip(agent)) { voiceAgents.set(agent.id, agent); voice.agentCreated(agent.id) } })
-  ctx.on('agent/disposed', ({ agent }) => { voiceAgents.delete(agent.id); voice.agentDisposed(agent.id) })
+  ctx.on('agent/disposed', ({ agent }) => { voiceAgents.delete(agent.id); pendingQuestions.dropSession(agent.id); voice.agentDisposed(agent.id) })
 
   ctx.on('agent/created', async ({ agent, source, signal }) => {
     if (skip(agent)) return
@@ -391,16 +455,22 @@ export function apply(ctx, baseConfig = {}) {
 
   ctx.on('tools/pre-execute', async (exec, next) => {
     toolSummaries.note(exec)
+    // Pending from here until the result arrives (post-execute): the alert hook below may hold its read-out and must know that.
+    pendingQuestions.note({ sessionId: exec.agent?.id, callId: exec.callId, name: exec.name, signal: exec.signal })
     if (skip(exec.agent) || !hooks.PreToolUse) return next()
     const folded = await run('PreToolUse', toolQueries(exec.name), {
       tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId,
     }, exec.agent, exec.signal)
-    if (folded.decision === 'deny') return { kind: 'deny', reason: folded.reason ?? 'blocked by PreToolUse hook' }
+    if (folded.decision === 'deny') {
+      pendingQuestions.release({ sessionId: exec.agent?.id, callId: exec.callId }) // the tool will not run: nothing is waiting
+      return { kind: 'deny', reason: folded.reason ?? 'blocked by PreToolUse hook' }
+    }
     if (folded.decision === 'ask') return { kind: 'ask', ...folded.reason ? { reason: folded.reason } : {} }
     return next()
   })
 
   ctx.on('tools/post-execute', async (exec, result, next) => {
+    pendingQuestions.release({ sessionId: exec.agent?.id, callId: exec.callId })
     if (skip(exec.agent) || !hooks.PostToolUse) return next()
     const folded = await run('PostToolUse', toolQueries(exec.name), {
       tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId,
@@ -434,13 +504,16 @@ export function apply(ctx, baseConfig = {}) {
 
   // Observe-only: never answers the request, just lets hooks (e.g. TTS) react.
   ctx.on('approval/request', async (req, next) => {
+    // off = plain next(); on = a spoken approve/deny races the GUI. The summary goes once the request is answered or withdrawn.
+    // intercept() registers the pending entry synchronously, so it must run BEFORE the alert hooks: run() may hold the alert
+    // right away (a flow is busy) and notes there whether voice already tracks this request (permissionIsPending).
+    const answered = voice.intercept(req, next)
     if (hooks.PermissionRequest && !skip(req.agent)) {
       const message = `The agent needs your permission to use ${req.toolName}${req.reason ? `. ${req.reason}` : ''}`
       void run('PermissionRequest', toolQueries(req.toolName), {
         tool_name: req.toolName, message,
       }, req.agent, req.signal).catch(() => {})
     }
-    // off = plain next(); on = a spoken approve/deny races the GUI. The summary goes once the request is answered or withdrawn.
-    return Promise.resolve(voice.intercept(req, next)).finally(() => toolSummaries.drop(req))
+    return Promise.resolve(answered).finally(() => toolSummaries.drop(req))
   })
 }

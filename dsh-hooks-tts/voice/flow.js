@@ -72,8 +72,9 @@ export function createVoiceFlow({
   speak, listen, decide, validate, readBack, resultText, execute, classify,
   now = Date.now, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout,
   uuid, windowS = 10, guardExtraMs = 15000, maxClarify = 2, cancelSpeech, executeTimeoutMs = EXECUTE_TIMEOUT_MS,
+  onIdle = () => {}, // the conversation just ended (reset to IDLE): the service uses it to replay held alerts at once
 }) {
-  const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0 }
+  const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0, decideAc: null }
 
   const ctxFor = (step) => ({ flow: 'voice', id: s.id, turn: s.turn, step })
   const mine = (c) => !!c && c.flow === 'voice' && c.id === s.id && c.turn === s.turn && c.step === s.step
@@ -283,8 +284,8 @@ export function createVoiceFlow({
 
   // ---- decide & execute --------------------------------------------------------------------------------
 
-  async function safeDecide() {
-    try { return (await decide(s.utterance, { history: [...s.history] })) ?? { ok: false, error: 'llm' } } catch (e) {
+  async function safeDecide(signal) {
+    try { return (await decide(s.utterance, { history: [...s.history], signal })) ?? { ok: false, error: 'llm' } } catch (e) {
       return { ok: false, error: 'llm', message: String(e?.message ?? e) }
     }
   }
@@ -316,7 +317,15 @@ export function createVoiceFlow({
     const turn = enter('DECIDE')
     note('decide.start', { utterance: s.utterance })
     const t = now()
-    const [d, said] = await Promise.all([safeDecide(), speakOnce(LINES.deciding, turn)])
+    // A barge-in or abort during the decision aborts the model call too (abortTurn), instead of letting it run to its timeout.
+    const ac = new AbortController()
+    s.decideAc = ac
+    let d, said
+    try {
+      ;[d, said] = await Promise.all([safeDecide(ac.signal), speakOnce(LINES.deciding, turn)])
+    } finally {
+      if (s.decideAc === ac) s.decideAc = null // also when a step rejects: a stale controller must not outlive its decision
+    }
     if (turn !== s.turn) return note('stale', { stage: 'decide' })
     note('decide.end', { ms: now() - t, model: d.model, ok: d.ok, error: d.error, raw: rawForLog(d.raw) })
     if (said !== 'done' && said !== 'cut') return lineFailed(said, LINES.deciding)
@@ -391,6 +400,7 @@ export function createVoiceFlow({
 
   function abortTurn(why) {
     clearGuard()
+    s.decideAc?.abort(); s.decideAc = null
     if (s.state !== 'IDLE') { note('abort', { why, state: s.state }); silence() }
     s.turn++; s.state = 'IDLE'
   }
@@ -407,6 +417,7 @@ export function createVoiceFlow({
 
   function reset() {
     s.state = 'IDLE'; s.id = null; s.step = null; s.action = null; s.utterance = ''; s.history = []; s.clarifies = 0
+    try { onIdle() } catch { /* a listener must never break the flow */ }
   }
 
   return {

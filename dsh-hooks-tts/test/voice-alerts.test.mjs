@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildHookBody, createAlerts } from '../voice/alerts.js'
+import { ASK_TOOLS, buildHookBody, createAlerts, isAskTool } from '../voice/alerts.js'
 
 const alerts = () => createAlerts()
 
@@ -71,4 +71,13 @@ test('a drive root or a dot is not a project name', () => {
   const al = alerts()
   assert.equal(al.headlineFor('Stop', { agentId: 'r1', cwd: 'D:\\', payload: {} }), 'Done.')
   assert.equal(al.headlineFor('Stop', { agentId: 'r2', cwd: '.', payload: {} }), 'Done.')
+})
+
+test('the ask-tool names live in alerts.js alone: both spellings are ask tools, nothing else is', () => {
+  assert.deepEqual([...ASK_TOOLS].sort(), ['AskUserQuestion', 'ask_user_question'])
+  assert.equal(isAskTool('ask_user_question'), true)
+  assert.equal(isAskTool('AskUserQuestion'), true)
+  assert.equal(isAskTool('pwsh'), false)
+  assert.equal(isAskTool(undefined), false)
+  assert.equal(isAskTool({}), false)
 })

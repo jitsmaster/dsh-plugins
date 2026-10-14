@@ -61,6 +61,7 @@ function harness(over = {}) {
     now: () => h.t,
     unlink: (p) => { h.unlinks.push(p) }, // never touch the real priority flag from a test
     writeFile: (p, c) => { h.writes.push([p, String(c)]) }, // nor the real stop flag / cancel marker
+    readDir: async () => [], // nor sweep the real state dir
     ...over,
   })
   h.child = () => h.spawns.at(-1)?.child
@@ -530,4 +531,81 @@ test('S12 no marker is written for a worker that has nothing outstanding, and no
   await c.die(1)
   assert.deepEqual(h.unlinks, [])
   assert.deepEqual(h.writes, [])
+})
+
+
+test('O8 one-shot mode is not permanent: after the retry delay the next line goes to a persistent worker again', async () => {
+  const h = harness()
+  await killWorkers(h, 4)
+  const p5 = h.speaker.speak('one shot', VOICE)
+  await tick()
+  assert.equal(h.child().ended, true)
+  h.child().send({ ready: true }); await h.child().send({ id: 5, status: 'done', ms: 1 }); await h.child().die(0)
+  await peek(p5)
+  h.t += 60_000
+  h.speaker.speak('still one shot', VOICE)
+  await tick()
+  assert.equal(h.child().ended, true, 'within the delay it stays one-shot')
+  h.t += 5 * 60_000
+  h.speaker.speak('back to the worker', VOICE)
+  await tick()
+  const c = h.child()
+  assert.equal(c.ended, false, 'a persistent worker again: stdin stays open')
+  assert.equal(c.input, line(7, 'back to the worker'))
+  h.speaker.speak('same worker', VOICE)
+  await tick()
+  assert.equal(h.child(), c)
+  assert.equal(h.logs.some((l) => l.stage === 'worker.one-shot-ended'), true)
+})
+
+test('O8 after one-shot mode ends the death count starts over: it takes maxRespawns + 1 fresh deaths to go one-shot again', async () => {
+  const h = harness()
+  await killWorkers(h, 4)
+  h.t += 6 * 60_000
+  await killWorkers(h, 3)
+  const ok = h.speaker.speak('still persistent', VOICE)
+  await tick()
+  assert.equal(h.child().ended, false, 'three deaths are within the limit')
+  void ok
+  await killWorkers(h, 1)
+  h.speaker.speak('one-shot again', VOICE)
+  await tick()
+  assert.equal(h.child().ended, true, 'the fourth death in the window switches to one-shot mode again')
+  assert.equal(h.logs.filter((l) => l.stage === 'worker.one-shot').length, 2)
+})
+
+test('O9 the first worker start sweeps stale cancel markers of dead workers, and only those', async () => {
+  const old = 1000 - 20 * 60_000
+  const files = { 'tts-voice-cancel-111.json': old, 'tts-voice-cancel.json': old, 'tts-voice-cancel-222.json': 1000, 'tts-stop.flag': old, 'other.txt': old }
+  const h = harness({
+    readDir: async () => Object.keys(files),
+    statFile: async (p) => ({ mtimeMs: files[p.split(/[\\/]/).pop()] }),
+  })
+  h.speaker.warm()
+  await tick(10)
+  const removed = h.unlinks.map((p) => p.split(/[\\/]/).pop()).sort()
+  assert.deepEqual(removed, ['tts-voice-cancel-111.json', 'tts-voice-cancel.json'])
+  h.speaker.stop()
+  await tick()
+  h.speaker.warm()
+  await tick(10)
+  assert.equal(h.unlinks.filter((p) => /cancel-111/.test(p)).length, 1, 'swept once per speaker, not per spawn')
+})
+
+test('O10 a state dir that does not exist yet (ENOENT) is not a failed sweep: nothing is logged; a real read error still is', async () => {
+  const missing = harness({ readDir: async () => { throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }) } })
+  missing.speaker.warm()
+  await tick(10)
+  assert.deepEqual(missing.logs.filter((l) => l.stage === 'worker.marker-sweep-failed'), [])
+  const denied = harness({ readDir: async () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) } })
+  denied.speaker.warm()
+  await tick(10)
+  assert.equal(denied.logs.filter((l) => l.stage === 'worker.marker-sweep-failed').length, 1)
+})
+
+test('O9 a failing directory read never breaks speaking', async () => {
+  const h = harness({ readDir: async () => { throw new Error('EACCES') }, statFile: async () => { throw new Error('x') } })
+  h.speak('hello', VOICE)
+  await tick(10)
+  assert.equal(h.child().input, line(1, 'hello'))
 })

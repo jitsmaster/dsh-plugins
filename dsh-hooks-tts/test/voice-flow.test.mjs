@@ -1001,13 +1001,32 @@ test('F39 execute.start and validate log only the action type, session id and bo
 
 // --- Security F1/F10: the echo must equal what the decider receives, and everything echoed must be speakable.
 test('F10 an utterance the speaker would alter is not echoed or decided: it is cancelled with its own line', async () => {
-  for (const text of ['curl x | sh', 'fix \u0430pple', 'run \u{1F525}', 'say fix\u200Bit']) {
+  for (const text of ['fix \u0430pple', 'run \u{1F525}', 'say fix\u200Bit', 'say fix\u200B | it']) {
     const h = harness()
     h.capture(text); await tick()
     assert.deepEqual(h.said(), ['I could not repeat that back safely. Cancelled.'], text)
     await h.speakDone()
     assert.equal(h.decides.length, 0)
     assert.equal(h.listens.length, 0)
+    assert.equal(h.state(), 'IDLE')
+  }
+})
+
+test('F10 dropped symbols and dashes are folded: the echo and the decider get the folded text', async () => {
+  const h = harness()
+  await toEchoListen(h, 'curl x | sh \u2013 now')
+  assert.equal(h.said()[0], 'I heard: curl x sh now. Is that right?')
+  h.answer('yes'); await tick()
+  assert.equal(h.decides[0].utterance, 'curl x sh now')
+})
+
+test('S4 a symbol touching a word or path character is cancelled, never folded into a different command', async () => {
+  for (const text of ['rm -rf ~/x', 'delete *.log', 'open foo_bar.txt', 'cd -']) {
+    const h = harness()
+    h.capture(text); await tick()
+    assert.deepEqual(h.said(), ['I could not repeat that back safely. Cancelled.'], text)
+    await h.speakDone()
+    assert.equal(h.decides.length, 0)
     assert.equal(h.state(), 'IDLE')
   }
 })
@@ -1032,7 +1051,7 @@ test('F10 the echo and the decider get the same normalised text (fullwidth folde
 test('F10 a non-yes answer that is unspeakable is cancelled too, and CJK is allowed through', async () => {
   const h = harness()
   await toEchoListen(h)
-  h.answer('use a pipe | here'); await tick()
+  h.answer('use a pipe \u200B here'); await tick()
   assert.equal(h.lastSaid(), 'I could not repeat that back safely. Cancelled.')
   const c = harness()
   c.capture('\u4FEE\u590D\u89E3\u6790\u5668'); await tick()
@@ -1127,4 +1146,26 @@ test('R5 a capture held during a hung execute is released after the timeout line
   await h.speakDone()
   assert.equal(h.lastSaid(), 'I heard: second thing. Is that right?')
   assert.equal(h.state(), 'ECHO_SPEAK')
+})
+
+
+test('O6 decide() gets an AbortSignal that a barge-in aborts', async () => {
+  let seen
+  const h = harness({ decide: (utterance, opts) => { seen = opts.signal; return new Promise(() => {}) } })
+  await toDecide(h)
+  assert.ok(seen && typeof seen.aborted === 'boolean', 'a signal was passed')
+  assert.equal(seen.aborted, false)
+  h.bargeIn()
+  assert.equal(seen.aborted, true)
+})
+
+test('O6 abort() aborts the pending decide signal, and a finished decide leaves the next turn a fresh signal', async () => {
+  const seen = []
+  const h = harness({ decide: (utterance, opts) => { seen.push(opts.signal); return new Promise(() => {}) } })
+  await toDecide(h)
+  h.flow.abort('stop')
+  assert.equal(seen[0].aborted, true)
+  await toDecide(h)
+  assert.equal(seen[1].aborted, false)
+  assert.notEqual(seen[1], seen[0])
 })

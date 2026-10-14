@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs'
-import { unlink as unlinkFile } from 'node:fs/promises'
+import { readdir, stat, unlink as unlinkFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -13,7 +13,7 @@ import { join } from 'node:path'
  * worker's queue, so it covers synthesis and the playback mutex, not earlier lines); on 'start' the timer is re-armed
  * with the WAV duration + playbackMarginMs (playbackFallbackMs when the worker sent no duration).
  * When the worker keeps dying (more than maxRespawns exits within 60 s) every line gets its own process instead
- * (one line, then EOF). The child is never detached: a detached PowerShell with piped stdio exits silently on Windows.
+ * (one line, then EOF) for oneShotRetryMs, after which the next line tries a persistent worker again. The child is never detached: a detached PowerShell with piped stdio exits silently on Windows.
  * speak() never rejects; it resolves { status:'done'|'cut'|'failed'|'timeout'|'cancelled'|'muted', ms, startMs? }. 'muted' = tts-muted.flag existed when the worker took the line; it was not spoken. 'cut' = the line was stopped early
  * (the worker saw the stop flag, or exited unexpectedly after the line's start event) and does not count as a worker death.
  * cancel() (a barge-in): lines queued behind the head resolve 'cancelled' at once. Requests are already written to the
@@ -24,6 +24,11 @@ import { join } from 'node:path'
  */
 
 const RESPAWN_WINDOW_MS = 60_000
+/** One-shot mode is a degraded mode: it ends after this long, and the next line tries a persistent worker again. */
+const ONE_SHOT_RETRY_MS = 5 * 60_000
+/** A cancel marker only matters around the barge-in that wrote it; one this old belongs to a worker that is long gone. */
+const STALE_MARKER_MS = 10 * 60_000
+const MARKER_FILE = /^tts-voice-cancel(?:-\d+)?\.json$/
 const PRIORITY_FLAG = 'tts-priority-pending.flag'
 const STOP_FLAG = 'tts-stop.flag'
 /** One cancel marker per worker process (named after its PID): hosts share the state dir and their request ids all restart at 1. */
@@ -37,7 +42,8 @@ export const VOICE = Object.freeze({ gender: 'female', priority: 'High' })
 export function createSpeakWorker({
   spawn, root, env, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now,
   requestTimeoutMs = 45_000, playbackMarginMs = 5_000, playbackFallbackMs = 120_000, maxRespawns = 3,
-  unlink = unlinkFile, writeFile = writeFileSync,
+  unlink = unlinkFile, writeFile = writeFileSync, readDir = readdir, statFile = stat,
+  oneShotRetryMs = ONE_SHOT_RETRY_MS, staleMarkerMs = STALE_MARKER_MS,
 }) {
   const script = join(root, 'scripts', 'speak-worker.ps1')
   // Same state dir tts-client.ps1 uses for its High-priority flag and its stop flag.
@@ -47,13 +53,40 @@ export function createSpeakWorker({
   let worker // the persistent worker record, when one is running
   let nextId = 1
   let oneShot = false
+  let oneShotSince = 0
+  let swept = false
   let deaths = [] // times of unexpected persistent-worker exits
 
   const note = (stage, data) => { try { log(stage, data) } catch { /* logging is best-effort */ } }
 
+  /** Once per speaker: removes cancel markers that dead workers (a crashed host, a killed process) left in the state dir. */
+  function sweepStaleMarkers() {
+    if (swept) return
+    swept = true
+    // A state dir that does not exist yet (nothing was ever spoken) has no markers to sweep: that is not a failure.
+    const fail = (error) => { if (error?.code !== 'ENOENT') note('worker.marker-sweep-failed', { error: String(error?.message ?? error) }) }
+    Promise.resolve().then(async () => {
+      for (const name of await readDir(stateDir)) {
+        if (!MARKER_FILE.test(name)) continue
+        const path = join(stateDir, name)
+        try {
+          if (now() - (await statFile(path)).mtimeMs > staleMarkerMs) removeFile(path)
+        } catch { /* gone already, or unreadable: leave it */ }
+      }
+    }).catch(fail)
+  }
+
+  /** One-shot mode ends after oneShotRetryMs: the next line tries a persistent worker again. Its deaths have aged out of the 60 s window by then (countDeath prunes), so the count starts fresh without a reset. */
+  function leaveOneShotWhenDue() {
+    if (!oneShot || now() - oneShotSince < oneShotRetryMs) return
+    oneShot = false
+    note('worker.one-shot-ended', {})
+  }
+
   /** Starts one worker process; throws when spawn itself throws. */
   function start(single) {
     const t0 = now()
+    sweepStaleMarkers()
     const child = spawn(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env,
     })
@@ -146,6 +179,7 @@ export function createSpeakWorker({
     deaths = [...deaths.filter((d) => t - d < RESPAWN_WINDOW_MS), t]
     if (deaths.length > maxRespawns && !oneShot) {
       oneShot = true
+      oneShotSince = t
       note('worker.one-shot', { deaths: deaths.length })
     }
   }
@@ -226,6 +260,7 @@ export function createSpeakWorker({
     const t0 = now()
     const priority = opts.priority ?? VOICE.priority
     const body = JSON.stringify({ id, text: String(text ?? ''), gender: opts.gender ?? VOICE.gender, priority }) + '\n'
+    leaveOneShotWhenDue()
     return new Promise((resolve) => {
       let w
       try { w = oneShot ? start(true) : ensureWorker() } catch (error) {
@@ -251,6 +286,7 @@ export function createSpeakWorker({
     cancel,
     /** Prewarm the persistent worker (no audio). No-op in one-shot mode or when spawning fails. */
     warm() {
+      leaveOneShotWhenDue()
       if (oneShot) return
       try { ensureWorker() } catch (error) { note('worker.spawn-failed', { error: String(error?.message ?? error) }) }
     },

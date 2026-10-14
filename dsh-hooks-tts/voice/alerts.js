@@ -1,6 +1,8 @@
 import { lastParagraph, permissionHeadline, questionHeadline, stopHeadline } from './headline.js'
 
-const ASK_TOOLS = new Set(['ask_user_question', 'AskUserQuestion'])
+/** The tool names (both spellings) of the ask-the-user tool: the one definition every module shares. */
+export const ASK_TOOLS = new Set(['ask_user_question', 'AskUserQuestion'])
+export const isAskTool = (name) => typeof name === 'string' && ASK_TOOLS.has(name)
 
 /**
  * The workspace a cwd belongs to: the last path segment (a drive root or a dot is no name), except that a git
@@ -27,7 +29,7 @@ export function createAlerts() {
       if (event === 'PermissionRequest') {
         return permissionHeadline({ toolName: payload.tool_name })
       }
-      if (event === 'PreToolUse' && ASK_TOOLS.has(payload.tool_name)) {
+      if (event === 'PreToolUse' && isAskTool(payload.tool_name)) {
         return questionHeadline({ questions: payload.tool_input?.questions })
       }
       return undefined

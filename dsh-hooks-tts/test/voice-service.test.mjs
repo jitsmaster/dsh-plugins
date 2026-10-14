@@ -460,3 +460,94 @@ test('SV10 the flow classifies answers step-aware: the read-back step takes only
   assert.equal(h.flow.deps.classify('ok', 'decision'), 'text')
   assert.equal(h.flow.deps.classify('confirm', 'decision'), 'yes')
 })
+
+
+test('O10 ensureStt is not asked again while a request is in flight or within the retry delay', async () => {
+  let t = 1_000_000
+  const calls = []
+  let release
+  const h = make({ now: () => t, ensureStt: () => new Promise((resolve) => { calls.push('ensure'); release = () => resolve('failed') }) })
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls.length, 1, 'in flight: not asked again')
+  release()
+  await new Promise((r) => setImmediate(r))
+  t += 5000
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls.length, 1, 'within the retry delay')
+  t += 5000
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls.length, 2, 'after a failure it asks again within 10 s')
+})
+
+test('O10 once the daemon answers (running) the next probe waits 30 s', async () => {
+  let t = 1_000_000
+  const calls = []
+  const h = make({ now: () => t, ensureStt: async () => { calls.push('ensure'); return 'running' } })
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  t += 10_000
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls.length, 1)
+  t += 20_000
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls.length, 2)
+})
+
+test('O10 turning voice off and on again asks right away', async () => {
+  let t = 1_000_000
+  const calls = []
+  const h = make({ now: () => t, ensureStt: async () => { calls.push('ensure'); return 'started' } })
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  h.state.enabled = false
+  h.svc.reconcile()
+  h.state.enabled = true
+  h.svc.reconcile()
+  await new Promise((r) => setImmediate(r))
+  assert.equal(calls.length, 2)
+})
+
+const sockEvent = (h, type) => h.sock().onmessage({ data: JSON.stringify({ type }) })
+
+test('I1 onIdle fires when the mic closes (busy flips to false) and nothing else keeps voice busy', () => {
+  let idles = 0
+  const h = make({ onIdle: () => { idles++ } })
+  h.svc.reconcile()
+  h.sock().onopen()
+  sockEvent(h, 'listening')
+  assert.equal(h.svc.busy(), true)
+  assert.equal(idles, 0, 'not while the mic is open')
+  sockEvent(h, 'idle')
+  assert.equal(h.svc.busy(), false)
+  assert.equal(idles, 1)
+})
+
+test('I1 onIdle does not fire while the flow is still active after the mic closed; it fires when the flow itself goes idle', () => {
+  let idles = 0
+  const h = make({ onIdle: () => { idles++ } })
+  h.svc.reconcile()
+  h.sock().onopen()
+  sockEvent(h, 'listening')
+  h.flow.active = true // the flow is speaking its result line
+  sockEvent(h, 'idle')
+  assert.equal(idles, 0, 'the flow keeps voice busy')
+  h.flow.active = false
+  h.flow.deps.onIdle() // the flow reports it returned to IDLE
+  assert.equal(idles, 1)
+})
+
+test('I1 a throwing onIdle never reaches the client or the flow', () => {
+  const h = make({ onIdle: () => { throw new Error('boom') } })
+  h.svc.reconcile()
+  h.sock().onopen()
+  sockEvent(h, 'listening')
+  assert.doesNotThrow(() => sockEvent(h, 'idle'))
+  assert.doesNotThrow(() => h.flow.deps.onIdle())
+})

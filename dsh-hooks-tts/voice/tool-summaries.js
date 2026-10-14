@@ -23,13 +23,15 @@ const hashOf = (args) => {
 
 const keyOf = (agentId, toolName, callId) => (agentId === undefined || toolName === undefined || callId === undefined ? undefined : JSON.stringify([agentId, toolName, callId]))
 
-export function createToolSummaries({ max = 200, summarise = toolSummaryInfo } = {}) {
+export function createToolSummaries({ max = 200, summarise = toolSummaryInfo, enabled = () => true } = {}) {
   const entries = new Map() // key -> { hash, info } (info undefined = conflicting arguments)
 
   return {
     /** tools/pre-execute: remember what the call will do (exec = { agent, name, callId, arguments }). Never throws. */
     note(exec) {
       try {
+        // Voice off: nothing will ever read this back, so skip the hashing and summarising on every tool call.
+        if (!enabled()) return
         const key = keyOf(exec.agent?.id, exec.name, exec.callId)
         if (key === undefined) return
         const hash = hashOf(exec.arguments)
