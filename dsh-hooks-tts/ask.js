@@ -1,12 +1,12 @@
 ﻿/**
  * ask_user_question tuning. DSH freezes tool arguments before a plugin sees them, so the timeout cannot be rewritten
- * in a hook: instead the model is told once per session to pass `timeout` = 120 s x number of questions, and a
+ * in a hook: instead the model is told once per session to pass `timeout` = 360 s x number of questions, and a
  * timed-out (pending) result gets a follow-up telling it to merge the user's confirmed answers with its own
  * recommended options and carry on.
  */
-const PER_QUESTION_SECONDS = 120
+const PER_QUESTION_SECONDS = 360
 
-const GUIDANCE = `When you call ask_user_question, pass the "timeout" argument explicitly as ${PER_QUESTION_SECONDS} seconds multiplied by the number of questions in that call (for example 3 questions -> timeout 360), so the user has enough time to answer.`
+const GUIDANCE = `When you call ask_user_question, pass the "timeout" argument explicitly as ${PER_QUESTION_SECONDS} seconds multiplied by the number of questions in that call (for example 3 questions -> timeout ${PER_QUESTION_SECONDS * 3}), so the user has enough time to answer.`
 
 const PENDING_FOLLOW_UP = [
   'The ask_user_question call timed out with no complete answer (pending).',

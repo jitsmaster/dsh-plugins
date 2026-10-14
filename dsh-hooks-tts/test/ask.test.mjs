@@ -38,6 +38,7 @@ test('the first step of a session gets the timeout guidance once', async () => {
   const h = harness()
   const first = await h.step()
   assert.match(first.messages[0].text, /timeout/)
-  assert.match(first.messages[0].text, /120/)
+  assert.match(first.messages[0].text, /360 seconds multiplied by the number of questions/)
+  assert.match(first.messages[0].text, /3 questions -> timeout 1080/)
   assert.equal((await h.step()).messages.length, 0)
 })
