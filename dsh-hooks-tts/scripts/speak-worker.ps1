@@ -1,5 +1,6 @@
 # Persistent speak worker for the voice flow (docs/voice-two-stage-flow.md section 2).
-# stdin:  one UTF-8 JSON request per line: {"id":n,"text":"...","gender":"female","priority":"High"}
+# stdin:  one UTF-8 JSON request per line: {"id":n,"text":"...","gender":"female","priority":"High"} (optional: "file" = a WAV to play
+#         instead of synthesising, "speed", "pause" = what the server is asked for)
 # stdout: JSON lines only: {"ready":true} once, then per request {"id":n,"event":"start","durationMs":n} right before
 #         playback (durationMs = WAV length, omitted when unknown; speaker.js times playback with it) and
 #         {"id":n,"status":"done"|"cut"|"failed"|"muted"|"cancelled","ms":n}. EOF on stdin -> exit 0.
@@ -73,7 +74,13 @@ while ($true) {
             $dur = if ($Seconds) { ',"durationMs":' + [int][math]::Round([double]$Seconds * 1000) } else { '' }
             [Console]::Out.WriteLine('{"id":' + $idJson + ',"event":"start"' + $dur + '}'); [Console]::Out.Flush()
         }
-        $ok = [bool](Invoke-KokoroTts -Text (Clean-ForSpeech ([string]$req.text)) -Gender $gender -Priority $priority -OnPlaybackStart $onStart -NoPidFile -KeepNewerStopFlag)
+        # Optional extras: file = a WAV the plugin already has (played as is, no server request; a missing file falls back to
+        # synthesis), speed / pause = what the server is asked for when it has to synthesise.
+        $extra = @{}
+        if ($req.file -and (Test-Path -LiteralPath ([string]$req.file))) { $extra.WavPath = [string]$req.file }
+        if ($req.speed -and [double]$req.speed -gt 0) { $extra.Speed = [double]$req.speed }
+        if ($req.pause -and [double]$req.pause -gt 0) { $extra.PauseSeconds = [double]$req.pause }
+        $ok = [bool](Invoke-KokoroTts -Text (Clean-ForSpeech ([string]$req.text)) -Gender $gender -Priority $priority -OnPlaybackStart $onStart -NoPidFile -KeepNewerStopFlag @extra)
     } catch {
         if (-not $cancelled -and -not $muted) { Add-TtsLog 'tts-client-errors.log' "speak-worker: $($_.Exception.Message)" }
         $ok = $false

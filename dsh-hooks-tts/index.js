@@ -33,6 +33,7 @@ import { queuePositionOf, refreshHeldAlert } from './voice/alert-position.js'
 import { createVoiceService } from './voice/service.js'
 import { createDecider } from './voice/decider.js'
 import { createSpeakWorker } from './voice/speaker.js'
+import { createAlertSpeech, speechModeOf } from './alert-speech.js'
 import { createSttLauncher, normalizePort } from './voice/stt-launcher.js'
 import { createToolSummaries } from './voice/tool-summaries.js'
 import { createHandoffTracker } from './handoffs.js'
@@ -91,7 +92,9 @@ function loadHooks(path, vars) {
           ...h,
           command: substitute(h.command, vars),
           args: h.args?.map(a => substitute(a, vars)),
-        })),
+        }))
+        // speak | stop | elicit for the three speak launchers (they are played through the speak worker, see alert-speech.js).
+        .map(h => ({ ...h, speechMode: speechModeOf(h) })),
     }))
   }
   return out
@@ -272,8 +275,8 @@ export function apply(ctx, baseConfig = {}) {
           cwd, env, defaultTimeoutMs,
           signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
         }
-        const job = runCommand(hook, bodyFor(isTts), opts)
-        if (hook.async) {
+        const job = launch(hook, bodyFor(isTts), opts)
+        if (hook.async || (alertSpeech && hook.speechMode)) {
           const tracked = job.finally(() => pending.delete(tracked))
           pending.add(tracked)
           continue
@@ -354,6 +357,26 @@ export function apply(ctx, baseConfig = {}) {
   }
   // The flow's lines go through one persistent, prewarmed speak worker (attached child; see voice/speaker.js).
   const speaker = createSpeakWorker({ spawn, root: ROOT, env: baseEnv, log: (stage, data) => voiceLog({ type: 'flow', stage, ...data }) })
+  // The three speak hooks (Stop, permission, question) use the same worker, with the WAVs cached by the plugin: no PowerShell process
+  // per alert. config.ttsAlertsViaWorker: false goes back to running the launcher scripts of hooks.json.
+  const alertSpeech = config.ttsAlertsViaWorker === false ? undefined : createAlertSpeech({
+    speaker, stateDir, speed: config.ttsSpeed,
+    url: config.ttsUrl ?? process.env.DSH_TTS_URL ?? 'http://127.0.0.1:8880/tts',
+    fetchFn: (...args) => fetch(...args),
+    log: (stage, data) => voiceLog({ type: 'alert', stage, ...data }),
+  })
+  /** Runs one hook: a speak hook is played by the worker, any other hook is a spawned command. */
+  const launch = (hook, body, opts) => (alertSpeech && hook.speechMode ? alertSpeech.run(hook.speechMode, body, { signal: opts.signal }) : runCommand(hook, body, opts))
+  // Keep the worker started while read-outs are on, so an alert never pays its start-up (warm() is a no-op when it already runs).
+  const warmWorker = () => { if (alertSpeech && settings.get().ttsEnabled) speaker.warm() } // called by the 5 s timer below
+  // The voice service stops its speaker whenever voice control is off (every reconcile); the worker must survive that while alerts use it.
+  // Shutdown stops it for real (see the cleanup effect).
+  const voiceSpeaker = {
+    speak: (text, opts) => speaker.speak(text, opts),
+    cancel: () => speaker.cancel(),
+    warm: () => speaker.warm(),
+    stop: () => { if (!(alertSpeech && settings.get().ttsEnabled)) speaker.stop() },
+  }
   // Lazy: the decider context reads the voice service, created right below.
   const decider = createDecider({
     llm: lazyLlm,
@@ -375,7 +398,7 @@ export function apply(ctx, baseConfig = {}) {
     onIdle: flushSoon,
     // The dsh-review-queue service (task-list voice commands); resolved per call and guarded: the plugin may not be installed.
     reviewQueue: reviewQueueOf,
-    speaker,
+    speaker: voiceSpeaker,
     summaryOf: (req) => toolSummaries.lookup(req),
     decide: (utterance, opts) => decider.decide(utterance, opts),
     cwdOf: (id) => voiceAgents.get(id)?.session?.header?.cwd,
@@ -422,7 +445,7 @@ export function apply(ctx, baseConfig = {}) {
     // Returns the launcher's promise: the queue starts the next held alert only after this one's launcher has finished.
     play: ({ hook, body, cwd, env, sessionId }) => {
       if (sessionId) voice.noteAlert(sessionId)
-      const job = runCommand(hook, body, { cwd, env, defaultTimeoutMs, signal: controller.signal })
+      const job = launch(hook, body, { cwd, env, defaultTimeoutMs, signal: controller.signal })
       const tracked = job.finally(() => pending.delete(tracked))
       tracked.catch(() => {})
       pending.add(tracked)
@@ -431,11 +454,12 @@ export function apply(ctx, baseConfig = {}) {
   })
   const voiceTimer = setInterval(() => {
     try { voice.reconcile() } catch (error) { ctx.logger.warn(`hooks-tts: voice reconcile failed: ${String(error)}`) }
+    try { warmWorker() } catch { /* the next alert starts the worker */ }
     void deferredAlerts.flush() // never rejects; plays the held alerts one after another
   }, 5000)
   voiceTimer.unref?.()
   // Returns the flush promise so shutdown awaits the last log lines, but only for LOG_FLUSH_TIMEOUT_MS: a stalled disk must not hang it.
-  ctx.effect(() => () => { voiceStopped = true; clearInterval(voiceTimer); clearTimeout(idleTimer); deferredAlerts.clear(); voice.stop(); return voiceLogger.flushWithin(LOG_FLUSH_TIMEOUT_MS) }, 'hooks-tts: stop voice control')
+  ctx.effect(() => () => { voiceStopped = true; clearInterval(voiceTimer); clearTimeout(idleTimer); deferredAlerts.clear(); voice.stop(); speaker.stop(); return voiceLogger.flushWithin(LOG_FLUSH_TIMEOUT_MS) }, 'hooks-tts: stop voice control')
   ctx.on('agent/created', ({ agent }) => { if (!skip(agent)) { voiceAgents.set(agent.id, agent); voice.agentCreated(agent.id) } })
   ctx.on('agent/disposed', ({ agent }) => { voiceAgents.delete(agent.id); pendingQuestions.dropSession(agent.id); voice.agentDisposed(agent.id) })
 

@@ -8,6 +8,11 @@
         # ttsServerScript: C:\path\to\start-hidden.ps1
         # Directory holding tts-stop-hotkey.exe (stop flag and audio.pids). Default: ~/.claude
         # hotkeyDir: C:\Users\you\.claude
+        # Speaking rate sent to the TTS server for Stop / permission / question read-outs (default: the server's own, 1.0).
+        # ttsSpeed: 1.2
+        # Read-outs are played by the persistent speak worker, with the WAVs cached in <state dir>/tts-cache (no PowerShell
+        # process per alert). false goes back to running the launcher scripts of hooks.json.
+        # ttsAlertsViaWorker: false
         skipSubagents: true
         # --- Obsidian session-start note (optional; the hook does nothing unless set) ---
         # obsidianVault: C:\path\to\your\vault

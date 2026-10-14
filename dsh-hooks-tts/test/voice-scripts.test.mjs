@@ -221,6 +221,34 @@ test('SC1 speak-worker.ps1 is pure ASCII, says ready, then start and status per 
   assert.equal(existsSync(join(tts.dir, 'audio.pids')), false, 'the worker never writes its PID to audio.pids')
 })
 
+test('SF1 speak-worker.ps1 plays a WAV file it is given without asking the server, falls back to synthesis when the file is missing, and forwards speed and pause', opts, async () => {
+  const tts = await fakeTts()
+  const wav = join(tts.dir, 'alert.wav')
+  writeFileSync(wav, silentWav(70))
+  const child = spawn('powershell.exe', [...PS, join(SCRIPTS, 'speak-worker.ps1')], { env: tts.env })
+  child.stderr.resume()
+  const out = collectLines(child.stdout)
+  try {
+    await out.until((l) => l.length >= 1)
+    child.stdin.write(JSON.stringify({ id: 1, text: 'from file', gender: 'male', priority: 'Normal', file: wav }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 1)
+    child.stdin.write(JSON.stringify({ id: 2, text: 'missing file', gender: 'male', priority: 'Normal', file: join(tts.dir, 'nope.wav') }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 2)
+    child.stdin.write(JSON.stringify({ id: 3, text: 'paced', gender: 'male', priority: 'Normal', speed: 1.2, pause: 0.5 }) + '\n', 'utf8')
+    await out.until((l) => statusCount(l) >= 3)
+  } finally {
+    child.stdin.end()
+    child.kill()
+    tts.close()
+  }
+  const msgs = out.lines.map((l) => JSON.parse(l))
+  assert.deepEqual(msgs.filter((m) => 'status' in m).map((m) => [m.id, m.status]), [[1, 'done'], [2, 'done'], [3, 'done']])
+  assert.deepEqual(msgs.find((m) => m.id === 1 && m.event === 'start'), { id: 1, event: 'start', durationMs: 70 })
+  assert.deepEqual(tts.spoken.map((s) => s.text), ['missing file', 'paced'], 'the file line never reached the server')
+  assert.equal(tts.spoken[1].speed, 1.2)
+  assert.equal(tts.spoken[1].pause_s, 0.5)
+})
+
 test('SC4 speak-worker.ps1 removes a stale (older than 20 s) tts-priority-pending.flag (left by a killed worker) at start-up', opts, async () => {
   const tts = await fakeTts()
   const flag = join(tts.dir, 'tts-priority-pending.flag')

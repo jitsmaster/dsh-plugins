@@ -259,7 +259,13 @@ export function createSpeakWorker({
     const id = nextId++
     const t0 = now()
     const priority = opts.priority ?? VOICE.priority
-    const body = JSON.stringify({ id, text: String(text ?? ''), gender: opts.gender ?? VOICE.gender, priority }) + '\n'
+    // file (a WAV to play instead of asking the server), speed and pause are optional extras; a plain line keeps its exact shape.
+    const extras = {
+      ...typeof opts.file === 'string' && opts.file ? { file: opts.file } : {},
+      ...typeof opts.speed === 'number' && opts.speed > 0 ? { speed: opts.speed } : {},
+      ...typeof opts.pause === 'number' && opts.pause > 0 ? { pause: opts.pause } : {},
+    }
+    const body = JSON.stringify({ id, text: String(text ?? ''), gender: opts.gender ?? VOICE.gender, priority, ...extras }) + '\n'
     leaveOneShotWhenDue()
     return new Promise((resolve) => {
       let w

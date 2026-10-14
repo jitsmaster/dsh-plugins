@@ -77,6 +77,20 @@ async function peek(p) {
   return s
 }
 
+test('SP-file a speak() with file, speed or pause adds exactly those keys to the request line, and nothing else changes', async () => {
+  const h = harness()
+  h.speak('hi', { gender: 'male', priority: 'Normal', file: 'C:\\c\\a.wav' })
+  await tick()
+  h.speak('hi 2', { gender: 'male', priority: 'Normal', speed: 1.2, pause: 0.5 })
+  await tick()
+  h.speak('hi 3', { gender: 'male', priority: 'Normal' })
+  await tick()
+  const lines = h.child().input.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  assert.deepEqual(lines[0], { id: 1, text: 'hi', gender: 'male', priority: 'Normal', file: 'C:\\c\\a.wav' })
+  assert.deepEqual(lines[1], { id: 2, text: 'hi 2', gender: 'male', priority: 'Normal', speed: 1.2, pause: 0.5 })
+  assert.deepEqual(lines[2], { id: 3, text: 'hi 3', gender: 'male', priority: 'Normal' })
+})
+
 test('S1 one persistent worker serves many lines; each request is one JSON line in the female High voice', async () => {
   const h = harness()
   h.speaker.warm()

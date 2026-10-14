@@ -171,7 +171,9 @@ function Invoke-KokoroTts {
         # Keep a stop flag created after this call started (a barge-in / Ctrl+Alt+M while the line was synthesised or queued) so it
         # still cuts THIS line. Only speak-worker.ps1 passes it. Legacy hook callers (stop/speak/elicitation) clear every stop flag
         # when they get the playback mutex, so a hotkey press never cuts or eats the NEXT queued alert.
-        [switch]$KeepNewerStopFlag
+        [switch]$KeepNewerStopFlag,
+        # A WAV the caller already has (the plugin's phrase cache): played as is, no server start or request.
+        [string]$WavPath = ''
     )
     $callStart = Get-Date
     # Set when the stop flag (Ctrl+Alt+M, barge-in) ended playback early; speak-worker.ps1 reports it as status 'cut'.
@@ -191,46 +193,50 @@ function Invoke-KokoroTts {
     $mutex = New-Object System.Threading.Mutex($false, 'Global\KokoroTtsPlayback')
     $acquired = $false; $setFlag = $false
     try {
-        # Synthesize immediately; only PLAYBACK is serialized so nothing overlaps audibly.
-        $null = Get-TtsHttpClient
-        if (-not (Start-TtsServerIfDown)) {
-            Add-TtsLog 'tts-client-errors.log' 'server is down and its last start failed; line skipped'
-            return $false
-        }
-        $request = @{ text = $Text; voice_gender = $Gender }
-        if ($Speed -gt 0) { $request.speed = $Speed }
-        if ($PauseSeconds -gt 0) { $request.pause_s = $PauseSeconds }
-        $body = $request | ConvertTo-Json -Compress
-        for ($attempt = 1; $attempt -le 2 -and -not $response; $attempt++) {
-            try {
-                $content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, 'application/json')
-                $response = (Get-TtsHttpClient).PostAsync($script:TtsUrl, $content).Result
-                $script:TtsHttpWarm = $true
-            } catch {
-                $failure = $_
-                # Possibly a connection the server closed while idle: a fresh client gets one more try, but only for a transport
-                # error on a warm client (one that has completed a request, so a pooled connection may exist). A timeout (hung
-                # server) or a failure on a cold client (server down) is not retried. Either way the server is no longer trusted,
-                # and the retry first makes sure it is up.
-                $timedOut = $false; $transport = $false
-                for ($e = $failure.Exception; $e; $e = $e.InnerException) {
-                    if ($e -is [System.OperationCanceledException]) { $timedOut = $true }
-                    if ($e -is [System.Net.Http.HttpRequestException] -or $e -is [System.IO.IOException]) { $transport = $true }
-                }
-                $retry = $script:TtsHttpWarm -and $attempt -lt 2 -and $transport -and -not $timedOut
-                Remove-TtsHttpClient
-                $script:TtsServerOkAt = $null
-                if ($retry -and -not (Start-TtsServerIfDown)) { $retry = $false }
-                if (-not $retry) { throw $failure }
-            } finally {
-                if ($content) { $content.Dispose(); $content = $null }
+        if ($WavPath -and (Test-Path -LiteralPath $WavPath)) {
+            $bytes = [System.IO.File]::ReadAllBytes($WavPath)
+        } else {
+            # Synthesize immediately; only PLAYBACK is serialized so nothing overlaps audibly.
+            $null = Get-TtsHttpClient
+            if (-not (Start-TtsServerIfDown)) {
+                Add-TtsLog 'tts-client-errors.log' 'server is down and its last start failed; line skipped'
+                return $false
             }
+            $request = @{ text = $Text; voice_gender = $Gender }
+            if ($Speed -gt 0) { $request.speed = $Speed }
+            if ($PauseSeconds -gt 0) { $request.pause_s = $PauseSeconds }
+            $body = $request | ConvertTo-Json -Compress
+            for ($attempt = 1; $attempt -le 2 -and -not $response; $attempt++) {
+                try {
+                    $content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, 'application/json')
+                    $response = (Get-TtsHttpClient).PostAsync($script:TtsUrl, $content).Result
+                    $script:TtsHttpWarm = $true
+                } catch {
+                    $failure = $_
+                    # Possibly a connection the server closed while idle: a fresh client gets one more try, but only for a transport
+                    # error on a warm client (one that has completed a request, so a pooled connection may exist). A timeout (hung
+                    # server) or a failure on a cold client (server down) is not retried. Either way the server is no longer trusted,
+                    # and the retry first makes sure it is up.
+                    $timedOut = $false; $transport = $false
+                    for ($e = $failure.Exception; $e; $e = $e.InnerException) {
+                        if ($e -is [System.OperationCanceledException]) { $timedOut = $true }
+                        if ($e -is [System.Net.Http.HttpRequestException] -or $e -is [System.IO.IOException]) { $transport = $true }
+                    }
+                    $retry = $script:TtsHttpWarm -and $attempt -lt 2 -and $transport -and -not $timedOut
+                    Remove-TtsHttpClient
+                    $script:TtsServerOkAt = $null
+                    if ($retry -and -not (Start-TtsServerIfDown)) { $retry = $false }
+                    if (-not $retry) { throw $failure }
+                } finally {
+                    if ($content) { $content.Dispose(); $content = $null }
+                }
+            }
+            if (-not $response.IsSuccessStatusCode) {
+                Add-TtsLog 'tts-client-errors.log' "HTTP $([int]$response.StatusCode) from $($script:TtsUrl)"
+                return $false
+            }
+            $bytes = $response.Content.ReadAsByteArrayAsync().Result
         }
-        if (-not $response.IsSuccessStatusCode) {
-            Add-TtsLog 'tts-client-errors.log' "HTTP $([int]$response.StatusCode) from $($script:TtsUrl)"
-            return $false
-        }
-        $bytes = $response.Content.ReadAsByteArrayAsync().Result
 
         if ($Priority -eq 'High') {
             Set-Content -Path $flagPath -Value (Get-Date -Format o) -Force
