@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installPrPoller, approvedBy, parsePrCreated, parsePollMarker, detectNewThreads, isPrSession, ciReviewCleanAt, ciReviewStands } from '../pr.js'
+import { installPrPoller, parsePrCreated, parsePollMarker, detectNewThreads, isPrSession } from '../pr.js'
 import { createSettings } from '../settings.js'
 
 const PAT = 'sup3r-secret-pat'
@@ -205,17 +205,10 @@ test('restore: without the registry or query services it does nothing and does n
   assert.equal(await h.poller.restore(), 0)
 })
 
-// ---- CI "no issues found" stop rule ----
+// ---- CI "no issues found" does not stop the poll ----
 
 const ciThread = (id, date, text = 'AI review complete â€” no issues found across all 10 passes (AI pitfall review, ...)') => ({
   id, status: 'closed', comments: [{ id: 1, commentType: 'text', content: text, publishedDate: date, author: { displayName: 'Project Collection Build Service (ingeniuxdev)' } }],
-})
-
-test('ciReviewCleanAt: date of the latest "no issues found" CI comment, else undefined', () => {
-  assert.equal(ciReviewCleanAt([thread(1, 2)]), undefined)
-  assert.equal(ciReviewCleanAt([ciThread(5, '2026-10-05T10:00:00Z', 'AI review complete â€” 3 issues found')]), undefined)
-  assert.equal(ciReviewCleanAt([ciThread(5, '2026-10-05T10:00:00Z'), ciThread(6, '2026-10-05T12:00:00Z')]), Date.parse('2026-10-05T12:00:00Z'))
-  assert.equal(ciReviewCleanAt([{ ...ciThread(7, '2026-10-05T10:00:00Z'), isDeleted: true }]), undefined)
 })
 
 test('poll keeps going after a quiet poll and traces every poll', async () => {
@@ -228,45 +221,18 @@ test('poll keeps going after a quiet poll and traces every poll', async () => {
   h.poller.stopAll()
 })
 
-test('poll stops once CI reports no issues found after the last commit', async () => {
+test('poll keeps going when CI reports no issues found, and queues nothing', async () => {
   const h = harness()
   h.poller.register(h.agent, '5')
   h.state.commitDate = '2026-10-05T11:00:00Z'
   h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z')]
   await h.poller.poll('a1')
-  assert.equal(h.poller.has('a1'), false)
-  assert.match(h.log(), /no issues found/)
-})
-
-test('poll keeps going when the CI "no issues" result is older than the last commit (a new review is pending)', async () => {
-  const h = harness()
-  h.poller.register(h.agent, '5')
-  h.state.commitDate = '2026-10-05T13:00:00Z'
-  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z')]
-  await h.poller.poll('a1')
   assert.equal(h.poller.has('a1'), true)
+  assert.equal(h.calls.prompt.length, 0)
   h.poller.stopAll()
 })
 
-test('poll keeps going when the commit lookup fails, and when new comments were just queued', async () => {
-  const h = harness()
-  h.poller.register(h.agent, '5')
-  h.state.commitFail = true
-  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z')]
-  await h.poller.poll('a1')
-  assert.equal(h.poller.has('a1'), true)
-  h.state.commitFail = false
-  h.state.commitDate = '2026-10-05T11:00:00Z'
-  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z'), thread(11, 2)]
-  await h.poller.poll('a1')
-  assert.equal(h.calls.prompt.length, 1)
-  assert.equal(h.poller.has('a1'), true) // its thread is still active, so it keeps going
-  h.state.threads = [ciThread(9, '2026-10-05T12:00:00Z'), humanThread(11, '2026-10-05T10:00:00Z')] // once resolved, nothing is pending
-  await h.poller.poll('a1')
-  assert.equal(h.poller.has('a1'), false)
-})
-
-// Auto-stop: CI all-clear + nothing newer or still open + not older than the head commit.
+// A clean CI result, an approval and a resolved thread never end the poll; only a merged or abandoned PR does.
 const CLEAN_AT = '2026-10-05T12:00:00Z'
 const humanThread = (id, date, status = 'closed', commentType = 'text') => ({
   id, status, comments: [{ id: 1, commentType, content: 'please look', publishedDate: date, author: { id: 'rev', displayName: 'Reviewer' } }],
@@ -281,59 +247,23 @@ async function cleanHarness(threads, commitDate = '2026-10-05T11:00:00Z') {
   return h
 }
 
-test('auto-stop: a clean CI comment alone stops the poll and queues one final message', async () => {
-  const h = await cleanHarness([ciThread(9, CLEAN_AT)])
-  assert.equal(h.poller.has('a1'), false)
-  assert.equal(h.calls.prompt.length, 1)
-  assert.match(h.calls.prompt[0].content[0].text, /PR 5 review poller stopped: the CI review found no issues/)
-  await h.poller.poll('a1') // the poll is gone: nothing more is fetched or sent
-  assert.equal(h.calls.prompt.length, 1)
-})
-
-test('auto-stop: system threads do not keep the poller running', async () => {
+test('a clean CI comment, system threads and resolved human threads never stop the poll', async () => {
   const sys = { id: 20, status: 'active', comments: [{ id: 1, commentType: 'system', content: 'Policy status', publishedDate: '2026-10-05T13:00:00Z' }] }
-  const h = await cleanHarness([ciThread(9, CLEAN_AT), sys])
-  assert.equal(h.poller.has('a1'), false)
-})
-
-test('auto-stop: a clean CI comment plus an active human thread does not stop', async () => {
-  const h = await cleanHarness([ciThread(9, CLEAN_AT), humanThread(10, '2026-10-05T10:00:00Z', 'active')])
-  assert.equal(h.poller.has('a1'), true)
-  assert.equal(h.calls.prompt.filter((c) => /poller stopped/.test(c.content[0].text)).length, 0)
-  h.poller.stopAll()
-})
-
-test('auto-stop: a human comment after the clean one does not stop, even in a resolved thread', async () => {
-  const h = await cleanHarness([ciThread(9, CLEAN_AT), humanThread(10, '2026-10-05T12:30:00Z')])
+  const h = await cleanHarness([ciThread(9, CLEAN_AT), sys, humanThread(10, '2026-10-05T10:00:00Z')])
   assert.equal(h.poller.has('a1'), true)
   assert.equal(h.calls.prompt.length, 0)
   h.poller.stopAll()
 })
 
-test('auto-stop: a later non-clean CI comment does not stop', async () => {
-  const later = ciThread(10, '2026-10-05T13:00:00Z', 'AI review complete — 2 issues found')
-  const h = await cleanHarness([ciThread(9, CLEAN_AT), later])
+test('a human comment after the clean CI one is still reported', async () => {
+  const h = await cleanHarness([ciThread(9, CLEAN_AT), humanThread(10, '2026-10-05T12:30:00Z', 'active')])
+  assert.equal(h.calls.prompt.length, 1)
+  assert.match(h.calls.prompt[0].content[0].text, /New review comments on PR 5 \(thread 10\)/)
   assert.equal(h.poller.has('a1'), true)
   h.poller.stopAll()
 })
 
-test('auto-stop: a stale clean comment (older than the head commit) does not stop', async () => {
-  const h = await cleanHarness([ciThread(9, CLEAN_AT)], '2026-10-05T13:00:00Z')
-  assert.equal(h.poller.has('a1'), true)
-  assert.equal(h.calls.prompt.length, 0)
-  h.poller.stopAll()
-})
-
-test('auto-stop: a "no issues" comment from another author does not count', async () => {
-  const fake = ciThread(9, CLEAN_AT)
-  fake.comments[0].author = { displayName: 'Some Human' }
-  assert.equal(ciReviewCleanAt([fake]), undefined)
-  const h = await cleanHarness([fake])
-  assert.equal(h.poller.has('a1'), true)
-  h.poller.stopAll()
-})
-
-test('auto-stop: a fetch error keeps the poller running and logs the original message', async () => {
+test('poll error: a fetch error keeps the poller running and logs the original message', async () => {
   const h = harness()
   h.poller.register(h.agent, '5')
   h.state.fetchError = true
@@ -344,7 +274,7 @@ test('auto-stop: a fetch error keeps the poller running and logs the original me
   h.poller.stopAll()
 })
 
-test('auto-stop: a parse error in the response keeps the poller running and is logged', async () => {
+test('poll error: a parse error in the response keeps the poller running and is logged', async () => {
   const h = harness()
   h.poller.register(h.agent, '5')
   h.state.badJson = true
@@ -354,26 +284,6 @@ test('auto-stop: a parse error in the response keeps the poller running and is l
   h.poller.stopAll()
 })
 
-test('auto-stop: a failed final message keeps the poll alive so it is retried', async () => {
-  const h = harness()
-  h.poller.register(h.agent, '5')
-  h.state.commitDate = '2026-10-05T11:00:00Z'
-  h.state.threads = [ciThread(9, CLEAN_AT)]
-  const sc = h.ctx.get('sessionController')
-  const prompt = sc.prompt
-  sc.prompt = async () => { throw new Error('queue refused') }
-  await h.poller.poll('a1')
-  assert.equal(h.poller.has('a1'), true)
-  assert.match(h.log(), /queue refused/)
-  sc.prompt = prompt
-  await h.poller.poll('a1')
-  assert.equal(h.poller.has('a1'), false)
-})
-
-test('ciReviewStands: unreadable comment dates count as newer (fail safe)', () => {
-  assert.equal(ciReviewStands([humanThread(1, 'garbage')], Date.parse(CLEAN_AT)), false)
-  assert.equal(ciReviewStands([humanThread(1, '2026-10-05T10:00:00Z')], Date.parse(CLEAN_AT)), true)
-})
 
 // ---- creation -> rename + register ----
 
@@ -702,19 +612,12 @@ test('CI pipeline: new threads and a running pipeline share one message', async 
   h.poller.stopAll()
 })
 
-test('CI pipeline: a running pipeline blocks the clean auto-stop; a failed lookup does too', async () => {
+test('CI pipeline: a running pipeline is reported once and the poll keeps going despite a clean CI comment', async () => {
   const h = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { builds: [{ id: 900, status: 'inProgress' }] })
   assert.equal(h.poller.has('a1'), true)
-  assert.equal(h.calls.prompt.filter((c) => /poller stopped/.test(c.content[0].text)).length, 0)
+  assert.equal(h.calls.prompt.length, 1)
+  assert.match(h.calls.prompt[0].content[0].text, /CI review pipeline is running/)
   h.poller.stopAll()
-  const f = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { buildFail: true })
-  assert.equal(f.poller.has('a1'), true)
-  f.poller.stopAll()
-})
-
-test('CI pipeline: once it has finished the clean auto-stop applies', async () => {
-  const h = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { builds: [] })
-  assert.equal(h.poller.has('a1'), false)
 })
 
 // ---- merge conflicts ----
@@ -760,7 +663,7 @@ test('merge conflicts: no conflict, no message; a failed hand-over is retried', 
   h.poller.stopAll()
 })
 
-test('merge conflicts: share one message with new threads and a running build, and block the clean auto-stop', async () => {
+test('merge conflicts: share one message with new threads and a running build', async () => {
   const h = harness()
   h.poller.register(h.agent, '5')
   h.state.mergeStatus = 'conflicts'
@@ -770,11 +673,6 @@ test('merge conflicts: share one message with new threads and a running build, a
   assert.equal(h.calls.prompt.length, 1)
   assert.match(h.calls.prompt[0].content[0].text, /MERGE CONFLICTS[\s\S]*CI review pipeline is running[\s\S]*New review comments on PR 5/)
   h.poller.stopAll()
-  const c = await cleanHarnessWith([ciThread(9, CLEAN_AT)], { builds: [], mergeStatus: 'conflicts' })
-  assert.equal(c.poller.has('a1'), true)
-  assert.equal(c.calls.prompt.filter((p) => /poller stopped/.test(p.content[0].text)).length, 0)
-  assert.equal(c.calls.prompt.filter((p) => /MERGE CONFLICTS/.test(p.content[0].text)).length, 1)
-  c.poller.stopAll()
 })
 
 async function cleanHarnessWith(threads, extra) {
@@ -787,71 +685,33 @@ async function cleanHarnessWith(threads, extra) {
   return h
 }
 
-// ---- approval stop rule ----
+// ---- approval does not end the poll ----
 
 const rev = (displayName, vote, extra = {}) => ({ id: displayName, displayName, vote, ...extra })
+const APPROVED = [rev('Laska Fitzhugh', 10, { isRequired: true })]
 
-test('approvedBy: needs a human approval, every required reviewer approving, and no negative vote', () => {
-  assert.deepEqual(approvedBy({}), [])
-  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 0, { isRequired: true })] }), [])
-  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 10, { isRequired: true })] }), ['Laska'])
-  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 5, { isRequired: true })] }), ['Laska'])
-  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 0, { isRequired: true }), rev('Bob', 10)] }), [])
-  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 10, { isRequired: true }), rev('Bob', -5)] }), [])
-  assert.deepEqual(approvedBy({ reviewers: [rev('Laska', 10, { isRequired: true }), rev('Bob', 0)] }), ['Laska'])
-})
-
-test('approvedBy: groups, the PR author and the CI build identity never count', () => {
-  const pr = { createdBy: { id: 'me' }, reviewers: [rev('Team', 10, { isContainer: true }), rev('Me', 10, { id: 'me' }), rev('Project Collection Build Service (ingeniuxdev)', 10)] }
-  assert.deepEqual(approvedBy(pr), [])
-})
-
-test('auto-stop: an approved PR stops the poll and queues one final message', async () => {
-  const h = await cleanHarnessWith([], { reviewers: [rev('Laska Fitzhugh', 10, { isRequired: true })] })
-  assert.equal(h.poller.has('a1'), false)
-  assert.equal(h.calls.prompt.length, 1)
-  assert.match(h.calls.prompt[0].content[0].text, /PR 5 review poller stopped: the PR is approved \(Laska Fitzhugh\)/)
-  assert.match(h.log(), /PR approved by Laska Fitzhugh/)
-  await h.poller.poll('a1')
-  assert.equal(h.calls.prompt.length, 1)
-})
-
-test('auto-stop: an unapproved, or not fully approved, PR keeps polling', async () => {
-  const h = await cleanHarnessWith([], { reviewers: [rev('Laska Fitzhugh', 0, { isRequired: true }), rev('Bob', 10)] })
+test('an approved PR keeps polling and queues no message', async () => {
+  const h = await cleanHarnessWith([], { reviewers: APPROVED })
   assert.equal(h.poller.has('a1'), true)
   assert.equal(h.calls.prompt.length, 0)
+  assert.doesNotMatch(h.log(), /stopped polling/)
   h.poller.stopAll()
 })
 
-test('auto-stop: approval does not stop while new comments, a running pipeline, or merge conflicts are pending', async () => {
-  const approved = [rev('Laska Fitzhugh', 10, { isRequired: true })]
-  const a = await cleanHarnessWith([thread(11, 2)], { reviewers: approved })
-  assert.equal(a.poller.has('a1'), true)
-  assert.doesNotMatch(a.calls.prompt[0].content[0].text, /poller stopped/)
-  a.poller.stopAll()
-  const b = await cleanHarnessWith([], { reviewers: approved, builds: [{ id: 900, status: 'inProgress' }] })
-  assert.equal(b.poller.has('a1'), true)
-  b.poller.stopAll()
-  const c = await cleanHarnessWith([], { reviewers: approved, mergeStatus: 'conflicts' })
-  assert.equal(c.poller.has('a1'), true)
-  c.poller.stopAll()
-})
-
-test('auto-stop: a failed approval hand-over keeps the poll alive so it is retried', async () => {
-  const h = harness()
-  h.poller.register(h.agent, '5')
-  h.state.reviewers = [rev('Laska Fitzhugh', 10, { isRequired: true })]
-  const ok = h.ctx.get('sessionController').prompt
-  h.ctx.get('sessionController').prompt = async () => { throw new Error('queue down') }
+test('a comment that arrives after the approval is still queued', async () => {
+  const h = await cleanHarnessWith([], { reviewers: APPROVED })
+  h.state.threads = [thread(11, 2)]
   await h.poller.poll('a1')
+  assert.equal(h.calls.prompt.length, 1)
+  assert.match(h.calls.prompt[0].content[0].text, /New review comments on PR 5 \(thread 11\)/)
   assert.equal(h.poller.has('a1'), true)
-  h.ctx.get('sessionController').prompt = ok
-  await h.poller.poll('a1')
-  assert.equal(h.poller.has('a1'), false)
+  h.poller.stopAll()
 })
 
-test('an approved PR stays stopped across a server restart', async () => {
-  const h = await cleanHarnessWith([], { reviewers: [rev('Laska Fitzhugh', 10, { isRequired: true })] })
+test('an approved PR stops polling once it is merged, and stays stopped across a restart', async () => {
+  const h = await cleanHarnessWith([], { reviewers: APPROVED })
+  h.state.prStatus = 'completed'
+  await h.poller.poll('a1')
   assert.equal(h.poller.has('a1'), false)
   h.poller.register(h.agent, '5') // what the next step or a restart does for a session titled "PR <n>"
   assert.equal(h.poller.has('a1'), false)
@@ -883,7 +743,7 @@ test('a finished PR stays finished across a server restart', async () => {
   assert.equal(again.has('a1'), false)
 })
 
-test('a PR that the CI review cleared stays stopped too', async () => {
+test('a PR that the CI review cleared keeps polling', async () => {
   const h = harness()
   h.state.title = 'PR 5'
   h.state.headCommit = 'c1'
@@ -891,9 +751,9 @@ test('a PR that the CI review cleared stays stopped too', async () => {
   h.state.threads = [{ id: 9, status: 'closed', comments: [{ id: 1, commentType: 'text', content: 'AI review complete — no issues found across all 10 passes', publishedDate: '2026-10-08T11:00:00Z', author: { displayName: 'Project Collection Build Service (ingeniuxdev)' } }] }]
   h.poller.register(h.agent, '5')
   await h.poller.poll('a1')
-  assert.equal(h.poller.has('a1'), false)
-  await h.fire('agent/pre-step', { agent: h.agent, messages: [] })
-  assert.equal(h.poller.has('a1'), false)
+  assert.equal(h.poller.has('a1'), true)
+  assert.equal(h.calls.prompt.length, 0)
+  h.poller.stopAll()
 })
 
 test('when a PR is merged its waiting follow-up session is started at once, by the poll that sees the merge', async () => {

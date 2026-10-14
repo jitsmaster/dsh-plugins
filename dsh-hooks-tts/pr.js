@@ -4,6 +4,9 @@
  * every 10 minutes. New or changed review threads are queued into the SAME session as a message that
  * starts the `ado-pr-implement` skill up to its own user-approval gate.
  *
+ * The poll ends only when the PR is completed or abandoned: an approval or a clean CI review does not stop it, since
+ * later comments, pushes and CI runs still need handling before the merge.
+ *
  * A session enters PR state when it creates a PR (tools/post-execute sees `az repos pr create` output with
  * a `pullRequestId`, or a `PR-CREATED: <id>` marker) and is renamed to `PR <id>`. State survives a handoff
  * through `PR-POLL: <id> seen=<thread>:<lastComment>,...` lines: a message carrying that marker re-registers
@@ -85,62 +88,6 @@ export function detectNewThreads(threads, seen, selfId) {
   return found
 }
 
-/** The CI AI-review bot's all-clear comment, e.g. "AI review complete — no issues found across all 10 passes". */
-const CI_CLEAN = /AI review complete\W+no issues found/i
-/** Display name of the CI reviewer (the pipeline's build identity); only its comments count as a CI verdict. */
-const CI_AUTHOR = /^Project Collection Build Service \(ingeniuxdev\)$/i
-
-const isCiClean = (c) => !c.isDeleted && CI_AUTHOR.test(c.author?.displayName ?? '') && CI_CLEAN.test(c.content ?? '')
-
-/** Time (ms) of the newest CI "no issues found" comment in the threads, or undefined when there is none. */
-export function ciReviewCleanAt(threads) {
-  let latest
-  for (const t of threads ?? []) {
-    if (t.isDeleted) continue
-    for (const c of t.comments ?? []) {
-      if (!isCiClean(c)) continue
-      const at = Date.parse(c.publishedDate)
-      if (Number.isFinite(at) && (latest === undefined || at > latest)) latest = at
-    }
-  }
-  return latest
-}
-
-/**
- * True when the CI all-clear (at `cleanAt`) still stands: no non-system, non-deleted comment other than a clean
- * result is newer than it (a later human comment or a later non-clean CI comment reopens the PR), and no thread
- * other than a system thread is active. A comment whose date cannot be read counts as newer (fail safe).
- */
-export function ciReviewStands(threads, cleanAt) {
-  for (const t of threads ?? []) {
-    if (t.isDeleted) continue
-    const real = (t.comments ?? []).filter((c) => !c.isDeleted && c.commentType !== 'system')
-    if (t.status === 'active' && real.length) return false
-    for (const c of real) {
-      if (isCiClean(c)) continue
-      const at = Date.parse(c.publishedDate)
-      if (!Number.isFinite(at) || at > cleanAt) return false
-    }
-  }
-  return true
-}
-
-/** Reviewer votes: 10 approved, 5 approved with suggestions, 0 none, -5 waiting for author, -10 rejected. */
-const APPROVED_VOTE = 5
-
-/**
- * Names of the reviewers who approved the PR, or [] while it is not approved: at least one human reviewer approved,
- * every required reviewer approved, and nobody is waiting on the author or rejecting. Groups, the PR author and the
- * CI build identity never count.
- */
-export function approvedBy(pr) {
-  const authorId = pr?.createdBy?.id
-  const people = (pr?.reviewers ?? []).filter((r) => !r.isContainer && !(authorId != null && r.id != null && String(r.id) === String(authorId)) && !CI_AUTHOR.test(r.displayName ?? ''))
-  if (people.some((r) => Number(r.vote) < 0)) return []
-  if (people.some((r) => r.isRequired && !(Number(r.vote) >= APPROVED_VOTE))) return []
-  return people.filter((r) => Number(r.vote) >= APPROVED_VOTE).map((r) => r.displayName ?? 'a reviewer')
-}
-
 const formatSeen = (seen) => [...seen].map(([t, c]) => (c ? `${t}:${c}` : t)).join(',')
 
 /** Asks the agent to put the spawn decision to the user; only the user's Yes leads to the marker. */
@@ -151,14 +98,6 @@ function suggestionMessage(prId) {
     `If the user answers Yes, run this shell command and nothing else: \`echo PR-RESUME-APPROVED: ${prId}\`.`,
     'If the user answers No, do nothing.',
   ].join('\n')
-}
-
-function cleanStopMessage(prId) {
-  return `PR ${prId} review poller stopped: the CI review found no issues and no human review is open. No further comment messages will be sent for this PR.`
-}
-
-function approvedStopMessage(prId, names) {
-  return `PR ${prId} review poller stopped: the PR is approved (${names.join(', ')}). No further comment messages will be sent for this PR, and its merge is no longer reported: check it with \`az repos pr show --id ${prId}\` if a follow-up depends on it.`
 }
 
 /** One line naming the active CI review runs. */
@@ -212,7 +151,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     return out
   }
 
-  // PRs that are over (merged, abandoned, or cleared by the CI review). A session titled "PR <n>" is re-registered on its
+  // PRs that are over (merged or abandoned). A session titled "PR <n>" is re-registered on its
   // next step and after every restart, so without this record a finished PR would be polled again and again.
   const finishedFile = join(dirname(settings.path), 'pr-finished.json')
   const finishedPrs = new Set()
@@ -272,15 +211,6 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     })
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
     return res.json()
-  }
-
-  /** True when the CI result is not older than the PR's last source commit. A failed lookup throws (the poll just continues). */
-  async function ciResultIsCurrent(cleanAt, pr, pat) {
-    const sha = pr?.lastMergeSourceCommit?.commitId
-    if (!sha) return false // the head commit is unknown, so the result cannot be shown current: keep polling
-    const commit = await getJson(`${ADO_REPO}/commits/${sha}?api-version=7.1`, pat)
-    const committedAt = Date.parse(commit?.committer?.date)
-    return Number.isFinite(committedAt) && cleanAt >= committedAt
   }
 
   /** Active (queued or running) CI review builds for the PR; undefined when the lookup failed (traced). */
@@ -352,26 +282,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
           if (conflictText) entry.conflictFor = head
           trace(`reported ${conflictText ? 'merge conflicts' : ''}${conflictText && newBuilds.length ? ' and ' : ''}${newBuilds.length ? `active CI review build(s) ${newBuilds.map((b) => b.id).join(',')}` : ''} on PR ${entry.prId}`)
         }
-        // Conflicts mean the CI review cannot run, so an old all-clear is not a reason to stop polling.
-        if (conflicted) return
-        // A running (or unknown) pipeline means the CI verdict is about to change: never auto-stop on a stale all-clear.
-        if (builds === undefined || builds.length) return
-        // An approved PR needs no more polling. This sits after the conflict and running-pipeline checks, so findings still
-        // to arrive, or a conflict that blocks the merge, keep the poll alive; the final message is queued BEFORE stopping.
-        const approvers = approvedBy(pr)
-        if (approvers.length) {
-          await queueMessage(entry, approvedStopMessage(entry.prId, approvers))
-          finish(id, `PR approved by ${approvers.join(', ')}`)
-          return
-        }
-        // Stop once the CI review reports no issues, nothing newer or still open contradicts it, and it is not older than
-        // the head commit (a newer push means a new review is pending). The final message is queued BEFORE stopping, so a
-        // failed hand-over keeps the poll alive and is retried; after stop() nothing more is sent for this PR.
-        const cleanAt = ciReviewCleanAt(data?.value)
-        if (cleanAt !== undefined && ciReviewStands(data?.value, cleanAt) && await ciResultIsCurrent(cleanAt, pr, pat)) {
-          await queueMessage(entry, cleanStopMessage(entry.prId))
-          finish(id, 'CI review reports no issues found')
-        }
+        // Approval and a clean CI review do not end the poll: only a merged or abandoned PR does.
         return
       }
       await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId), newBuilds, conflictText))
