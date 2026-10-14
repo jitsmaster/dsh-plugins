@@ -38,10 +38,9 @@ test('P2 an empty queue says "Nothing waiting."', async () => {
   assert.deepEqual(r, { ok: false, outcome: 'empty', line: 'Nothing waiting.' })
 })
 
-test('P3 a question or permission first item is for the screen, for now: one line, no dictation', async () => {
-  const line = 'Voice reply works on done items only. Answer it on screen.'
-  assert.deepEqual(await setup({ open: [question()] }).runner.prepareReply({ kind: 'reply', n: 1 }), { ok: false, outcome: 'unsupported', line })
-  assert.deepEqual(await setup({ open: [permission()] }).runner.prepareReply({ kind: 'reply', n: 1 }), { ok: false, outcome: 'unsupported', line })
+test('P3 a permission first item has no dictation (slice 6: approve or deny), and a question the voice cannot walk is for the screen: one line each', async () => {
+  assert.deepEqual(await setup({ open: [question()] }).runner.prepareReply({ kind: 'reply', n: 1 }), { ok: false, outcome: 'unsupported', line: 'That question cannot be answered by voice. Answer it on screen.' })
+  assert.deepEqual(await setup({ open: [permission()] }).runner.prepareReply({ kind: 'reply', n: 1 }), { ok: false, outcome: 'wrong-type', line: 'The first item is a permission request. Say approve or deny.' })
 })
 
 test('P3b only the FIRST item counts: a done item at position 2 does not make the reply possible', async () => {
@@ -183,7 +182,8 @@ test('P11 a service without reply() is a failure, not a crash', async () => {
 
 test('P12 a frozen item type with no handler is refused (the handler table is the extension point)', async () => {
   const h = setup({})
-  await assert.rejects(() => h.runner.sendReply({ id: 'q1', type: 'question', snapshotId: 'e:1', title: 'T' }, 'x'), /no voice reply/)
+  await assert.rejects(() => h.runner.sendReply({ id: 'q1', type: 'weird', snapshotId: 'e:1', title: 'T' }, 'x'), /no voice reply/)
+  assert.deepEqual(await setup({ open: [{ ...done(), type: 'weird' }] }).runner.prepareReply({ kind: 'reply', n: 1 }), { ok: false, outcome: 'unsupported', line: 'This item cannot be answered by voice. Answer it on screen.' })
 })
 
 test('P13 the matcher still yields the reply intent that prepareReply takes', () => {

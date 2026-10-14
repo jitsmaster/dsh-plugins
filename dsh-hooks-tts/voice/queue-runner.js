@@ -17,14 +17,11 @@
  * Reply lines: "Send to <title>: <text>. Say yes to send, or say the prompt again to replace it." · "Task <title>, reply sent. N waiting." ·
  * "That item changed. Nothing done." · "Voice reply works on done items only. Answer it on screen."
  */
-import { createHash } from 'node:crypto'
 import { matchQueueCommand } from './queue-commands.js'
 import { spokenName } from './sanitize.js'
-
-const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty']
-/** Number words one..twenty, digits above. */
-const say = (n) => (Number.isInteger(n) && n >= 0 && n <= 20 ? WORDS[n] : String(n))
-const cap = (text) => text.charAt(0).toUpperCase() + text.slice(1)
+import { CHANGED, cap, fingerprintOf, need, resultLine, say, spokenTitle } from './reply-common.js'
+import { permissionHandler } from './reply-permission.js'
+import { questionHandler } from './reply-question.js'
 
 /** [byType key, singular, plural] in spoken order; "done" has no plural. */
 const TYPES = [['question', 'question', 'questions'], ['permission', 'permission', 'permissions'], ['completed', 'done', 'done']]
@@ -57,37 +54,36 @@ function readOutcome(result, intent) {
   }
 }
 
-const UNSUPPORTED_REPLY = 'Voice reply works on done items only. Answer it on screen.'
-const CHANGED = 'That item changed. Nothing done.'
+const UNSUPPORTED_REPLY = 'This item cannot be answered by voice. Answer it on screen.'
+/** What to say when a command is for another type of item than the first one. */
+const WRONG_TYPE = {
+  completed: 'The first item is a done item. Say reply.',
+  permission: 'The first item is a permission request. Say approve or deny.',
+  question: 'The first item is a question. Say an option, or reply.',
+}
+/** Commands that answer the first item: they are only commands while the list has something in it (else the old LLM flow keeps "approve"). */
+const ANSWERING = new Set(['approve', 'deny', 'option', 'recommended', 'answer'])
 
 /**
- * Voice reply, one handler per item type (the first item decides). `send` goes through the SAME service call as the card's button, so
- * there is no second action path. Question and permission items get their handler in a later slice; until then they are answered on screen.
+ * Voice answers, one handler per item type (the first item decides). A handler says which intent kinds it takes, how it begins
+ * (begin → { refuse } | { extra, move }; no begin = dictate a reply), what the next step is (step), and how it decides (send), always
+ * through the SAME service call as the card's button, so there is no second action path. `move` is what the flow does next
+ * (flow-reply.js): ask / confirm / again / cancel / reject / end.
  */
 const REPLY_HANDLERS = {
-  completed: { send: (service, frozen, text) => need(service, 'reply').reply(frozen.id, text) },
+  completed: {
+    kinds: new Set(['reply']),
+    changed: ['not-open'],
+    send: (service, frozen, text) => need(service, 'reply').reply(frozen.id, text),
+    word: () => 'reply sent',
+  },
+  permission: permissionHandler,
+  question: questionHandler,
 }
 
-/** What a reply is a reply TO: the item's identity and its message. Titles, summaries and queue positions may change meanwhile without it being another item. */
-const fingerprintOf = (item) => createHash('sha256').update(JSON.stringify([item.type, item.sessionId, item.createdAt, item.seq, item.payload?.reply])).digest('hex')
-
-/** The item as the listener knows it: cleaned for speech, no trailing full stop (the lines add their own). */
-const spokenTitle = (title) => spokenName(title, 60).text.replace(/[.!?]+$/, '').trim() || 'the first item'
-
-/** "Task <title>, reply sent." plus " N waiting." / " Nothing waiting."; a count that cannot be read is simply left out. */
-function sentLine(title, service) {
-  let waiting = ''
-  try {
-    const total = service.count()?.total
-    if (Number.isInteger(total)) waiting = total > 0 ? ' ' + cap(say(total)) + ' waiting.' : ' Nothing waiting.'
-  } catch { /* the reply is sent; only the count is missing */ }
-  return 'Task ' + title + ', reply sent.' + waiting
-}
-
-function need(q, method) {
-  if (!q) throw new Error('task list is not available')
-  if (typeof q[method] !== 'function') throw new Error('task list ' + method + ' is not available')
-  return q
+/** True when the list has an open item; a service that cannot say counts as none. */
+function hasOpen(q) {
+  try { return q.snapshot().open.length > 0 } catch { return false }
 }
 
 export function createQueueRunner({ queue = () => undefined, select }) {
@@ -124,22 +120,34 @@ export function createQueueRunner({ queue = () => undefined, select }) {
     }
   }
 
-  /** Freezes the first open item for a voice reply: id, type, snapshotId and spoken title; or the reason it cannot be replied to. */
-  async function prepareReply() {
+  /** Freezes the first open item for a voice answer: id, type, snapshotId and spoken title (plus what its handler needs); or the reason it cannot be answered. */
+  async function prepareReply(intent) {
     const q = need(service(), 'snapshot')
     const snap = q.snapshot()
     const item = snap?.open?.[0]
     if (!item) return { ok: false, outcome: 'empty', line: 'Nothing waiting.' }
-    if (!REPLY_HANDLERS[item.type]) return { ok: false, outcome: 'unsupported', line: UNSUPPORTED_REPLY }
-    const frozen = Object.freeze({ id: item.id, type: item.type, snapshotId: snap.snapshotId, title: spokenTitle(item.title), fingerprint: fingerprintOf(item) })
-    return { ok: true, frozen }
+    const handler = REPLY_HANDLERS[item.type]
+    if (!handler) return { ok: false, outcome: 'unsupported', line: UNSUPPORTED_REPLY }
+    if (!handler.kinds.has(intent?.kind)) return { ok: false, outcome: 'wrong-type', line: WRONG_TYPE[item.type] }
+    const base = { id: item.id, type: item.type, snapshotId: snap.snapshotId, title: spokenTitle(item.title), fingerprint: fingerprintOf(item) }
+    const begun = handler.begin?.(item, intent, base)
+    if (begun?.refuse) return { ok: false, ...begun.refuse }
+    const frozen = Object.freeze({ ...base, ...begun?.extra })
+    return { ok: true, frozen, ...(begun?.move ? { move: begun.move } : {}) }
+  }
+
+  /** The next move for what was said at an ask / confirm step of a stepped answer (permission, question). */
+  async function replyStep(frozen, state, input) {
+    const handler = REPLY_HANDLERS[frozen?.type]
+    if (!handler?.step) throw new Error('no voice steps for ' + frozen?.type + ' items')
+    return handler.step(frozen, state, input)
   }
 
   /**
    * The yes: the frozen item must still be waiting and unchanged (the snapshot id is the cheap check; when the queue moved on for
    * another reason the item's own fingerprint decides, so a new item arriving while the user dictates does not cancel the reply).
    */
-  async function sendReply(frozen, text) {
+  async function sendReply(frozen, text, state) {
     const q = need(service(), 'snapshot')
     const handler = REPLY_HANDLERS[frozen?.type]
     if (!handler) throw new Error('no voice reply for ' + frozen?.type + ' items')
@@ -147,17 +155,24 @@ export function createQueueRunner({ queue = () => undefined, select }) {
     const item = snap?.open?.find((i) => i.id === frozen.id)
     const same = item && item.type === frozen.type && (snap.snapshotId === frozen.snapshotId || fingerprintOf(item) === frozen.fingerprint)
     if (!same) return { outcome: 'changed', line: CHANGED }
-    const result = await handler.send(q, frozen, text)
-    if (result?.error === 'not-open') return { outcome: 'changed', line: CHANGED }
+    const result = await handler.send(q, frozen, text, state)
+    if (handler.changed.includes(result?.error)) return { outcome: 'changed', line: CHANGED }
     if (!result?.ok) throw new Error(String(result?.error ?? 'could not send'))
-    return { outcome: 'sent', line: sentLine(frozen.title, q) }
+    return { outcome: 'sent', line: resultLine(frozen.title, handler.word(frozen, state), q) }
   }
 
   return {
     // Without the service nothing is a command: the flow echoes the words like any other utterance.
-    match: (text) => (service() ? matchQueueCommand(text) : undefined),
+    match(text) {
+      const q = service()
+      if (!q) return undefined
+      const intent = matchQueueCommand(text)
+      // An answer word with nothing to answer is just speech for the LLM flow ("approve" there approves a pending request of a session).
+      return intent && ANSWERING.has(intent.kind) && !hasOpen(q) ? undefined : intent
+    },
     run,
     prepareReply,
+    replyStep,
     sendReply,
     replyReadBack: (frozen, text) => 'Send to ' + frozen.title + ': ' + text + (/[.!?]$/.test(text) ? ' ' : '. ') + 'Say yes to send, or say the prompt again to replace it.',
     stop: () => { service()?.stop?.() },

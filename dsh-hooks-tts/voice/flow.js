@@ -16,6 +16,7 @@
  * task-list command (queue.match(text) → intent) runs at once, with no echo, no LLM and no "yes", then speaks its outcome line
  * (or nothing) and ends. A listening{context:null} (hotkey / GUI capture) stops the queue reader so it never speaks into the open mic.
  * The reply intent (queue.prepareReply present) starts the voice reply instead: REPLY_DICTATE -> REPLY_CONFIRM -> EXECUTE (flow-reply.js).
+ * So do approve / deny / option / recommended / answer (slice 6): the queue returns moves (ask -> REPLY_ASK, confirm -> REPLY_CONFIRM) the same way.
  */
 
 import { VOICE } from './speaker.js'
@@ -28,6 +29,8 @@ const HELD_EVENTS = new Set(['listening', 'transcript', 'idle', 'error'])
 const LOG_RAW_MAX = 300
 /** The read-only task-list intents the flow runs itself; reply starts the voice reply when the queue can prepare one; anything else takes the normal echo path. */
 const FAST_KINDS = new Set(['show', 'hide', 'count', 'read', 'next', 'again', 'stop', 'open'])
+/** The intents that start a voice answer to the first item (flow-reply.js): reply to a done item, approve / deny, option / recommended / free text. They need queue.prepareReply. */
+const REPLY_KINDS = new Set(['reply', 'approve', 'deny', 'option', 'recommended', 'answer'])
 /** The step whose answers are classified with another step's rules: the reply read-back is as strict as the action read-back. */
 const CLASSIFY_AS = Object.freeze({ [REPLY_STEPS.confirm]: 'decision' })
 /** An execute() that has not settled by then counts as failed ("That failed: timed out."), so a hung call cannot hold EXECUTE forever. */
@@ -135,7 +138,7 @@ export function createVoiceFlow({
     const text = String(ev.text ?? '').trim()
     if (!text) return void detach(end(LINES.notCaught))
     const intent = matchQueue(text)
-    if (intent) return void detach(intent.kind === 'reply' ? replyStep.start(intent) : runQueue(intent))
+    if (intent) return void detach(REPLY_KINDS.has(intent.kind) ? replyStep.start(intent) : runQueue(intent))
     echo(text, s.t0)
   }
 
@@ -147,7 +150,7 @@ export function createVoiceFlow({
     try {
       const intent = queue.match(text)
       if (!intent) return undefined
-      return FAST_KINDS.has(intent.kind) || (intent.kind === 'reply' && typeof queue.prepareReply === 'function') ? intent : undefined
+      return FAST_KINDS.has(intent.kind) || (REPLY_KINDS.has(intent.kind) && typeof queue.prepareReply === 'function') ? intent : undefined
     } catch (e) {
       note('queue.error', { phase: 'match', message: String(e?.message ?? e) })
       return undefined
@@ -236,7 +239,7 @@ export function createVoiceFlow({
     const text = String(raw ?? '').trim()
     const kind = classify(text, CLASSIFY_AS[s.step] ?? s.step)
     note('answer', { step: s.step, text, kind })
-    if (s.step === REPLY_STEPS.dictate || s.step === REPLY_STEPS.confirm) return void detach(replyStep.answer(s.step, kind, text))
+    if (s.step === REPLY_STEPS.dictate || s.step === REPLY_STEPS.confirm || s.step === REPLY_STEPS.ask) return void detach(replyStep.answer(s.step, kind, text))
     if (kind === 'stop') return void detach(end(LINES.cancelled))
     if (kind === 'empty') return void detach(end(LINES.noAnswer))
     // T7a: a bare "no" at a confirm step asks again at the same step; utterance/action stay as they are.
