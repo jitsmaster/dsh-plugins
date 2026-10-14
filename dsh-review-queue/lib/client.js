@@ -121,6 +121,23 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		/** Page-wide hotkey: Ctrl+Alt+L toggles the task list (Ctrl+Alt+V is the voice hotkey, Ctrl+Alt+M stops the TTS). The physical key counts, so AltGr layouts that type another letter still work. */
+		function hotkeyAction(e) {
+			if (!e || !e.ctrlKey || !e.altKey || e.shiftKey || e.metaKey || e.isComposing) return undefined;
+			return e.code === "KeyL" || String(e.key).toLowerCase() === "l" ? "toggle" : undefined;
+		}
+
+		/** Listens for the hotkey on `target` (the window), also while typing: a modifier chord is never text. Returns the remover. */
+		function installHotkey(target) {
+			const onKey = (e) => {
+				if (hotkeyAction(e) !== "toggle") return;
+				e.preventDefault();
+				setOverlay(!state.overlay);
+			};
+			target.addEventListener("keydown", onKey);
+			return () => target.removeEventListener("keydown", onKey);
+		}
+
 		/** Filter by type ("all" or an item type) and by text: every word must appear in the title, session, workspace, summary or question. */
 		function filterItems(items, f) {
 			const type = (f && f.type) || "all";
@@ -667,7 +684,7 @@ window.__ModuleLoader__.load({
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
 						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : null),
 						h("div", { className: "rq-narrow" }, list)),
-				st.showResolved ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Esc close"));
+				st.showResolved ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Esc or Ctrl+Alt+L close"));
 		}
 
 		/** The full-screen overlay: mounted once, in a root on document.body (the queue is global, not per session). */
@@ -702,7 +719,7 @@ window.__ModuleLoader__.load({
 			ensureStyle();
 			const st = useStore();
 			const n = st.snap ? st.snap.open.length : 0;
-			return h("span", { className: "rq rq-hwrap" }, h("button", { className: "rq-hbtn" + (st.overlay ? " on" : ""), "data-rq": "anchor", title: st.overlay ? "Close the task list" : "Open the task list (" + n + " waiting)", "aria-label": "Task list", "aria-expanded": st.overlay, onClick: () => setOverlay(!st.overlay) },
+			return h("span", { className: "rq rq-hwrap" }, h("button", { className: "rq-hbtn" + (st.overlay ? " on" : ""), "data-rq": "anchor", title: st.overlay ? "Close the task list" : "Open the task list (" + n + " waiting)", "aria-keyshortcuts": "Control+Alt+L", "aria-label": "Task list", "aria-expanded": st.overlay, onClick: () => setOverlay(!st.overlay) },
 				"✔", n > 0 ? h("span", { className: "b" }, n > 99 ? "99+" : n) : null));
 		}
 
@@ -731,6 +748,7 @@ window.__ModuleLoader__.load({
 			stopped = false;
 			ctx.effect(() => { pollLoop(); return () => { stopped = true; cancelEmptyClose(); }; }, "review-queue: polling");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
+			ctx.effect(() => (typeof window === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installHotkey(window)), "review-queue: hotkey");
 			// order 1000: after every other utility, i.e. next to the right-sidebar (corner) button.
 			ctx.effect(() => ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({ name: "conversation.session.header.utilities", id: ANCHOR_ID, order: 1000, label: () => "Task list" }, HeaderAnchor)), "review-queue: header button");
 		}
@@ -740,7 +758,7 @@ window.__ModuleLoader__.load({
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, EMPTY_CLOSE_MS, emptiedAction, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
-		Object.assign(exports.__test, { act, errorText, openSession, resolvedOpenAction, isButtonClick });
+		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick });
 		return module.exports;
 	}
 });
