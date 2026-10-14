@@ -78,6 +78,7 @@ window.__ModuleLoader__.load({
 				case "approved": return "Approved" + (where ? " " + where : "");
 				case "denied": return "Denied" + (where ? " " + where : "");
 				case "reviewed": return "Reviewed";
+				case "started": return "Started" + (item.workspaceTitle ? " in " + item.workspaceTitle : "") + " (in the background)";
 				case "superseded": return "Replaced by a newer result";
 				case "no-action": return "Hidden: nothing for you to do (judged from the message; Reopen if it was wrong)";
 				case "replied": return r.by === "session" ? "You continued the session" : "You replied";
@@ -146,7 +147,7 @@ window.__ModuleLoader__.load({
 				if (type !== "all" && it.type !== type) return false;
 				if (!words.length) return true;
 				const p = it.payload || {};
-				const hay = [it.title, it.sessionTitle, it.workspace, it.summary, p.summary, ...(p.questions || []).map((q) => q && q.question)].filter(Boolean).join("\n").toLowerCase();
+				const hay = [it.title, it.sessionTitle, it.workspace, it.summary, it.text, p.summary, ...(p.questions || []).map((q) => q && q.question)].filter(Boolean).join("\n").toLowerCase();
 				return words.every((w) => hay.includes(w));
 			});
 		}
@@ -253,9 +254,55 @@ window.__ModuleLoader__.load({
 		/** The long-poll token: what this tab has already seen. The server answers "unchanged" only while all four parts still match. */
 		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0);
 
-		const TYPE = { question: "Question", permission: "Permission", completed: "Done" };
+		const TYPE = { question: "Question", permission: "Permission", completed: "Done", todo: "Todo" };
 		const typeLabel = (t) => TYPE[t] || t;
 		const recommended = (q, label) => /\(recommended\)/i.test(label);
+
+		// ---- Todo: start a new session from the list ----------------------------------------------------
+		const TODO_MAX = 4000;
+		/** Which card a todo shows: confirm (a suggestion), pick (none), suggesting (looking), starting, started, failed, cancelled. */
+		function todoCardState(item) {
+			if (!item) return "unknown";
+			if (item.state === "awaiting-confirm") return item.suggested ? "confirm" : item.suggesting ? "suggesting" : "pick";
+			return item.state === "starting" || item.state === "started" || item.state === "failed" || item.state === "cancelled" ? item.state : "unknown";
+		}
+		/** The workspace id Start would use: the user's pick, else the one given before, else the suggestion. */
+		function todoTarget(item, pick) { return pick || (item && (item.workspaceId || (item.suggested && item.suggested.workspaceId))) || undefined; }
+		const canConfirm = (item, pick) => !!item && item.type === "todo" && (item.state === "awaiting-confirm" || item.state === "failed") && !!todoTarget(item, pick);
+		/** The sentence under the task text. */
+		function todoLine(item, pick, workspaces) {
+			const title = (id) => { const w = (workspaces || []).find((x) => x.id === id); return w ? w.title : "the chosen workspace"; };
+			switch (todoCardState(item)) {
+				case "confirm": case "pick": case "suggesting": {
+					const s = item.suggested;
+					if (pick && !(s && s.workspaceId === pick)) return "Start in " + title(pick);
+					if (s) return "Start in " + s.title + (s.reason ? " — " + s.reason : "");
+					return item.suggesting ? "Looking for a workspace…" : "Pick a workspace";
+				}
+				case "starting": return "Starting" + (item.workspaceTitle ? " in " + item.workspaceTitle : "") + "…";
+				case "started": return "Started" + (item.workspaceTitle ? " in " + item.workspaceTitle : "");
+				case "failed": return "Could not start: " + (item.error || "unknown error");
+				default: return "";
+			}
+		}
+		/** What waits on the user: a todo that is being started does not. */
+		const waitingCount = (open) => (open || []).filter((i) => !(i.type === "todo" && i.state === "starting")).length;
+		/** The endpoint a keyboard action calls for an item; Shift+A, Shift+D and e only apply to the cards they belong to (never a todo). */
+		function keyRoute(action, item) {
+			const type = item && item.type;
+			if (action === "reviewed" && type === "completed") return "/v1/reviewed";
+			if (action === "approve" && type === "permission") return "/v1/approve";
+			if (action === "deny" && type === "permission") return "/v1/deny";
+			return undefined;
+		}
+		/** Ctrl+Enter (or Cmd+Enter) submits the todo form; plain Enter is a new line. */
+		const isSubmitKey = (e) => !!e && e.key === "Enter" && !!(e.ctrlKey || e.metaKey) && !e.isComposing;
+		function todoFormProblem(text) {
+			const t = String(text || "").trim();
+			return !t ? "Type the task first." : t.length > TODO_MAX ? "That is too long." : undefined;
+		}
+		/** The Open session control of a resolved card: a BUTTON for a started todo, the small link for the rest, none without a session or host. */
+		function openControl(it, hostHasOpen) { return resolvedOpenAction(it, hostHasOpen) !== "open" ? "none" : it.type === "todo" ? "button" : "link"; }
 
 		// =====================================================================================
 		// Shared state: one store for the overlay and the header button
@@ -286,6 +333,7 @@ window.__ModuleLoader__.load({
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
+			todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined }, workspaces: null, todoPick: {},
 		};
 		const listeners = new Set();
 		let version = 0;
@@ -326,16 +374,16 @@ window.__ModuleLoader__.load({
 			if (!state.overlay) return;
 			emptyTimer = setTimeout(() => {
 				emptyTimer = undefined;
-				if (state.overlay && state.snap && state.snap.open.length === 0) setOverlay(false);
+				if (state.overlay && state.snap && waitingCount(state.snap.open) === 0) setOverlay(false);
 			}, EMPTY_CLOSE_MS);
 		}
 		/** Takes a fresh snapshot into the store and runs the empty-list auto-close. */
 		function applySnapshot(body) {
-			const prev = state.snap ? state.snap.open.length : undefined;
+			const prev = state.snap ? waitingCount(state.snap.open) : undefined;
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now() });
 			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen }, body);
 			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply))) set({ expanded: tog.expanded, replyOpen: tog.reply });
-			const action = emptiedAction(prev, body.open.length);
+			const action = emptiedAction(prev, waitingCount(body.open));
 			if (action === "arm") armEmptyClose();
 			else if (action === "cancel") cancelEmptyClose();
 		}
@@ -370,17 +418,21 @@ window.__ModuleLoader__.load({
 			polling = false;
 		}
 
+		/** POST JSON to the plugin; returns the words for a failure, undefined on success. */
+		async function post(path, body) {
+			try {
+				const res = await fetch(API + path, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+				if (!res.ok) { const j = await res.json().catch(() => ({})); return errorText(res.status, j); }
+			} catch (e) { return "Request failed: " + String((e && e.message) || e); }
+			return undefined;
+		}
 		async function act(path, body, id, opts) {
 			// After a successful action on the selected card, the next card becomes the selected one.
 			const cur = opts && opts.advance ? currentItem() : undefined;
 			const nextId = cur && cur.id === id ? nextAfter(visibleOpen(), id) : undefined;
 			const advance = !!cur && cur.id === id;
 			set({ busy: { ...state.busy, [id]: true }, errors: { ...state.errors, [id]: undefined } });
-			let error;
-			try {
-				const res = await fetch(API + path, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-				if (!res.ok) { const j = await res.json().catch(() => ({})); error = errorText(res.status, j); }
-			} catch (e) { error = "Request failed: " + String((e && e.message) || e); }
+			const error = await post(path, body);
 			set({ busy: { ...state.busy, [id]: false }, errors: { ...state.errors, [id]: error } });
 			if (!error && advance) set({ selected: nextId || null });
 			return !error;
@@ -391,6 +443,7 @@ window.__ModuleLoader__.load({
 			"no-controller": "Cannot reach the session right now.", "not-completed": "That only applies to finished work.",
 			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so a late answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
+			"no-workspace": "Pick a workspace first.", "unknown-workspace": "That workspace no longer exists.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
 		};
 
 		const OLD_SERVER = "The Task list server is older than this page and does not know this action. Restart DSH.";
@@ -426,6 +479,36 @@ window.__ModuleLoader__.load({
 			uiSeen = step.seen;
 			if (step.action) setOverlay(step.action === "show");
 		}
+		const patchForm = (p) => set({ todoForm: { ...state.todoForm, ...p } });
+		/** The dropdown's workspaces (id, title); best effort, the todo form and the cards work without them (Choose for me). */
+		async function loadWorkspaces() {
+			try {
+				const res = await fetch(API + "/v1/workspaces", { credentials: "same-origin" });
+				if (res.ok) { const j = await res.json(); if (j && Array.isArray(j.workspaces)) set({ workspaces: j.workspaces }); }
+			} catch (_e) { /* keep what we have */ }
+		}
+		function openTodoForm() { patchForm({ open: true, error: undefined }); loadWorkspaces(); }
+		const closeTodoForm = () => patchForm({ open: false, error: undefined });
+		/** Adds the todo (POST /v1/todo). A workspace starts it at once; "Choose for me" waits for the confirm card. */
+		async function submitTodo() {
+			const f = state.todoForm;
+			if (f.busy) return false;
+			const problem = todoFormProblem(f.text);
+			if (problem) { patchForm({ error: problem }); return false; }
+			patchForm({ busy: true, error: undefined });
+			const error = await post("/v1/todo", { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc });
+			if (error) { patchForm({ busy: false, error }); return false; }
+			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined } });
+			return true;
+		}
+		/** Start (or Retry) a todo in the picked workspace, else the suggested or given one. */
+		async function confirmTodo(item, pick) {
+			const workspaceId = todoTarget(item, pick);
+			const ok = await act("/v1/todo-confirm", { id: item.id, ...(workspaceId ? { workspaceId } : {}) }, item.id);
+			if (ok) set({ todoPick: { ...state.todoPick, [item.id]: undefined } });
+			return ok;
+		}
+		const cancelTodo = (item) => act("/v1/todo-cancel", { id: item.id }, item.id, { advance: true });
 		function setOverlay(on) { cancelEmptyClose(); if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
 
 		// =====================================================================================
@@ -441,7 +524,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
 			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}"
-			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
+			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.todo{color:var(--rq-accent)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
 			+ ".rq-text{white-space:pre-wrap;word-break:break-word}.rq-clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}"
@@ -460,6 +543,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-md{font-size:13.5px;line-height:1.5}.rq-md p{margin:0 0 8px;white-space:pre-wrap;word-break:break-word}.rq-md ul,.rq-md ol{margin:0 0 8px;padding-left:22px}.rq-md blockquote{margin:0 0 8px;padding:2px 10px;border-left:3px solid var(--rq-border);color:var(--rq-mute)}"
 			+ ".rq-md pre.rq-pre{margin:0 0 8px}.rq-code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--rq-layer2);border-radius:4px;padding:0 4px}.rq-md a{color:var(--rq-accent)}.rq-h{font-weight:600;margin:6px 0 4px}.rq-h1{font-size:16px}.rq-h2{font-size:14.5px}"
 			+ ".rq-replybox{max-height:360px;overflow:auto;background:var(--rq-base);border:1px solid var(--rq-border);border-radius:7px;padding:10px 12px;margin-top:6px}"
+			+ ".rq-todoform{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-sel{width:auto;max-width:260px;padding:6px 8px}"
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
 			+ ".rq-filter{flex:none;display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--rq-border);flex-wrap:wrap}.rq-fchip{padding:3px 12px;border-radius:9px;border:1px solid var(--rq-border)!important;font-size:12px;color:var(--rq-mute)}"
 			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
@@ -581,12 +665,32 @@ window.__ModuleLoader__.load({
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Reviewed")));
 		}
 
+		/** A todo: confirm where it starts (nothing is created before), watch it start, retry a failure. The session is never opened by itself; Open session is a button. */
+		function TodoBody({ item, full }) {
+			const st = useStore();
+			const busy = st.busy[item.id];
+			const s = todoCardState(item);
+			const pick = st.todoPick[item.id] || "";
+			const waiting = s === "confirm" || s === "pick" || s === "suggesting" || s === "failed";
+			useEffect(() => { if (waiting && !state.workspaces) loadWorkspaces(); }, [waiting]);
+			return h(React.Fragment, null,
+				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.text),
+				item.sparc ? h("div", { className: "rq-sub" }, "Use SPARC") : null,
+				h("div", { className: s === "failed" ? "rq-err" : "rq-sub" }, todoLine(item, pick, st.workspaces)),
+				waiting ? h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn pri", disabled: busy || !canConfirm(item, pick), onClick: () => confirmTodo(item, pick) }, s === "failed" ? "Retry" : "Start"),
+					h("select", { className: "rq-input rq-sel", value: pick, disabled: busy, "aria-label": "Change workspace", onChange: (e) => set({ todoPick: { ...state.todoPick, [item.id]: e.target.value } }) },
+						h("option", { value: "" }, item.suggested || item.workspaceId ? "Change workspace…" : "Pick a workspace…"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
+					h("button", { className: "rq-btn", disabled: busy, onClick: () => cancelTodo(item) }, "Cancel")) : null,
+				(s === "starting" || s === "started") && item.sessionId && hostApi.openSession ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", onClick: () => openSession(item) }, "Open session")) : null);
+		}
+
 		function Card({ item, forceFull, selected, onSelect }) {
 			const st = useStore();
 			const now = useNow(item.type === "question" && !!item.expiresAt);
 			const full = forceFull || !!st.expanded[item.id];
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
-			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : CompletedBody;
+			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "todo" ? TodoBody : CompletedBody;
 			const reading = !!(st.snap && st.snap.reading === item.id);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },
@@ -604,7 +708,7 @@ window.__ModuleLoader__.load({
 				st.errors[item.id] ? h("div", { className: "rq-err" }, st.errors[item.id]) : null,
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn rq-play", disabled: st.busy[item.id], title: reading ? "Stop reading" : "Read the whole message aloud", "aria-pressed": reading, onClick: () => (reading ? act("/v1/stop", {}, item.id) : act("/v1/read", { id: item.id }, item.id)) }, reading ? "■ Stop reading" : "▶ Read aloud"),
-					hostApi.openSession ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
+					hostApi.openSession && item.type !== "todo" ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
 		}
 
 		/** A resolved card can jump to its session when the host can open sessions and the item knows one (also after session-ended: the host may still refuse). */
@@ -615,13 +719,14 @@ window.__ModuleLoader__.load({
 		function ResolvedCard({ it }) {
 			const st = useStore();
 			const canOpen = resolvedOpenAction(it, !!hostApi.openSession) === "open";
+			const asButton = openControl(it, !!hostApi.openSession) === "button";
 			const late = it.type === "question" && it.resolution && it.resolution.kind === "expired";
 			const open = !!st.lateOpen[it.id];
 			const reopenable = isReopenable(it);
 			return h("div", { className: "rq-card rq-res" },
 				h("div", { className: "rq-card-h", title: canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : "default" }, onClick: canOpen ? (e) => { if (!isButtonClick(e && e.target)) openSession(it); } : undefined }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: canOpen ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
 				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? it.summary : undefined }, resolutionText(it)),
-				canOpen ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => openSession(it) }, "Open session ↗")) : null,
+				canOpen ? h("div", { className: "rq-row" }, h("button", { className: asButton ? "rq-btn pri" : "rq-link", onClick: () => openSession(it) }, asButton ? "Open session" : "Open session ↗")) : null,
 				reopenable ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/reopen", { id: it.id }, it.id) }, "Reopen")) : null,
 				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
 				late && open ? h(QuestionBody, { item: it, full: true, path: "/v1/late-answer", sendLabel: "Send late answer" }) : null,
@@ -641,7 +746,7 @@ window.__ModuleLoader__.load({
 			const total = snap ? snap.open.length + snap.resolved.length : 0;
 			if (total < 4 && !f.query && f.type === "all") return null;
 			return h("div", { className: "rq-filter" },
-				["all", "completed", "question", "permission"].map((t) => h("button", { key: t, className: "rq-fchip" + (f.type === t ? " on" : ""), "aria-pressed": f.type === t, onClick: () => set({ filter: { ...f, type: t } }) }, t === "all" ? "All" : typeLabel(t))),
+				["all", "completed", "question", "permission", "todo"].map((t) => h("button", { key: t, className: "rq-fchip" + (f.type === t ? " on" : ""), "aria-pressed": f.type === t, onClick: () => set({ filter: { ...f, type: t } }) }, t === "all" ? "All" : typeLabel(t))),
 				h("input", { className: "rq-input rq-fsearch", placeholder: "Filter by title, session or workspace…", value: f.query, onChange: (e) => set({ filter: { ...f, query: e.target.value } }) }));
 		}
 
@@ -660,11 +765,29 @@ window.__ModuleLoader__.load({
 				h("span", { className: "rq-sub rq-clamp" }, it.sessionTitle || ""));
 		}
 
+		/** The "+ New todo" form: the task, the workspace ("Choose for me" asks before anything starts) and Use SPARC. */
+		function TodoForm() {
+			const st = useStore();
+			const f = st.todoForm;
+			if (!f.open) return null;
+			return h("div", { className: "rq-todoform" },
+				h("textarea", { className: "rq-ta", autoFocus: true, placeholder: "What should the new session do? (Ctrl+Enter adds it)", value: f.text, disabled: f.busy, onChange: (e) => patchForm({ text: e.target.value, error: undefined }), onKeyDown: (e) => { if (isSubmitKey(e.nativeEvent || e)) { e.preventDefault(); submitTodo(); } } }),
+				h("div", { className: "rq-row" },
+					h("select", { className: "rq-input rq-sel", value: f.workspaceId, disabled: f.busy, "aria-label": "Workspace", onChange: (e) => patchForm({ workspaceId: e.target.value }) }, h("option", { value: "" }, "Choose for me"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
+					h("label", { className: "rq-sub" }, h("input", { type: "checkbox", checked: !!f.sparc, disabled: f.busy, onChange: (e) => patchForm({ sparc: e.target.checked }) }), " Use SPARC"),
+					h("span", { className: "rq-grow" }),
+					h("button", { className: "rq-btn pri", disabled: f.busy || !f.text.trim(), onClick: submitTodo }, f.busy ? "Adding…" : "Add todo"),
+					h("button", { className: "rq-link", disabled: f.busy, onClick: closeTodoForm }, "Cancel")),
+				f.error ? h("div", { className: "rq-err" }, f.error) : null,
+				h("div", { className: "rq-sub" }, f.workspaceId ? "Starts in the background right away." : "Nothing starts until you confirm the workspace."));
+		}
+
 		function Head({ snap, extra }) {
 			const st = useStore();
-			const n = snap ? snap.open.length : 0;
+			const n = snap ? waitingCount(snap.open) : 0;
 			return h("div", { className: "rq-head" }, h("h2", null, "Task list"), h("span", { className: "rq-count" }, n),
 				h("span", { className: "rq-grow" }),
+				h("button", { className: "rq-link", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				h("button", { className: "rq-link", onClick: () => set({ showResolved: !st.showResolved }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
 				extra);
 		}
@@ -678,7 +801,7 @@ window.__ModuleLoader__.load({
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : h("div", { className: "rq-empty" }, snap ? none : "Loading…");
 			const extra = h("button", { className: "rq-link", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), banner, h(FilterBar, { snap }),
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), banner, h(TodoForm), h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
@@ -693,7 +816,7 @@ window.__ModuleLoader__.load({
 			useEffect(() => {
 				if (!st.overlay) return undefined;
 				const onKey = (e) => {
-					if (e.key === "Escape") { setOverlay(false); return; }
+					if (e.key === "Escape") { if (state.todoForm.open) closeTodoForm(); else setOverlay(false); return; }
 					if (state.showResolved) return;
 					const action = keyAction(e);
 					const cur = action ? currentItem() : undefined;
@@ -704,9 +827,7 @@ window.__ModuleLoader__.load({
 					if (state.busy[cur.id]) return;
 					e.preventDefault();
 					if (action === "read") { if (state.snap && state.snap.reading === cur.id) act("/v1/stop", {}, cur.id); else act("/v1/read", { id: cur.id }, cur.id); }
-					else if (action === "reviewed" && cur.type === "completed") act("/v1/reviewed", { id: cur.id }, cur.id, { advance: true });
-					else if (action === "approve" && cur.type === "permission") act("/v1/approve", { id: cur.id }, cur.id, { advance: true });
-					else if (action === "deny" && cur.type === "permission") act("/v1/deny", { id: cur.id }, cur.id, { advance: true });
+					else { const route = keyRoute(action, cur); if (route) act(route, { id: cur.id }, cur.id, { advance: true }); }
 				};
 				window.addEventListener("keydown", onKey);
 				return () => window.removeEventListener("keydown", onKey);
@@ -718,7 +839,7 @@ window.__ModuleLoader__.load({
 		function HeaderAnchor() {
 			ensureStyle();
 			const st = useStore();
-			const n = st.snap ? st.snap.open.length : 0;
+			const n = st.snap ? waitingCount(st.snap.open) : 0;
 			return h("span", { className: "rq rq-hwrap" }, h("button", { className: "rq-hbtn" + (st.overlay ? " on" : ""), "data-rq": "anchor", title: st.overlay ? "Close the task list" : "Open the task list (" + n + " waiting)", "aria-keyshortcuts": "Control+Alt+L", "aria-label": "Task list", "aria-expanded": st.overlay, onClick: () => setOverlay(!st.overlay) },
 				"✔", n > 0 ? h("span", { className: "b" }, n > 99 ? "99+" : n) : null));
 		}
@@ -758,6 +879,7 @@ window.__ModuleLoader__.load({
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, EMPTY_CLOSE_MS, emptiedAction, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
+		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoLine, waitingCount, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, submitTodo, confirmTodo, cancelTodo });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick });
 		return module.exports;
 	}

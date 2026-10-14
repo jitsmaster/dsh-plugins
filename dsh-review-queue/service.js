@@ -5,16 +5,20 @@
 import { randomUUID } from 'node:crypto'
 import { spokenFor, titleFor, fullTextFor, chunkForSpeech } from './speech.js'
 import { riskOf } from './risk.js'
+import { createTodos } from './todo.js'
 
 const MAX_REPLY = 4000
-const TYPES = ['question', 'permission', 'completed']
+const TYPES = ['question', 'permission', 'completed', 'todo']
+/** A todo being started is not waiting on the user. */
+const needsUser = (item) => !(item.type === 'todo' && item.state === 'starting')
 
 // Show/hide commands for the browsers. Module-level so that re-creating the queue inside one server run (a plugin
 // reload) does not reset the sequence: a tab that already saw seq N would otherwise ignore every later command.
 let uiSeq = 0
 let uiCmd
 
-export function createReviewQueue({ store, capture, controllerOf, speaker, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, titlesOf, sparcText, suggestTimeoutMs, log, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+  const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log })
   let focusId
   let reading // id of the item being read aloud
   let readOpen = false // the item being read was in the queue when reading started
@@ -73,10 +77,16 @@ export function createReviewQueue({ store, capture, controllerOf, speaker, now =
       emit()
       return { ok: true }
     },
+    /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc? }) -> { ok, id, state }; confirmTodo(id, { workspaceId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). */
+    addTodo: (text, opts) => todos.add(text, opts),
+    confirmTodo: (id, opts) => todos.confirm(String(id), opts),
+    cancelTodo: (id) => todos.cancel(String(id)),
+    todoIdle: () => todos.idle(),
+    workspaces: () => todos.workspaces(),
     /** Open items only: how many wait in total and per type. */
     count() {
       const byType = Object.fromEntries(TYPES.map((t) => [t, 0]))
-      const open = store.snapshot().open
+      const open = store.snapshot().open.filter(needsUser)
       for (const item of open) if (item.type in byType) byType[item.type]++
       return { total: open.length, byType }
     },

@@ -18,6 +18,20 @@ The queue is global, so it is an **overlay only** (the right sidebar is per sess
 
 Voice control (read, answer, approve, deny by voice) is a later phase; the plugin already exposes a `reviewQueue` service with speakable text for each item. Besides `snapshot`, `read`, `stop`, `answer`, `approve`, `deny`, `reply`, `markReviewed` it has `count()` (`{total, byType:{question, permission, completed}}`, open items only), `first()` (the oldest open item), `readPosition(n)` (reads the open item at 1-based position n and focuses it; errors `empty`, `no-item`), `again()` (reads the last item read once more; `nothing-read`) and `uiCommand('show'|'hide')`. The text of a read is `"Item N."` as a chunk of its own followed by body chunks that do not depend on the position, so the speech cache hits at any position.
 
+## Todo: start a session from the list
+
+Add a task here and rely on the list for everything after it. **+ New todo** (task list header, next to *Resolved*) opens a small form: the task (several lines; Ctrl+Enter or *Add todo* submits), a workspace dropdown (*Choose for me* by default, then every workspace by title) and a *Use SPARC* checkbox (off by default). Esc closes the form first, then the list.
+
+- **Workspace given:** the session is created at once, with no confirmation. The card shows *Starting...* and moves to *Resolved* as "Started in <workspace> (in the background)".
+- **Choose for me:** nothing is ever created before you confirm. The plugin suggests a workspace: first the one whose title or folder name appears in the task as a whole word (any case, a unique match wins; "named in the text"), else a pick by the cheapest LLM (the same service as the summaries; it sees the task, the workspaces and a few recent session titles; 15 s limit; an unknown id or any failure means no suggestion). The *Todo* card then reads "Start in <workspace> - <reason>" (or "Pick a workspace" with no suggestion) and offers **Start**, **Change workspace** (the dropdown) and **Cancel**. Enter does not start it, and Shift+A, Shift+D and e do nothing on a todo.
+- **Started in the background:** the session is created like the handoff follow-ups are (create, rename to the first line of the task, at most 60 characters, then the task as its first prompt, queued). It is not focused and not opened. Its questions, permission requests and "done" results reach this list like any session's, so the list is the only place you need to watch.
+- **Open session:** a started card has an *Open session* **button** (also while it is still starting). It never opens by itself.
+- **Use SPARC:** the first prompt is the task, then the /sparc flow instructions and the text of ~/.claude/commands/modes/sparc.md (config sparcCommandPath), the same convention as the handoff resume of dsh-hooks-tts. Without the file it asks the session to invoke the modes:sparc skill.
+- **Failed:** the card is still waiting and shows the error with **Retry** and **Cancel**. Retry starts it again; a session that was already created is reused, not duplicated. A todo that was *starting* when the server restarted comes back as failed.
+- **Counting:** a todo counts as waiting while it needs you (waiting for confirmation, or failed), not while it is starting. Voice reads it as "Todo: <task>, start in <workspace>?"; answering a todo by voice is not built yet.
+
+Service for other plugins (ctx.get('reviewQueue')): addTodo(text, { workspaceId?, sparc? }) returns { ok, id, state } at once (the session or the suggestion is worked out in the background), confirmTodo(id, { workspaceId? }) (also Retry), cancelTodo(id), workspaces(). A todo is an item { type: 'todo', text, sparc, state, workspaceId?, workspaceTitle?, suggested?: { workspaceId, title, reason }, suggesting?, error?, sessionId? } with state awaiting-confirm, starting, started (resolved), failed or cancelled (resolved).
+
 ## Install
 
 ```
@@ -35,6 +49,7 @@ Set in the plugin's `config` (see `cordis.patch.yml`); all optional.
 | `stateDir` | `~/.dsh/review-queue` (`$DSH_HOME/review-queue`) | Where `queue.json` is kept. If unusable the queue works but is not persisted. |
 | `ttsClient` | `../dsh-hooks-tts/scripts/tts-client.ps1` | Path of the TTS client script the play button uses. |
 | `voice` | `male` | `male` or `female` voice for the play button. |
+| `sparcCommandPath` | ~/.claude/commands/modes/sparc.md | The modes:sparc command text a *Use SPARC* todo puts in the new session's first prompt. |
 | `dev` | off | `true`, or env `DSH_REVIEW_QUEUE_DEV=1`, enables `POST /v1/dev/ask` which creates fake items (testing only; never enable in a real profile). |
 
 ## HTTP API
@@ -54,6 +69,10 @@ Served on the DSH web server under `/review-queue` (same host/origin fence and c
 | `/v1/ui` | POST | `{cmd:'show'|'hide'}` | Asks every open browser to show or hide the overlay (voice uses it). `{ok:true, seq}`; anything else is 400 `bad-command`. See below. |
 | `/v1/reopen` | POST | `{id}` | Done items resolved as reviewed, superseded or hidden as no-action only (`not-reopenable` otherwise). |
 | `/v1/approve-similar` | POST | `{id}` | Approves the permission request and identical open ones of the same session; `{ok, count}`; `risky` is refused. |
+| `/v1/todo` | POST | {text, workspaceId?, sparc?} | Adds a todo. {ok, id, state}: starting with a workspace (the session is created in the background), else awaiting-confirm. 400: empty, too-long (4000), unknown-workspace; 409 no-registry. |
+| `/v1/todo-confirm` | POST | {id, workspaceId?} | Starts (or retries) a todo in workspaceId, else the given or suggested one. 400 no-workspace, unknown-workspace; 409 not-open, not-todo, not-confirmable. |
+| `/v1/todo-cancel` | POST | {id} | Cancels a todo that waits (or failed); nothing is created. |
+| `/v1/workspaces` | GET | | {workspaces: [{id, title}]} for the dropdowns. |
 | `/v1/focus` | POST | `{id}` or `{id:null}` | Shared selection (screen and voice follow it). |
 
 **UI command.** The snapshot carries `ui: { seq, cmd }` (`cmd` is absent until the first command; `seq` starts at 0 per server run and goes up by one per command). A browser tab applies a command only when its `seq` is newer than the last one that tab has seen, never on its first snapshot (a tab opened later uses its own saved open/closed state), and never twice for the same `seq`. It uses the same function as the header button, so the per-browser open/closed state in localStorage still follows. The command wakes waiting long-polls.

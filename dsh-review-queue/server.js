@@ -29,11 +29,13 @@ async function readJson(req) {
 }
 
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
-const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command'])
+const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'unknown-workspace', 'no-workspace'])
 const outcome = (res, result) => {
   if (result?.ok) return send(res, 200, { ...result })
   send(res, BAD_INPUT.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed' })
 }
+
+const workspaceOf = (b) => (b.workspaceId === undefined || b.workspaceId === null || b.workspaceId === '' ? undefined : String(b.workspaceId))
 
 /** @param {{ queue: ReturnType<import('./service.js').createReviewQueue>, dev?: { ask: (body: object) => Promise<object> } }} deps */
 export function createRouter({ queue, dev }) {
@@ -49,6 +51,9 @@ export function createRouter({ queue, dev }) {
     '/v1/ui': (b) => queue.uiCommand(b.cmd),
     '/v1/reopen': (b) => queue.reopen(String(b.id)),
     '/v1/approve-similar': (b) => queue.approveSimilar(String(b.id)),
+    '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true }),
+    '/v1/todo-confirm': (b) => queue.confirmTodo(String(b.id), { workspaceId: workspaceOf(b) }),
+    '/v1/todo-cancel': (b) => queue.cancelTodo(String(b.id)),
     '/v1/focus': (b) => (queue.setFocus(b.id === null || b.id === undefined ? undefined : String(b.id)) ? { ok: true } : { ok: false, error: 'not-open' }),
   }
   if (dev) actions['/v1/dev/ask'] = (b) => dev.ask(b)
@@ -85,6 +90,10 @@ export function createRouter({ queue, dev }) {
       if (url.pathname === '/v1/snapshot') {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })
         return await snapshot(req, res, url)
+      }
+      if (url.pathname === '/v1/workspaces') {
+        if (req.method !== 'GET') return send(res, 405, { error: 'method' })
+        return send(res, 200, { workspaces: queue.workspaces() })
       }
       const action = actions[url.pathname]
       // An unknown route is not a missing item (that is a 409 'not-found' from the service): a client newer than this server

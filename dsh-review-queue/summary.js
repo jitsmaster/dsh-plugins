@@ -26,7 +26,7 @@ function parseAnswer(out) {
   return { title, actionable, text: cleanText(body, { maxChars: 500 }) }
 }
 
-const within = (promise, ms, signal) => new Promise((resolve, reject) => {
+export const within = (promise, ms, signal) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('timed out')), ms)
   const onAbort = () => reject(new Error('aborted'))
   signal?.addEventListener('abort', onAbort, { once: true })
@@ -34,7 +34,7 @@ const within = (promise, ms, signal) => new Promise((resolve, reject) => {
     (e) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); reject(e) })
 })
 
-async function pickModel(llm, override, timeoutMs) {
+export async function pickModel(llm, override, timeoutMs) {
   if (override?.provider && override?.model) return override
   const providers = await within(Promise.resolve().then(() => llm.listProviders()), timeoutMs)
   const listed = await Promise.all(providers.map(async (p) => {

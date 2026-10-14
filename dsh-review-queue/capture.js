@@ -329,11 +329,17 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
 
 /**
  * After a restart no request is waiting any more: open questions and permission requests can no longer be answered
- * from here, so they leave the queue. Finished-work items stay.
+ * from here, so they leave the queue. Finished-work items stay. A todo stays too; one that was being started
+ * is a failed one now (Retry starts it, reusing a session that was already created).
  */
 export function cancelStalePending(store) {
   let n = 0
   for (const item of store.list({ status: 'open' })) {
+    if (item.type === 'todo') {
+      if (item.state === 'starting') store.update(item.id, { state: 'failed', error: 'Interrupted by a server restart. Retry to start it.' })
+      else if (item.suggesting) store.update(item.id, { suggesting: false })
+      continue
+    }
     if (item.type !== 'completed' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) n++
   }
   return n

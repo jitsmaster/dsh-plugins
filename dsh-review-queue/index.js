@@ -3,7 +3,7 @@
  * questions, permission requests) into one queue and serves it to the browser half (lib/client.js: a sidebar tab and
  * a full-screen overlay) under /review-queue on the Host web server.
  *
- * Config (all optional): `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
+ * Config (all optional): `sparcCommandPath` (the modes:sparc command file a "Use SPARC" todo inlines, default ~/.claude/commands/modes/sparc.md), `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
  * sibling plugin folder), `voice` ('male' default, or 'female') for the play button, `dev` (true, or env DSH_REVIEW_QUEUE_DEV=1, enables the
  * /v1/dev/ask route that creates fake questions, permissions and completions for testing the UI).
  */
@@ -44,10 +44,8 @@ export function apply(ctx, config = {}) {
   store.prune()
 
   const llmService = () => { try { return ctx.get?.('llm') ?? ctx.llm } catch { return undefined } }
-  const summarizer = createSummarizer({
-    llm: { listProviders: () => llmService().listProviders(), listModels: (p) => llmService().listModels(p), prepareCall: (...a) => llmService().prepareCall(...a) },
-    log,
-  })
+  const llm = { listProviders: () => llmService().listProviders(), listModels: (p) => llmService().listModels(p), prepareCall: (...a) => llmService().prepareCall(...a) }
+  const summarizer = createSummarizer({ llm, log })
   const capture = installCapture(ctx, { store, summarizer, log })
   const controllerOf = () => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } }
   // The play button speaks through the sibling dsh-hooks-tts plugin's TTS client (same server, mute switch and stop hotkey).
@@ -60,7 +58,22 @@ export function apply(ctx, config = {}) {
     gender: config.voice === 'female' ? 'female' : 'male',
     log,
   })
-  const queue = createReviewQueue({ store, capture, controllerOf, speaker: reader })
+  const registryOf = () => { try { return ctx.get?.('workspaceRegistry') ?? ctx.workspaceRegistry } catch { return undefined } }
+  // Todo: recent session titles help the model pick a workspace (best effort), and a SPARC todo inlines the modes:sparc text like dsh-hooks-tts does.
+  const titlesOf = async (ids) => {
+    const titles = new Map()
+    try {
+      const query = ctx.get?.('sessionQuery')
+      if (!ids.length || typeof query?.readTitleSnapshots !== 'function') return titles
+      const results = await query.readTitleSnapshots(ids)
+      results.forEach((r, i) => { if (r?.status === 'fulfilled' && typeof r.value?.title?.title === 'string') titles.set(ids[i], r.value.title.title) })
+    } catch { /* titles are a bonus */ }
+    return titles
+  }
+  const sparcText = () => {
+    try { return readFileSync(resolve(config.sparcCommandPath ?? join(homedir(), '.claude', 'commands', 'modes', 'sparc.md')), 'utf8').replace(/^---[\s\S]*?\n---\s*/, '') } catch { return '' }
+  }
+  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker: reader, llm, titlesOf, sparcText, log })
 
   const pruneTimer = setInterval(() => store.prune(), 3600_000)
   pruneTimer.unref?.()

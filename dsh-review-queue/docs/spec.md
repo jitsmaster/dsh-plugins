@@ -8,6 +8,7 @@ A **Review** tab in the DSH right sidebar (sibling of dsh-git-view): the user's 
 ## Items (all sessions, all workspaces), sorted by time ascending (oldest first)
 - **Completed**: session finished a turn. Card shows session title, workspace/worktree, finish time, an LLM-written 2-3 line summary of what was done (cheapest available DSH model, generated once and cached; falls back to the last paragraph of the reply on failure); full reply behind the expander.
 - **Question**: pending ask_user_question. Card shows the full question, all choices with the recommended one marked, time left, and what happens at expiry. Answerable from the card (option buttons).
+- **Todo**: a task the user added to start a new session (see "Todo item" below).
 - **Permission**: pending approval ("Approve write file?"), showing tool and arguments, with Approve/Deny. Never expires or auto-resolves; stays until answered or the session ends; shows its age.
 
 ## Persistent view (added after the grilling)
@@ -61,6 +62,16 @@ Roomy, collapsed by default, expands for more detail, **Open session** button ju
 - **Not disturbed.** The request promise stays DSH's to settle: a session-resolved item is dropped from the card-answerable set (`answerQuestion` then says `not-pending`) but `next()` and abort still flow through untouched. Answering from the card works exactly as before: the item is resolved first, later events find it settled. A late answer sent from the card is shielded while it is in flight (its own reply event must not re-label it `late-answered`).
 - **Other item types.** Permission items: an approval already settles through the same wrapped waterfall when answered on screen, and a plain user message does not decide a permission, so no session signal is added. Done items are already resolved by the user continuing the session (`replied by session`) and by the card; unchanged.
 - **Edge cases.** A question still pending in another session is untouched. If the plugin's session ids differ from the agent ids the matching simply never fires (items then end by answer, expiry or session end as before). Events from a session the plugin does not receive (not loaded yet) cannot help; after a restart open questions are cancelled anyway.
+
+## Todo item (revision 2026-10-14 (e))
+A fourth item type, **todo**, lets the user start a session from the list and rely on the list for all follow-ups (the new session's questions, permissions and done results already flow in from every session).
+- **Add.** "+ New todo" in the overlay header: task text (max 4000 characters), workspace dropdown ("Choose for me" default), "Use SPARC" (default off). POST /v1/todo; service addTodo(text, { workspaceId?, sparc? }) so voice can call it later.
+- **Item.** { type:'todo', text, sparc, state, workspaceId?, workspaceTitle?, workspace?, suggested?:{ workspaceId, title, reason }, suggesting?, error?, sessionId?, sessionTitle? }. States: awaiting-confirm (open, needs the user), starting (open, transient, not counted as waiting), started (resolved, keeps sessionId), failed (open, error and Retry), cancelled (resolved).
+- **Workspace rule.** Given: create at once. Not given: suggest, then ALWAYS wait for an explicit confirm; nothing is created without it. Suggestion: (a) a workspace whose title or folder name is in the text as a whole word, case-insensitive, unique (a name inside a longer matched name of another workspace does not count) = "named in the text"; else (b) the cheapest LLM (summary.js pattern, pickModel) answers JSON { workspaceId, reason }, validated against the list, 15 s limit; else (c) none, and the card asks the user to pick.
+- **Create.** Like dsh-hooks-tts spawnSession: create({ workspaceId }), rename (first line, max 60 characters), prompt({ requestId, sessionId, mode:'queue', content }) with a caller AbortSignal (30 s). Not focused or opened. SPARC puts the task first (so the done card titles from it), then the /sparc flow and the modes:sparc text. A failure after create keeps the sessionId; Retry reuses it.
+- **Routes.** POST /v1/todo, /v1/todo-confirm ({id, workspaceId?}, also Retry), /v1/todo-cancel, GET /v1/workspaces.
+- **Follow-ups.** The created session is a normal session: capture lists its done, question and permission items (nothing excludes it; only subagents are skipped), each carrying its sessionId.
+- **Keys and voice.** Shift+A, Shift+D and e do nothing on a todo; Enter is not bound. Voice reads "Todo: <text>, start in <workspace>?"; answering by voice comes later. A restart keeps waiting and failed todos and turns a starting one into failed.
 
 ## Persistence
 Survives server restarts. Resolved items kept in a collapsed **Resolved** section for 7 days, then deleted.
