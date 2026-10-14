@@ -5,7 +5,8 @@
  *
  * Config (all optional): `sparcCommandPath` (the modes:sparc command file a "Use SPARC" todo inlines, default ~/.claude/commands/modes/sparc.md), `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
  * sibling plugin folder), `voice` ('male' default, or 'female') for the play button, `dev` (true, or env DSH_REVIEW_QUEUE_DEV=1, enables the
- * /v1/dev/ask route that creates fake questions, permissions and completions for testing the UI).
+ * /v1/dev/ask route that creates fake questions, permissions and completions for testing the UI), `pushSubject` (the mailto: or https: contact
+ * the push services see in the VAPID token) and `sendPush` (replaces the real Web Push delivery, for tests).
  */
 import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -18,6 +19,8 @@ import { installCapture, cancelStalePending } from './capture.js'
 import { createReviewQueue } from './service.js'
 import { createReader } from './reader.js'
 import { createRouter, PREFIX } from './server.js'
+import { createPushStore, loadOrCreateVapid, jsonFileIo } from './push.js'
+import { createPushRoutes } from './push-routes.js'
 
 export const name = 'review-queue'
 
@@ -108,7 +111,10 @@ export function apply(ctx, config = {}) {
       },
     }
   }
-  const serve = createRouter({ queue, dev })
+  // Phone notifications: the VAPID key pair and the registered devices live next to queue.json (private files); delivery is injectable.
+  const vapid = loadOrCreateVapid({ io: stateDir ? jsonFileIo(join(stateDir, 'vapid.json'), { mode: 0o600 }) : undefined, subject: config.pushSubject })
+  const push = createPushStore({ io: stateDir ? jsonFileIo(join(stateDir, 'push.json'), { mode: 0o600 }) : undefined, vapid, ...(typeof config.sendPush === 'function' ? { sendPush: config.sendPush } : {}) })
+  const serve = createRouter({ queue, dev, pushRoutes: createPushRoutes({ push, publicKey: vapid.publicKey }) })
 
   // Same pattern as dsh-git-view: ride the Host web server so the browser, Desktop and remote access all reach it, behind
   // the Host's own Host/Origin fence and cookie authentication.

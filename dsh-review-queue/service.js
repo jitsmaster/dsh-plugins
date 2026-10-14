@@ -8,7 +8,7 @@ import { riskOf } from './risk.js'
 import { createTodos } from './todo.js'
 
 const MAX_REPLY = 4000
-const TYPES = ['question', 'permission', 'completed', 'todo']
+const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo']
 /** A todo being started is not waiting on the user. */
 const needsUser = (item) => !(item.type === 'todo' && item.state === 'starting')
 
@@ -46,8 +46,17 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
     return item?.status === 'open' ? item : undefined
   }
 
+  /** A merged-PR item whose session was archived somewhere else (the sidebar menu) has nothing left to offer. */
+  const settleArchived = () => {
+    let archived
+    try { archived = new Set((registryOf()?.archivedSessionIds ?? []).map(String)) } catch { return }
+    if (!archived.size) return
+    for (const item of store.snapshot().open) if (item.type === 'pr-merged' && archived.has(String(item.sessionId))) store.resolve(item.id, { kind: 'archived', by: 'elsewhere' })
+  }
+
   return {
     snapshot() {
+      settleArchived()
       const snap = store.snapshot()
       return {
         ...snap,
@@ -75,6 +84,41 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       lastReadId = id
       readOpen = item.status === 'open'
       emit()
+      return { ok: true }
+    },
+    /**
+     * A pull request was merged: one item per session that worked on it ("PR n" sessions), offering to archive that
+     * session. `followUps` are the "after PR n" sessions that were told to start (shown on the card). Once per session and PR.
+     * info: { prId, prSessions: [{ id, title }], followUps: [{ id, title }] }.
+     */
+    notifyPrMerged(info) {
+      const prId = String(info?.prId ?? '')
+      if (!/^\d+$/.test(prId)) return { ok: false, error: 'bad-input', added: 0 }
+      const listOf = (value) => (Array.isArray(value) ? value : []).filter((s) => typeof s?.id === 'string' && s.id).map((s) => ({ id: s.id, title: typeof s.title === 'string' ? s.title : '' }))
+      const followUps = listOf(info.followUps)
+      let added = 0
+      for (const session of listOf(info.prSessions)) {
+        const duplicate = store.list().some((i) => i.type === 'pr-merged' && i.sessionId === session.id && i.payload?.prId === prId)
+        if (duplicate) continue
+        store.add({ type: 'pr-merged', sessionId: session.id, sessionTitle: session.title, payload: { prId, followUps } })
+        added++
+      }
+      return { ok: true, added }
+    },
+    /** Archives the session of a merged-PR item (the card's button), then closes the item. Running work of that session is stopped. */
+    async archive(id) {
+      const item = openItem(id)
+      if (!item) return { ok: false, error: 'not-open' }
+      if (item.type !== 'pr-merged') return { ok: false, error: 'not-pr-merged' }
+      const registry = registryOf()
+      if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'no-registry' }
+      try {
+        await registry.archiveSession(item.sessionId, { stopActivity: true })
+      } catch (error) {
+        if (error?.name === 'WorkspaceUnknownSessionError') { store.resolve(id, { kind: 'session-ended' }); return { ok: false, error: 'no-session' } }
+        return { ok: false, error: String(error?.message ?? error) }
+      }
+      store.resolve(id, { kind: 'archived', by: 'card' })
       return { ok: true }
     },
     /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc? }) -> { ok, id, state }; confirmTodo(id, { workspaceId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). */
@@ -148,7 +192,8 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       return store.reopen(id) ? { ok: true } : { ok: false, error: 'not-reopenable' }
     },
     /** Approve this request and every identical open one of the same session; never a risky one. */
-    approveSimilar(id) {
+    approveSimilar(id, opts = {}) {
+      if (opts.via === 'phone' && opts.confirmed !== true) return { ok: false, error: 'needs-confirm' }
       const item = store.get(id)
       if (!item || item.status !== 'open') return { ok: false, error: 'not-open' }
       if (item.type !== 'permission') return { ok: false, error: 'not-permission' }
@@ -162,12 +207,26 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
     onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
     answer: (id, answers) => capture.answerQuestion(id, answers),
     lateAnswer: (id, answers) => capture.lateAnswerQuestion(id, answers),
-    approve: (id) => capture.decidePermission(id, 'approve'),
+    /**
+     * Approve a pending request. From the phone (opts.via === 'phone') the page must say that its confirm sheet was accepted
+     * (confirmed) and, for a risky request, that the press-and-hold was completed (held). Same login as the desktop, so this is a
+     * guard against a wrong tap or a stale client, not a second security boundary.
+     */
+    approve(id, opts = {}) {
+      if (opts.via === 'phone') {
+        const item = openItem(id)
+        if (item?.type === 'permission') {
+          if (opts.confirmed !== true) return { ok: false, error: 'needs-confirm' }
+          if (risksOf(item).length && opts.held !== true) return { ok: false, error: 'needs-hold' }
+        }
+      }
+      return capture.decidePermission(id, 'approve')
+    },
     deny: (id) => capture.decidePermission(id, 'deny'),
     markReviewed(id) {
       const item = openItem(id)
       if (!item) return { ok: false, error: 'not-open' }
-      if (item.type !== 'completed') return { ok: false, error: 'not-completed' }
+      if (item.type !== 'completed' && item.type !== 'pr-merged') return { ok: false, error: 'not-completed' }
       return store.resolve(id, { kind: 'reviewed', by: 'card' }) ? { ok: true } : { ok: false, error: 'not-open' }
     },
     async reply(id, text) {

@@ -87,6 +87,12 @@ function bodyParts(item) {
     const what = cleanText(item.payload?.summary, { maxWords: 20 }) || cleanText(item.payload?.toolName, { maxWords: 4 }) || 'a tool'
     return { headline: 'Permission from ' + who + ': ' + what, full: 'Permission request from ' + who + ': ' + what + '. Say approve or deny.' }
   }
+  if (item.type === 'pr-merged') {
+    const pr = 'Pull request ' + cleanText(String(item.payload?.prId ?? ''), { maxChars: 12 })
+    const followUps = (item.payload?.followUps ?? []).length
+    const told = followUps ? ' The follow-up session' + (followUps === 1 ? ' was' : 's were') + ' told to start.' : ''
+    return { headline: pr + ' merged in ' + who + '.', full: pr + ' is merged in ' + who + '.' + told + ' You can archive this session.' }
+  }
   if (item.type === 'todo') return todoParts(item)
   const summary = cleanText(item.summary) || lastParagraph(item.payload?.reply)
   const firstSentence = cleanText(summary.split(/(?<=[.!?])\s/)[0] ?? '', { maxWords: 20 })
@@ -114,6 +120,7 @@ export function titleFor(item) {
   if (item.type === 'permission') {
     return cleanText(item.payload?.summary, { maxWords: 10 }) || cleanText(item.payload?.toolName, { maxWords: 4 }) || 'Permission request'
   }
+  if (item.type === 'pr-merged') return 'PR ' + cleanText(String(item.payload?.prId ?? ''), { maxChars: 12 }) + ' merged'
   if (item.type === 'todo') return cleanText(String(item.text ?? '').split(/\r?\n/).find((l) => l.trim()), { maxWords: 10 }) || 'Todo'
   return cleanText(item.title, { maxWords: 12 })
     || cleanText(item.payload?.request, { maxWords: 10 })
@@ -195,7 +202,7 @@ export function fullTextFor(item, position) {
     const reason = cleanText(item.payload?.reason, { maxChars: 600 })
     return withLead(position, reason ? base.replace(/ Say approve or deny\.$/, '') + ' Reason: ' + sentence(reason) + ' Say approve or deny.' : base, '\n\n')
   }
-  if (item.type === 'question' || item.type === 'todo') return spokenFor(item, position).full
+  if (item.type === 'question' || item.type === 'pr-merged' || item.type === 'todo') return spokenFor(item, position).full
   const reply = speakable(item.payload?.reply) || cleanText(item.summary) || 'Finished.'
   return withLead(position, 'Done in ' + name(item) + '. ' + sentence(titleFor(item)) + '\n\n' + reply, '\n\n')
 }

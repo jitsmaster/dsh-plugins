@@ -79,6 +79,7 @@ window.__ModuleLoader__.load({
 				case "denied": return "Denied" + (where ? " " + where : "");
 				case "reviewed": return "Reviewed";
 				case "started": return "Started" + (item.workspaceTitle ? " in " + item.workspaceTitle : "") + " (in the background)";
+				case "archived": return r.by === "elsewhere" ? "Session archived elsewhere" : "Session archived";
 				case "superseded": return "Replaced by a newer result";
 				case "no-action": return "Hidden: nothing for you to do (judged from the message; Reopen if it was wrong)";
 				case "replied": return r.by === "session" ? "You continued the session" : "You replied";
@@ -254,7 +255,7 @@ window.__ModuleLoader__.load({
 		/** The long-poll token: what this tab has already seen. The server answers "unchanged" only while all four parts still match. */
 		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0);
 
-		const TYPE = { question: "Question", permission: "Permission", completed: "Done", todo: "Todo" };
+		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", todo: "Todo" };
 		const typeLabel = (t) => TYPE[t] || t;
 		const recommended = (q, label) => /\(recommended\)/i.test(label);
 
@@ -440,7 +441,7 @@ window.__ModuleLoader__.load({
 		const ERRORS = {
 			"not-open": "That item is no longer waiting.", "not-pending": "That request is no longer waiting for an answer.",
 			"bad-answer": "That answer does not match the question.", "empty": "Type something first.", "too-long": "That is too long.",
-			"no-controller": "Cannot reach the session right now.", "not-completed": "That only applies to finished work.",
+			"no-controller": "Cannot reach the session right now.", "not-completed": "That only applies to finished work.", "not-pr-merged": "That only applies to a merged pull request.", "needs-confirm": "Confirm the approval first.", "needs-hold": "A risky request needs the press-and-hold confirmation.", "no-registry": "Cannot reach the session list right now.",
 			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so a late answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
 			"no-workspace": "Pick a workspace first.", "unknown-workspace": "That workspace no longer exists.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
@@ -524,7 +525,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
 			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}"
-			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.todo{color:var(--rq-accent)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
+			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.todo{color:var(--rq-accent)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
 			+ ".rq-text{white-space:pre-wrap;word-break:break-word}.rq-clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}"
@@ -665,6 +666,22 @@ window.__ModuleLoader__.load({
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Reviewed")));
 		}
 
+		/** A merged pull request: archive the session that worked on it (the follow-up sessions were already told to start). */
+		function PrMergedBody({ item }) {
+			const st = useStore();
+			const busy = st.busy[item.id];
+			const p = item.payload || {};
+			const followUps = p.followUps || [];
+			return h(React.Fragment, null,
+				h("div", { className: "rq-text" }, "Pull request " + p.prId + " is merged."),
+				followUps.length
+					? h("div", { className: "rq-sub" }, (followUps.length === 1 ? "Follow-up session told to start: " : "Follow-up sessions told to start: ") + followUps.map((f) => f.title || f.id).join(", "))
+					: h("div", { className: "rq-sub" }, "No follow-up session was waiting for this PR."),
+				h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn pri", disabled: busy, title: "Archive this session (stops anything it is still running)", onClick: () => act("/v1/archive", { id: item.id }, item.id, { advance: true }) }, busy ? "Archiving…" : "Archive session"),
+					h("button", { className: "rq-btn", disabled: busy, title: "Keep the session and clear this item", onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Keep session")));
+		}
+
 		/** A todo: confirm where it starts (nothing is created before), watch it start, retry a failure. The session is never opened by itself; Open session is a button. */
 		function TodoBody({ item, full }) {
 			const st = useStore();
@@ -690,7 +707,7 @@ window.__ModuleLoader__.load({
 			const now = useNow(item.type === "question" && !!item.expiresAt);
 			const full = forceFull || !!st.expanded[item.id];
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
-			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "todo" ? TodoBody : CompletedBody;
+			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "todo" ? TodoBody : CompletedBody;
 			const reading = !!(st.snap && st.snap.reading === item.id);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },
@@ -746,7 +763,7 @@ window.__ModuleLoader__.load({
 			const total = snap ? snap.open.length + snap.resolved.length : 0;
 			if (total < 4 && !f.query && f.type === "all") return null;
 			return h("div", { className: "rq-filter" },
-				["all", "completed", "question", "permission", "todo"].map((t) => h("button", { key: t, className: "rq-fchip" + (f.type === t ? " on" : ""), "aria-pressed": f.type === t, onClick: () => set({ filter: { ...f, type: t } }) }, t === "all" ? "All" : typeLabel(t))),
+				["all", "completed", "question", "permission", "pr-merged", "todo"].map((t) => h("button", { key: t, className: "rq-fchip" + (f.type === t ? " on" : ""), "aria-pressed": f.type === t, onClick: () => set({ filter: { ...f, type: t } }) }, t === "all" ? "All" : typeLabel(t))),
 				h("input", { className: "rq-input rq-fsearch", placeholder: "Filter by title, session or workspace…", value: f.query, onChange: (e) => set({ filter: { ...f, query: e.target.value } }) }));
 		}
 
@@ -874,6 +891,8 @@ window.__ModuleLoader__.load({
 			ctx.effect(() => ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({ name: "conversation.session.header.utilities", id: ANCHOR_ID, order: 1000, label: () => "Task list" }, HeaderAnchor)), "review-queue: header button");
 		}
 
+		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
+		exports.shared = { isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;

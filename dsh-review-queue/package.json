@@ -19,6 +19,10 @@
     "capture.js",
     "service.js",
     "server.js",
+    "mobile.js",
+    "webpush.js",
+    "push.js",
+    "push-routes.js",
     "reader.js",
     "risk.js",
     "scripts",
@@ -27,7 +31,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/store.test.mjs test/speech.test.mjs test/reader.test.mjs test/risk.test.mjs test/summary.test.mjs test/capture.test.mjs test/service.test.mjs test/service-voice-nav.test.mjs test/server.test.mjs test/index.test.mjs test/client.test.mjs test/client-resolved-open.test.mjs test/server-unknown-action.test.mjs test/todo.test.mjs test/todo-server.test.mjs test/todo-speech.test.mjs test/client-todo.test.mjs"
+    "test": "node --test test/store.test.mjs test/speech.test.mjs test/reader.test.mjs test/risk.test.mjs test/summary.test.mjs test/capture.test.mjs test/service.test.mjs test/service-voice-nav.test.mjs test/server.test.mjs test/index.test.mjs test/client.test.mjs test/client-resolved-open.test.mjs test/server-unknown-action.test.mjs test/todo.test.mjs test/todo-server.test.mjs test/todo-speech.test.mjs test/client-todo.test.mjs test/pr-merged.test.mjs test/phone-approve.test.mjs test/mobile-static.test.mjs test/mobile-hold.test.mjs test/mobile-core.test.mjs test/mobile-push-client.test.mjs test/mobile-api-push.test.mjs test/mobile-sw.test.mjs test/mobile-icons.test.mjs test/webpush.test.mjs test/push.test.mjs test/push-routes.test.mjs test/push-index.test.mjs"
   },
   "dsh": {
     "bundle": {

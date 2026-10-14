@@ -329,7 +329,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
 
 /**
  * After a restart no request is waiting any more: open questions and permission requests can no longer be answered
- * from here, so they leave the queue. Finished-work items stay. A todo stays too; one that was being started
+ * from here, so they leave the queue. Finished-work and merged-PR items stay. A todo stays too; one that was being started
  * is a failed one now (Retry starts it, reusing a session that was already created).
  */
 export function cancelStalePending(store) {
@@ -340,7 +340,7 @@ export function cancelStalePending(store) {
       else if (item.suggesting) store.update(item.id, { suggesting: false })
       continue
     }
-    if (item.type !== 'completed' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) n++
+    if (item.type !== 'completed' && item.type !== 'pr-merged' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) n++
   }
   return n
 }

@@ -3,6 +3,8 @@
  * cookie fence, see index.js). createRouter returns a plain (req, res) handler so tests can run it on a bare http
  * server. Reads are a long-poll on the snapshot id; actions are small JSON POSTs.
  */
+import { serveMobile } from './mobile.js'
+
 export const PREFIX = '/review-queue'
 const MAX_BODY = 64 * 1024
 const MAX_WAIT_MS = 25_000
@@ -29,7 +31,7 @@ async function readJson(req) {
 }
 
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
-const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'unknown-workspace', 'no-workspace'])
+const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace'])
 const outcome = (res, result) => {
   if (result?.ok) return send(res, 200, { ...result })
   send(res, BAD_INPUT.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed' })
@@ -37,20 +39,21 @@ const outcome = (res, result) => {
 
 const workspaceOf = (b) => (b.workspaceId === undefined || b.workspaceId === null || b.workspaceId === '' ? undefined : String(b.workspaceId))
 
-/** @param {{ queue: ReturnType<import('./service.js').createReviewQueue>, dev?: { ask: (body: object) => Promise<object> } }} deps */
-export function createRouter({ queue, dev }) {
+/** @param {{ queue: ReturnType<import('./service.js').createReviewQueue>, dev?: { ask: (body: object) => Promise<object> }, pushRoutes?: ReturnType<import('./push-routes.js').createPushRoutes> }} deps */
+export function createRouter({ queue, dev, pushRoutes }) {
   const actions = {
     '/v1/answer': (b) => queue.answer(String(b.id), b.answers),
     '/v1/late-answer': (b) => queue.lateAnswer(String(b.id), b.answers),
-    '/v1/approve': (b) => queue.approve(String(b.id)),
+    '/v1/approve': (b) => queue.approve(String(b.id), { via: b.via, confirmed: b.confirmed === true, held: b.held === true }),
     '/v1/deny': (b) => queue.deny(String(b.id)),
     '/v1/reviewed': (b) => queue.markReviewed(String(b.id)),
+    '/v1/archive': (b) => queue.archive(String(b.id)),
     '/v1/reply': (b) => queue.reply(String(b.id), b.text),
     '/v1/read': (b) => queue.read(String(b.id)),
     '/v1/stop': () => queue.stop(),
     '/v1/ui': (b) => queue.uiCommand(b.cmd),
     '/v1/reopen': (b) => queue.reopen(String(b.id)),
-    '/v1/approve-similar': (b) => queue.approveSimilar(String(b.id)),
+    '/v1/approve-similar': (b) => queue.approveSimilar(String(b.id), { via: b.via, confirmed: b.confirmed === true }),
     '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true }),
     '/v1/todo-confirm': (b) => queue.confirmTodo(String(b.id), { workspaceId: workspaceOf(b) }),
     '/v1/todo-cancel': (b) => queue.cancelTodo(String(b.id)),
@@ -87,6 +90,7 @@ export function createRouter({ queue, dev }) {
   return async function serve(req, res) {
     try {
       const url = new URL(req.url ?? '/', 'http://local')
+      if (await serveMobile(req, res, url.pathname)) return
       if (url.pathname === '/v1/snapshot') {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })
         return await snapshot(req, res, url)
@@ -95,6 +99,7 @@ export function createRouter({ queue, dev }) {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })
         return send(res, 200, { workspaces: queue.workspaces() })
       }
+      if (pushRoutes && url.pathname.startsWith('/v1/push/')) return await pushRoutes(req, res, url.pathname, { readJson, send })
       const action = actions[url.pathname]
       // An unknown route is not a missing item (that is a 409 'not-found' from the service): a client newer than this server
       // must be able to tell "I do not know this action" from "that item is gone".

@@ -327,7 +327,7 @@ test('count(): a todo waits while it needs the user (awaiting or failed), not wh
   const { queue } = setup({ createError: 'boom' })
   const a = queue.addTodo('Update the dsh-plugins readme').id
   await queue.todoIdle()
-  assert.deepEqual(queue.count(), { total: 1, byType: { question: 0, permission: 0, completed: 0, todo: 1 } })
+  assert.deepEqual(queue.count(), { total: 1, byType: { question: 0, permission: 0, completed: 0, 'pr-merged': 0, todo: 1 } })
   queue.confirmTodo(a)
   assert.equal(queue.count().total, 0, 'starting')
   await queue.todoIdle()
@@ -341,6 +341,7 @@ test('other card actions do not apply to a todo', async () => {
   assert.equal(queue.markReviewed(id).ok, false)
   assert.equal((await queue.reply(id, 'hi')).ok, false)
   assert.equal(queue.deny(id).ok, false)
+  assert.equal((await queue.archive(id)).ok, false)
 })
 
 test('a restart: a todo waiting for confirmation or failed survives, one that was starting becomes failed and can be retried', async () => {
