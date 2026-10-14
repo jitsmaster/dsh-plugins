@@ -366,6 +366,8 @@ export function apply(ctx, baseConfig = {}) {
   }
   const voice = createVoiceService({
     onIdle: flushSoon,
+    // The dsh-review-queue service (task-list voice commands); resolved per call and guarded: the plugin may not be installed.
+    reviewQueue: () => { try { return ctx.get('reviewQueue') ?? undefined } catch { return undefined } },
     speaker,
     summaryOf: (req) => toolSummaries.lookup(req),
     decide: (utterance, opts) => decider.decide(utterance, opts),

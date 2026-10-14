@@ -11,6 +11,10 @@
  * Exception: a barge-in or capture during EXECUTE is held (the action ran either way, so its outcome is always said):
  * the result line waits until the barge-in's listen has ended (transcript or idle) so it is not spoken into the open
  * mic, is then spoken first, and a held capture then starts the next conversation.
+ *
+ * Task-list fast path (optional `queue` dependency, dsh-review-queue/docs/voice-task-list.md): a capture that IS a read-only
+ * task-list command (queue.match(text) → intent) runs at once, with no echo, no LLM and no "yes", then speaks its outcome line
+ * (or nothing) and ends. A listening{context:null} (hotkey / GUI capture) stops the queue reader so it never speaks into the open mic.
  */
 
 import { VOICE } from './speaker.js'
@@ -20,6 +24,8 @@ const LISTEN_RETRY_MS = 500
 /** Events of a barge-in/capture listen (context null) that are held while EXECUTE runs. */
 const HELD_EVENTS = new Set(['listening', 'transcript', 'idle', 'error'])
 const LOG_RAW_MAX = 300
+/** The task-list intents the flow runs itself; anything else the matcher returns (reply, for now) takes the normal echo path. */
+const FAST_KINDS = new Set(['show', 'hide', 'count', 'read', 'next', 'again', 'stop', 'open'])
 /** An execute() that has not settled by then counts as failed ("That failed: timed out."), so a hung call cannot hold EXECUTE forever. */
 const EXECUTE_TIMEOUT_MS = 35_000
 
@@ -73,6 +79,7 @@ export function createVoiceFlow({
   now = Date.now, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout,
   uuid, windowS = 10, guardExtraMs = 15000, maxClarify = 2, cancelSpeech, executeTimeoutMs = EXECUTE_TIMEOUT_MS,
   onIdle = () => {}, // the conversation just ended (reset to IDLE): the service uses it to replay held alerts at once
+  queue, // optional task-list fast path: { match(text) → intent | undefined, run(intent) → { outcome, line?, silence? }, stop() }
 }) {
   const s = { state: 'IDLE', id: null, turn: 0, step: null, utterance: '', history: [], action: null, clarifies: 0, t0: 0, guard: null, hold: null, listenAt: 0, decideAc: null }
 
@@ -96,6 +103,8 @@ export function createVoiceFlow({
   function handle(ev) {
     if (!ev || typeof ev !== 'object') return
     const c = ev.context
+    // A capture is starting (hotkey / GUI / wake): the task-list reader must not talk into the open mic, whatever the flow is doing.
+    if (ev.type === 'listening' && c == null) stopQueue()
     if (c && c.flow === 'voice' && !mine(c)) return note('stale', { ev: ev.type, c })
     if (s.hold && c == null && HELD_EVENTS.has(ev.type)) return holdEvent(ev)
     if (ev.type === 'listening') return c == null ? (s.state !== 'IDLE' ? bargeIn() : undefined) : note('listen.open', { ms: now() - s.listenAt })
@@ -115,7 +124,44 @@ export function createVoiceFlow({
     note('capture.transcript', { text: ev.text, sttSeconds: ev.seconds, source: ev.source })
     const text = String(ev.text ?? '').trim()
     if (!text) return void detach(end(LINES.notCaught))
+    const intent = matchQueue(text)
+    if (intent) return void detach(runQueue(intent))
     echo(text, s.t0)
+  }
+
+  // ---- task-list fast path -------------------------------------------------------------------------------
+
+  /** The task-list intent this utterance is, if it is one of the kinds the flow runs; a matcher bug counts as "not a command". */
+  function matchQueue(text) {
+    if (!queue) return undefined
+    try {
+      const intent = queue.match(text)
+      return intent && FAST_KINDS.has(intent.kind) ? intent : undefined
+    } catch (e) {
+      note('queue.error', { phase: 'match', message: String(e?.message ?? e) })
+      return undefined
+    }
+  }
+
+  function stopQueue() {
+    try { queue?.stop?.() } catch (e) { note('queue.error', { phase: 'stop', message: String(e?.message ?? e) }) }
+  }
+
+  /** Runs one task-list command, then speaks its outcome line (none → silent end). No echo, no LLM, no re-listen. */
+  async function runQueue(intent) {
+    const turn = enter('QUEUE'); s.step = 'queue'
+    const t = now()
+    let result
+    try {
+      result = (await withTimeout(() => queue.run(intent))) ?? {}
+    } catch (e) {
+      result = { outcome: 'error', line: failText(e), error: String(e?.message ?? e) }
+    }
+    if (turn !== s.turn) return note('stale', { stage: 'queue' })
+    note('queue.intent', { kind: intent.kind, ...(intent.n !== undefined ? { n: intent.n } : {}), outcome: result.outcome, ...(result.line ? { line: result.line } : {}), ...(result.error ? { error: result.error } : {}), ms: now() - t })
+    if (result.silence) silence()
+    if (result.line) return end(String(result.line), turn)
+    clearGuard(); reset()
   }
 
   /** T1/T7/T22: (re)start at the echo confirm with a new utterance; any frozen action is discarded. */
@@ -365,12 +411,14 @@ export function createVoiceFlow({
     } finally { release(hold) }
   }
 
-  /** execute(action), failing with 'timed out' when it has not settled after executeTimeoutMs (the timer never outlives the call). */
-  async function executeWithTimeout(action) {
+  /** fn(), failing with 'timed out' when it has not settled after executeTimeoutMs (the timer never outlives the call). */
+  async function withTimeout(fn) {
     let timer
     const timedOut = new Promise((_, reject) => { timer = setTimer(() => reject(new Error('timed out')), executeTimeoutMs) })
-    try { return await Promise.race([(async () => execute(action))(), timedOut]) } finally { clearTimer(timer) }
+    try { return await Promise.race([(async () => fn())(), timedOut]) } finally { clearTimer(timer) }
   }
+
+  const executeWithTimeout = (action) => withTimeout(() => execute(action))
 
   /** The result line is done: replay a capture held during EXECUTE. Dropped when abort() cleared the hold. */
   function release(hold) {

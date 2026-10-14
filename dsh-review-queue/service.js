@@ -99,6 +99,22 @@ export function createReviewQueue({ store, capture, controllerOf, speaker, now =
       const result = this.read(id)
       return result.ok ? { ok: true, id } : result
     },
+    /**
+     * Reads the open item after the one read last, in the current order (the first item when nothing was read or that
+     * item has left the list). Past the end: { ok:false, error:'no-item', n } where n is the missing position.
+     */
+    next() {
+      const open = store.snapshot().open
+      if (!open.length) return { ok: false, error: 'empty' }
+      const n = (lastReadId === undefined ? -1 : open.findIndex((i) => i.id === lastReadId)) + 2
+      const result = this.readPosition(n)
+      return !result.ok && result.error === 'no-item' ? { ...result, n } : result
+    },
+    /** The session of the first open item and that item's card title, for "open the first item's session". */
+    openTarget() {
+      const item = store.snapshot().open[0]
+      return item ? { sessionId: item.sessionId, title: titleFor(item) } : undefined
+    },
     /** Asks every open browser to show or hide the overlay; each applies a given seq once. */
     uiCommand(cmd) {
       if (cmd !== 'show' && cmd !== 'hide') return { ok: false, error: 'bad-command' }

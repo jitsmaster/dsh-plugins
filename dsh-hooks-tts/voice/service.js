@@ -4,6 +4,7 @@ import { createVoiceApprovals } from './approvals.js'
 import { createVoiceFlow } from './flow.js'
 import { createExecutor, readBack, resultText, toolPhrase, validateAction } from './actions.js'
 import { classifyAnswer } from './answers.js'
+import { createQueueRunner } from './queue-runner.js'
 import { VOICE } from './speaker.js'
 import { cleanTitle } from './sanitize.js'
 
@@ -46,6 +47,7 @@ export function createVoiceService({
   summaryOf,
   now = Date.now,
   onIdle, // called when voice may just have stopped being busy (mic closed, flow ended): see notifyIdle
+  reviewQueue, // () => the dsh-review-queue `reviewQueue` service or undefined (resolved per call; the plugin may be absent). Omitted: no task-list commands
 }) {
   let secret
   const agents = new Set()
@@ -135,6 +137,10 @@ export function createVoiceService({
     return { started: body?.started === true }
   }
 
+  const select = (id) => { selected = id }
+  // The task-list fast path (flow.js `queue`): only wired when the host can provide the reviewQueue service at all.
+  const queue = reviewQueue ? createQueueRunner({ queue: reviewQueue, select }) : undefined
+
   const flow = createFlow({
     speak: (text, opts) => speaker.speak(text, opts),
     listen,
@@ -146,7 +152,7 @@ export function createVoiceService({
       controller,
       runSlash,
       approvals: { peek: (a) => approvals.peek(a), answer: async (a) => approvals.answer(a) },
-      select: (id) => { selected = id },
+      select,
       cwdOf,
       uuid: uuid8,
     }),
@@ -158,6 +164,7 @@ export function createVoiceService({
     clearTimer,
     uuid: uuid8,
     onIdle: notifyIdle,
+    queue,
   })
 
   const onEvent = (event) => {
