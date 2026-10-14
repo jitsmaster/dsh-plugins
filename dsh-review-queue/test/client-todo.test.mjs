@@ -62,6 +62,20 @@ test('todoTarget and todoLine: the workspace that would be used and the sentence
   assert.equal(T.todoLine(todo({ state: 'failed', error: 'boom' }), '', ws), 'Could not start: boom')
 })
 
+test('todoLine: with no suggestion the card says why (the model pass note), never while still looking and never next to a suggestion', () => {
+  const { T } = load()
+  const ws = [{ id: 'w1', title: 'Alpha' }, { id: 'w2', title: 'Beta' }]
+  const none = todo({ suggested: undefined, suggesting: false, suggestNote: 'timed out after 15 s' })
+  assert.equal(T.todoCardState(none), 'pick')
+  assert.equal(T.todoLine(none, '', ws), 'Pick a workspace (no suggestion: timed out after 15 s)')
+  assert.equal(T.todoLine(todo({ suggested: undefined, suggestNote: 'the model found no clear fit' }), '', ws), 'Pick a workspace (no suggestion: the model found no clear fit)')
+  assert.equal(T.todoLine(todo({ suggested: undefined, suggestNote: '' }), '', ws), 'Pick a workspace')
+  assert.equal(T.todoLine(todo({ suggested: undefined, suggesting: true, suggestNote: 'old' }), '', ws), 'Looking for a workspace…')
+  assert.equal(T.todoLine(todo({ suggestNote: 'stale' }), '', ws), 'Start in Alpha — named in the text')
+  assert.equal(T.todoLine(none, 'w2', ws), 'Start in Beta')
+  assert.equal(T.todoLine(todo({ suggested: undefined, suggestNote: 42 }), '', ws), 'Pick a workspace')
+})
+
 test('waitingCount: a todo that is starting is not waiting on the user', () => {
   const { T } = load()
   assert.equal(T.waitingCount([todo(), todo({ state: 'starting' }), todo({ state: 'failed' }), { type: 'completed' }]), 3)
@@ -204,4 +218,25 @@ test('source: the header has "+ New todo" next to Resolved, the form and the car
   assert.match(body, /onClick: \(\) => openSession\(item\)/)
   assert.ok(!/useEffect\([^)]*openSession/.test(body), 'the session is never opened by itself')
   assert.match(source, /"pr-merged", "todo"\]/, 'the filter bar knows the todo type')
+})
+
+test('todoSelect: the dropdown shows the suggested workspace selected, the user pick wins, and there is a placeholder only when nothing is chosen', () => {
+  const { T } = load()
+  const ws = [{ id: 'w1', title: 'Alpha' }, { id: 'w2', title: 'Beta' }]
+  const sel = T.todoSelect(todo(), '', ws)
+  assert.equal(sel.value, 'w1', 'the suggestion is preselected')
+  assert.equal(sel.placeholder, undefined, 'nothing to pick, so no placeholder')
+  assert.deepEqual(JSON.parse(JSON.stringify(sel.options)), [{ id: 'w1', title: 'Alpha' }, { id: 'w2', title: 'Beta' }])
+  assert.equal(T.todoSelect(todo(), 'w2', ws).value, 'w2', 'a pick wins over the suggestion')
+  const none = T.todoSelect(todo({ suggested: undefined }), '', ws)
+  assert.equal(none.value, '')
+  assert.equal(none.placeholder, 'Pick a workspace…')
+  assert.equal(T.todoSelect(todo({ suggested: undefined, workspaceId: 'w2', state: 'failed' }), '', ws).value, 'w2', 'a failed todo keeps the workspace it had')
+})
+
+test('todoSelect: a suggested workspace that is not (yet) in the loaded list is still an option, so the select can show it', () => {
+  const { T } = load()
+  assert.deepEqual(JSON.parse(JSON.stringify(T.todoSelect(todo(), '', null).options)), [{ id: 'w1', title: 'Alpha' }])
+  assert.deepEqual(JSON.parse(JSON.stringify(T.todoSelect(todo(), '', [{ id: 'w2', title: 'Beta' }]).options)), [{ id: 'w1', title: 'Alpha' }, { id: 'w2', title: 'Beta' }])
+  assert.deepEqual(JSON.parse(JSON.stringify(T.todoSelect(todo({ suggested: undefined }), '', undefined).options)), [])
 })

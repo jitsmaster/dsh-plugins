@@ -206,7 +206,7 @@ test('mdBlocks finds headings, paragraphs, lists, quotes and fenced code', () =>
   assert.deepEqual(T.mdBlocks('```\nunclosed'), [{ t: 'code', text: 'unclosed', lang: '' }])
 })
 
-// --- the overlay closes itself 15 s after the waiting list empties ---
+// --- the task list stays open when the waiting list empties (no auto-close) ---
 
 function loadWithTimers(overlayOn, extraStore = {}) {
   const timers = []
@@ -221,82 +221,19 @@ function loadWithTimers(overlayOn, extraStore = {}) {
   vm.runInNewContext(readFileSync(file, 'utf8'), sandbox, { filename: file })
   const stubReact = { createElement: () => null, Fragment: Symbol('Fragment'), useState() {}, useEffect() {}, useRef() {}, useSyncExternalStore() {} }
   const m = registered.factory(() => stubReact)
-  const closeTimers = () => timers.filter((t) => t.ms === m.__test.EMPTY_CLOSE_MS)
-  const live = () => closeTimers().filter((t) => !t.cancelled && !t.fired)
-  const fire = () => { for (const t of live()) { t.fired = true; t.fn() } }
-  return { m, store, timers, closeTimers, live, fire }
+  // Runs every timer still pending, whatever its delay: an auto-close of any length would show up here.
+  const fireAll = () => { for (const t of timers) if (!t.cancelled && !t.fired) { t.fired = true; t.fn() } }
+  return { m, store, timers, fireAll }
 }
 const snapOf = (n) => ({ snapshotId: 's' + n, open: Array.from({ length: n }, (_, i) => ({ id: 'i' + i })), resolved: [] })
 
-test('the grace period is 15 seconds', () => {
-  assert.equal(T.EMPTY_CLOSE_MS, 15000)
-})
-
-test('emptiedAction arms only when the list goes from non-empty to empty and cancels once something waits again', () => {
-  assert.equal(T.emptiedAction(3, 0), 'arm')
-  assert.equal(T.emptiedAction(1, 0), 'arm')
-  assert.equal(T.emptiedAction(undefined, 0), undefined, 'first snapshot being empty is not a transition')
-  assert.equal(T.emptiedAction(0, 0), undefined)
-  assert.equal(T.emptiedAction(0, 2), 'cancel')
-  assert.equal(T.emptiedAction(2, 1), 'cancel')
-  assert.equal(T.emptiedAction(undefined, 4), 'cancel')
-})
-
-test('open overlay closes 15 s after the last waiting item goes away', () => {
-  const { m, store, live, fire } = loadWithTimers(true)
+test('an open task list stays open after the last waiting item goes away', () => {
+  const { m, store, fireAll } = loadWithTimers(true)
   m.__test.applySnapshot(snapOf(2))
-  assert.equal(live().length, 0, 'nothing is scheduled while items wait')
   m.__test.applySnapshot(snapOf(0))
-  assert.equal(live().length, 1)
-  assert.equal(m.__test.state.overlay, true, 'still open during the grace period')
-  fire()
-  assert.equal(m.__test.state.overlay, false)
-  assert.equal(store['dsh-review-queue.overlay'], '0')
-})
-
-test('a new item within the 15 s keeps the overlay open', () => {
-  const { m, live, fire } = loadWithTimers(true)
-  m.__test.applySnapshot(snapOf(1))
-  m.__test.applySnapshot(snapOf(0))
-  assert.equal(live().length, 1)
-  m.__test.applySnapshot(snapOf(1))
-  assert.equal(live().length, 0, 'the pending close is cancelled')
-  fire()
+  fireAll()
   assert.equal(m.__test.state.overlay, true)
-})
-
-test('an overlay opened on an already empty queue is not closed', () => {
-  const { m, closeTimers } = loadWithTimers(true)
-  m.__test.applySnapshot(snapOf(0))
-  m.__test.applySnapshot(snapOf(0))
-  assert.equal(closeTimers().length, 0)
-  assert.equal(m.__test.state.overlay, true)
-})
-
-test('nothing is scheduled when the overlay is already closed, and closing by hand cancels the timer', () => {
-  const closed = loadWithTimers(false)
-  closed.m.__test.applySnapshot(snapOf(2))
-  closed.m.__test.applySnapshot(snapOf(0))
-  assert.equal(closed.closeTimers().length, 0)
-
-  const { m, live } = loadWithTimers(true)
-  m.__test.applySnapshot(snapOf(1))
-  m.__test.applySnapshot(snapOf(0))
-  assert.equal(live().length, 1)
-  m.__test.setOverlay(false)
-  assert.equal(live().length, 0)
-  m.__test.setOverlay(true) // reopened inside the grace period: the old timer must not close it
-  assert.equal(live().length, 0)
-})
-
-test('the timer re-checks the list: if an item came back between polls the overlay stays', () => {
-  const { m, live, fire } = loadWithTimers(true)
-  m.__test.applySnapshot(snapOf(1))
-  m.__test.applySnapshot(snapOf(0))
-  m.__test.state.snap = snapOf(1) // a snapshot landed without going through applySnapshot
-  fire()
-  assert.equal(m.__test.state.overlay, true)
-  assert.equal(live().length, 0)
+  assert.notEqual(store['dsh-review-queue.overlay'], '0')
 })
 
 // --- the "Full reply" and expand toggles survive closing and reopening the list ---

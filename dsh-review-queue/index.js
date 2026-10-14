@@ -21,6 +21,7 @@ import { createReader } from './reader.js'
 import { createRouter, PREFIX } from './server.js'
 import { createPushStore, loadOrCreateVapid, jsonFileIo } from './push.js'
 import { createPushRoutes } from './push-routes.js'
+import { createFileLog } from './filelog.js'
 
 export const name = 'review-queue'
 
@@ -41,7 +42,9 @@ export function apply(ctx, config = {}) {
     mkdirSync(stateDir, { recursive: true })
   } catch (error) { ctx.logger?.warn?.('review-queue: state directory unusable (' + String(error) + '); the queue is not persisted'); stateDir = undefined }
 
-  const log = (line) => ctx.logger?.info?.('review-queue: ' + line)
+  // Every log line also goes to review-queue.log next to queue.json (size capped), so a silent failure can be traced later.
+  const fileLog = stateDir ? createFileLog(join(stateDir, 'review-queue.log')) : undefined
+  const log = (line) => { ctx.logger?.info?.('review-queue: ' + line); fileLog?.('review-queue: ' + line) }
   const store = createStore({ io: stateDir ? fileIo(join(stateDir, 'queue.json')) : undefined })
   cancelStalePending(store)
   store.prune()

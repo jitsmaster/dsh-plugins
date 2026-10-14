@@ -13,8 +13,6 @@ window.__ModuleLoader__.load({
 		const API = "/review-queue";
 		const LS = { overlay: "dsh-review-queue.overlay", drafts: "dsh-review-queue.drafts", toggles: "dsh-review-queue.toggles" };
 		const WAIT_MS = 20000;
-		/** How long the overlay stays open after the last waiting item is gone. */
-		const EMPTY_CLOSE_MS = 15000;
 
 		// =====================================================================================
 		// Pure helpers (exported through exports.__test)
@@ -93,12 +91,6 @@ window.__ModuleLoader__.load({
 		const isSendKey = (e) => !!e && e.key === "Enter" && !e.shiftKey && !e.isComposing;
 		/** Heading of a card: the task title, else the session title. */
 		const cardTitle = (item) => (item && (item.title || item.sessionTitle)) || "Untitled";
-
-		/** What an incoming snapshot means for the auto-close: "arm" when the waiting list just went from non-empty to empty, "cancel" once something waits again. */
-		function emptiedAction(prevCount, nextCount) {
-			if (nextCount > 0) return "cancel";
-			return prevCount > 0 ? "arm" : undefined;
-		}
 
 		/** Id of the item to select once `id` leaves the list: the next one, else the previous one. */
 		function nextAfter(items, id) {
@@ -270,6 +262,16 @@ window.__ModuleLoader__.load({
 		/** The workspace id Start would use: the user's pick, else the one given before, else the suggestion. */
 		function todoTarget(item, pick) { return pick || (item && (item.workspaceId || (item.suggested && item.suggested.workspaceId))) || undefined; }
 		const canConfirm = (item, pick) => !!item && item.type === "todo" && (item.state === "awaiting-confirm" || item.state === "failed") && !!todoTarget(item, pick);
+		/** The workspace dropdown of a todo card, as an instruction for the select: the value to show selected (the user's pick, else the one given before, else the suggestion; "" when none), the options (the loaded workspaces, plus the target when it is not in them yet) and the placeholder (only while nothing is selected). */
+		function todoSelect(item, pick, workspaces) {
+			const value = todoTarget(item, pick) || "";
+			const options = (workspaces || []).map((w) => ({ id: w.id, title: w.title }));
+			if (value && !options.some((o) => o.id === value)) {
+				const known = item && item.suggested && item.suggested.workspaceId === value ? item.suggested.title : item && item.workspaceTitle;
+				options.unshift({ id: value, title: known || "the chosen workspace" });
+			}
+			return { value, options, placeholder: value ? undefined : "Pick a workspace…" };
+		}
 		/** The sentence under the task text. */
 		function todoLine(item, pick, workspaces) {
 			const title = (id) => { const w = (workspaces || []).find((x) => x.id === id); return w ? w.title : "the chosen workspace"; };
@@ -278,7 +280,9 @@ window.__ModuleLoader__.load({
 					const s = item.suggested;
 					if (pick && !(s && s.workspaceId === pick)) return "Start in " + title(pick);
 					if (s) return "Start in " + s.title + (s.reason ? " — " + s.reason : "");
-					return item.suggesting ? "Looking for a workspace…" : "Pick a workspace";
+					if (item.suggesting) return "Looking for a workspace…";
+					// Why there is no suggestion (timed out, no model, no clear fit...), so a silent failure is visible.
+					return typeof item.suggestNote === "string" && item.suggestNote ? "Pick a workspace (no suggestion: " + item.suggestNote + ")" : "Pick a workspace";
 				}
 				case "starting": return "Starting" + (item.workspaceTitle ? " in " + item.workspaceTitle : "") + "…";
 				case "started": return "Started" + (item.workspaceTitle ? " in " + item.workspaceTitle : "");
@@ -367,26 +371,11 @@ window.__ModuleLoader__.load({
 		const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l); }; };
 		const useStore = () => { useSyncExternalStore(subscribe, () => version); return state; };
 
-		let emptyTimer;
-		function cancelEmptyClose() { if (emptyTimer !== undefined) { clearTimeout(emptyTimer); emptyTimer = undefined; } }
-		/** The list just emptied while the overlay is open: close it after the grace period, unless something is waiting again by then. */
-		function armEmptyClose() {
-			cancelEmptyClose();
-			if (!state.overlay) return;
-			emptyTimer = setTimeout(() => {
-				emptyTimer = undefined;
-				if (state.overlay && state.snap && waitingCount(state.snap.open) === 0) setOverlay(false);
-			}, EMPTY_CLOSE_MS);
-		}
-		/** Takes a fresh snapshot into the store and runs the empty-list auto-close. */
+		/** Takes a fresh snapshot into the store. */
 		function applySnapshot(body) {
-			const prev = state.snap ? waitingCount(state.snap.open) : undefined;
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now() });
 			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen }, body);
 			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply))) set({ expanded: tog.expanded, replyOpen: tog.reply });
-			const action = emptiedAction(prev, waitingCount(body.open));
-			if (action === "arm") armEmptyClose();
-			else if (action === "cancel") cancelEmptyClose();
 		}
 
 		let polling = false;
@@ -468,7 +457,7 @@ window.__ModuleLoader__.load({
 		function openSession(item) {
 			if (!hostApi.openSession) return;
 			const failed = () => set({ errors: { ...state.errors, [item.id]: "That session no longer exists." } });
-			const done = () => { stopReading(); cancelEmptyClose(); set({ overlay: false }); storage.set(LS.overlay, "0"); };
+			const done = () => { stopReading(); set({ overlay: false }); storage.set(LS.overlay, "0"); };
 			let result;
 			try { result = hostApi.openSession(item.sessionId); } catch (e) { failed(); return; }
 			if (result && typeof result.then === "function") result.then(done, failed); else done();
@@ -510,7 +499,7 @@ window.__ModuleLoader__.load({
 			return ok;
 		}
 		const cancelTodo = (item) => act("/v1/todo-cancel", { id: item.id }, item.id, { advance: true });
-		function setOverlay(on) { cancelEmptyClose(); if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
+		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
 
 		// =====================================================================================
 		// Styles
@@ -688,6 +677,7 @@ window.__ModuleLoader__.load({
 			const busy = st.busy[item.id];
 			const s = todoCardState(item);
 			const pick = st.todoPick[item.id] || "";
+			const sel = todoSelect(item, pick, st.workspaces);
 			const waiting = s === "confirm" || s === "pick" || s === "suggesting" || s === "failed";
 			useEffect(() => { if (waiting && !state.workspaces) loadWorkspaces(); }, [waiting]);
 			return h(React.Fragment, null,
@@ -696,8 +686,8 @@ window.__ModuleLoader__.load({
 				h("div", { className: s === "failed" ? "rq-err" : "rq-sub" }, todoLine(item, pick, st.workspaces)),
 				waiting ? h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: busy || !canConfirm(item, pick), onClick: () => confirmTodo(item, pick) }, s === "failed" ? "Retry" : "Start"),
-					h("select", { className: "rq-input rq-sel", value: pick, disabled: busy, "aria-label": "Change workspace", onChange: (e) => set({ todoPick: { ...state.todoPick, [item.id]: e.target.value } }) },
-						h("option", { value: "" }, item.suggested || item.workspaceId ? "Change workspace…" : "Pick a workspace…"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
+					h("select", { className: "rq-input rq-sel", value: sel.value, disabled: busy, "aria-label": "Change workspace", onChange: (e) => set({ todoPick: { ...state.todoPick, [item.id]: e.target.value } }) },
+						sel.placeholder ? h("option", { value: "" }, sel.placeholder) : null, sel.options.map((w) => h("option", { key: w.id, value: w.id }, w.title))),
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => cancelTodo(item) }, "Cancel")) : null,
 				(s === "starting" || s === "started") && item.sessionId && hostApi.openSession ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", onClick: () => openSession(item) }, "Open session")) : null);
 		}
@@ -884,7 +874,7 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
 			stopped = false;
-			ctx.effect(() => { pollLoop(); return () => { stopped = true; cancelEmptyClose(); }; }, "review-queue: polling");
+			ctx.effect(() => { pollLoop(); return () => { stopped = true; }; }, "review-queue: polling");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
 			ctx.effect(() => (typeof window === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installHotkey(window)), "review-queue: hotkey");
 			// order 1000: after every other utility, i.e. next to the right-sidebar (corner) button.
@@ -896,9 +886,9 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, EMPTY_CLOSE_MS, emptiedAction, applySnapshot, setOverlay, state };
+		exports.__test = { isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
-		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoLine, waitingCount, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, submitTodo, confirmTodo, cancelTodo });
+		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, submitTodo, confirmTodo, cancelTodo });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick });
 		return module.exports;
 	}
