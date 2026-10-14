@@ -55,7 +55,8 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
     return { ok: true, status: 200, json: async () => { if (state.badJson) throw new SyntaxError('Unexpected token < in JSON'); return body } }
   }
   const created = []
-  const poller = installPrPoller(ctx, {}, { settings, fetchImpl, intervalMs, env, ...(withCreated ? { onPrCreated: async (a, id) => { created.push([a.id, id]) } } : {}) })
+  const merged = []
+  const poller = installPrPoller(ctx, {}, { settings, fetchImpl, intervalMs, env, onPrMerged: async (info) => { merged.push(info) }, ...(withCreated ? { onPrCreated: async (a, id) => { created.push([a.id, id]) } } : {}) })
   const agent = { id: 'a1', session: { header: { cwd: 'C:/proj' } } }
   const fire = async (event, ...args) => {
     let out
@@ -64,7 +65,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
   }
   const shell = (command, output, name = 'pwsh') => fire('tools/post-execute', { name, agent, arguments: { command } }, { content: [{ type: 'text', text: output }] })
   const log = () => { const p = join(dir, 'spawn.log'); return existsSync(p) ? readFileSync(p, 'utf8') : '' }
-  return { poller, agent, state, calls, settings, shell, fire, log, ctx, created, dir, fetchImpl }
+  return { poller, agent, state, calls, settings, shell, fire, log, ctx, created, dir, fetchImpl, merged }
 }
 
 // ---- parsing ----
@@ -787,4 +788,92 @@ test('checkWaits seeing a merge also stops the PR session poll of that PR', asyn
   h.state.prStatus = 'completed'
   await h.poller.checkWaits()
   assert.equal(h.poller.has('a1'), false)
+})
+
+// ---- merged PR: locate and start the follow-up session, report the PR session for archiving ----
+
+test('merged PR: a follow-up session whose wait was lost is located by its title and started; the PR session is reported once', async () => {
+  const h = harness()
+  h.state.known = { p1: 'PR 5', f1: 'feature - after PR 5', other: 'feature - after PR 6', unrelated: 'PR 55' }
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'completed'
+  await h.poller.poll('a1')
+  await new Promise((r) => setTimeout(r, 30))
+  assert.deepEqual(h.calls.prompt.map((p) => p.sessionId), ['f1']) // no wait was recorded for f1, the title found it
+  assert.match(h.calls.prompt[0].content[0].text, /Start the remaining work now/)
+  assert.equal(h.merged.length, 1)
+  assert.equal(h.merged[0].prId, '5')
+  assert.deepEqual(h.merged[0].prSessions.map((s) => s.id).sort(), ['a1', 'p1'])
+  assert.deepEqual(h.merged[0].followUps, [{ id: 'f1', title: 'feature - after PR 5' }])
+  await h.poller.checkWaits()
+  await h.poller.poll('a1')
+  assert.equal(h.merged.length, 1) // handled once
+  assert.equal(h.calls.prompt.length, 1)
+})
+
+test('merged PR: a follow-up with a recorded wait is started once, not twice, when it is also found by title', async () => {
+  const h = harness()
+  h.state.known = { f1: 'feature - after PR 5' }
+  h.poller.addWait('f1', '5')
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'completed'
+  await h.poller.poll('a1')
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(h.calls.prompt.length, 1)
+  assert.deepEqual(h.poller.waits(), [])
+  assert.deepEqual(h.merged[0].followUps.map((s) => s.id), ['f1'])
+})
+
+test('merged PR: a follow-up that cannot be reached is retried, and the report waits until it was told', async () => {
+  const h = harness()
+  h.state.known = { f1: 'feature - after PR 5' }
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'completed'
+  const sc = h.ctx.get('sessionController')
+  const original = sc.prompt
+  sc.prompt = async () => { throw new Error('queue down') }
+  await h.poller.poll('a1')
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(h.merged.length, 0)
+  assert.deepEqual(h.poller.waits(), [['f1', '5']])
+  sc.prompt = original
+  await h.poller.checkWaits()
+  assert.equal(h.calls.prompt.length, 1)
+  assert.equal(h.merged.length, 1)
+  h.poller.stopAll()
+})
+
+test('merged PR: seen by the wait check alone, the PR session is found by its title', async () => {
+  const h = harness()
+  h.state.known = { p1: 'PR 5' }
+  h.poller.addWait('f1', '5')
+  h.state.prStatus = 'completed'
+  await h.poller.checkWaits()
+  assert.equal(h.calls.prompt.length, 1)
+  assert.deepEqual(h.merged[0].prSessions.map((s) => s.id), ['p1'])
+})
+
+test('abandoned PR: no archive offer is made', async () => {
+  const h = harness()
+  h.state.known = { p1: 'PR 5' }
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'abandoned'
+  await h.poller.poll('a1')
+  await h.poller.checkWaits()
+  assert.equal(h.merged.length, 0)
+})
+
+test('the merge report survives a restart: a PR handled before is not announced again', async () => {
+  const h = harness()
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'completed'
+  await h.poller.poll('a1')
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(h.merged.length, 1)
+  const again = []
+  const second = installPrPoller(h.ctx, {}, { settings: h.settings, fetchImpl: h.fetchImpl, env: { AZURE_DEVOPS_EXT_PAT: PAT }, onPrMerged: async (i) => { again.push(i) } })
+  second.addWait('f2', '5')
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(again.length, 0)
+  second.stopAll()
 })

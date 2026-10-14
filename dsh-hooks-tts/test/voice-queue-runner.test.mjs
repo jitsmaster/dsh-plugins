@@ -60,6 +60,8 @@ test('count: the exact wording table', () => {
   assert.equal(t(25, 0, 0, 25), '25 waiting: 25 done.')
   assert.equal(t(120, 100, 10, 10), '120 waiting: 100 questions, ten permissions, ten done.')
   assert.equal(countLine({ total: 2, byType: { question: 1 } }), 'Two waiting: one question.', 'a missing type counts as none')
+  assert.equal(countLine({ total: 2, byType: { question: 1, 'pr-merged': 1 } }), 'Two waiting: one question, one merged pull request.')
+  assert.equal(countLine({ total: 2, byType: { 'pr-merged': 2 } }), 'Two waiting: two merged pull requests.')
   assert.equal(countLine({ total: 0 }), 'Nothing waiting.')
   assert.equal(countLine(undefined), 'Nothing waiting.')
 })

@@ -24,7 +24,7 @@ import { permissionHandler } from './reply-permission.js'
 import { questionHandler } from './reply-question.js'
 
 /** [byType key, singular, plural] in spoken order; "done" has no plural. */
-const TYPES = [['question', 'question', 'questions'], ['permission', 'permission', 'permissions'], ['completed', 'done', 'done']]
+const TYPES = [['question', 'question', 'questions'], ['permission', 'permission', 'permissions'], ['completed', 'done', 'done'], ['pr-merged', 'merged pull request', 'merged pull requests']]
 
 /** "Three waiting: one question, one permission, one done." / "Nothing waiting." — total first, zero types omitted. */
 export function countLine(count) {
