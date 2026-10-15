@@ -55,6 +55,10 @@ Set in the plugin's `config` (see `cordis.patch.yml`); all optional.
 | `sparcCommandPath` | ~/.claude/commands/modes/sparc.md | The modes:sparc command text a *Use SPARC* todo puts in the new session's first prompt. |
 | `dev` | off | `true`, or env `DSH_REVIEW_QUEUE_DEV=1`, enables `POST /v1/dev/ask` which creates fake items (testing only; never enable in a real profile). |
 
+## Taskbar badge
+
+On Windows the number of waiting items (the count in the Task list header) also shows as a red badge on the app's taskbar button, so you can see from the taskbar whether anything changed. The Desktop window is owned by the Electron main process, so `scripts/taskbar-badge.ps1` finds the window up the host's parent process chain and sets the overlay icon through the shell; `taskbar.js` debounces changes and only sends a changed count. Nine or more shows `9+`; zero removes the badge, as does stopping the plugin. When DSH runs in a browser there is no such window and nothing happens. Turn it off with config `taskbarBadge: false` or env `DSH_RQ_TASKBAR=0`. A DSH server restart loads it; no browser refresh is needed.
+
 ## HTTP API
 
 Served on the DSH web server under `/review-queue` (same host/origin fence and cookie auth as the rest of the web UI). JSON only.

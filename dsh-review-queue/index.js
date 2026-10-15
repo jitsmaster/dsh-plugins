@@ -3,6 +3,8 @@
  * questions, permission requests) into one queue and serves it to the browser half (lib/client.js: a sidebar tab and
  * a full-screen overlay) under /review-queue on the Host web server.
  *
+ * `taskbarBadge` (default on, Windows only; env DSH_RQ_TASKBAR=0 turns it off): the number of waiting items as a badge on the app's taskbar button (taskbar.js).
+ *
  * Config (all optional): `sparcCommandPath` (the modes:sparc command file a "Use SPARC" todo inlines, default ~/.claude/commands/modes/sparc.md), `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
  * sibling plugin folder), `voice` ('male' default, or 'female') for the play button, `dev` (true, or env DSH_REVIEW_QUEUE_DEV=1, enables the
  * /v1/dev/ask route that creates fake questions, permissions and completions for testing the UI), `pushSubject` (the mailto: or https: contact
@@ -22,6 +24,7 @@ import { createRouter, PREFIX } from './server.js'
 import { createPushStore, loadOrCreateVapid, jsonFileIo } from './push.js'
 import { createPushRoutes } from './push-routes.js'
 import { createFileLog } from './filelog.js'
+import { createTaskbarBadge } from './taskbar.js'
 
 export const name = 'review-queue'
 
@@ -81,9 +84,19 @@ export function apply(ctx, config = {}) {
   }
   const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker: reader, llm, titlesOf, sparcText, log })
 
+  // The waiting count as a badge on the taskbar button. Off in node --test runs (they set NODE_TEST_CONTEXT) unless a test asks with taskbarBadge: true.
+  const badgeWanted = config.taskbarBadge === true || (config.taskbarBadge !== false && process.env.DSH_RQ_TASKBAR !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
+  const taskbar = badgeWanted
+    ? createTaskbarBadge({
+      queue, spawn: config.badgeDeps?.spawn ?? spawn, script: join(HERE, 'scripts', 'taskbar-badge.ps1'), pid: process.pid, log,
+      powershell: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ...(config.badgeDeps ?? {}),
+    })
+    : undefined
+
   const pruneTimer = setInterval(() => store.prune(), 3600_000)
   pruneTimer.unref?.()
-  ctx.effect?.(() => () => { clearInterval(pruneTimer); capture.dispose(); reader.stop() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(pruneTimer); capture.dispose(); reader.stop(); await taskbar?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.
