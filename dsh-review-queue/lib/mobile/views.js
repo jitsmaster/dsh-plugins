@@ -3,10 +3,18 @@ import { html, useState, useEffect, useRef } from './vendor/preact-htm.js'
 import { state, subscribe, set, act, getCore } from './api.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { SettingsView } from './settings.js'
+import { listModel, todoView } from './model.js'
 
 export function useStore() {
   const [, tick] = useState(0)
-  useEffect(() => subscribe(() => tick((n) => n + 1)), [])
+  const seen = useRef(state.version)
+  seen.current = state.version
+  useEffect(() => {
+    // The effect runs after the first paint: an update that landed in between (a fast local snapshot) would be missed for good,
+    // so catch up once when the version moved on since this render.
+    if (state.version !== seen.current) tick((n) => n + 1)
+    return subscribe(() => tick((n) => n + 1))
+  }, [])
   return state
 }
 export function useRoute() {
@@ -186,10 +194,12 @@ function PrMergedBody({ item }) {
 
 /** A todo is started and confirmed from the desktop task list; the phone only shows it. */
 function TodoBody({ item }) {
+  const v = todoView(getCore(), item)
   return html`<div>
-    <div class="text">${item.text}</div>
-    <div class="sub">${item.suggested ? 'Suggested workspace: ' + item.suggested.title : item.workspaceTitle ? 'Workspace: ' + item.workspaceTitle : 'No workspace chosen yet.'}</div>
-    <div class="sub">Start or cancel this todo from the task list on the desktop.</div>
+    <div class="text">${v.text}</div>
+    ${v.sparc ? html`<div class="sub">Use SPARC</div>` : null}
+    <div class=${v.failed ? 'err' : 'sub'}>${v.line}</div>
+    ${item.state === 'awaiting-confirm' || item.state === 'failed' ? html`<div class="sub">Start or cancel this todo from the task list on the desktop.</div>` : null}
   </div>`
 }
 
@@ -205,12 +215,11 @@ function ItemRow({ item }) {
   </a>`
 }
 
-function FilterBar() {
-  const c = getCore()
+function FilterBar({ model }) {
   const st = useStore()
   const f = st.filter
   return html`<div class="filter">
-    <div class="chips">${['all', 'completed', 'question', 'permission', 'pr-merged'].map((t) => html`<button class=${'fchip' + (f.type === t ? ' on' : '')} aria-pressed=${f.type === t} onClick=${() => set({ filter: { ...f, type: t } })}>${t === 'all' ? 'All' : c.typeLabel(t)}</button>`)}</div>
+    <div class="chips">${model.chips.map((c) => html`<button class=${'fchip' + (c.on ? ' on' : '')} aria-pressed=${c.on} onClick=${() => set({ filter: { ...f, type: c.type } })}>${c.label}</button>`)}</div>
     <input class="input" type="search" placeholder="Search…" value=${f.query} onInput=${(e) => set({ filter: { ...f, query: e.target.value } })} />
   </div>`
 }
@@ -219,9 +228,10 @@ function WaitingList() {
   const c = getCore()
   const st = useStore()
   const all = st.snap ? st.snap.open : []
-  const shown = c.filterItems(all, st.filter)
+  const model = listModel(c, st.snap, st.filter)
+  const shown = model.open
   return html`<div>
-    ${all.length > 3 || st.filter.query || st.filter.type !== 'all' ? html`<${FilterBar} />` : null}
+    ${model.barVisible ? html`<${FilterBar} model=${model} />` : null}
     ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
   </div>`
 }
@@ -230,9 +240,10 @@ function ResolvedList() {
   const c = getCore()
   const st = useStore()
   const all = st.snap ? st.snap.resolved : []
-  const shown = c.filterItems(all, st.filter)
+  const model = listModel(c, st.snap, st.filter)
+  const shown = model.resolved
   return html`<div>
-    <${FilterBar} />
+    <${FilterBar} model=${model} />
     ${shown.length ? shown.map((i) => html`<a class="rowitem" key=${i.id} href=${'#/item/' + i.id}>
       <div class="top"><${Chip} type=${i.type} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
       <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved in the last 7 days.'}</div>`}
@@ -270,7 +281,8 @@ export function App() {
   if (!st.ready && !st.snap) return html`<p class="boot">${st.error || 'Loading the task list…'}</p>`
   const item = /^\/item\/(.+)$/.exec(route)
   const tab = route === '/resolved' ? 'resolved' : route === '/settings' ? 'settings' : 'waiting'
-  const count = st.snap ? st.snap.open.length : 0
+  const model = listModel(getCore(), st.snap, st.filter)
+  const count = model.waiting
   return html`<div class="app">
     <header><h1>Task list</h1><span class="count">${count} waiting</span></header>
     ${st.error ? html`<div class="banner">${st.error}</div>` : null}
@@ -279,7 +291,7 @@ export function App() {
     </main>
     <nav>
       <a class=${tab === 'waiting' && !item ? 'on' : ''} href="#/">Waiting${count ? html`<span class="badge">${count}</span>` : null}</a>
-      <a class=${tab === 'resolved' && !item ? 'on' : ''} href="#/resolved">Resolved</a>
+      <a class=${tab === 'resolved' && !item ? 'on' : ''} href="#/resolved">Resolved${model.resolvedCount ? html`<span class="badge dim">${model.resolvedCount}</span>` : null}</a>
       <a class=${tab === 'settings' && !item ? 'on' : ''} href="#/settings">Settings</a>
     </nav>
   </div>`

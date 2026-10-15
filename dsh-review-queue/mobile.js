@@ -22,6 +22,7 @@ export const FILES = {
   'core.js': { file: join(M, 'core.js'), type: JS },
   'views.js': { file: join(M, 'views.js'), type: JS },
   'hold.js': { file: join(M, 'hold.js'), type: JS },
+  'model.js': { file: join(M, 'model.js'), type: JS },
   'settings.js': { file: join(M, 'settings.js'), type: JS },
   'push-client.js': { file: join(M, 'push-client.js'), type: JS },
   'style.css': { file: join(M, 'style.css'), type: 'text/css; charset=utf-8' },

@@ -6,19 +6,29 @@
  *   node scripts/dev-server.mjs            -> http://127.0.0.1:8788/review-queue/m/   (PORT=... overrides the port)
  *
  * Extra routes: GET /__dev/pushes (what would have been pushed), GET /__dev/prompts (replies sent to sessions),
- * POST /__dev/reset (a fresh seeded list). State lives in a throwaway folder, never in the real DSH state.
+ * POST /__dev/reset (a fresh seeded list), POST /__dev/pr-merged (a merged-PR item), POST /__dev/push (sends a custom push payload to the registered devices). State lives in a
+ * throwaway folder, never in the real DSH state.
+ *
+ * Opt-in modes (CLI flags or env):
+ *   --real-queue / DEV_REAL_QUEUE=1   serve a COPY of ~/.dsh/review-queue/queue.json (read only on the source) in
+ *                                     ~/.dsh/scratch/rq-dev-real-state: no wipe, no seed; the fake session controller and registry still
+ *                                     only record. /__dev/reset re-copies the source. DEV_REAL_QUEUE_SOURCE=<file> overrides the source.
+ *   --real-push  / REAL_PUSH=1        the plugin's real Web Push sender instead of the recorder (the push services are really called).
  */
 import { createServer } from 'node:http'
-import { mkdirSync, unlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { apply } from '../index.js'
+import { createPushStore, jsonFileIo, loadOrCreateVapid } from '../push.js'
 import { seed } from './dev-seed.mjs'
 
 const PREFIX = '/review-queue'
 const STATE_FILES = ['queue.json', 'vapid.json', 'push.json']
 export const DEFAULT_STATE_DIR = join(homedir(), '.dsh', 'scratch', 'rq-dev-state')
+export const REAL_QUEUE_SOURCE = join(homedir(), '.dsh', 'review-queue', 'queue.json')
+export const REAL_STATE_DIR = join(homedir(), '.dsh', 'scratch', 'rq-dev-real-state')
 
 /** A stand-in for the summary model: the title is the reply's first line, the summary its last paragraph; "[no-action]" in a reply says nothing is for the user. */
 function fakeLlm() {
@@ -70,26 +80,39 @@ function createFakeHost({ pushes, prompts, log }) {
 const wipe = (stateDir) => { for (const f of STATE_FILES) for (const name of [f, f + '.tmp']) { try { unlinkSync(join(stateDir, name)) } catch { /* not there */ } } }
 
 /**
- * @param {{ port?: number, host?: string, stateDir?: string, quiet?: boolean }} [opts] port 0 picks a free port
+ * @param {{ port?: number, host?: string, stateDir?: string, quiet?: boolean, realQueue?: boolean | string, realPush?: boolean,
+ *   sendPushOverride?: Function }} [opts] port 0 picks a free port; realQueue true or a queue.json path serves a copy of it instead
+ *   of the demo seed; realPush uses the real Web Push sender (sendPushOverride stands in for it in tests)
  */
-export async function startDevServer({ port = 8788, host = '127.0.0.1', stateDir = DEFAULT_STATE_DIR, quiet = false } = {}) {
+export async function startDevServer({ port = 8788, host = '127.0.0.1', stateDir, quiet = false, realQueue = false, realPush = false, sendPushOverride } = {}) {
+  const source = realQueue ? resolve(typeof realQueue === 'string' ? realQueue : REAL_QUEUE_SOURCE) : undefined
+  stateDir = stateDir ?? (source ? REAL_STATE_DIR : DEFAULT_STATE_DIR)
+  if (source) {
+    if (!existsSync(source)) throw new Error('source queue not found: ' + source)
+    // Safety: the scratch copy must never be the real file, or the plugin would write into the real queue.
+    if (resolve(stateDir) === dirname(source)) throw new Error('the state dir is the same folder as the source queue: ' + stateDir)
+  }
   const log = quiet ? () => {} : (line) => console.log(line)
   const pushes = []
   const prompts = []
   mkdirSync(stateDir, { recursive: true })
   let app
 
+  // Real queue: a fresh copy of the source (the only access to it is this read); the push key and devices stay across restarts.
+  const copySource = () => { copyFileSync(source, join(stateDir, 'queue.json')); try { unlinkSync(join(stateDir, 'queue.json.tmp')) } catch { /* not there */ } }
+  const sendPush = (host_) => (realPush ? sendPushOverride : host_.sendPush)
   const mount = () => {
-    wipe(stateDir)
+    if (source) copySource(); else wipe(stateDir)
     pushes.length = 0
     prompts.length = 0
     const host_ = createFakeHost({ pushes, prompts, log })
-    const queue = apply(host_.ctx, { dev: true, stateDir, sendPush: host_.sendPush })
+    const queue = apply(host_.ctx, { dev: true, stateDir, sendPush: sendPush(host_) })
     app = { queue, route: host_.ctx.route, dispose: host_.dispose }
   }
   const unmount = () => { app?.dispose(); app?.queue?.stop?.() }
 
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+  const readBody = async (req) => { const chunks = []; for await (const c of req) chunks.push(c); try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { return {} } }
   let url
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://local').pathname
@@ -97,6 +120,8 @@ export async function startDevServer({ port = 8788, host = '127.0.0.1', stateDir
     if (path === '/__dev/pushes') return json(res, 200, pushes)
     if (path === '/__dev/prompts') return json(res, 200, prompts)
     if (path === '/__dev/reset' && req.method === 'POST') { await reset(); return json(res, 200, { ok: true }) }
+    if (path === '/__dev/pr-merged' && req.method === 'POST') return json(res, 200, devPrMerged(await readBody(req)))
+    if (path === '/__dev/push' && req.method === 'POST') return json(res, 200, await devPush(await readBody(req)))
     // Reading aloud on the desktop would speak through the real TTS client; the phone uses its own speech.
     if (path === PREFIX + '/v1/read') return json(res, 409, { ok: false, error: 'no-speaker' })
     if (path === PREFIX || path.startsWith(PREFIX + '/')) return app.route.handler(req, res)
@@ -107,14 +132,36 @@ export async function startDevServer({ port = 8788, host = '127.0.0.1', stateDir
   async function reset() {
     unmount()
     mount()
-    await seed({ base: url, queue: app.queue })
+    if (!source) await seed({ base: url, queue: app.queue })
   }
 
+  /** Adds a merged-PR item (the queue method the PR watcher would call): { prId, title?, followUps? }. */
+  function devPrMerged(body) {
+    const prId = String(body.prId ?? '1')
+    app.queue.notifyPrMerged({ prId, prSessions: [{ id: 'pr-' + prId, title: String(body.title ?? 'PR ' + prId) }], followUps: Array.isArray(body.followUps) ? body.followUps : [] })
+    return { ok: true }
+  }
+
+  /** Sends one payload ({ title, body, tag, url, device?, ttl?, urgency? }) to every registered device (or the one with that id), as the notifier would. */
+  async function devPush(body) {
+    const io = jsonFileIo(join(stateDir, 'push.json'), { mode: 0o600 })
+    const vapid = loadOrCreateVapid({ io: jsonFileIo(join(stateDir, 'vapid.json'), { mode: 0o600 }) })
+    // A separate store over the same file: it reads the devices at call time, so a device added or removed through the routes is seen.
+    const store = createPushStore({ io, vapid, ...(realPush ? (sendPushOverride ? { sendPush: sendPushOverride } : {}) : { sendPush: recorder }) })
+    const payload = { title: String(body.title ?? 'Task list'), body: String(body.body ?? ''), tag: String(body.tag ?? 'task-list'), url: String(body.url ?? '#/') }
+    const opts = { ttl: Number(body.ttl) || 300, urgency: body.urgency ?? 'normal', topic: String(body.topic ?? payload.tag) }
+    const targets = store.devices().filter((d) => body.device === undefined || d.id === body.device)
+    const results = []
+    for (const d of targets) { const r = await store.send(d.id, payload, opts); results.push({ id: d.id, ok: r.ok, status: r.status, gone: r.gone, ...(r.error ? { error: r.error } : {}) }) }
+    return { sent: results.length, results }
+  }
+  const recorder = async (subscription, payload, opts) => { pushes.push({ endpoint: subscription.endpoint, payload, opts: { ttl: opts.ttl, urgency: opts.urgency, topic: opts.topic } }); return { ok: true, status: 201, gone: false } }
+
   mount()
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve) })
+  await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(port, host, resolveListen) })
   url = 'http://' + host + ':' + server.address().port
-  await seed({ base: url, queue: app.queue })
-  log('review-queue dev server: ' + url + PREFIX + '/m/  (state ' + stateDir + ')')
+  if (!source) await seed({ base: url, queue: app.queue })
+  log('review-queue dev server: ' + url + PREFIX + '/m/  (state ' + stateDir + (source ? '; COPY of ' + source : '') + (realPush ? '; REAL push' : '') + ')')
 
   return {
     url,
@@ -132,7 +179,12 @@ export async function startDevServer({ port = 8788, host = '127.0.0.1', stateDir
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const dev = await startDevServer({ port: Number(process.env.PORT) || 8788 })
+  const flag = (name, env) => process.argv.includes('--' + name) || process.env[env] === '1'
+  const dev = await startDevServer({
+    port: Number(process.env.PORT) || 8788,
+    realQueue: flag('real-queue', 'DEV_REAL_QUEUE') ? (process.env.DEV_REAL_QUEUE_SOURCE || true) : false,
+    realPush: flag('real-push', 'REAL_PUSH'),
+  })
   const stop = () => { void dev.stop().then(() => process.exit(0)) }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)

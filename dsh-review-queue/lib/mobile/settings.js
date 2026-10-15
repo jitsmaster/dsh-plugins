@@ -95,7 +95,7 @@ export function SettingsView() {
     <section>
       <h3>This phone</h3>
       <label class="sub" for="dev-name">Name shown in the device list</label>
-      <input id="dev-name" class="input" maxlength="40" placeholder="e.g. Pixel 7" value=${prefs.name} onInput=${(e) => setPrefs({ ...prefs, name: e.target.value })} />
+      <input id="dev-name" class="input" maxlength="40" placeholder="e.g. Pixel 7" value=${prefs.name} onInput=${(e) => { const v = e.target.value; setPrefs((p) => ({ ...p, name: v })) }} />
       <div class="row"><button class="btn" disabled=${busy} onClick=${() => save(prefs, 'Saved.')}>Save name</button></div>
     </section>
     <section>
@@ -109,8 +109,8 @@ export function SettingsView() {
         <input type="checkbox" checked=${prefs.quiet.enabled} disabled=${busy} onChange=${(e) => save({ ...prefs, quiet: { ...prefs.quiet, enabled: e.target.checked } })} /></label>
       <div class="sub">Permission requests and questions still come through (a session is blocked). Done and merged items wait and arrive together when quiet hours end. Time zone: ${prefs.quiet.tz}.</div>
       <div class="times">
-        <label>From <input class="input" type="time" value=${prefs.quiet.start} onInput=${(e) => setPrefs({ ...prefs, quiet: { ...prefs.quiet, start: e.target.value } })} /></label>
-        <label>Until <input class="input" type="time" value=${prefs.quiet.end} onInput=${(e) => setPrefs({ ...prefs, quiet: { ...prefs.quiet, end: e.target.value } })} /></label>
+        <label>From <input class="input" type="time" value=${prefs.quiet.start} onInput=${(e) => { const v = e.target.value; setPrefs((p) => ({ ...p, quiet: { ...p.quiet, start: v } })) }} /></label>
+        <label>Until <input class="input" type="time" value=${prefs.quiet.end} onInput=${(e) => { const v = e.target.value; setPrefs((p) => ({ ...p, quiet: { ...p.quiet, end: v } })) }} /></label>
       </div>
       ${quietError ? html`<div class="err" role="alert">${quietError}</div>` : null}
       <div class="row"><button class="btn" disabled=${busy} onClick=${() => save(prefs, 'Saved.')}>Save quiet hours</button></div>

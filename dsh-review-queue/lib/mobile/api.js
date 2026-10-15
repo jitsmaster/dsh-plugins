@@ -4,6 +4,7 @@
  */
 import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
+import { pollWaitMs } from './model.js'
 
 /** The plugin prefix on this host ("/review-queue", or behind a public URL prefix). */
 export const API = location.pathname.replace(/\/m\/.*$/, '')
@@ -57,9 +58,9 @@ async function pollLoop() {
     const ac = new AbortController()
     current = ac
     let timedOut = false
-    const timeout = setTimeout(() => { timedOut = true; ac.abort() }, WAIT_MS + 15000)
+    const timeout = setTimeout(() => { timedOut = true; ac.abort() }, WAIT_MS + 15000) // also covers wait=0 (a hung connection)
     try {
-      const url = API + '/v1/snapshot?wait=' + WAIT_MS + '&client=phone' + (since ? '&since=' + encodeURIComponent(since) : '')
+      const url = API + '/v1/snapshot?wait=' + pollWaitMs(state, WAIT_MS) + '&client=phone' + (since ? '&since=' + encodeURIComponent(since) : '')
       const res = await fetch(url, { credentials: 'same-origin', signal: ac.signal })
       if (res.status === 401 || res.status === 403) { set({ auth: true, error: 'Not signed in (HTTP ' + res.status + '). Sign in to DSH in this browser, then reload.' }); await new Promise((r) => setTimeout(r, 5000)); continue }
       if (!res.ok) throw new Error('HTTP ' + res.status)
@@ -98,6 +99,7 @@ export async function init() {
   set({ ready: false })
   document.addEventListener('visibilitychange', () => { if (!document.hidden && current) current.abort() }) // a phone that slept has a dead connection
   window.addEventListener('online', () => { if (current) current.abort() })
+  window.addEventListener('offline', () => { if (current) current.abort() }) // a long-poll on a dead link would otherwise hide the outage for up to 20 s
   pollLoop()
 }
 

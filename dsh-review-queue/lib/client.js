@@ -292,6 +292,13 @@ window.__ModuleLoader__.load({
 		}
 		/** What waits on the user: a todo that is being started does not. */
 		const waitingCount = (open) => (open || []).filter((i) => !(i.type === "todo" && i.state === "starting")).length;
+		/** The filter chips, in order ("all" first); the phone page draws the same set. */
+		const FILTER_TYPES = ["all", "completed", "question", "permission", "pr-merged", "todo"];
+		/** The filter bar shows from four items in all (waiting + resolved), and always while a type or a search is active. */
+		function filterBarVisible(snap, f) {
+			const total = snap ? snap.open.length + snap.resolved.length : 0;
+			return !(total < 4 && !(f && f.query) && !(f && f.type && f.type !== "all"));
+		}
 		/** The endpoint a keyboard action calls for an item; Shift+A, Shift+D and e only apply to the cards they belong to (never a todo). */
 		function keyRoute(action, item) {
 			const type = item && item.type;
@@ -750,10 +757,9 @@ window.__ModuleLoader__.load({
 		function FilterBar({ snap }) {
 			const st = useStore();
 			const f = st.filter;
-			const total = snap ? snap.open.length + snap.resolved.length : 0;
-			if (total < 4 && !f.query && f.type === "all") return null;
+			if (!filterBarVisible(snap, f)) return null;
 			return h("div", { className: "rq-filter" },
-				["all", "completed", "question", "permission", "pr-merged", "todo"].map((t) => h("button", { key: t, className: "rq-fchip" + (f.type === t ? " on" : ""), "aria-pressed": f.type === t, onClick: () => set({ filter: { ...f, type: t } }) }, t === "all" ? "All" : typeLabel(t))),
+				FILTER_TYPES.map((t) => h("button", { key: t, className: "rq-fchip" + (f.type === t ? " on" : ""), "aria-pressed": f.type === t, onClick: () => set({ filter: { ...f, type: t } }) }, t === "all" ? "All" : typeLabel(t))),
 				h("input", { className: "rq-input rq-fsearch", placeholder: "Filter by title, session or workspace…", value: f.query, onChange: (e) => set({ filter: { ...f, query: e.target.value } }) }));
 		}
 
@@ -882,13 +888,13 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended };
+		exports.shared = { isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended, waitingCount, FILTER_TYPES, filterBarVisible, todoLine, todoCardState };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
-		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, submitTodo, confirmTodo, cancelTodo });
+		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, submitTodo, confirmTodo, cancelTodo });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick });
 		return module.exports;
 	}
