@@ -1,9 +1,14 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { html, useState, useEffect, useRef } from './vendor/preact-htm.js'
-import { state, subscribe, set, act, getCore } from './api.js'
+import { state, subscribe, set, act, getCore, loadWorkspaces, startTodo, NEW_TODO_ID } from './api.js'
 import { HOLD_MS, holdState } from './hold.js'
+import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { listModel, todoView } from './model.js'
+import { listModel, screenFor, todoCardModel } from './model.js'
+import { viewIssue } from './view-guard.js'
+import { platformInfo, installHint, isStandalone } from './platform.js'
+import { createDictation } from './dictation.js'
+import { TODO_MAX, newTodoPayload, todoErrorText, workspaceChoices, workspacesNote } from './todo-form.js'
 
 export function useStore() {
   const [, tick] = useState(0)
@@ -102,6 +107,29 @@ function ReadAloud({ item }) {
   return html`<button class="btn" aria-pressed=${on} onClick=${toggle}>${on ? '■ Stop' : '▶ Read aloud'}</button>`
 }
 
+/**
+ * Dictation button next to a free-text box: tap to listen, tap again to stop. The recognised text goes to onText (the box's draft setter),
+ * after the text already in the box; the user reviews it and presses the normal Send button. Hidden when the browser cannot do speech to text.
+ */
+function Mic({ text, onText, disabled }) {
+  const [on, setOn] = useState(false)
+  const [problem, setProblem] = useState(null)
+  const latest = useRef(onText)
+  latest.current = onText
+  const dictation = useRef(undefined)
+  // iOS words the permission errors differently (Settings > Safari, Siri & Dictation).
+  const ios = platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }).ios
+  if (dictation.current === undefined) dictation.current = createDictation({ win: window, ios, onText: (t) => latest.current(t), onState: setOn, onError: setProblem })
+  const d = dictation.current
+  useEffect(() => () => { if (d) d.stop() }, []) // leaving the screen releases the microphone
+  if (!d) return null
+  return html`<div class="micwrap">
+    <button class=${'btn mic' + (on ? ' on' : '')} type="button" aria-pressed=${on} aria-label=${on ? 'Stop dictation' : 'Dictate'} disabled=${disabled}
+      onClick=${() => (on ? d.stop() : d.start(text))}>${on ? '■' : '🎤'}</button>
+    ${problem ? html`<div class="sub" role="status">${problem}</div>` : null}
+  </div>`
+}
+
 // ---- item bodies ------------------------------------------------------------------------------------------------
 
 function QuestionBody({ item, path = '/v1/answer', sendLabel = 'Send answer' }) {
@@ -110,10 +138,13 @@ function QuestionBody({ item, path = '/v1/answer', sendLabel = 'Send answer' }) 
   const questions = item.payload.questions || []
   const drafts = st.drafts[item.id] || {}
   const busy = st.busy[item.id]
-  const setDraft = (qid, next) => set({ drafts: { ...st.drafts, [item.id]: { ...drafts, [qid]: next } } })
+  // Read the live drafts: dictation updates a box many times a second, between two renders.
+  const setDraft = (qid, next) => set({ drafts: { ...state.drafts, [item.id]: { ...(state.drafts[item.id] || {}), [qid]: next } } })
   const answers = c.buildAnswers(questions, drafts)
+  const note = path === '/v1/answer' ? c.detachedNote(item) : undefined
   const send = async () => { if (await act(path, { id: item.id, answers }, item.id)) { set({ drafts: { ...state.drafts, [item.id]: undefined } }); if (path === '/v1/answer') go('/') } }
   return html`<div>
+    ${note ? html`<div class="sub">${note}</div>` : null}
     ${questions.map((q) => {
       const d = drafts[q.id] || { selected: [], custom: '' }
       return html`<div class="q" key=${q.id}>
@@ -123,7 +154,10 @@ function QuestionBody({ item, path = '/v1/answer', sendLabel = 'Send answer' }) 
           onClick=${() => setDraft(q.id, c.toggleChoice(d, o.label, !!q.multiSelect))}>
           <span class="mark">${d.selected.includes(o.label) ? (q.multiSelect ? '☑' : '◉') : (q.multiSelect ? '☐' : '○')}</span>
           <span><span>${c.recommended(q, o.label) ? '★ ' : ''}${o.label}</span>${o.description ? html`<div class="d">${o.description}</div>` : null}</span></button>`)}
-        <input class="input" placeholder="Other answer…" value=${d.custom || ''} disabled=${busy} onInput=${(e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value })} />
+        <div class="inwrap">
+          <input class="input" placeholder="Other answer…" value=${d.custom || ''} disabled=${busy} onInput=${(e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value })} />
+          <${Mic} text=${d.custom || ''} disabled=${busy} onText=${(t) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: t })} />
+        </div>
       </div>`
     })}
     <div class="row"><button class="btn pri" disabled=${!answers || busy} onClick=${send}>${busy ? 'Sending…' : sendLabel}</button></div>
@@ -168,6 +202,7 @@ function CompletedBody({ item }) {
     ${item.payload && item.payload.reply ? html`<details open=${(item.payload.reply || '').length < 1500}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <textarea class="input ta" placeholder="Reply to this session…" value=${reply} disabled=${busy} onInput=${(e) => set({ replies: { ...st.replies, [item.id]: e.target.value } })}></textarea>
     <div class="row">
+      <${Mic} text=${reply} disabled=${busy} onText=${(t) => set({ replies: { ...state.replies, [item.id]: t } })} />
       <button class="btn pri" disabled=${busy || !reply.trim()} onClick=${send}>${busy ? 'Sending…' : 'Send reply'}</button>
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>
     </div>
@@ -192,14 +227,30 @@ function PrMergedBody({ item }) {
   </div>`
 }
 
-/** A todo is started and confirmed from the desktop task list; the phone only shows it. */
+/**
+ * A todo waiting for the user (awaiting confirmation, or failed): the suggested workspace, a dropdown preselected like the desktop,
+ * Start (Retry when failed) and Cancel. Starting, started and cancelled are read-only text.
+ */
 function TodoBody({ item }) {
-  const v = todoView(getCore(), item)
+  const st = useStore()
+  const [pick, setPick] = useState('')
+  const busy = st.busy[item.id]
+  const m = todoCardModel(getCore(), item, st.workspaces, pick || undefined)
+  useEffect(() => { if (m.canAct && !state.workspaces) loadWorkspaces() }, [m.canAct])
+  const start = async () => { if (await act('/v1/todo-confirm', { id: item.id, workspaceId: m.selected }, item.id)) go('/') }
+  const cancel = async () => { if (await act('/v1/todo-cancel', { id: item.id }, item.id)) go('/') }
   return html`<div>
-    <div class="text">${v.text}</div>
-    ${v.sparc ? html`<div class="sub">Use SPARC</div>` : null}
-    <div class=${v.failed ? 'err' : 'sub'}>${v.line}</div>
-    ${item.state === 'awaiting-confirm' || item.state === 'failed' ? html`<div class="sub">Start or cancel this todo from the task list on the desktop.</div>` : null}
+    <div class="text">${m.text}</div>
+    ${m.sparc ? html`<div class="sub">Use SPARC</div>` : null}
+    ${m.line ? html`<div class=${m.failed ? 'err' : 'sub'}>${m.line}</div>` : null}
+    ${m.canAct ? html`<select class="input" aria-label="Workspace" value=${m.selected} disabled=${busy} onChange=${(e) => setPick(e.target.value)}>
+        ${m.placeholder ? html`<option value="" disabled selected=${!m.selected}>${m.placeholder}</option>` : null}
+        ${m.options.map((o) => html`<option key=${o.id} value=${o.id} selected=${o.id === m.selected}>${o.title}</option>`)}
+      </select>
+      <div class="row">
+        <button class="btn pri" disabled=${busy || !m.canStart} onClick=${start}>${busy ? 'Working…' : m.startLabel}</button>
+        <button class="btn" disabled=${busy} onClick=${cancel}>Cancel</button>
+      </div>` : null}
   </div>`
 }
 
@@ -231,6 +282,7 @@ function WaitingList() {
   const model = listModel(c, st.snap, st.filter)
   const shown = model.open
   return html`<div>
+    <div class="row todo-link"><a class="btn pri" href="#/new">+ New todo</a></div>
     ${model.barVisible ? html`<${FilterBar} model=${model} />` : null}
     ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
   </div>`
@@ -248,6 +300,45 @@ function ResolvedList() {
       <div class="top"><${Chip} type=${i.type} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
       <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved in the last 7 days.'}</div>`}
   </div>`
+}
+
+/** The "+ New todo" screen (#/new): same flow as the desktop form. The draft lives in state, so it survives a trip to another screen. */
+function NewTodoView() {
+  const c = getCore()
+  const st = useStore()
+  const draft = st.todoDraft
+  const busy = st.busy[NEW_TODO_ID]
+  const [message, setMessage] = useState(null)
+  useEffect(() => { if (!state.workspaces) loadWorkspaces() }, [])
+  const edit = (patch) => set({ todoDraft: { ...state.todoDraft, ...patch } })
+  const note = workspacesNote(st.workspaces, st.workspacesError)
+  const start = async () => {
+    const payload = newTodoPayload(draft)
+    if (!payload.ok) { setMessage(payload.message); return }
+    setMessage(null)
+    const result = await startTodo(payload.body)
+    if (result.ok) go('/')
+    else setMessage(result.text || todoErrorText(c, result.status, result.body))
+  }
+  return html`<form class="card newtodo" onSubmit=${(e) => e.preventDefault()}>
+    <h2>New todo</h2>
+    <textarea class="input ta" placeholder="What should the new session do?" maxlength=${TODO_MAX} value=${draft.text} disabled=${busy}
+      onInput=${(e) => edit({ text: e.target.value })}></textarea>
+    <div class="row"><${Mic} text=${draft.text} disabled=${busy} onText=${(t) => edit({ text: t })} /></div>
+    <label class="field">Workspace
+      <select class="input" value=${draft.workspaceId} disabled=${busy} onChange=${(e) => edit({ workspaceId: e.target.value })}>
+        ${workspaceChoices(st.workspaces).map((o) => html`<option key=${o.value} value=${o.value} selected=${o.value === draft.workspaceId}>${o.label}</option>`)}
+      </select>
+    </label>
+    ${note ? html`<div class="sub">${note}</div>` : null}
+    ${st.workspacesError || (st.workspaces && !st.workspaces.length) ? html`<div class="row"><button class="btn" type="button" onClick=${() => loadWorkspaces()}>Reload workspaces</button></div>` : null}
+    <label class="switch"><input type="checkbox" checked=${draft.sparc} disabled=${busy} onChange=${(e) => edit({ sparc: e.target.checked })} /> Use SPARC</label>
+    ${message ? html`<div class="err">${message}</div>` : null}
+    <div class="row">
+      <button class="btn pri" type="button" disabled=${busy || !draft.text.trim()} onClick=${start}>${busy ? 'Starting…' : 'Start todo'}</button>
+      <a class="btn" href="#/">Back</a>
+    </div>
+  </form>`
 }
 
 function ItemView({ id }) {
@@ -273,21 +364,36 @@ function ItemView({ id }) {
   </article>`
 }
 
+const INSTALL_HINT_KEY = 'rq-m.install-hint-dismissed'
+/** Storage can be blocked (private mode): a failure only means the banner is not remembered. */
+const installHintDismissed = () => { try { return localStorage.getItem(INSTALL_HINT_KEY) === '1' } catch { return false } }
+const dismissInstallHint = () => { try { localStorage.setItem(INSTALL_HINT_KEY, '1') } catch { /* not remembered */ } }
+
 export function App() {
   const st = useStore()
   const route = useRoute()
   const [, tick] = useState(0)
+  const [hintGone, setHintGone] = useState(installHintDismissed)
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 30000); return () => clearInterval(t) }, [])
+  // Rotating the phone or toggling Desktop site changes the viewport: re-render so the guard banner follows.
+  useEffect(() => { const f = () => tick((n) => n + 1); window.addEventListener('resize', f); return () => window.removeEventListener('resize', f) }, [])
+  if (screenFor(st, route) === 'pair') return html`<${PairView} message=${st.pairMessage} />`
   if (!st.ready && !st.snap) return html`<p class="boot">${st.error || 'Loading the task list…'}</p>`
   const item = /^\/item\/(.+)$/.exec(route)
+  const isNew = route === '/new'
   const tab = route === '/resolved' ? 'resolved' : route === '/settings' ? 'settings' : 'waiting'
   const model = listModel(getCore(), st.snap, st.filter)
   const count = model.waiting
+  const guard = viewIssue({ userAgent: navigator.userAgent, innerWidth: window.innerWidth, maxTouchPoints: navigator.maxTouchPoints })
+  // iPhone in a Safari tab: say once how to install the Home Screen app (the only place push works on iOS).
+  const install = hintGone ? null : installHint(platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, standalone: isStandalone(window) }))
   return html`<div class="app">
     <header><h1>Task list</h1><span class="count">${count} waiting</span></header>
+    ${guard ? html`<div class="banner view-guard">${guard.message}</div>` : null}
+    ${install ? html`<div class="banner install-hint">${install} <button class="btn" type="button" onClick=${() => { dismissInstallHint(); setHintGone(true) }}>Dismiss</button></div>` : null}
     ${st.error ? html`<div class="banner">${st.error}</div>` : null}
     <main>
-      ${item ? html`<${ItemView} id=${decodeURIComponent(item[1])} />` : tab === 'resolved' ? html`<${ResolvedList} />` : tab === 'settings' ? html`<${SettingsView} />` : html`<${WaitingList} />`}
+      ${item ? html`<${ItemView} id=${decodeURIComponent(item[1])} />` : isNew ? html`<${NewTodoView} />` : tab === 'resolved' ? html`<${ResolvedList} />` : tab === 'settings' ? html`<${SettingsView} />` : html`<${WaitingList} />`}
     </main>
     <nav>
       <a class=${tab === 'waiting' && !item ? 'on' : ''} href="#/">Waiting${count ? html`<span class="badge">${count}</span>` : null}</a>

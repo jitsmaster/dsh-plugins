@@ -61,6 +61,9 @@ window.__ModuleLoader__.load({
 			return (answers || []).map((a) => [...(a.selected || []), a.custom ? "“" + a.custom + "”" : ""].filter(Boolean).join(", ")).join(" · ");
 		}
 
+		/** The note a detached open question shows (its live request ended, so the answer goes to the session). */
+		const detachedNote = (item) => (item && item.type === "question" && item.detached ? "The live request ended; your answer is sent to the session." : undefined);
+
 		/** Done items that left the list without the user acting on them can go back in. */
 		const isReopenable = (it) => !!(it && it.type === "completed" && it.resolution && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action"));
 
@@ -344,7 +347,7 @@ window.__ModuleLoader__.load({
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
-			selected: null, showResolved: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
+			selected: null, showResolved: false, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined }, workspaces: null, todoPick: {},
 		};
 		const listeners = new Set();
@@ -385,6 +388,9 @@ window.__ModuleLoader__.load({
 			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply))) set({ expanded: tog.expanded, replyOpen: tog.reply });
 		}
 
+		/** Whether somebody can see this page now: the hub's presence (is the desktop looked at?) counts only polls that say so. */
+		const pageVisible = () => typeof document !== "undefined" && document.visibilityState === "visible";
+
 		let polling = false;
 		let stopped = false;
 		async function pollLoop() {
@@ -394,7 +400,7 @@ window.__ModuleLoader__.load({
 			let fails = 0;
 			while (!stopped) {
 				try {
-					const url = API + "/v1/snapshot?wait=" + WAIT_MS + (since ? "&since=" + encodeURIComponent(since) : "");
+					const url = API + "/v1/snapshot?wait=" + WAIT_MS + (since ? "&since=" + encodeURIComponent(since) : "") + (pageVisible() ? "&visible=1" : "");
 					const res = await fetch(url, { credentials: "same-origin" });
 					if (!res.ok) throw new Error("HTTP " + res.status);
 					const body = await res.json();
@@ -438,8 +444,9 @@ window.__ModuleLoader__.load({
 			"not-open": "That item is no longer waiting.", "not-pending": "That request is no longer waiting for an answer.",
 			"bad-answer": "That answer does not match the question.", "empty": "Type something first.", "too-long": "That is too long.",
 			"no-controller": "Cannot reach the session right now.", "not-completed": "That only applies to finished work.", "not-pr-merged": "That only applies to a merged pull request.", "needs-confirm": "Confirm the approval first.", "needs-hold": "A risky request needs the press-and-hold confirmation.", "no-registry": "Cannot reach the session list right now.",
-			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so a late answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
+			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so the answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
+			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
 			"no-workspace": "Pick a workspace first.", "unknown-workspace": "That workspace no longer exists.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
 		};
 
@@ -484,6 +491,10 @@ window.__ModuleLoader__.load({
 				if (res.ok) { const j = await res.json(); if (j && Array.isArray(j.workspaces)) set({ workspaces: j.workspaces }); }
 			} catch (_e) { /* keep what we have */ }
 		}
+		/** The list again when none was loaded or the loaded one is empty: the app may not have had its workspaces yet when it was first asked. */
+		function ensureWorkspaces() { return state.workspaces && state.workspaces.length ? undefined : loadWorkspaces(); }
+		/** Why the dropdown has nothing but "Choose for me": a list that loaded empty is said so; nothing before it loaded or while it has entries. */
+		const workspacesNote = (list) => (Array.isArray(list) && !list.length ? "No workspace is listed yet (the app may still be loading them). Choose for me works without one." : undefined);
 		function openTodoForm() { patchForm({ open: true, error: undefined }); loadWorkspaces(); }
 		const closeTodoForm = () => patchForm({ open: false, error: undefined });
 		/** Adds the todo (POST /v1/todo). A workspace starts it at once; "Choose for me" waits for the confirm card. */
@@ -517,7 +528,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-head{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border)}"
 			+ ".rq-head h2{margin:0;font-size:14px;font-weight:600}.rq-count{background:var(--rq-layer2);border-radius:9px;padding:1px 8px;font-size:11px;color:var(--rq-mute)}"
 			+ ".rq-grow{flex:1}.rq-link{color:var(--rq-mute);padding:4px 8px;border-radius:6px}.rq-link:hover{background:var(--rq-hover);color:var(--rq-fg)}.rq-row>.rq-link:first-child{margin-left:-8px}"
-			+ ".rq-body{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px}.rq-banner{padding:8px 14px;background:#f25a5a22;color:var(--rq-err);font-size:12px}"
+			+ ".rq-body{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px}.rq-banner{padding:8px 14px;background:#f25a5a22;color:var(--rq-err);font-size:12px}.rq-notice{padding:6px 14px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#8883}.rq-notice-warn{background:#f2b5301f;color:var(--rq-fg)}"
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
 			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}"
@@ -588,7 +599,9 @@ window.__ModuleLoader__.load({
 					questions.length > 1 ? h("div", { className: "rq-sub" }, questions.length + " questions") : null);
 			}
 			const answers = buildAnswers(questions, drafts);
+			const note = path === "/v1/answer" ? detachedNote(item) : undefined;
 			return h(React.Fragment, null,
+				note ? h("div", { className: "rq-sub" }, note) : null,
 				questions.map((q) => {
 					const d = drafts[q.id] || { selected: [], custom: "" };
 					return h("div", { key: q.id, className: "rq-opts" },
@@ -686,7 +699,7 @@ window.__ModuleLoader__.load({
 			const pick = st.todoPick[item.id] || "";
 			const sel = todoSelect(item, pick, st.workspaces);
 			const waiting = s === "confirm" || s === "pick" || s === "suggesting" || s === "failed";
-			useEffect(() => { if (waiting && !state.workspaces) loadWorkspaces(); }, [waiting]);
+			useEffect(() => { if (waiting) ensureWorkspaces(); }, [waiting]);
 			return h(React.Fragment, null,
 				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.text),
 				item.sparc ? h("div", { className: "rq-sub" }, "Use SPARC") : null,
@@ -783,6 +796,7 @@ window.__ModuleLoader__.load({
 			const st = useStore();
 			const f = st.todoForm;
 			if (!f.open) return null;
+			const note = workspacesNote(st.workspaces);
 			return h("div", { className: "rq-todoform" },
 				h("textarea", { className: "rq-ta", autoFocus: true, placeholder: "What should the new session do? (Ctrl+Enter adds it)", value: f.text, disabled: f.busy, onChange: (e) => patchForm({ text: e.target.value, error: undefined }), onKeyDown: (e) => { if (isSubmitKey(e.nativeEvent || e)) { e.preventDefault(); submitTodo(); } } }),
 				h("div", { className: "rq-row" },
@@ -791,6 +805,7 @@ window.__ModuleLoader__.load({
 					h("span", { className: "rq-grow" }),
 					h("button", { className: "rq-btn pri", disabled: f.busy || !f.text.trim(), onClick: submitTodo }, f.busy ? "Adding…" : "Add todo"),
 					h("button", { className: "rq-link", disabled: f.busy, onClick: closeTodoForm }, "Cancel")),
+				note ? h("div", { className: "rq-sub" }, note) : null,
 				f.error ? h("div", { className: "rq-err" }, f.error) : null,
 				h("div", { className: "rq-sub" }, f.workspaceId ? "Starts in the background right away." : "Nothing starts until you confirm the workspace."));
 		}
@@ -801,8 +816,32 @@ window.__ModuleLoader__.load({
 			return h("div", { className: "rq-head" }, h("h2", null, "Task list"), h("span", { className: "rq-count" }, n),
 				h("span", { className: "rq-grow" }),
 				h("button", { className: "rq-link", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
-				h("button", { className: "rq-link", onClick: () => set({ showResolved: !st.showResolved }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
+				h("button", { className: "rq-link", onClick: () => set({ showResolved: !st.showResolved, showPhone: false }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
+				h("button", { className: "rq-link", title: "Pair a phone and manage the paired phones", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
 				extra);
+		}
+
+		// The phone panel (pairing code, paired phones, revoke) is lib/phone-panel.js. This file has to stay one self-contained script, so the panel is
+		// imported from the app's own route on first use and given React.
+		let phoneImporter = (url) => import(url);
+		let phonePanel;
+		function loadPhonePanel() {
+			phonePanel = phonePanel || phoneImporter(API + "/m/phone-panel.js").then((m) => m.createPhonePanel(React, { API, fmtAge }), (e) => { phonePanel = undefined; throw e; });
+			return phonePanel;
+		}
+		function PhoneHost() {
+			const [Loaded, setLoaded] = useState(null);
+			const [failed, setFailed] = useState(null);
+			useEffect(() => { loadPhonePanel().then((C) => setLoaded(() => C), (e) => setFailed(String((e && e.message) || e))); }, []);
+			if (Loaded) return h(Loaded);
+			return h("div", { className: failed ? "rq-err" : "rq-sub", style: { padding: "12px 20px" } }, failed ? "The phone panel could not be loaded (" + failed + "). Restart DSH if the plugin was just updated." : "Loading…");
+		}
+
+		/** The hub's one-line notice (phone sync off, hub unreachable); nothing when the snapshot carries none. */
+		function noticeBanner(snap) {
+			const n = snap && snap.notice;
+			const words = n && typeof n.text === "string" ? n.text.slice(0, 200) : "";
+			return words ? h("div", { className: "rq-notice rq-notice-" + (n.level === "warn" ? "warn" : "info"), role: "status" }, words) : null;
 		}
 
 		function Panel() {
@@ -814,7 +853,8 @@ window.__ModuleLoader__.load({
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : h("div", { className: "rq-empty" }, snap ? none : "Loading…");
 			const extra = h("button", { className: "rq-link", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), banner, h(TodoForm), h(FilterBar, { snap }),
+			if (st.showPhone) return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h("div", { className: "rq-body" }, h(PhoneHost)));
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(TodoForm), h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
@@ -829,8 +869,8 @@ window.__ModuleLoader__.load({
 			useEffect(() => {
 				if (!st.overlay) return undefined;
 				const onKey = (e) => {
-					if (e.key === "Escape") { if (state.todoForm.open) closeTodoForm(); else setOverlay(false); return; }
-					if (state.showResolved) return;
+					if (e.key === "Escape") { if (state.todoForm.open) closeTodoForm(); else if (state.showPhone) set({ showPhone: false }); else setOverlay(false); return; }
+					if (state.showResolved || state.showPhone) return;
 					const action = keyAction(e);
 					const cur = action ? currentItem() : undefined;
 					if (!cur) return;
@@ -888,14 +928,14 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended, waitingCount, FILTER_TYPES, filterBarVisible, todoLine, todoCardState };
+		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended, waitingCount, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
+		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
-		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, submitTodo, confirmTodo, cancelTodo });
-		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick });
+		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo });
+		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;
 	}
 });

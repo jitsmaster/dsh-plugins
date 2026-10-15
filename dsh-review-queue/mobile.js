@@ -21,17 +21,26 @@ export const FILES = {
   'api.js': { file: join(M, 'api.js'), type: JS },
   'core.js': { file: join(M, 'core.js'), type: JS },
   'views.js': { file: join(M, 'views.js'), type: JS },
+  'view-guard.js': { file: join(M, 'view-guard.js'), type: JS },
+  'platform.js': { file: join(M, 'platform.js'), type: JS },
   'hold.js': { file: join(M, 'hold.js'), type: JS },
   'model.js': { file: join(M, 'model.js'), type: JS },
+  'dictation.js': { file: join(M, 'dictation.js'), type: JS },
+  'todo-form.js': { file: join(M, 'todo-form.js'), type: JS },
   'settings.js': { file: join(M, 'settings.js'), type: JS },
+  'auth.js': { file: join(M, 'auth.js'), type: JS },
+  'pairing.js': { file: join(M, 'pairing.js'), type: JS },
   'push-client.js': { file: join(M, 'push-client.js'), type: JS },
   'style.css': { file: join(M, 'style.css'), type: 'text/css; charset=utf-8' },
   'sw.js': { file: join(M, 'sw.js'), type: JS, extra: { 'Service-Worker-Allowed': './' } },
   'manifest.webmanifest': { file: join(M, 'manifest.webmanifest'), type: 'application/manifest+json; charset=utf-8' },
+  'icon-180.png': { file: join(M, 'icon-180.png'), type: 'image/png' },
   'icon-192.png': { file: join(M, 'icon-192.png'), type: 'image/png' },
   'icon-512.png': { file: join(M, 'icon-512.png'), type: 'image/png' },
   'vendor/preact-htm.js': { file: join(M, 'vendor', 'preact-htm.js'), type: JS },
   'overlay.js': { file: join(LIB, 'client.js'), type: JS },
+  /** The desktop overlay's Phone panel (devices, pairing code), imported by the overlay on first use. */
+  'phone-panel.js': { file: join(LIB, 'phone-panel.js'), type: JS },
 }
 
 /**

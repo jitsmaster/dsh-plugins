@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../index.js'
-import { b64u } from '../webpush.js'
+import { b64u } from '../hub/webpush.js'
 
 function fakeCtx(admit = () => ({})) {
   const routes = []
@@ -32,14 +32,14 @@ test('apply creates the VAPID key once in the state dir and serves its public ha
   let web
   try {
     const a = fakeCtx()
-    apply(a.ctx, { stateDir: dir })
+    apply(a.ctx, { hub: false, stateDir: dir })
     web = await serve(a.routes[0])
     const { key } = await (await fetch(web.base + '/v1/push/key')).json()
     const file = JSON.parse(readFileSync(join(dir, 'vapid.json'), 'utf8'))
     assert.equal(key, file.publicKey)
     web.close()
     const b = fakeCtx()
-    apply(b.ctx, { stateDir: dir })
+    apply(b.ctx, { hub: false, stateDir: dir })
     web = await serve(b.routes[0])
     assert.equal((await (await fetch(web.base + '/v1/push/key')).json()).key, key, 'same key after a restart')
   } finally { web?.close(); rmSync(dir, { recursive: true, force: true }) }
@@ -52,7 +52,7 @@ test('devices are saved to push.json, survive a restart, and the test push goes 
   try {
     const sendPush = async (subscription, payload, opts) => { sent.push({ subscription, payload, opts }); return { ok: true, status: 201, gone: false } }
     const a = fakeCtx()
-    apply(a.ctx, { stateDir: dir, sendPush })
+    apply(a.ctx, { hub: false, stateDir: dir, sendPush })
     web = await serve(a.routes[0])
     const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/xyz', keys: keys() }
     const res = await fetch(web.base + '/v1/push/subscribe', { method: 'POST', headers: json, body: JSON.stringify({ subscription, name: 'Pixel' }) })
@@ -60,7 +60,7 @@ test('devices are saved to push.json, survive a restart, and the test push goes 
     assert.ok(existsSync(join(dir, 'push.json')))
     web.close()
     const b = fakeCtx()
-    apply(b.ctx, { stateDir: dir, sendPush })
+    apply(b.ctx, { hub: false, stateDir: dir, sendPush })
     web = await serve(b.routes[0])
     assert.equal((await (await fetch(web.base + '/v1/push/devices')).json()).devices[0].name, 'Pixel')
     const t = await fetch(web.base + '/v1/push/test', { method: 'POST', headers: json, body: JSON.stringify({ endpoint: subscription.endpoint }) })
@@ -76,7 +76,7 @@ test('push routes sit behind the same Host admission as every other route', asyn
   let web
   try {
     const a = fakeCtx(() => ({ rejection: 401 }))
-    apply(a.ctx, { stateDir: dir })
+    apply(a.ctx, { hub: false, stateDir: dir })
     web = await serve(a.routes[0])
     assert.equal((await fetch(web.base + '/v1/push/devices')).status, 401)
     assert.equal((await fetch(web.base + '/v1/push/key')).status, 401)
@@ -90,7 +90,7 @@ test('config.pushSubject sets the VAPID contact; with an unusable state dir the 
   let web
   try {
     const a = fakeCtx()
-    apply(a.ctx, { stateDir: blocker, pushSubject: 'https://example.org/contact', sendPush: async (s, p, o) => { sent.push(o); return { ok: true, status: 201, gone: false } } })
+    apply(a.ctx, { hub: false, stateDir: blocker, pushSubject: 'https://example.org/contact', sendPush: async (s, p, o) => { sent.push(o); return { ok: true, status: 201, gone: false } } })
     web = await serve(a.routes[0])
     const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/mem', keys: keys() }
     await fetch(web.base + '/v1/push/subscribe', { method: 'POST', headers: json, body: JSON.stringify({ subscription }) })

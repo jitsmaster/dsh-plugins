@@ -1,13 +1,14 @@
 /**
- * The phones that get push notifications: one record per browser push subscription, kept in push.json in the state dir, plus the
- * VAPID key pair (vapid.json, same dir). Validates what the phone sends, saves after every change, and removes a device the push
+ * The phones that get push notifications: one record per browser push subscription, kept in push.json, plus the
+ * VAPID key pair (vapid.json, same dir). In the hub a record belongs to a paired device (deviceId) or is a legacy record without one
+ * (an old push.json: it keeps receiving pushes; a paired device that subscribes with the same endpoint absorbs it, docs/hub.md 12.2). Validates what the phone sends, saves after every change, and removes a device the push
  * service reports as gone (404/410). The phone's own rules for quiet hours are reused (lib/mobile/push-client.js), so both sides agree.
  * Secrets (endpoint, keys) never leave through list(); the notifier reads them through devices() / send().
  */
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { PUSH_TYPES, validateQuietHours } from './lib/mobile/push-client.js'
+import { PUSH_TYPES, validateQuietHours } from '../lib/mobile/push-client.js'
 import { fromB64u, generateVapidKeys, publicKeyOf, sendPush as realSendPush } from './webpush.js'
 
 const VERSION = 1
@@ -21,14 +22,15 @@ const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const typeIds = PUSH_TYPES.map((t) => t.id)
 const defaultTypes = () => Object.fromEntries(typeIds.map((id) => [id, true]))
 
-/** Atomic JSON file: write a temp file (private mode where the OS has one), then rename over the target. */
-export function jsonFileIo(file, { mode } = {}) {
+/** Atomic JSON file: write a temp file (private mode where the OS has one), then rename over the target; prepare(tmp) runs before the rename. */
+export function jsonFileIo(file, { mode, prepare } = {}) {
   return {
     read: () => { try { return readFileSync(file, 'utf8') } catch { return undefined } },
     write: (text) => {
       const tmp = file + '.tmp'
       mkdirSync(dirname(file), { recursive: true })
       writeFileSync(tmp, text, mode === undefined ? undefined : { mode })
+      prepare?.(tmp) // a rename keeps the rights of the temp file: a private file is tightened here
       renameSync(tmp, file)
     },
   }
@@ -88,11 +90,12 @@ function settingsPatch({ name, types, quiet }) {
   return { ok: true, patch }
 }
 
-const publicDevice = (d) => ({ id: d.id, name: d.name, types: { ...d.types }, quiet: { ...d.quiet }, createdAt: d.createdAt, lastSuccessAt: d.lastSuccessAt ?? null, lastError: d.lastError ?? null })
+const publicDevice = (d) => ({ id: d.id, deviceId: d.deviceId ?? null, name: d.name, types: { ...d.types }, quiet: { ...d.quiet }, createdAt: d.createdAt, lastSuccessAt: d.lastSuccessAt ?? null, lastError: d.lastError ?? null })
 
 /**
  * @param {{ io?: { read: () => string | undefined, write: (text: string) => void }, now?: () => number, uuid?: () => string,
- *   sendPush?: typeof realSendPush, vapid?: { publicKey: string, privateKey: string, subject: string } }} [opts]
+ *   sendPush?: typeof realSendPush, vapid?: { publicKey: string, privateKey: string, subject: string } | (() => { publicKey: string, privateKey: string, subject: string }) }} [opts]
+ *   vapid may be a function, called when a push is sent (the hub creates its key pair on first use).
  */
 export function createPushStore({ io, now = Date.now, uuid = () => randomUUID().slice(0, 12), sendPush = realSendPush, vapid } = {}) {
   /** @type {Map<string, any>} */
@@ -109,7 +112,7 @@ export function createPushStore({ io, now = Date.now, uuid = () => randomUUID().
       if (!data || data.v !== VERSION || !Array.isArray(data.devices)) return
       for (const d of data.devices) {
         if (!isObject(d) || typeof d.id !== 'string' || !validEndpoint(d.endpoint) || !validKeys(d.keys)) continue
-        records.set(d.id, { ...d, types: { ...defaultTypes(), ...(isObject(d.types) ? d.types : {}) }, quiet: validateQuietHours(d.quiet).value ?? validateQuietHours({}).value })
+        records.set(d.id, { ...d, deviceId: typeof d.deviceId === 'string' ? d.deviceId : null, types: { ...defaultTypes(), ...(isObject(d.types) ? d.types : {}) }, quiet: validateQuietHours(d.quiet).value ?? validateQuietHours({}).value })
       }
     } catch { records.clear() }
   }
@@ -132,12 +135,16 @@ export function createPushStore({ io, now = Date.now, uuid = () => randomUUID().
       const parsed = settingsPatch(input)
       if (!parsed.ok) return parsed
       let device = byEndpoint(sub.endpoint)
+      const owner = typeof input?.deviceId === 'string' && input.deviceId ? input.deviceId : undefined
+      // A paired device has one subscription: a new endpoint replaces its old one.
+      if (owner) for (const other of [...records.values()]) if (other.deviceId === owner && other.endpoint !== sub.endpoint) records.delete(other.id)
       if (!device) {
         if (records.size >= MAX_DEVICES) return { ok: false, error: 'too-many-devices' }
-        device = { id: uuid(), endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, name: '', types: defaultTypes(), quiet: validateQuietHours({}).value, createdAt: now(), lastSuccessAt: null, lastError: null }
+        device = { id: uuid(), deviceId: null, endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, name: '', types: defaultTypes(), quiet: validateQuietHours({}).value, createdAt: now(), lastSuccessAt: null, lastError: null }
         records.set(device.id, device)
       }
       device.keys = { p256dh: sub.keys.p256dh, auth: sub.keys.auth }
+      if (owner) device.deviceId = owner // absorbs a legacy record, or moves the endpoint to the device that holds it now
       apply(device, parsed.patch)
       save()
       return { ok: true, device: publicDevice(device) }
@@ -160,11 +167,18 @@ export function createPushStore({ io, now = Date.now, uuid = () => randomUUID().
       save()
       return true
     },
+    /** Drops every subscription of a paired device (revoke); how many were dropped. */
+    removeByDevice(deviceId) {
+      const mine = [...records.values()].filter((d) => d.deviceId === deviceId)
+      for (const d of mine) records.delete(d.id)
+      if (mine.length) save()
+      return mine.length
+    },
     /** The full record (with endpoint and keys) for the notifier and the routes; a copy. */
     find: (target) => { const d = locate(target); return d ? structuredClone(d) : undefined },
     devices: () => [...records.values()].map((d) => structuredClone(d)),
-    /** Devices as the API shows them: no endpoint, no keys. */
-    list: () => [...records.values()].sort((a, b) => a.createdAt - b.createdAt).map(publicDevice),
+    /** Devices as the API shows them: no endpoint, no keys; { deviceId } cuts the list to one paired device. */
+    list: ({ deviceId } = {}) => [...records.values()].filter((d) => deviceId === undefined || d.deviceId === deviceId).sort((a, b) => a.createdAt - b.createdAt).map(publicDevice),
     /**
      * Sends to one device (an id, or a record from devices()) and keeps the books: a gone subscription is deleted, success and
      * failure are recorded. Never throws.
@@ -173,7 +187,7 @@ export function createPushStore({ io, now = Date.now, uuid = () => randomUUID().
     async send(target, payload, opts = {}) {
       const device = records.get(typeof target === 'string' ? target : target?.id)
       if (!device) return { ok: false, status: 0, gone: false, removed: false, error: 'unknown-device' }
-      const result = await sendPush({ endpoint: device.endpoint, keys: device.keys }, payload, { ...opts, vapid })
+      const result = await sendPush({ endpoint: device.endpoint, keys: device.keys }, payload, { ...opts, vapid: typeof vapid === 'function' ? vapid() : vapid })
       const current = records.get(device.id)
       if (!current) return { ...result, removed: false }
       if (result.gone) { records.delete(device.id); save(); return { ...result, removed: true } }

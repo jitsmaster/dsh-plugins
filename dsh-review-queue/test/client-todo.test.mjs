@@ -240,3 +240,32 @@ test('todoSelect: a suggested workspace that is not (yet) in the loaded list is 
   assert.deepEqual(JSON.parse(JSON.stringify(T.todoSelect(todo(), '', [{ id: 'w2', title: 'Beta' }]).options)), [{ id: 'w1', title: 'Alpha' }, { id: 'w2', title: 'Beta' }])
   assert.deepEqual(JSON.parse(JSON.stringify(T.todoSelect(todo({ suggested: undefined }), '', undefined).options)), [])
 })
+
+test('ensureWorkspaces loads the list when none was loaded or the loaded one is empty, and leaves a list that has entries alone', async () => {
+  const seen = []
+  let answer = []
+  const { T } = load({ fetchImpl: async (url) => { seen.push(url); return { ok: true, status: 200, json: async () => ({ workspaces: answer }) } } })
+  await T.ensureWorkspaces()
+  assert.equal(seen.length, 1, 'never loaded: loads')
+  assert.deepEqual(T.state.workspaces, [])
+  answer = [{ id: 'w1', title: 'Alpha' }]
+  await T.ensureWorkspaces()
+  assert.equal(seen.length, 2, 'an empty list is asked again')
+  assert.deepEqual(T.state.workspaces, [{ id: 'w1', title: 'Alpha' }])
+  await T.ensureWorkspaces()
+  assert.equal(seen.length, 2, 'a list with entries is kept')
+})
+
+test('source: a todo card that waits for the user asks for the workspaces when it has none, and the form says when there are none', () => {
+  const body = source.slice(source.indexOf('function TodoBody'), source.indexOf('function Card('))
+  assert.match(body, /useEffect\(\(\) => \{ if \(waiting\) ensureWorkspaces\(\);/)
+  const form = source.slice(source.indexOf('function TodoForm'), source.indexOf('function Head('))
+  assert.match(form, /workspacesNote\(st\.workspaces\)/)
+})
+
+test('workspacesNote: nothing before the list is loaded or while it has entries; a loaded empty list is explained', () => {
+  const { T } = load()
+  assert.equal(T.workspacesNote(null), undefined)
+  assert.equal(T.workspacesNote([{ id: 'w1', title: 'A' }]), undefined)
+  assert.match(T.workspacesNote([]), /No workspace is listed yet.*Choose for me/)
+})

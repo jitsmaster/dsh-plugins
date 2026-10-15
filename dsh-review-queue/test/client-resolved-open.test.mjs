@@ -126,3 +126,19 @@ test('ResolvedCard source has the Open session control and a heading click that 
   assert.match(card, /title: canOpen \? "Open session"/)
   assert.match(card, /cursor: canOpen \? "pointer"/)
 })
+
+test('a detached open question carries a note that the answer goes to the session; other cards do not', () => {
+  const { T, mod } = load()
+  const note = T.detachedNote({ type: 'question', status: 'open', detached: true, payload: { questions: [] } })
+  assert.match(note, /live request ended/)
+  assert.match(note, /sent to the session/)
+  assert.equal(T.detachedNote({ type: 'question', status: 'open', payload: { questions: [] } }), undefined)
+  assert.equal(T.detachedNote({ type: 'completed', detached: true }), undefined)
+  assert.equal(mod.shared.detachedNote({ type: 'question', detached: true }), note, 'the phone page uses the same helper')
+})
+
+test('a refused answer to a session that is gone says the answer cannot be delivered', () => {
+  const { T } = load()
+  assert.match(T.errorText(409, { error: 'no-session' }), /session is not running any more/)
+  assert.doesNotMatch(T.errorText(409, { error: 'no-session' }), /late answer/)
+})

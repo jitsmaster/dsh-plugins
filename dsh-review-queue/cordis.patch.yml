@@ -2,4 +2,6 @@
 - insert:
     - id: review-queue
       name: dsh-review-queue
+      # All optional (README, Config): hub (false = standalone), hubPort (47615), hubNode, instanceLabel,
+      # stateDir, ttsClient, voice, sparcCommandPath, dev, pushSubject.
       config: {}

@@ -4,8 +4,8 @@ import { createECDH, randomBytes } from 'node:crypto'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createPushStore, loadOrCreateVapid, jsonFileIo } from '../push.js'
-import { b64u, publicKeyOf } from '../webpush.js'
+import { createPushStore, loadOrCreateVapid, jsonFileIo } from '../hub/push.js'
+import { b64u, publicKeyOf } from '../hub/webpush.js'
 
 const keys = () => { const e = createECDH('prime256v1'); e.generateKeys(); return { p256dh: b64u(e.getPublicKey()), auth: b64u(randomBytes(16)) } }
 const sub = (n = 1) => ({ endpoint: 'https://fcm.googleapis.com/fcm/send/token' + n, keys: keys() })

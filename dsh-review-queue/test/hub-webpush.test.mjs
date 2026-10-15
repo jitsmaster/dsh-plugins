@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createECDH, createDecipheriv, createPublicKey, hkdfSync, randomBytes, verify } from 'node:crypto'
-import { b64u, fromB64u, encryptPayload, generateVapidKeys, vapidAuthorization, sendPush } from '../webpush.js'
+import { b64u, fromB64u, encryptPayload, generateVapidKeys, vapidAuthorization, sendPush } from '../hub/webpush.js'
 
 // ---- RFC 8291 appendix A: the values of the worked example ------------------------------------------------------------------
 const RFC = {

@@ -12,12 +12,12 @@ const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo']
 /** A todo being started is not waiting on the user. */
 const needsUser = (item) => !(item.type === 'todo' && item.state === 'starting')
 
-// Show/hide commands for the browsers. Module-level so that re-creating the queue inside one server run (a plugin
-// reload) does not reset the sequence: a tab that already saw seq N would otherwise ignore every later command.
-let uiSeq = 0
-let uiCmd
+// Show/hide commands for the browsers. The default state is module-level so that re-creating the queue inside one server run
+// (a plugin reload) does not reset the sequence: a tab that already saw seq N would otherwise ignore every later command.
+// A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
+const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, titlesOf, sparcText, suggestTimeoutMs, log, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, titlesOf, sparcText, suggestTimeoutMs, log, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log })
   let focusId
   let reading // id of the item being read aloud
@@ -63,7 +63,7 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
         serverNow: now(),
         focusId,
         reading,
-        ui: { seq: uiSeq, cmd: uiCmd },
+        ui: { seq: ui.seq, cmd: ui.cmd },
         open: snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position), ...(item.type === 'permission' ? { risks: risksOf(item) } : {}) })),
         resolved: snap.resolved.map((item) => ({ ...item, title: titleFor(item) })),
       }
@@ -172,11 +172,13 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
     /** Asks every open browser to show or hide the overlay; each applies a given seq once. */
     uiCommand(cmd) {
       if (cmd !== 'show' && cmd !== 'hide') return { ok: false, error: 'bad-command' }
-      uiCmd = cmd
-      uiSeq++
+      ui.cmd = cmd
+      ui.seq++
       emit()
-      return { ok: true, seq: uiSeq }
+      return { ok: true, seq: ui.seq }
     },
+    /** The show/hide state this service reads and writes (a second view of the same app shares it). */
+    uiState: () => ui,
     stop() {
       const was = reading
       stopReading()
@@ -241,6 +243,8 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       try {
         await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: body }] }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
       } catch (error) {
+        // The controller of this app does not know the session: the card says so in words, and the item stays for an app that does.
+        if (error?.code === 'session/not-found') return { ok: false, error: 'no-session' }
         return { ok: false, error: String(error?.message ?? error) }
       }
       store.resolve(id, { kind: 'replied', by: 'card' })

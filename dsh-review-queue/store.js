@@ -32,9 +32,21 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
 
   const order = (a, b) => a.createdAt - b.createdAt || a.seq - b.seq
 
+  // The live items, not copies: for a caller that serialises them at once (the hub's file) and must not mutate them.
+  const dump = () => ({ seq, items: [...items.values()] })
+
   function save() {
     if (!io) return
-    try { io.write(JSON.stringify({ v: VERSION, seq, items: [...items.values()] })) } catch { /* persistence is best effort */ }
+    try { io.write(JSON.stringify({ v: VERSION, ...dump() })) } catch { /* persistence is best effort */ }
+  }
+
+  /** Replace everything with saved state; items without an id or a type are skipped. */
+  function restore(data) {
+    items.clear()
+    for (const item of data.items) {
+      if (item && typeof item.id === 'string' && typeof item.type === 'string') items.set(item.id, item)
+    }
+    seq = Number.isFinite(data.seq) ? data.seq : items.size
   }
 
   function changed() {
@@ -52,10 +64,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       if (!text) return
       const data = JSON.parse(text)
       if (!data || data.v !== VERSION || !Array.isArray(data.items)) return
-      for (const item of data.items) {
-        if (item && typeof item.id === 'string' && typeof item.type === 'string') items.set(item.id, item)
-      }
-      seq = Number.isFinite(data.seq) ? data.seq : items.size
+      restore(data)
     } catch { items.clear() }
   }
   load()
@@ -63,8 +72,9 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
   const copy = (item) => (item === undefined ? undefined : structuredClone(item))
 
   return {
-    add(input) {
-      const item = { ...capped(input), id: uuid(), seq: ++seq, status: 'open', createdAt: now() }
+    /** opts.id / opts.createdAt: an item captured elsewhere keeps its id and time (the hub). */
+    add(input, { id, createdAt } = {}) {
+      const item = { ...capped(input), id: id ?? uuid(), seq: ++seq, status: 'open', createdAt: createdAt ?? now() }
       items.set(item.id, item)
       changed()
       return copy(item)
@@ -146,6 +156,8 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       }
       if (any) changed()
     },
+    dump,
+    restore,
     onChange(listener) {
       listeners.add(listener)
       return () => { listeners.delete(listener) }

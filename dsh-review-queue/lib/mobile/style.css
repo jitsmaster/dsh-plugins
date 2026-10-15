@@ -24,6 +24,8 @@ pre { margin: 0; }
 .app > header h1 { font-size: 20px; }
 .count { color: var(--dim); font-size: 14px; }
 .banner { margin: 0; padding: 10px 16px; background: #3a2a10; color: var(--warn); font-size: 14px; border-bottom: 1px solid #5a4318; }
+.install-hint .btn { display: block; margin-top: 8px; }
+.todo-link { margin-bottom: 16px; }
 main { padding: 12px calc(12px + env(safe-area-inset-right)) 16px calc(12px + env(safe-area-inset-left)); max-width: 720px; margin: 0 auto; }
 
 nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; background: var(--panel); border-top: 1px solid var(--line);
@@ -86,6 +88,21 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 .btn.bad { background: var(--bad); border-color: var(--bad); color: #fff; }
 .btn:disabled { opacity: .45; }
 .btn:focus-visible, .opt:focus-visible, .fchip:focus-visible, nav a:focus-visible, .rowitem:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* ---- dictation (mic) and the new-todo form ---- */
+.micwrap { flex: none; }
+.row > .micwrap { flex: 0 0 auto; }
+.mic { min-width: var(--tap); padding: 0 14px; font-size: 20px; line-height: 1; }
+.mic.on { background: var(--bad); border-color: var(--bad); color: #fff; animation: micpulse 1.2s ease-in-out infinite; }
+@keyframes micpulse { 50% { opacity: .65; } }
+.inwrap { display: flex; align-items: flex-start; gap: 8px; }
+.inwrap .input { flex: 1; min-width: 0; }
+.inwrap .micwrap .sub { max-width: 40vw; }
+.newtodo .field { display: block; margin-top: 12px; color: var(--dim); font-size: 14px; }
+.newtodo .field .input { margin-top: 4px; color: var(--text); font-size: 16px; }
+.newtodo .switch { display: flex; align-items: center; gap: 12px; min-height: var(--tap); margin-top: 8px; }
+.newtodo .switch input { width: 24px; height: 24px; accent-color: var(--accent); flex: none; }
+.card select.input { margin-top: 8px; }
 
 /* ---- press and hold (risky approvals): --p (0..1) is the progress, set by HoldButton ---- */
 .hold { position: relative; overflow: hidden; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; }

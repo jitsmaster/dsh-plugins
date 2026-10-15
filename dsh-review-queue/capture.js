@@ -10,6 +10,7 @@ import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
 
 const TOOL_ARG_KEYS = ['command', 'file_path', 'path', 'url', 'pattern', 'query']
 const MAX_NOTES = 200
+const MAX_SEEN = 500
 
 /** One short line saying what a tool call will do: "shell: git push", "write: D:/a.md", or just the tool name. */
 export function summarizeTool(name, args) {
@@ -30,7 +31,52 @@ const textOf = (content) => {
 /** The request that started a finished turn is kept (capped) as context for its title. */
 const MAX_REQUEST = 2000
 
-const isTimeout = (reason) => reason?.code === 'ASK_TIMED_OUT'
+/**
+ * How long DSH waits for an answer when the model passes no timeout (tool-ask-user's Config.timeout, 120 s). The tool's config is
+ * not exposed to other plugins, so this is only used to recognise a timeout after the fact (see classifyClose), never to set an expiry.
+ */
+const DEFAULT_ASK_WINDOW_MS = 120_000
+const WINDOW_SLACK_BEFORE_MS = 3_000
+const WINDOW_SLACK_AFTER_MS = 5_000
+const SYSTEM_CODE = /^(E[A-Z0-9]+|UND_ERR_\w+)$/ // ETIMEDOUT and friends: a network timeout is not the question's timeout
+const PAIR_WINDOW_MS = 10 * 60 * 1000
+
+const stringOf = (value) => (typeof value === 'string' ? value : undefined)
+const codeOf = (e) => stringOf(e?.code)
+const messageOf = (e) => stringOf(e?.message) ?? stringOf(e) ?? ''
+/** The error and its cause chain (a wire record counts as an error). */
+function chainOf(error) {
+  const chain = []
+  for (let e = error, n = 0; e !== undefined && e !== null && n < 6; n++) { chain.push(e); e = typeof e === 'object' ? e.cause : undefined }
+  return chain
+}
+
+/**
+ * Why a question's request ended without an answer. Returns { kind, basis }:
+ *   timeout   the question itself timed out: ASK_TIMED_OUT anywhere on the error or its cause chain (an Error, or the bare wire
+ *             record {name, code}), a TimeoutError, the text "timed out" (unless it carries a network/system error code), or an
+ *             abort-type end after the known deadline (expiresAt), or, when no deadline is known, at DSH's default window.
+ *   cancelled the user cancelled it (ASK_CANCELLED).
+ *   detached  anything else (disconnect, parent turn abort, ASK_ABORTED with no timeout evidence, a generic error): the live request
+ *             is gone but nobody decided the question is over, so the item stays open and is answered through the session.
+ * The deadline inferences need an abort-type end (the request signal, ASK_ABORTED, AbortError or a dropped event source) so an
+ * unrelated error that happens near 120 s is not mistaken for a timeout.
+ */
+export function classifyClose(error, { source = 'rejection', elapsedMs = 0, expiresAt, now = 0 } = {}) {
+  try {
+    const chain = chainOf(error)
+    const codes = chain.map(codeOf).filter(Boolean)
+    if (codes.includes('ASK_TIMED_OUT')) return { kind: 'timeout', basis: 'code' }
+    if (codes.includes('ASK_CANCELLED')) return { kind: 'cancelled', basis: 'code' }
+    if (chain.some((e) => e?.name === 'TimeoutError')) return { kind: 'timeout', basis: 'name' }
+    if (chain.some((e) => /timed out/i.test(messageOf(e)) && !SYSTEM_CODE.test(codeOf(e) ?? ''))) return { kind: 'timeout', basis: 'message' }
+    const abortLike = source === 'abort' || codes.includes('ASK_ABORTED')
+      || chain.some((e) => e?.name === 'AbortError' || /forwarded Remote event source ended/i.test(messageOf(e)))
+    if (abortLike && Number.isFinite(expiresAt) && now >= expiresAt - WINDOW_SLACK_BEFORE_MS) return { kind: 'timeout', basis: 'deadline' }
+    if (abortLike && !Number.isFinite(expiresAt) && elapsedMs >= DEFAULT_ASK_WINDOW_MS - WINDOW_SLACK_BEFORE_MS && elapsedMs <= DEFAULT_ASK_WINDOW_MS + WINDOW_SLACK_AFTER_MS) return { kind: 'timeout', basis: 'default-window' }
+    return { kind: 'detached', basis: abortLike ? 'abort' : 'error' }
+  } catch { return { kind: 'detached', basis: 'unclassified' } }
+}
 
 /** Bounded map: the oldest entry goes when it is full. */
 function boundedMap(limit) {
@@ -67,7 +113,7 @@ function isDefaultAnswer(questions, clean) {
   })
 }
 
-export function installCapture(ctx, { store, summarizer, log = () => {} }) {
+export function installCapture(ctx, { store, summarizer, log = () => {}, now = Date.now }) {
   const children = new Set()
   const pending = new Map() // item id -> { type, ... }
   const timeouts = boundedMap(MAX_NOTES) // question callId -> seconds
@@ -75,7 +121,21 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
   const controller = new AbortController()
   const handlers = {}
   const lateInFlight = new Set() // expired question items whose late answer from the card is being sent
-  const on = (name, fn, options) => { handlers[name] = fn; ctx.on(name, fn, options) }
+  const detachedInFlight = new Set() // detached open question items whose card answer is being sent
+  const askCalls = new Map() // agent id -> [{ callId, at }]: ask_user_question calls seen at tools/pre-execute, for a request that carries no call id
+  const seen = new Set() // ids of the sessions whose events this app saw: sessions it can reach (the hub hands it their unowned items)
+  const note = (event) => {
+    const id = event?.agent?.id
+    if (typeof id !== 'string' || !id) return
+    seen.delete(id)
+    seen.add(id)
+    if (seen.size > MAX_SEEN) seen.delete(seen.values().next().value) // memory: oldest first, the set never grows without bound
+  }
+  const on = (name, fn, options) => {
+    const watched = (event, ...rest) => { note(event); return fn(event, ...rest) }
+    handlers[name] = watched
+    ctx.on(name, watched, options)
+  }
 
   const titleOf = (agent) => {
     try { return ctx.get?.('sessionTitle')?.get(agent?.session)?.title } catch { return undefined }
@@ -88,9 +148,23 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
   on('subagent/start', (info) => { if (info?.id) children.add(info.id) })
   on('subagent/end', (info) => { children.delete(info?.id) })
 
+  const noteAsk = (agentId, callId) => {
+    const list = (askCalls.get(agentId) ?? []).filter((c) => now() - c.at < PAIR_WINDOW_MS && c.callId !== callId)
+    askCalls.set(agentId, [...list, { callId, at: now() }].slice(-10))
+  }
+  /** The call id of this agent's oldest ask_user_question call not yet matched to a request (or the named one, now matched). */
+  const claimAsk = (agentId, callId) => {
+    const list = (askCalls.get(agentId) ?? []).filter((c) => now() - c.at < PAIR_WINDOW_MS)
+    const at = callId === undefined ? 0 : list.findIndex((c) => c.callId === callId)
+    const [claimed] = at < 0 ? [] : list.splice(at, 1)
+    askCalls.set(agentId, list)
+    return claimed?.callId
+  }
+
   // What each pending call will do, so a permission card can say it; the question timeout comes from the same event.
   on('tools/pre-execute', async (exec, next) => {
     guard(() => {
+      if (exec?.name === 'ask_user_question' && exec.callId !== undefined && exec.agent?.id !== undefined) noteAsk(exec.agent.id, exec.callId)
       if (exec?.name === 'ask_user_question' && Number.isInteger(exec.arguments?.timeout) && exec.arguments.timeout > 0) timeouts.set(exec.callId, exec.arguments.timeout)
       else if (exec?.callId) {
         const path = [exec.arguments?.file_path, exec.arguments?.path].find((v) => typeof v === 'string' && v)
@@ -103,13 +177,15 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
   on('user-questions/request', (req, next) => {
     const agent = req?.agent
     if (!agent || children.has(agent.id)) return next()
-    const callId = req.wait?.callId
+    // The request normally names its call; when it does not, the call seen at tools/pre-execute for this agent is the one.
+    const callId = guard(() => claimAsk(agent.id, req.wait?.callId)) ?? req.wait?.callId
+    const startedAt = now()
     const seconds = callId === undefined ? undefined : timeouts.get(callId)
     let item
     try {
       item = store.add({
         type: 'question', ...baseOf(agent), key: callId,
-        ...(seconds ? { expiresAt: Date.now() + seconds * 1000 } : {}),
+        ...(seconds ? { expiresAt: startedAt + seconds * 1000 } : {}),
         payload: { questions: req.questions ?? [], callId },
       })
     } catch (error) { log('capture: ' + error); return next() }
@@ -124,11 +200,17 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
         fn()
         return true
       }
-      const closeOut = (reason) => guard(() => {
-        if (isTimeout(reason)) store.resolve(item.id, { kind: 'expired', assumed: (req.questions ?? []).map(recommendedOf).filter(Boolean) })
-        else store.resolve(item.id, { kind: 'cancelled' })
+      // Only a real timeout or the user's own cancel closes the item; any other end of the request leaves it open, flagged detached.
+      const closeOut = (reason, source) => guard(() => {
+        const elapsedMs = now() - startedAt
+        const verdict = classifyClose(reason, { source, elapsedMs, expiresAt: item.expiresAt, now: now() })
+        const text = (v) => String(v ?? '').replace(/\s+/g, ' ').slice(0, 120)
+        log('capture: question ' + item.id + ' ended without an answer: name=' + text(reason?.name) + ' code=' + text(reason?.code) + ' message="' + text(messageOf(reason)) + '" after ' + Math.round(elapsedMs / 1000) + 's via ' + source + ' -> ' + verdict.kind + ' (' + verdict.basis + ')')
+        if (verdict.kind === 'timeout') store.resolve(item.id, { kind: 'expired', assumed: (req.questions ?? []).map(recommendedOf).filter(Boolean) })
+        else if (verdict.kind === 'cancelled') store.resolve(item.id, { kind: 'cancelled' })
+        else store.update(item.id, { detached: true })
       })
-      const onAbort = () => finish(() => { const reason = req.signal.reason; closeOut(reason); reject(reason ?? new Error('aborted')) })
+      const onAbort = () => finish(() => { const reason = req.signal.reason; closeOut(reason, 'abort'); reject(reason ?? new Error('aborted')) })
       pending.set(item.id, {
         type: 'question', questions: req.questions ?? [],
         answer: (answers) => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by: 'card', answers })); resolve({ answers }) }),
@@ -139,7 +221,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
       req.signal?.addEventListener('abort', onAbort, { once: true })
       Promise.resolve().then(() => next()).then(
         (result) => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by: 'screen', answers: result?.answers })); resolve(result) }),
-        (error) => finish(() => { closeOut(error); reject(error) }),
+        (error) => finish(() => { closeOut(error, 'rejection'); reject(error) }),
       )
     })
   })
@@ -239,7 +321,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
       for (const item of store.list({ status: 'open' })) {
         if (item.type !== 'question' || item.sessionId !== agent.id) continue
         const answered = messages.some((m) => (m?.source?.kind === 'user-question-reply' ? m.source.callId === item.key : isHumanMessage(m)))
-        if (answered) pending.get(item.id)?.handledElsewhere({ kind: 'answered', by: 'session' }) ?? store.resolve(item.id, { kind: 'answered', by: 'session' })
+        if (answered && !detachedInFlight.has(item.id)) closeOpen(item.id, { kind: 'answered', by: 'session' })
       }
     })
     return next()
@@ -250,21 +332,63 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
     guard(() => {
       if (!session || !event) return
       if (event.type === 'user/message' && event.data?.source?.kind === 'user-question-reply') settleQuestion(String(session.id), event.data.source.callId, { answers: replyAnswers(event.data.content) })
-      else if (event.type === 'tool/result') settleQuestion(String(session.id), event.data?.message?.toolCallId, { result: event.data.message })
+      else if (event.type === 'tool/result') {
+        claimAsk(String(session.id), event.data?.message?.toolCallId) // a call that returned without ever reaching us cannot name a later request
+        settleQuestion(String(session.id), event.data?.message?.toolCallId, { result: event.data.message })
+      }
     })
   }, { global: true })
+
+  /** Close an open question item from outside its request: through its pending entry when it has one, else (detached) directly. */
+  function closeOpen(id, resolution) {
+    const entry = pending.get(id)
+    return entry ? entry.handledElsewhere(resolution) : guard(() => store.resolve(id, resolution), false)
+  }
+
+  /**
+   * A card answer for a question whose live request ended (detached, still open): steer it into the session as DSH's own late
+   * reply. When DSH no longer holds the question, or the session is gone, the answer is refused and the item expires (never silently).
+   */
+  async function answerDetached(item, answers) {
+    const clean = cleanAnswers(item.payload?.questions ?? [], answers)
+    if (!clean) return { ok: false, error: 'bad-answer' }
+    if (detachedInFlight.has(item.id)) return { ok: false, error: 'not-pending' }
+    const service = guard(() => ctx.get?.('userQuestions'))
+    if (typeof service?.answer !== 'function') return { ok: false, error: 'no-controller' }
+    const callId = item.payload?.callId ?? item.key
+    const agent = guard(() => ctx.get?.('agents')?.get(item.sessionId))
+    const gone = (error, why) => {
+      guard(() => store.resolve(item.id, { kind: 'expired', assumed: [] }))
+      log('capture: question ' + item.id + ' expired: ' + why)
+      return { ok: false, error }
+    }
+    if (!agent) return gone('no-session', 'the session is not running any more')
+    if (callId === undefined) return gone('not-pending', 'the question has no call id to answer through')
+    detachedInFlight.add(item.id) // its reply reaching the session must not re-label the item before we record it
+    let accepted
+    try { accepted = await service.answer(agent, callId, { answers: clean }) } catch (error) {
+      detachedInFlight.delete(item.id)
+      const code = error?.code
+      if (code === 'CALLER_NOT_LIVE' || code === 'DELEGATED_CALLER') return gone('no-session', 'DSH no longer has the calling session live')
+      return { ok: false, error: code === 'REPLY_QUEUED' ? 'reply-queued' : code === 'BAD_ANSWER' ? 'bad-answer' : String(error?.message ?? error) }
+    }
+    detachedInFlight.delete(item.id)
+    if (!accepted) return gone('not-pending', 'DSH no longer holds the question')
+    guard(() => store.resolve(item.id, { kind: 'answered', by: 'card', answers: clean }))
+    return { ok: true }
+  }
 
   /** Close the question item (open or expired) of this session and call id, once. */
   function settleQuestion(sessionId, callId, { answers, result }) {
     if (callId === undefined) return
-    const item = store.list().find((i) => i.type === 'question' && i.key === callId && i.sessionId === sessionId && (i.status === 'open' || (i.resolution?.kind === 'expired' && !lateInFlight.has(i.id))))
+    const item = store.list().find((i) => i.type === 'question' && i.key === callId && i.sessionId === sessionId && !detachedInFlight.has(i.id) && (i.status === 'open' || (i.resolution?.kind === 'expired' && !lateInFlight.has(i.id))))
     if (!item) return
     if (item.status === 'open') {
       if (result && isPendingResult(result.content)) {
-        pending.get(item.id)?.handledElsewhere({ kind: 'expired', assumed: (item.payload?.questions ?? []).map(recommendedOf).filter(Boolean) })
+        closeOpen(item.id, { kind: 'expired', assumed: (item.payload?.questions ?? []).map(recommendedOf).filter(Boolean) })
       } else {
         const a = answers?.length ? answers : replyAnswers(result?.content)
-        pending.get(item.id)?.handledElsewhere({ kind: 'answered', by: 'session', ...(a?.length ? { answers: a } : {}) })
+        closeOpen(item.id, { kind: 'answered', by: 'session', ...(a?.length ? { answers: a } : {}) })
       }
     } else if (answers) {
       store.update(item.id, { resolution: { ...item.resolution, kind: 'answered', by: 'session', ...(answers.length ? { answers } : {}) } })
@@ -274,14 +398,22 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
   on('agent/disposed', ({ agent } = {}) => {
     if (!agent) return
     children.delete(agent.id)
+    seen.delete(agent.id)
     guard(() => store.resolveSession(agent.id, { kind: 'session-ended' }))
   })
 
   return {
-    /** Answer a pending question from the card. answers: [{ id, selected, custom? }], one per question. */
+    /**
+     * Answer a pending question from the card. answers: [{ id, selected, custom? }], one per question. A detached question (its live
+     * request ended, the item is still open) is answered through the session instead; that call is asynchronous.
+     */
     answerQuestion(itemId, answers) {
       const entry = pending.get(itemId)
-      if (!entry || entry.type !== 'question') return { ok: false, error: 'not-pending' }
+      if (!entry) {
+        const item = store.get(itemId)
+        return item?.type === 'question' && item.status === 'open' && item.detached ? answerDetached(item, answers) : { ok: false, error: 'not-pending' }
+      }
+      if (entry.type !== 'question') return { ok: false, error: 'not-pending' }
       const clean = cleanAnswers(entry.questions, answers)
       if (!clean) return { ok: false, error: 'bad-answer' }
       return entry.answer(clean) ? { ok: true } : { ok: false, error: 'not-pending' }
@@ -321,6 +453,8 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
       if (decision !== 'approve' && decision !== 'deny') return { ok: false, error: 'bad-decision' }
       return entry.decide(decision) ? { ok: true } : { ok: false, error: 'not-pending' }
     },
+    /** The sessions whose events this app has seen and that are not disposed. */
+    seenSessionIds: () => [...seen],
     /** The registered event handlers by name (the dev route drives the real code path through them). */
     handlers,
     dispose() { controller.abort() },
@@ -330,11 +464,13 @@ export function installCapture(ctx, { store, summarizer, log = () => {} }) {
 /**
  * After a restart no request is waiting any more: open questions and permission requests can no longer be answered
  * from here, so they leave the queue. Finished-work and merged-PR items stay. A todo stays too; one that was being started
- * is a failed one now (Retry starts it, reusing a session that was already created).
+ * is a failed one now (Retry starts it, reusing a session that was already created). With { only: Set<id> } just those items
+ * are looked at.
  */
-export function cancelStalePending(store) {
+export function cancelStalePending(store, { only } = {}) {
   let n = 0
   for (const item of store.list({ status: 'open' })) {
+    if (only && !only.has(item.id)) continue // only: the ids that existed before this process (an item of this process has a live request)
     if (item.type === 'todo') {
       if (item.state === 'starting') store.update(item.id, { state: 'failed', error: 'Interrupted by a server restart. Retry to start it.' })
       else if (item.suggesting) store.update(item.id, { suggesting: false })

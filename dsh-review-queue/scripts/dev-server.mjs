@@ -21,7 +21,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { apply } from '../index.js'
-import { createPushStore, jsonFileIo, loadOrCreateVapid } from '../push.js'
+import { createPushStore, jsonFileIo, loadOrCreateVapid } from '../hub/push.js'
 import { seed } from './dev-seed.mjs'
 
 const PREFIX = '/review-queue'
@@ -106,7 +106,7 @@ export async function startDevServer({ port = 8788, host = '127.0.0.1', stateDir
     pushes.length = 0
     prompts.length = 0
     const host_ = createFakeHost({ pushes, prompts, log })
-    const queue = apply(host_.ctx, { dev: true, stateDir, sendPush: sendPush(host_) })
+    const queue = apply(host_.ctx, { hub: false, dev: true, stateDir, sendPush: sendPush(host_) })
     app = { queue, route: host_.ctx.route, dispose: host_.dispose }
   }
   const unmount = () => { app?.dispose(); app?.queue?.stop?.() }

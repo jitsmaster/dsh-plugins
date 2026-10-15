@@ -22,7 +22,7 @@ test('apply registers the capture handlers and one /review-queue route', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rq-'))
   try {
     const { ctx, handlers, routes } = fakeCtx()
-    const queue = apply(ctx, { stateDir: dir })
+    const queue = apply(ctx, { hub: false, stateDir: dir })
     for (const name of ['user-questions/request', 'approval/request', 'agent/turn-stopping', 'agent/pre-step', 'agent/disposed']) assert.ok(handlers[name]?.length, name)
     assert.equal(routes.length, 1)
     assert.equal(routes[0].path, '/review-queue')
@@ -35,7 +35,7 @@ test('the route rejects a request the Host refuses and strips the prefix otherwi
   try {
     const { ctx, routes } = fakeCtx()
     ctx.inject = (_n, fn) => fn({ effect: (f) => f(), connection: { admit: (req) => (req.deny ? { rejection: 403 } : {}) }, webServer: { register: (r) => routes.push(r) } })
-    apply(ctx, { stateDir: dir })
+    apply(ctx, { hub: false, stateDir: dir })
     const res = { statusCode: 200, ended: false, end() { this.ended = true } }
     routes[0].handler({ deny: true, url: '/review-queue/v1/snapshot' }, res)
     assert.equal(res.statusCode, 403)
@@ -47,13 +47,13 @@ test('the queue is saved to queue.json and stale questions are cancelled on the 
   const dir = mkdtempSync(join(tmpdir(), 'rq-'))
   try {
     const one = fakeCtx()
-    apply(one.ctx, { stateDir: dir })
+    apply(one.ctx, { hub: false, stateDir: dir })
     const agent = { id: 'a', session: { header: {}, deriveMessages: () => [{ role: 'assistant', content: [{ type: 'text', text: 'Finished the thing.' }] }] } }
     await one.handlers['agent/turn-stopping'][0]({ agent })
     one.handlers['user-questions/request'][0]({ agent, questions: [{ id: 'q', question: 'Pick?', options: [{ label: 'A' }] }], wait: { callId: 'c' } }, () => new Promise(() => {}))
     assert.ok(existsSync(join(dir, 'queue.json')))
     const two = fakeCtx()
-    const queue = apply(two.ctx, { stateDir: dir })
+    const queue = apply(two.ctx, { hub: false, stateDir: dir })
     const snap = queue.snapshot()
     assert.deepEqual(snap.open.map((i) => i.type), ['completed'])
     assert.equal(snap.resolved[0].resolution.by, 'restart')
@@ -64,7 +64,7 @@ test('the dev route is off by default and, when enabled, creates a real question
   const dir = mkdtempSync(join(tmpdir(), 'rq-'))
   try {
     const off = fakeCtx()
-    apply(off.ctx, { stateDir: dir })
+    apply(off.ctx, { hub: false, stateDir: dir })
     const post = (route, body) => new Promise((resolve) => {
       const res = { statusCode: 0, head(code) { this.statusCode = code }, writeHead(code) { this.statusCode = code }, end(text) { resolve({ status: this.statusCode, text }) } }
       const req = Object.assign(require_stream(JSON.stringify(body)), { url: '/review-queue/v1/dev/ask', method: 'POST', headers: { 'content-type': 'application/json' } })
@@ -72,7 +72,7 @@ test('the dev route is off by default and, when enabled, creates a real question
     })
     assert.equal((await post(off.routes[0], {})).status, 404)
     const on = fakeCtx()
-    const queue = apply(on.ctx, { stateDir: join(dir, 'on'), dev: true })
+    const queue = apply(on.ctx, { hub: false, stateDir: join(dir, 'on'), dev: true })
     const r = await post(on.routes[0], { kind: 'question', title: 'Demo', questions: [{ id: 'q', question: 'Pick?', options: [{ label: 'A' }] }] })
     assert.equal(r.status, 200)
     assert.equal(queue.snapshot().open[0].sessionTitle, 'Demo')

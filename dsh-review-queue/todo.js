@@ -33,7 +33,7 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const wholeWord = (name) => new RegExp('(?<![\\p{L}\\p{N}_])' + escapeRe(name) + '(?![\\p{L}\\p{N}_])', 'iu')
 
 /** The registry's workspaces as { id, title, path, sessionIds }; undefined when there is no registry (or it fails). */
-function listWorkspaces(registryOf) {
+export function listWorkspaces(registryOf) {
   try {
     const registry = registryOf()
     const list = registry?.list?.()
@@ -46,6 +46,13 @@ function listWorkspaces(registryOf) {
       sessionIds: (Array.isArray(w.sessionIds) ? w.sessionIds : []).map(String).filter((id) => !archived.has(id)),
     }))
   } catch { return undefined }
+}
+
+/** Workspaces given as plain data: ids and titles are kept, a missing title falls back to the folder name. */
+function normalizeWorkspaces(list) {
+  return list.filter((w) => w && typeof w.id === 'string' && w.id).map((w) => ({
+    id: w.id, title: (typeof w.title === 'string' && w.title.trim()) || folderOf(w.path) || w.id, path: typeof w.path === 'string' ? w.path : '', sessionIds: (Array.isArray(w.sessionIds) ? w.sessionIds : []).map(String),
+  }))
 }
 
 /**
@@ -231,11 +238,12 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
 
   return {
     /** { ok, id, state } at once; the session is created (or the suggestion looked for) in the background. */
-    add(text, { workspaceId, sparc } = {}) {
+    add(text, { workspaceId, sparc, workspaces } = {}) {
       const body = typeof text === 'string' ? text.trim() : ''
       if (!body) return { ok: false, error: 'empty' }
       if (body.length > MAX_TODO) return { ok: false, error: 'too-long' }
-      const list = listWorkspaces(registryOf)
+      // A list given by the caller (the hub's union of every app's workspaces) replaces this app's own registry.
+      const list = Array.isArray(workspaces) ? normalizeWorkspaces(workspaces) : listWorkspaces(registryOf)
       const given = workspaceId === undefined || workspaceId === null || workspaceId === '' ? undefined : String(workspaceId)
       const base = { type: 'todo', text: body, sparc: sparc === true }
       if (given !== undefined) {

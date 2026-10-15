@@ -1,6 +1,6 @@
 # dsh-review-queue hub: one queue for every DSH app, one phone (design and plan)
 
-Status: DRAFT for user review, 2026-10-14. Spec only, no code written. Builds on [mobile.md](mobile.md) (the phone PWA), [spec.md](spec.md) and the code under [../](../). Reference files are linked, not copied.
+Status: built H1-H4 (hub, agent bridge, proxy/launcher/plugin wiring, overlay delta; auth, pairing, devices, push and notifier, the desktop Phone panel and the phone's pairing screen; 2026-10-15), H5-H6 pending (APK, review). H4 deviations: subscriptions stay in `hub/push.json` (records gain `deviceId`) instead of inside `hub/devices.json`; a paired phone may start todos (`todo`, `todo-confirm`, `todo-cancel`, routed like the desktop's, see 6.4) but never open sessions (`open-session` and every other action off its list is 403 `desktop-only`); `vapid.json` is created on first use. Design below as approved. Builds on [mobile.md](mobile.md) (the phone PWA), [spec.md](spec.md) and the code under [../](../). Reference files are linked, not copied.
 
 ## 1. Goals and non-goals
 
@@ -180,15 +180,20 @@ register(instanceKey, instanceId, sync):
   else if prev:                                    // same process reconnecting (hub restart, sleep, network)
       for it in sync.openItems: if hub has it resolved with by:'hub' -> reopen        // revival   // TEST: laptop asleep 10 min
       for it in hubOpenItemsOf(prev) not in sync.openItems: resolve(it, session-ended)
-  orphan items of the legacy import: owner := instance whose sync.sessionIds contains item.sessionId
+  every register and sync (see "Adoption by session id" below) adopts the unowned items whose session the instance reports
 graceful bye (ctx.effect cleanup): settle now (question/permission), keep the rest as orphans
 ```
+
+**Adoption by session id.** On every register and every sync the hub gives an online instance the open **completed, pr-merged and todo** items whose session is in the `sessionIds` it reports and whose owner is missing (legacy import), unknown, or **gone** (a replaced app, an instance key that changed): owner := that instance, `ownerLabel`/`ownerState` follow from the owner, the log says `adopted N by session`. Away owners are not robbed (they may come back), an online owner keeps its items, and open questions and permissions of a gone owner are never adopted (their promises died: `session-ended`, `owner-gone`). The new owner has no local copy, so the answer to the register / sync carries the items (`adoptedItems`, also for the same-key restart above); an item stays on the instance's handed list, and is handed again instead of ended as `not-in-sync`, until the instance lists it in a sync. The agent reports every session it can reach (live agents, workspace sessions, sessions its capture has seen, sessions of its own open items), sends a full sync when that list changes (checked every 15 s) and at least every 60 s, so a session learned later or an owner that went gone is picked up within a minute. The instance key (home plus web port) is only a shortcut: the port changes at every DSH start, so the continuity is the session id. The agent waits up to 3 s for the web port before registering, then falls back to a pid key.
+
+**No app has the session.** An action on an open item without an owner whose session nobody reports goes to the coordinator (6.4): it is handed the item (`apply` / `adopt`) and becomes the owner if the action succeeds; if it answers `no-session` the item stays ownerless and the card shows `session-unavailable` ("That session is not available in this app, so this cannot be sent."), not "That app is not running". With no app online at all it is still `owner-offline`.
 
 Kind `session-ended` is the existing resolution ([lib/client.js](../lib/client.js) line 84 shows "Session ended"), so no client text changes; `by:'hub'` tells logs and the revival rule apart. Why a grace at all: a sleeping laptop or a hub restart must not wipe live questions; the real process still holds the promise and revives them.
 
 ### 6.4 Todos and workspaces
-- Each agent reports its workspace list (`{id,title,path,sessionIds}` from `workspaceRegistry`) at register/sync and on change; the hub keeps the union in memory (not persisted; an offline instance's workspaces drop out). `GET /review-queue/v1/workspaces` returns every online instance's list; ids are opaque `<instanceShort>/<workspaceId>` strings (the overlay only passes them back); titles of other instances get a " (label)" suffix, the caller's own come first (the proxy sends `X-RQ-Instance`).
+- Each agent reports its workspace list (`{id,title,path,sessionIds}` from `workspaceRegistry`) at register/sync and on change; the hub keeps the union in memory (not persisted; an offline instance's workspaces drop out). `GET /review-queue/v1/workspaces` returns every online instance's list; ids are opaque `<instanceShort>/<workspaceId>` strings (the overlay only passes them back); titles of other instances get a " (label)" suffix, the caller's own come first (the proxy sends `X-RQ-Instance`). The agent re-reports its workspaces whenever the registry's ids, titles or folders differ from the last report (checked every 15 s with the session list), and the proxy has the hub updated first (waits at most 2 s) before it answers the overlay's `GET /v1/workspaces`, so a workspace added after register shows up at once. The `<instanceShort>` is the id of one start of an app: a todo card that waited over a restart keeps the old one, and the hub then finds the workspace by its own id when exactly one live app lists it (else `unknown-workspace`). The overlay asks for the list again when a card waits for a pick and the list it has is empty; the log says `workspaces: the hub lists none | N` when the count changes.
 - A todo is a normal hub item (type `todo`, states unchanged, see [todo.js](../todo.js) header). **Add with a workspace**: owner = that workspace's instance, hub sends `todo-start`. **Choose for me**: the hub picks the *coordinator* (the calling instance for desktop, else the most recently desktop-active online instance) and sends `todo-suggest` with the union list; the coordinator runs name match then LLM ([todo.js](../todo.js)), writes the suggestion, the item waits for confirm; confirm sends `todo-start` to the chosen workspace's owner and the item's owner moves there. The "Open session" button for a session of another instance needs that instance's controller: it goes through `apply`/command `open-session` to the owner (new, small), the overlay button is unchanged.
+- **Phone todos.** A paired phone may call `POST /v1/todo`, `/v1/todo-confirm` and `/v1/todo-cancel` (the `DEVICE_ACTIONS` list in [hub/http.js](../hub/http.js)); they route exactly as above, so a phone todo with "Choose for me" is coordinated by the most recently desktop-active online app (open question 6, accepted). The phone still cannot open a session: `open-session` stays desktop-only (403). The phone form and card are described in [mobile.md](mobile.md) "New todo on the phone".
 - No instance online: `409 no-registry` as today.
 
 ### 6.5 Plugin `apply()` flow (index.js)
@@ -208,7 +213,7 @@ Single writer: only the hub process writes `hub/*`; agents write only their own 
 | `hub.json` | hub | `{pid, port, hubId, version, protocol, startedAt}`; written after listen succeeds, removed on clean exit only if it names this pid |
 | `hub.lock` | launcher | created with flag `wx`: `{pid, ts}`; removed by the hub once listening |
 | `hub.secret` | first launcher / hub | 32 random bytes base64url, ACL restricted (9.3); created if absent, never rotated automatically |
-| `hub.config.json` | user | `hubPort, publicUrl, allowedTailnetLogins[], staleGraceMs, android:{packageName, sha256CertFingerprints[]}, pushSubject`; no secrets |
+| `hub.config.json` | user | `hubPort, publicUrl, allowedTailnetLogins[], staleGraceMs, android:{packageName, sha256CertFingerprints[]}, pushSubject` (VAPID subject; unset: the https `publicUrl` origin, else `mailto:dsh-review-queue@localhost`); no secrets |
 | `hub/queue.json` | hub | `{v:2, epoch, seq, rev, items[], instances[{key,id,label,lastSeenAt}]}`; keeps the last good copy as `queue.json.bak` |
 | `hub/devices.json` | hub | device records: `id, name, tokenHash(sha256), createdAt, lastSeenAt, lastLogin, push:{endpoint,keys,types,quiet,lastSuccessAt,lastError}, revokedAt` (subscription endpoint/keys never leave through the API) |
 | `hub/vapid.json` | hub | VAPID pair, imported from the old `vapid.json` so existing subscriptions stay valid |
@@ -255,7 +260,7 @@ Tailnet peers are semi-trusted (any device in the tailnet can reach the HTTPS na
 | Role | Credential | May |
 | --- | --- | --- |
 | public | none | `GET /hub/v1/health` (minimal), `/.well-known/assetlinks.json`, static `/review-queue/m/*` (no data), `POST /hub/v1/pair` |
-| device | `Authorization: Bearer rqd_...` | snapshot, item actions (via forced to phone), own push settings, `GET /hub/v1/session` |
+| device | `Authorization: Bearer rqd_...` | snapshot, item actions (via forced to phone), start / confirm / cancel todos (`todo`, `todo-confirm`, `todo-cancel`) and read `GET /v1/workspaces` for the todo dropdown, own push settings, `GET /hub/v1/session`. **Never** `open-session` (a session is opened at the PC) nor any other action: 403 `desktop-only` |
 | desktop | agent secret + `X-RQ-Role: desktop` from an instance proxy (the user passed DSH's login there) | everything a device may, plus create pairing code, list/rename/revoke devices, restart hub, `client=desktop` presence |
 | agent | agent secret | register, ops, sync, commands, results, presence, bye, shutdown |
 
@@ -281,7 +286,7 @@ The phone stores the token in localStorage of the Chrome origin (shared by TWA a
 ### 9.5 Other controls
 - **Network**: bind 127.0.0.1 only. **Host allow-list**: `127.0.0.1:<port>`, `localhost:<port>` and the configured `publicUrl` host (DNS rebinding). Optional `allowedTailnetLogins`: `Tailscale-User-Login` (set by serve, trusted only for loopback peers) must match; recommended on (Q4).
 - **Approvals**: the existing confirm sheet, press-and-hold for risky items and server-side `via/confirmed/held` checks stay, now keyed off the credential (D8); `approve-similar` never for risky ones; Origin check on every POST.
-- **Rate limits**: pairing as above; per device 120 requests/min excluding the snapshot long-poll; body cap 64 KB as today; push subscribe keeps the SSRF guard in [push.js](../push.js) (no private hosts).
+- **Rate limits**: pairing as above; per device 120 requests/min excluding the snapshot long-poll; body cap 64 KB as today; push subscribe keeps the SSRF guard in [push.js](../hub/push.js) (no private hosts).
 - **Push content**: counts and types only on the lock screen, as in [mobile.md](mobile.md).
 - **The assetlinks file** is public by design; it holds package name and a certificate fingerprint only.
 
@@ -342,6 +347,9 @@ Throwaway: 30-line Node server answering `/.well-known/assetlinks.json`, a manif
 | T6 | localStorage token survives closing/reopening the TWA and is shared with a Chrome tab |
 | T7 | Samsung Internet default does not hijack the launch (LAUNCHING_BROWSER pin works) |
 | T8 | adb install works on Android 16; Play Protect / developer-verification prompts noted |
+| T10 | the app (TWA/WebAPK) sends the mobile user agent and innerWidth is about the device width (CSS px ~384 on SM-S918U); the in-page view guard (lib/mobile/view-guard.js) shows no warning |
+| T11 | mic button works in the TWA: permission prompt, text lands in the box, nothing is sent |
+| T12 | iPhone: Add to Home Screen, opens standalone in mobile layout, pairing, queue, answer, reply with mic (no auto-send), New todo, push arrives (iOS 16.4+, installed app only) |
 
 **Gate**: T2 and T5 pass: build the real APK (H5), delegation on if T5 shows it better. T2 fails but T4 passes: ask the user whether a flag-dependent TWA is acceptable. Otherwise **fallback F1**: the APK is a Custom Tab launcher (no DAL needed; address bar visible, push through Chrome) or **F2**: plain Chrome "Add to Home screen" PWA only (needs a WebAPK; Google's minting service may be unable to fetch a private host's icons, so Chrome may create only a shortcut: unverified, test as T9). F1/F2 drop the assetlinks work but the hub, pairing and push stand unchanged.
 
@@ -352,7 +360,7 @@ Throwaway: 30-line Node server answering `/.well-known/assetlinks.json`, a manif
 4. Docs to update in H6 (not touched now): [mobile.md](mobile.md) (decisions Reach, Sign-in, Lost phone, trusted host), [README.md](../README.md) (config table, API table, state files), [spec.md](spec.md) pointer.
 
 ## 13. Test strategy (node:test, tests first, as the repo does)
-- **Unit** (fake clock, in-memory io): hub-store ordering/prune/rev/persistence and `.bak` recovery; instances (away, gone, settle, adoption, revival); commands (routing, timeouts, idempotent redelivery, unknown-outcome); http (roles, Host/Origin, rate limits, error mapping equals [server.js](../server.js) `outcome()`); devices (pairing, 5-try lock, revoke, idle expiry, hash at rest); notifier (type, hold, actionable gate; reuses the [push.test.mjs](../test/push.test.mjs) and [webpush.test.mjs](../test/webpush.test.mjs) vectors after the move); assetlinks JSON; launcher (lock race, stale lock, foreign port, nodeExe resolution) with injected fs/spawn/probe like [stt-launcher](../../dsh-hooks-tts/voice/stt-launcher.js)'s tests.
+- **Unit** (fake clock, in-memory io): hub-store ordering/prune/rev/persistence and `.bak` recovery; instances (away, gone, settle, adoption, revival); commands (routing, timeouts, idempotent redelivery, unknown-outcome); http (roles, Host/Origin, rate limits, error mapping equals [server.js](../server.js) `outcome()`); devices (pairing, 5-try lock, revoke, idle expiry, hash at rest); notifier (type, hold, actionable gate; reuses the [push.test.mjs](../test/hub-push.test.mjs) and [webpush.test.mjs](../test/hub-webpush.test.mjs) vectors after the move); assetlinks JSON; launcher (lock race, stale lock, foreign port, nodeExe resolution) with injected fs/spawn/probe like [stt-launcher](../../dsh-hooks-tts/voice/stt-launcher.js)'s tests.
 - **Contract**: `test/hub-api-contract.test.mjs` runs the existing [server.test.mjs](../test/server.test.mjs) and [phone-approve.test.mjs](../test/phone-approve.test.mjs) cases against the proxy-to-hub path, so the overlay's API is provably unchanged. Existing 440 tests stay green at every slice.
 - **Integration (in process)**: `createHub({port:0})` + **two fake agents** built from the real `agent/client.js` over a fake capture: A and B add items, ordering and global positions, phone approve of A's permission routed to A only, B restarts (same key, new id: its question gone, completed adopted), A sleeps (revival), hub restart mid-run (resync, no loss), hub killed (standalone notice, items kept, promotion back), protocol skew (426 path), log-scan for secrets.
 - **Process-level**: spawn `node hub/main.js` on a random port with a temp state dir: lock race with 3 launchers, singleton on a busy port, clean shutdown removes hub.json.

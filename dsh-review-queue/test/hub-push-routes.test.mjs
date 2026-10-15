@@ -5,9 +5,9 @@ import { createECDH, randomBytes } from 'node:crypto'
 import { createStore } from '../store.js'
 import { createReviewQueue } from '../service.js'
 import { createRouter } from '../server.js'
-import { createPushStore } from '../push.js'
-import { createPushRoutes } from '../push-routes.js'
-import { b64u } from '../webpush.js'
+import { createPushStore } from '../hub/push.js'
+import { createPushRoutes } from '../hub/push-routes.js'
+import { b64u } from '../hub/webpush.js'
 
 let server, base, push, sent, nextResult
 const VAPID_PUBLIC = 'BPublicKeyForTests'

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
-import { listModel, todoView, pollWaitMs } from '../lib/mobile/model.js'
+import { listModel, todoView, pollWaitMs, screenFor } from '../lib/mobile/model.js'
 import { FILES } from '../mobile.js'
 import { startDevServer } from '../scripts/dev-server.mjs'
 
@@ -112,4 +112,15 @@ test('after a failed or unauthorised poll the next request does not long-wait, s
   assert.equal(pollWaitMs({ error: null, auth: false }, 20000), 20000)
   assert.equal(pollWaitMs({ error: 'Task list unreachable', auth: false }, 20000), 0)
   assert.equal(pollWaitMs({ error: null, auth: true }, 20000), 0)
+})
+
+test('screenFor: a phone that must pair, or opened the pairing link, sees the pairing screen; everybody else the app', () => {
+  assert.equal(screenFor({ needsPairing: true }, '/'), 'pair')
+  assert.equal(screenFor({ needsPairing: true }, '/item/x'), 'pair')
+  assert.equal(screenFor({ needsPairing: false }, '/pair'), 'pair')
+  assert.equal(screenFor({ needsPairing: false }, '/pair/ABCD-EFGH'), 'pair')
+  assert.equal(screenFor({ needsPairing: false }, '/'), 'app')
+  assert.equal(screenFor({ needsPairing: false }, '/settings'), 'app')
+  assert.equal(screenFor({ needsPairing: false }, '/pairing-is-not-pair'), 'app')
+  assert.equal(screenFor({}, '/'), 'app')
 })

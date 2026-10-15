@@ -155,3 +155,33 @@ test('reopen puts a resolved item back in the queue in its old place', () => {
   assert.equal(store.reopen(a.id), false)
   assert.equal(store.reopen('nope'), false)
 })
+
+test('add accepts an explicit id and creation time (the hub stores what an agent captured)', () => {
+  const { store } = make()
+  const a = store.add(q(), { id: 'ab12-0123456789ab', createdAt: 42 })
+  assert.equal(a.id, 'ab12-0123456789ab')
+  assert.equal(a.createdAt, 42)
+  assert.equal(store.get('ab12-0123456789ab').createdAt, 42)
+  assert.equal(store.add(q()).id, 'id2', 'without options the generated id and the clock are used')
+})
+
+test('dump gives the state a file needs and restore loads it into a fresh store', () => {
+  const { store } = make()
+  const a = store.add(q({ sessionId: 'a' }))
+  store.add(q({ sessionId: 'b' }))
+  store.resolve(a.id, { kind: 'answered' })
+  const dumped = JSON.parse(JSON.stringify(store.dump()))
+  assert.equal(dumped.seq, 2)
+  assert.equal(dumped.items.length, 2)
+  const { store: other } = make()
+  other.restore(dumped)
+  assert.deepEqual(other.list(), store.list())
+  assert.equal(other.add(q({ sessionId: 'c' })).seq, 3, 'the sequence continues after a restore')
+})
+
+test('restore skips malformed items and replaces what was there', () => {
+  const { store } = make()
+  store.add(q({ sessionId: 'old' }))
+  store.restore({ seq: 9, items: [null, { id: 5, type: 'question' }, { id: 'x' }, { id: 'ok', type: 'question', seq: 1, createdAt: 1, status: 'open' }] })
+  assert.deepEqual(store.list().map((i) => i.id), ['ok'])
+})

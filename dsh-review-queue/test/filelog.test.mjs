@@ -43,7 +43,7 @@ test('apply writes the review queue log lines (the same ones ctx.logger gets) to
       get: (name) => (name === 'workspaceRegistry' ? { list: () => [{ id: 'w1', title: 'Alpha', path: 'D:/a', sessionIds: [] }], archivedSessionIds: [] } : undefined),
       logger: { warn() {}, info: (line) => infos.push(line) },
     }
-    const queue = apply(ctx, { stateDir: dir })
+    const queue = apply(ctx, { hub: false, stateDir: dir })
     queue.addTodo('Make the website header sticky')
     await queue.todoIdle()
     const text = readFileSync(join(dir, 'review-queue.log'), 'utf8')

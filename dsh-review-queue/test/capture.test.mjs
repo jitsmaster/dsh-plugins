@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
 import { installCapture, summarizeTool, cancelStalePending } from '../capture.js'
 
-function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'Session One' }, services = {} } = {}) {
+function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'Session One' }, services = {}, log, now } = {}) {
   const handlers = {}
   const ctx = {
     on: (name, fn) => { (handlers[name] ??= []).push(fn) },
@@ -14,7 +14,7 @@ function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'S
   let n = 0
   const store = createStore({ now: () => ++t, uuid: () => 'i' + ++n })
   const summarizer = { summarize: async () => summary }
-  const capture = installCapture(ctx, { store, summarizer })
+  const capture = installCapture(ctx, { store, summarizer, ...(log ? { log } : {}), ...(now ? { now } : {}) })
   const agent = (id = 'a1', reply = 'All done.') => ({
     id,
     session: { id, header: { cwd: 'D:/proj' }, deriveMessages: () => [{ role: 'user', content: 'hi' }, { role: 'assistant', content: [{ type: 'text', text: reply }] }] },
@@ -104,13 +104,16 @@ test('a timeout rejection from the screen answerer also expires the item', async
   assert.equal(store.snapshot().resolved[0].resolution.kind, 'expired')
 })
 
-test('an aborted question that is not a timeout is cancelled, not expired', async () => {
+test('an aborted question that is not a timeout stays open as detached, and the abort still reaches DSH', async () => {
   const { store, fire, agent } = setup()
   const ac = new AbortController()
   const p = fire('user-questions/request', { agent: agent(), questions: QUESTIONS, signal: ac.signal }, never)
   ac.abort()
   await assert.rejects(p)
-  assert.equal(store.snapshot().resolved[0].resolution.kind, 'cancelled')
+  assert.equal(store.snapshot().resolved.length, 0)
+  const [item] = store.snapshot().open
+  assert.equal(item.type, 'question')
+  assert.equal(item.detached, true)
 })
 
 test('subagent questions are passed through untouched', async () => {
@@ -527,4 +530,254 @@ test('permission items are not touched by session events', async () => {
   sessionEvent(x, 'a1', toolResult('c1', 'ok'))
   await x.fire('agent/pre-step', { agent: x.agent(), messages: [{ role: 'user', source: { kind: 'user' }, content: 'hi' }] }, async () => ({ kind: 'enter', messages: [] }))
   assert.equal(x.store.snapshot().open.length, 1)
+})
+
+// ---- a question never vanishes on its own: only a real timeout, the user's cancel or the session ending closes it ----
+// Real shapes, from the DSH source: UserQuestionError (user-questions/src/index.ts), the Client's questionError (ui-user-questions slots.ts),
+// the gateway's restoreRemoteEventRejection (api-gateway stream-protocol.ts) and api-remotes' forwarded-event-source end.
+const MSG = { ASK_TIMED_OUT: 'ask_user_question timed out before the user answered', ASK_ABORTED: 'ask_user_question was aborted before the user answered', ASK_CANCELLED: 'the user cancelled ask_user_question' }
+const restored = (code) => Object.assign(new Error(MSG[code]), { name: 'UserQuestionError', code }) // what next() rejects with for a Client rejection
+const wireRecord = (code) => ({ name: 'UserQuestionError', message: MSG[code], code }) // the bare wire record
+const abortedWith = (cause) => Object.assign(new Error(MSG.ASK_ABORTED, cause === undefined ? undefined : { cause }), { name: 'UserQuestionError', code: 'ASK_ABORTED' }) // abortedQuestion(cause)
+const disconnect = () => new Error('api-remotes: forwarded Remote event source ended')
+const clock = (start = 5_000_000) => { let t = start; const now = () => t; now.advance = (ms) => { t += ms }; return now }
+
+/** Open a question whose next() we control, let it start, advance the clock, then reject next() with the error. */
+async function rejectNext(x, error, { advanceMs = 0, req = {} } = {}) {
+  let fail
+  const p = x.fire('user-questions/request', { agent: x.agent(), questions: QUESTIONS, wait: { callId: 'c1', timed: true }, ...req }, () => new Promise((_, rej) => { fail = rej }))
+  await Promise.resolve(); await Promise.resolve()
+  x.now?.advance(advanceMs)
+  fail(error)
+  await assert.rejects(p, (e) => e === error)
+  return x.store.list()[0]
+}
+const withClock = (opts = {}) => { const now = clock(); return { ...setup({ ...opts, now }), now } }
+
+for (const [label, error] of [
+  ['a plain wire record', wireRecord('ASK_TIMED_OUT')],
+  ['the Error the gateway restores from the Client', restored('ASK_TIMED_OUT')],
+  ['an ASK_ABORTED that wraps the timeout as its cause', abortedWith(restored('ASK_TIMED_OUT'))],
+  ['an ASK_ABORTED that wraps the bare wire record', abortedWith(wireRecord('ASK_TIMED_OUT'))],
+  ['an error with the timeout text and no code', new Error(MSG.ASK_TIMED_OUT)],
+]) {
+  test('a timeout shaped as ' + label + ' expires the question and still reaches DSH', async () => {
+    const x = withClock()
+    const item = await rejectNext(x, error)
+    assert.equal(item.status, 'resolved')
+    assert.equal(item.resolution.kind, 'expired')
+    assert.deepEqual(item.resolution.assumed, ['A (Recommended)'])
+  })
+}
+
+test('a rejection that merely mentions a network timeout does not expire the question', async () => {
+  const x = withClock()
+  const item = await rejectNext(x, Object.assign(new Error('connect timed out'), { code: 'ETIMEDOUT' }))
+  assert.equal(item.status, 'open')
+  assert.equal(item.detached, true)
+})
+
+test('the user cancelling the question stays a cancelled item', async () => {
+  const x = withClock()
+  const item = await rejectNext(x, restored('ASK_CANCELLED'), { advanceMs: 120_000 })
+  assert.equal(item.status, 'resolved')
+  assert.equal(item.resolution.kind, 'cancelled')
+})
+
+test('a disconnect (the forwarded event source ended) keeps the question open and marks it detached', async () => {
+  const x = withClock()
+  const item = await rejectNext(x, disconnect(), { advanceMs: 20_000 })
+  assert.equal(item.status, 'open')
+  assert.equal(item.detached, true)
+  assert.equal(x.store.snapshot().resolved.length, 0)
+})
+
+test('an ASK_ABORTED with no timeout evidence, a generic error and a parent turn abort all keep the question open', async () => {
+  for (const error of [restored('ASK_ABORTED'), new TypeError('boom'), Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })]) {
+    const x = withClock()
+    const item = await rejectNext(x, error, { advanceMs: 30_000 })
+    assert.equal(item.status, 'open', String(error.message))
+    assert.equal(item.detached, true)
+  }
+})
+
+test('a parent turn abort (the request signal) keeps the question open, not cancelled', async () => {
+  const x = withClock()
+  const ac = new AbortController()
+  const p = x.fire('user-questions/request', { agent: x.agent(), questions: QUESTIONS, signal: ac.signal, wait: { callId: 'c1', timed: true } }, never)
+  x.now.advance(5_000)
+  const reason = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })
+  ac.abort(reason)
+  await assert.rejects(p, (e) => e === reason)
+  const [item] = x.store.list()
+  assert.equal(item.status, 'open')
+  assert.equal(item.detached, true)
+})
+
+test('a known deadline that has passed turns an abort-type rejection into an expiry', async () => {
+  const x = withClock()
+  await x.fire('tools/pre-execute', { name: 'ask_user_question', callId: 'c1', arguments: { timeout: 360 }, agent: x.agent() }, async () => ({ kind: 'continue' }))
+  const item = await rejectNext(x, restored('ASK_ABORTED'), { advanceMs: 360_500 })
+  assert.equal(item.resolution.kind, 'expired')
+  const early = withClock()
+  await early.fire('tools/pre-execute', { name: 'ask_user_question', callId: 'c1', arguments: { timeout: 360 }, agent: early.agent() }, async () => ({ kind: 'continue' }))
+  const before = await rejectNext(early, restored('ASK_ABORTED'), { advanceMs: 100_000 })
+  assert.equal(before.status, 'open')
+})
+
+test('with no known deadline, an abort-type rejection at the 120 s DSH default window is taken as the timeout', async () => {
+  for (const advanceMs of [119_500, 120_000, 123_000]) {
+    const x = withClock()
+    const item = await rejectNext(x, restored('ASK_ABORTED'), { advanceMs })
+    assert.equal(item.resolution?.kind, 'expired', 'after ' + advanceMs + ' ms')
+  }
+  const viaAbort = withClock()
+  const ac = new AbortController()
+  const p = viaAbort.fire('user-questions/request', { agent: viaAbort.agent(), questions: QUESTIONS, signal: ac.signal }, never)
+  viaAbort.now.advance(120_000)
+  ac.abort(new Error('aborted'))
+  await assert.rejects(p)
+  assert.equal(viaAbort.store.list()[0].resolution?.kind, 'expired')
+})
+
+test('with no known deadline, only the 120 s window and only an abort-type rejection count: nothing else is guessed', async () => {
+  const far = withClock()
+  assert.equal((await rejectNext(far, restored('ASK_ABORTED'), { advanceMs: 300_000 })).status, 'open') // 300 s: the deadline is unknown, so it is not a guess
+  const soon = withClock()
+  assert.equal((await rejectNext(soon, restored('ASK_ABORTED'), { advanceMs: 60_000 })).status, 'open')
+  const generic = withClock()
+  assert.equal((await rejectNext(generic, new TypeError('boom'), { advanceMs: 120_000 })).status, 'open') // at 120 s but not abort-type
+})
+
+test('a call id seen at tools/pre-execute names a question whose request carries none, with its own timeout', async () => {
+  const x = withClock()
+  await x.fire('tools/pre-execute', { name: 'ask_user_question', callId: 'c7', arguments: { timeout: 360 }, agent: x.agent() }, async () => ({ kind: 'continue' }))
+  void x.fire('user-questions/request', { agent: x.agent(), questions: QUESTIONS }, never) // the request has no wait.callId
+  const [item] = x.store.snapshot().open
+  assert.equal(item.key, 'c7')
+  assert.equal(item.payload.callId, 'c7')
+  assert.equal(item.expiresAt, x.now() + 360_000)
+  void x.fire('user-questions/request', { agent: x.agent(), questions: QUESTIONS }, never) // a second request, no pre-execute seen
+  assert.equal(x.store.snapshot().open[1].key, undefined)
+})
+
+test('an ask call that ended without a request is forgotten, so it cannot name a later question', async () => {
+  const x = withClock()
+  await x.fire('tools/pre-execute', { name: 'ask_user_question', callId: 'bad', arguments: {}, agent: x.agent() }, async () => ({ kind: 'continue' }))
+  sessionEvent(x, 'a1', toolResult('bad', 'Error: ask_user_question requires at least one question'))
+  void x.fire('user-questions/request', { agent: x.agent(), questions: QUESTIONS }, never)
+  assert.equal(x.store.snapshot().open[0].key, undefined)
+})
+
+test('a closed-without-answer question is logged: id, error name, code, message, seconds and the classification, nothing private', async () => {
+  const logs = []
+  const x = withClock({ log: (l) => logs.push(l) })
+  const item = await rejectNext(x, abortedWith(restored('ASK_TIMED_OUT')), { advanceMs: 12_000 })
+  const line = logs.find((l) => l.includes(item.id))
+  assert.ok(line, logs.join('|'))
+  for (const part of ['UserQuestionError', 'ASK_ABORTED', 'ask_user_question was aborted', '12s', 'timeout']) assert.ok(line.includes(part), part + ' in ' + line)
+  assert.ok(!line.includes('Which port?') && !line.includes('Session One'), line)
+  const kept = withClock({ log: (l) => logs.push(l) })
+  const open = await rejectNext(kept, disconnect())
+  assert.ok(logs.some((l) => l.includes(open.id) && l.includes('detached')), logs.join('|'))
+})
+
+// ---- the detached question: open, no promise any more ----
+async function detached(opts = {}) {
+  const x = withClock(opts)
+  const item = await rejectNext(x, disconnect(), { advanceMs: 20_000 })
+  return { ...x, id: item.id }
+}
+const live = (answer) => liveServices(answer)
+const ANSWER_B = [{ id: 'q1', selected: ['B'] }]
+
+test('answering a detached question from the card steers the reply into the session and records it as answered by the card', async () => {
+  const l = live()
+  const x = await detached({ services: l.services })
+  assert.deepEqual(await x.capture.answerQuestion(x.id, ANSWER_B), { ok: true })
+  assert.deepEqual(l.calls, [['a1', 'c1', { answers: ANSWER_B }]])
+  const it = x.store.get(x.id)
+  assert.equal(it.status, 'resolved')
+  assert.deepEqual({ kind: it.resolution.kind, by: it.resolution.by, answers: it.resolution.answers }, { kind: 'answered', by: 'card', answers: ANSWER_B })
+})
+
+test('a detached question that DSH no longer holds refuses the answer clearly and then expires in Resolved', async () => {
+  const l = live(() => false)
+  const x = await detached({ services: l.services })
+  assert.deepEqual(await x.capture.answerQuestion(x.id, ANSWER_B), { ok: false, error: 'not-pending' })
+  const it = x.store.get(x.id)
+  assert.equal(it.status, 'resolved')
+  assert.equal(it.resolution.kind, 'expired')
+})
+
+test('a detached question whose session is gone refuses with no-session and expires', async () => {
+  const x = await detached({ services: { agents: { get: () => undefined }, userQuestions: { answer: async () => true } } })
+  assert.deepEqual(await x.capture.answerQuestion(x.id, ANSWER_B), { ok: false, error: 'no-session' })
+  assert.equal(x.store.get(x.id).resolution.kind, 'expired')
+})
+
+test('a queued reply, a bad answer or a missing service keep the detached question open', async () => {
+  const queued = live(() => { throw Object.assign(new Error('queued'), { code: 'REPLY_QUEUED' }) })
+  const a = await detached({ services: queued.services })
+  assert.deepEqual(await a.capture.answerQuestion(a.id, ANSWER_B), { ok: false, error: 'reply-queued' })
+  assert.equal(a.store.get(a.id).status, 'open')
+  const fine = live()
+  const b = await detached({ services: fine.services })
+  assert.equal((await b.capture.answerQuestion(b.id, [{ id: 'q1', selected: ['Z'] }])).error, 'bad-answer')
+  assert.equal(fine.calls.length, 0)
+  assert.equal(b.store.get(b.id).status, 'open')
+  const none = await detached({})
+  assert.equal((await none.capture.answerQuestion(none.id, ANSWER_B)).ok, false)
+  assert.equal(none.store.get(none.id).status, 'open')
+})
+
+test('two answers at once to a detached question: one goes through, the other is refused', async () => {
+  let release
+  const calls = []
+  const x = await detached({ services: { agents: { get: (id) => ({ id }) }, userQuestions: { answer: (agent, callId) => { calls.push(callId); return new Promise((r) => { release = r }) } } } })
+  const first = x.capture.answerQuestion(x.id, ANSWER_B)
+  const second = await x.capture.answerQuestion(x.id, ANSWER_B)
+  assert.equal(second.ok, false)
+  release?.(true)
+  assert.deepEqual(await first, { ok: true })
+  assert.equal(calls.length, 1)
+  assert.equal((await x.capture.answerQuestion(x.id, ANSWER_B)).error, 'not-pending') // and once it is answered, nothing more
+})
+
+test('the reply reaching the session while the card answer is in flight does not relabel the item', async () => {
+  let x
+  const services = { agents: { get: (id) => ({ id }) }, userQuestions: { answer: async () => { sessionEvent(x, 'a1', reply('c1', ANSWER_B)); return true } } }
+  x = await detached({ services })
+  assert.deepEqual(await x.capture.answerQuestion(x.id, ANSWER_B), { ok: true })
+  assert.equal(x.store.get(x.id).resolution.by, 'card')
+})
+
+test('the session replying to a detached question closes it as answered in the session', async () => {
+  const x = await detached({})
+  sessionEvent(x, 'a1', reply('c1', ANSWER_B))
+  const r = x.store.get(x.id).resolution
+  assert.deepEqual({ kind: r.kind, by: r.by, answers: r.answers }, { kind: 'answered', by: 'session', answers: ANSWER_B })
+})
+
+test('the tool call of a detached question returning closes it: an answer as answered, a pending result as expired', async () => {
+  const a = await detached({})
+  sessionEvent(a, 'a1', toolResult('c1', JSON.stringify({ answers: ANSWER_B })))
+  assert.deepEqual({ kind: a.store.get(a.id).resolution.kind, by: a.store.get(a.id).resolution.by }, { kind: 'answered', by: 'session' })
+  const b = await detached({})
+  sessionEvent(b, 'a1', toolResult('c1', JSON.stringify({ pending: true, callId: 'c1' })))
+  assert.equal(b.store.get(b.id).resolution.kind, 'expired')
+  assert.deepEqual(b.store.get(b.id).resolution.assumed, ['A (Recommended)'])
+})
+
+test('the user continuing the session with a plain message closes a detached question', async () => {
+  const x = await detached({})
+  await x.fire('agent/pre-step', { agent: x.agent(), messages: [{ role: 'user', source: { kind: 'user' }, content: 'use B please' }] }, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(x.store.get(x.id).resolution.kind, 'answered')
+  assert.equal(x.store.get(x.id).resolution.by, 'session')
+})
+
+test('the session ending closes a detached question as session-ended', async () => {
+  const x = await detached({})
+  x.fire('agent/disposed', { agent: x.agent() })
+  assert.equal(x.store.get(x.id).resolution.kind, 'session-ended')
 })

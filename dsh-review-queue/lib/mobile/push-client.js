@@ -52,8 +52,13 @@ export function normalizeSettings(raw, tz = 'UTC') {
   }
 }
 
-/** A readable device name from the user agent ("Pixel 7"); Chrome's reduced user agent only says "K". */
-export function defaultDeviceName(userAgent) {
+/** A readable device name from the user agent ("Pixel 7", "iPhone", "iPad"); Chrome's reduced user agent only says "K". */
+export function defaultDeviceName(userAgent, { maxTouchPoints } = {}) {
+  // iPadOS in desktop mode sends a Macintosh user agent; only its touch points tell it from a real Mac.
+  if (typeof userAgent === 'string') {
+    if (/iPhone|iPod/.test(userAgent)) return 'iPhone'
+    if (userAgent.includes('iPad') || (userAgent.includes('Macintosh') && typeof maxTouchPoints === 'number' && maxTouchPoints > 1)) return 'iPad'
+  }
   const model = typeof userAgent === 'string' ? /Android [\d.]+;\s*([^;)]+)/.exec(userAgent) : null
   if (typeof userAgent !== 'string' || !userAgent.trim()) return 'This phone'
   const name = model ? model[1].replace(/\s+Build\/.*$/, '').trim() : ''
@@ -61,12 +66,12 @@ export function defaultDeviceName(userAgent) {
 }
 
 /** The body of POST /v1/push/subscribe: the endpoint and keys of the subscription plus this device's settings. */
-export function buildSubscribePayload({ subscription, settings, userAgent, tz }) {
+export function buildSubscribePayload({ subscription, settings, userAgent, maxTouchPoints, tz }) {
   const sub = subscription && typeof subscription.toJSON === 'function' ? subscription.toJSON() : subscription
   const keys = isObject(sub) && isObject(sub.keys) ? sub.keys : {}
   if (!isObject(sub) || typeof sub.endpoint !== 'string' || !sub.endpoint.startsWith('https://') || !keys.p256dh || !keys.auth) throw new Error('Invalid push subscription (needs an https endpoint with p256dh and auth keys).')
   const s = normalizeSettings(settings, tz)
-  return { subscription: { endpoint: sub.endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } }, name: s.name || defaultDeviceName(userAgent), types: s.types, quiet: s.quiet }
+  return { subscription: { endpoint: sub.endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } }, name: s.name || defaultDeviceName(userAgent, { maxTouchPoints }), types: s.types, quiet: s.quiet }
 }
 
 /**

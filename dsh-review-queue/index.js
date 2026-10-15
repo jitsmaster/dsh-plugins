@@ -3,6 +3,10 @@
  * questions, permission requests) into one queue and serves it to the browser half (lib/client.js: a sidebar tab and
  * a full-screen overlay) under /review-queue on the Host web server.
  *
+ * The hub (docs/hub.md): by default each app is an agent of one shared hub process (agent/wire.js) so every app and the phone see
+ * one list; `hub: false` or env DSH_RQ_HUB=0 keeps the plugin standalone exactly as it was. Config: `hubPort` (env DSH_RQ_HUB_PORT, default
+ * 47615), `hubNode` (the node executable that runs the hub), `instanceLabel` (how this app is named, default "DSH :<port>").
+ *
  * `taskbarBadge` (default on, Windows only; env DSH_RQ_TASKBAR=0 turns it off): the number of waiting items as a badge on the app's taskbar button (taskbar.js).
  *
  * Config (all optional): `sparcCommandPath` (the modes:sparc command file a "Use SPARC" todo inlines, default ~/.claude/commands/modes/sparc.md), `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
@@ -10,19 +14,25 @@
  * /v1/dev/ask route that creates fake questions, permissions and completions for testing the UI), `pushSubject` (the mailto: or https: contact
  * the push services see in the VAPID token) and `sendPush` (replaces the real Web Push delivery, for tests).
  */
+import { randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { awaitPort, hubEnabled, instanceKeyOf, instanceLabelOf } from './agent/config.js'
+import { hubPortOf } from './agent/launcher.js'
+import { createStoreAdapter } from './agent/store-adapter.js'
+import { wireHub } from './agent/wire.js'
 import { createStore } from './store.js'
 import { createSummarizer } from './summary.js'
 import { installCapture, cancelStalePending } from './capture.js'
 import { createReviewQueue } from './service.js'
 import { createReader } from './reader.js'
+import { listWorkspaces } from './todo.js'
 import { createRouter, PREFIX } from './server.js'
-import { createPushStore, loadOrCreateVapid, jsonFileIo } from './push.js'
-import { createPushRoutes } from './push-routes.js'
+import { createPushStore, loadOrCreateVapid, jsonFileIo } from './hub/push.js'
+import { createPushRoutes } from './hub/push-routes.js'
 import { createFileLog } from './filelog.js'
 import { createTaskbarBadge } from './taskbar.js'
 
@@ -38,18 +48,59 @@ function fileIo(file) {
   }
 }
 
-export function apply(ctx, config = {}) {
+/**
+ * Builds every piece of the plugin and returns { queue, local, store, agent, proxy }: queue is what other plugins get as reviewQueue (the hub
+ * queue, or the local service when the hub is off), agent the hub connection (undefined when the hub is off); apply() is the DSH entry.
+ * config.ui: a { seq, cmd } show/hide state of its own (several apps in one process, tests); config.hubDeps: { launcher, agent, retryMs } overrides for tests.
+ */
+export function createReviewQueuePlugin(ctx, config = {}) {
   let stateDir
   try {
     stateDir = resolve(config.stateDir ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'review-queue'))
     mkdirSync(stateDir, { recursive: true })
   } catch (error) { ctx.logger?.warn?.('review-queue: state directory unusable (' + String(error) + '); the queue is not persisted'); stateDir = undefined }
 
+  // The web port names this app at the hub. It is read here when the host already has it; otherwise the agent waits for it a moment before it
+  // registers (the host may run this callback, or bind the port, after the plugin was applied). The route is registered in the same step and answers once the pieces below exist.
+  let webPort
+  let handle = (req, res) => { res.statusCode = 503; res.end() }
+  // Same pattern as dsh-git-view: ride the Host web server so the browser, Desktop and remote access all reach it, behind
+  // the Host's own Host/Origin fence and cookie authentication.
+  try {
+    ctx.inject(['connection', 'webServer'], (webCtx) => {
+      webPort = Number(webCtx.webServer?.port) || undefined
+      webCtx.effect(() => webCtx.webServer.register({
+        kind: 'prefix',
+        path: PREFIX,
+        handler: (req, res) => {
+          const admission = webCtx.connection.admit(req)
+          if ('rejection' in admission) { res.statusCode = admission.rejection; res.end(); return }
+          req.url = (req.url ?? '/').slice(PREFIX.length) || '/'
+          handle(req, res)
+        },
+      }), 'review-queue: routes')
+    })
+  } catch (error) { ctx.logger?.warn?.('review-queue: routes not registered: ' + String(error)) }
+
   // Every log line also goes to review-queue.log next to queue.json (size capped), so a silent failure can be traced later.
   const fileLog = stateDir ? createFileLog(join(stateDir, 'review-queue.log')) : undefined
   const log = (line) => { ctx.logger?.info?.('review-queue: ' + line); fileLog?.('review-queue: ' + line) }
-  const store = createStore({ io: stateDir ? fileIo(join(stateDir, 'queue.json')) : undefined })
-  cancelStalePending(store)
+  const useHub = hubEnabled(config) && stateDir !== undefined
+  const instanceId = randomBytes(8).toString('hex')
+  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  const servicePort = () => { try { return Number(ctx.get?.('webServer')?.port) || undefined } catch { return undefined } }
+  const portNow = () => webPort ?? servicePort()
+  const instanceKey = instanceKeyOf({ dshHome, port: portNow() }) // names the local file; a pid key when the port is not known yet
+  let store
+  if (useHub) {
+    // Own items live in local/<instanceKey>.json (also the outbox for the hub); the hub imports the old shared queue.json itself.
+    mkdirSync(join(stateDir, 'local'), { recursive: true })
+    store = createStoreAdapter({ instanceId, io: fileIo(join(stateDir, 'local', instanceKey + '.json')) })
+    log('hub on')
+  } else {
+    store = createStore({ io: stateDir ? fileIo(join(stateDir, 'queue.json')) : undefined })
+    cancelStalePending(store) // with the hub on, the hub settles the dead requests of an earlier run (agent/wire.js)
+  }
   store.prune()
 
   const llmService = () => { try { return ctx.get?.('llm') ?? ctx.llm } catch { return undefined } }
@@ -67,6 +118,13 @@ export function apply(ctx, config = {}) {
     gender: config.voice === 'female' ? 'female' : 'male',
     log,
   })
+  const identify = async () => {
+    const waitMs = config.hubDeps?.portWaitMs
+    const port = await awaitPort(portNow, waitMs === undefined ? {} : { timeoutMs: waitMs })
+    log('instance key from ' + (port ? 'the web port ' + port : 'the pid (no web port; items are adopted by session)'))
+    return { key: port ? instanceKeyOf({ dshHome, port }) : instanceKey, label: instanceLabelOf(config, port) }
+  }
+  const agentsOf = () => { try { return ctx.get?.('agents') ?? ctx.agents } catch { return undefined } }
   const registryOf = () => { try { return ctx.get?.('workspaceRegistry') ?? ctx.workspaceRegistry } catch { return undefined } }
   // Todo: recent session titles help the model pick a workspace (best effort), and a SPARC todo inlines the modes:sparc text like dsh-hooks-tts does.
   const titlesOf = async (ids) => {
@@ -82,21 +140,20 @@ export function apply(ctx, config = {}) {
   const sparcText = () => {
     try { return readFileSync(resolve(config.sparcCommandPath ?? join(homedir(), '.claude', 'commands', 'modes', 'sparc.md')), 'utf8').replace(/^---[\s\S]*?\n---\s*/, '') } catch { return '' }
   }
-  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker: reader, llm, titlesOf, sparcText, log })
-
-  // The waiting count as a badge on the taskbar button. Off in node --test runs (they set NODE_TEST_CONTEXT) unless a test asks with taskbarBadge: true.
-  const badgeWanted = config.taskbarBadge === true || (config.taskbarBadge !== false && process.env.DSH_RQ_TASKBAR !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
-  const taskbar = badgeWanted
-    ? createTaskbarBadge({
-      queue, spawn: config.badgeDeps?.spawn ?? spawn, script: join(HERE, 'scripts', 'taskbar-badge.ps1'), pid: process.pid, log,
-      powershell: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-      ...(config.badgeDeps ?? {}),
-    })
-    : undefined
+  // Every session this app can reach: live agents, the sessions of the workspaces, the ones capture has seen. The hub gives the app the unowned items of these.
+  const reachableSessionIds = () => {
+    const ids = new Set(capture.seenSessionIds())
+    try { for (const agent of agentsOf()?.list?.() ?? []) if (typeof agent?.id === 'string') ids.add(agent.id) } catch { /* the live agents are a bonus */ }
+    for (const workspace of listWorkspaces(registryOf) ?? []) for (const id of workspace.sessionIds) ids.add(id)
+    return [...ids]
+  }
+  const speaker = config.speaker ?? reader
+  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, titlesOf, sparcText, log, ...(config.ui ? { ui: config.ui } : {}) })
 
   const pruneTimer = setInterval(() => store.prune(), 3600_000)
   pruneTimer.unref?.()
-  ctx.effect?.(() => async () => { clearInterval(pruneTimer); capture.dispose(); reader.stop(); await taskbar?.dispose() }, 'review-queue: stop')
+  let wiring
+  ctx.effect?.(() => async () => { clearInterval(pruneTimer); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.
@@ -127,29 +184,43 @@ export function apply(ctx, config = {}) {
       },
     }
   }
-  // Phone notifications: the VAPID key pair and the registered devices live next to queue.json (private files); delivery is injectable.
-  const vapid = loadOrCreateVapid({ io: stateDir ? jsonFileIo(join(stateDir, 'vapid.json'), { mode: 0o600 }) : undefined, subject: config.pushSubject })
-  const push = createPushStore({ io: stateDir ? jsonFileIo(join(stateDir, 'push.json'), { mode: 0o600 }) : undefined, vapid, ...(typeof config.sendPush === 'function' ? { sendPush: config.sendPush } : {}) })
-  const serve = createRouter({ queue, dev, pushRoutes: createPushRoutes({ push, publicKey: vapid.publicKey }) })
+  // Phone notifications. Standalone (hub off): the VAPID key pair and the registered devices live next to queue.json (private files); delivery is injectable.
+  // With the hub on they belong to the hub (hub/hub.js: key pair, subscriptions per paired device, notifier), so this app keeps none and has no push routes.
+  let pushRoutes
+  if (!useHub) {
+    const vapid = loadOrCreateVapid({ io: stateDir ? jsonFileIo(join(stateDir, 'vapid.json'), { mode: 0o600 }) : undefined, subject: config.pushSubject })
+    const push = createPushStore({ io: stateDir ? jsonFileIo(join(stateDir, 'push.json'), { mode: 0o600 }) : undefined, vapid, ...(typeof config.sendPush === 'function' ? { sendPush: config.sendPush } : {}) })
+    pushRoutes = createPushRoutes({ push, publicKey: vapid.publicKey })
+  }
+  const makeServe = (served) => createRouter({ queue: served, dev, pushRoutes })
 
-  // Same pattern as dsh-git-view: ride the Host web server so the browser, Desktop and remote access all reach it, behind
-  // the Host's own Host/Origin fence and cookie authentication.
-  try {
-    ctx.inject(['connection', 'webServer'], (webCtx) => {
-      webCtx.effect(() => webCtx.webServer.register({
-        kind: 'prefix',
-        path: PREFIX,
-        handler: (req, res) => {
-          const admission = webCtx.connection.admit(req)
-          if ('rejection' in admission) { res.statusCode = admission.rejection; res.end(); return }
-          req.url = (req.url ?? '/').slice(PREFIX.length) || '/'
-          serve(req, res)
-        },
-      }), 'review-queue: routes')
+  // Hub mode: reads and actions go through the hub, the instance routes through the proxy; the local service stays alive underneath.
+  let provided = queue
+  if (useHub) {
+    wiring = wireHub({
+      stateDir, port: hubPortOf({ hubPort: config.hubPort }), hubNode: config.hubNode, instanceKey, instanceId, label: instanceLabelOf(config, webPort), adapter: store, local: queue, makeServe, speaker,
+      controllerOf, workspaces: () => listWorkspaces(registryOf) ?? [], sessionIds: reachableSessionIds, identify, log, deps: config.hubDeps,
     })
-  } catch (error) { ctx.logger?.warn?.('review-queue: routes not registered: ' + String(error)) }
+    provided = wiring.hubQueue
+    handle = (req, res) => wiring.proxy.handle(req, res)
+    wiring.start()
+  } else handle = makeServe(queue)
+
+  // The waiting count as a badge on the taskbar button. Off in node --test runs (they set NODE_TEST_CONTEXT) unless a test asks with taskbarBadge: true.
+  const badgeWanted = config.taskbarBadge === true || (config.taskbarBadge !== false && process.env.DSH_RQ_TASKBAR !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
+  const taskbar = badgeWanted
+    ? createTaskbarBadge({
+      queue: provided, spawn: config.badgeDeps?.spawn ?? spawn, script: join(HERE, 'scripts', 'taskbar-badge.ps1'), pid: process.pid, log,
+      powershell: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ...(config.badgeDeps ?? {}),
+    })
+    : undefined
 
   // Other plugins (voice) reach the queue through the context.
-  try { ctx.provide?.('reviewQueue', queue) } catch { /* optional */ }
-  return queue
+  try { ctx.provide?.('reviewQueue', provided) } catch { /* optional */ }
+  return { queue: provided, local: queue, agent: wiring?.client, proxy: wiring?.proxy, store }
+}
+
+export function apply(ctx, config = {}) {
+  return createReviewQueuePlugin(ctx, config).queue
 }

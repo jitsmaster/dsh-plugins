@@ -7,21 +7,21 @@ import { serveMobile } from './mobile.js'
 
 export const PREFIX = '/review-queue'
 const MAX_BODY = 64 * 1024
-const MAX_WAIT_MS = 25_000
+export const MAX_WAIT_MS = 25_000
 
-const send = (res, code, body) => {
+export const send = (res, code, body) => {
   if (res.destroyed) return
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
   res.end(JSON.stringify(body))
 }
 
-async function readJson(req) {
+export async function readJson(req, max = MAX_BODY) {
   if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '')) return { status: 415 }
   const chunks = []
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > MAX_BODY) return { status: 413 }
+    if (size > max) return { status: 413 }
     chunks.push(chunk)
   }
   try {
@@ -32,10 +32,17 @@ async function readJson(req) {
 
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
 const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace'])
-const outcome = (res, result) => {
+// The hub's answer when the owning app did not report back in time: a gateway timeout, not a refusal.
+const GATEWAY = new Set(['owner-timeout', 'unknown-outcome'])
+export const outcome = (res, result) => {
   if (result?.ok) return send(res, 200, { ...result })
-  send(res, BAD_INPUT.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed' })
+  send(res, GATEWAY.has(result?.error) ? 504 : BAD_INPUT.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed' })
 }
+
+/** The client sends "<snapshotId>|<focusId>|<readingId>|<uiSeq>"; missing parts mean "none" (ui seq 0). A token from
+ * before the ui part existed therefore matches only while no ui command has been given, else it gets a full snapshot. */
+export const parseSince = (raw) => (raw === undefined ? undefined : raw.split('|').concat(['', '', '0']).slice(0, 4).map((p, i) => (i === 3 && p === '' ? '0' : p)).join('|'))
+export const stampOf = (s) => s.snapshotId + '|' + (s.focusId ?? '') + '|' + (s.reading ?? '') + '|' + (s.ui?.seq ?? 0)
 
 const workspaceOf = (b) => (b.workspaceId === undefined || b.workspaceId === null || b.workspaceId === '' ? undefined : String(b.workspaceId))
 
@@ -62,17 +69,13 @@ export function createRouter({ queue, dev, pushRoutes }) {
   if (dev) actions['/v1/dev/ask'] = (b) => dev.ask(b)
 
   async function snapshot(req, res, url) {
-    // The client sends "<snapshotId>|<focusId>|<readingId>|<uiSeq>"; missing parts mean "none" (ui seq 0). A token from
-    // before the ui part existed therefore matches only while no ui command has been given, else it gets a full snapshot.
-    const raw = url.searchParams.get('since') ?? undefined
-    const since = raw === undefined ? undefined : raw.split('|').concat(['', '', '0']).slice(0, 4).map((p, i) => (i === 3 && p === '' ? '0' : p)).join('|')
+    const since = parseSince(url.searchParams.get('since') ?? undefined)
     const wait = Math.min(Math.max(Number(url.searchParams.get('wait')) || 0, 0), MAX_WAIT_MS)
     const current = () => queue.snapshot()
-    const stamp = (s) => s.snapshotId + '|' + (s.focusId ?? '') + '|' + (s.reading ?? '') + '|' + (s.ui?.seq ?? 0)
     const unchanged = () => {
       if (since === undefined) return undefined
       const s = current()
-      return stamp(s) === since ? s : undefined
+      return stampOf(s) === since ? s : undefined
     }
     const first = unchanged()
     if (!first) return send(res, 200, current())

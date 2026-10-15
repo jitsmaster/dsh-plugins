@@ -135,3 +135,52 @@ test('buildSubscribePayload refuses a subscription that is not usable', () => {
   const bad = [undefined, null, {}, { endpoint: 'http://insecure.example/x', keys: SUB.keys }, { endpoint: SUB.endpoint }, { endpoint: SUB.endpoint, keys: { p256dh: 'x' } }, { endpoint: SUB.endpoint, keys: { auth: 'x' } }]
   for (const subscription of bad) assert.throws(() => buildSubscribePayload({ subscription, settings: {}, tz: 'UTC' }), /subscription/i)
 })
+
+// ---- iOS device names ------------------------------------------------------------------------------------------------------------------
+// An iPhone UA gives "iPhone", an iPad UA gives "iPad", and so does iPadOS in desktop mode (a Macintosh UA when the caller also says the screen
+// has more than one touch point: defaultDeviceName(userAgent, { maxTouchPoints })). The Android model parsing above is unchanged.
+const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
+const IPOD_UA = 'Mozilla/5.0 (iPod touch; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1'
+const IPAD_UA = 'Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
+const MAC_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15'
+
+test('defaultDeviceName: an iPhone user agent is "iPhone" (Safari and Chrome on iOS), an iPod is "iPhone" too', () => {
+  assert.equal(defaultDeviceName(IPHONE_UA), 'iPhone')
+  assert.equal(defaultDeviceName('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/126.0.6478.153 Mobile/15E148 Safari/604.1'), 'iPhone')
+  assert.equal(defaultDeviceName(IPOD_UA), 'iPhone')
+})
+
+test('defaultDeviceName: an iPad user agent is "iPad"', () => {
+  assert.equal(defaultDeviceName(IPAD_UA), 'iPad')
+})
+
+test('defaultDeviceName: iPadOS in desktop mode (Macintosh UA with maxTouchPoints > 1) is "iPad"; a plain Mac UA is not', () => {
+  assert.equal(defaultDeviceName(MAC_UA, { maxTouchPoints: 5 }), 'iPad')
+  assert.equal(defaultDeviceName(MAC_UA, { maxTouchPoints: 2 }), 'iPad')
+  assert.notEqual(defaultDeviceName(MAC_UA, { maxTouchPoints: 0 }), 'iPad')
+  assert.notEqual(defaultDeviceName(MAC_UA, { maxTouchPoints: 1 }), 'iPad')
+  assert.notEqual(defaultDeviceName(MAC_UA), 'iPad')
+  assert.notEqual(defaultDeviceName(MAC_UA), 'iPhone')
+})
+
+test('defaultDeviceName: the options argument never changes an Android or empty user agent', () => {
+  assert.equal(defaultDeviceName('Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36', { maxTouchPoints: 5 }), 'Pixel 7')
+  assert.equal(defaultDeviceName('', { maxTouchPoints: 5 }), 'This phone')
+  assert.equal(defaultDeviceName(undefined, { maxTouchPoints: 5 }), 'This phone')
+})
+
+test('buildSubscribePayload names an iPhone "iPhone" when the settings have no name', () => {
+  const body = buildSubscribePayload({ subscription: { endpoint: 'https://web.push.apple.com/QGaU1', keys: { p256dh: 'BPk', auth: 'aut' } }, settings: {}, userAgent: IPHONE_UA, tz: 'America/Los_Angeles' })
+  assert.equal(body.name, 'iPhone')
+  assert.equal(body.subscription.endpoint, 'https://web.push.apple.com/QGaU1')
+})
+
+test('buildSubscribePayload names iPadOS desktop mode "iPad" when it is told the touch points (maxTouchPoints)', () => {
+  const body = buildSubscribePayload({ subscription: { endpoint: 'https://web.push.apple.com/QGaU2', keys: { p256dh: 'BPk', auth: 'aut' } }, settings: {}, userAgent: MAC_UA, maxTouchPoints: 5, tz: 'UTC' })
+  assert.equal(body.name, 'iPad')
+})
+
+test('buildSubscribePayload keeps a name the user typed on an iPhone', () => {
+  const body = buildSubscribePayload({ subscription: SUB, settings: { name: 'My iPhone' }, userAgent: IPHONE_UA, tz: 'UTC' })
+  assert.equal(body.name, 'My iPhone')
+})

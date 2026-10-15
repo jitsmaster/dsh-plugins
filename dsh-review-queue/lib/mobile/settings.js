@@ -4,8 +4,9 @@
  * the server calls in api.js; this file is only the screen.
  */
 import { html, useState, useEffect } from './vendor/preact-htm.js'
-import { getCore, getPushPrefs, setPushPrefs, getDeviceId, setDeviceId, pushKey, pushSubscribe, pushUnsubscribe, pushTest, pushSettings, pushDevices } from './api.js'
+import { getCore, getToken, signOut, getPushPrefs, setPushPrefs, getDeviceId, setDeviceId, pushKey, pushSubscribe, pushUnsubscribe, pushTest, pushSettings, pushDevices } from './api.js'
 import { PUSH_TYPES, urlBase64ToUint8Array, validateQuietHours, buildSubscribePayload, notificationStatus } from './push-client.js'
+import { platformInfo, pushHint, isStandalone } from './platform.js'
 
 const zone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' } }
 const supported = () => typeof navigator !== 'undefined' && 'serviceWorker' in navigator && typeof PushManager !== 'undefined' && typeof Notification !== 'undefined'
@@ -44,7 +45,7 @@ export function SettingsView() {
     if (answer !== 'granted') throw new Error('Notifications are blocked for this site. Allow them in the browser site settings, then try again.')
     const { reg, sub: existing } = await currentSubscription()
     const subscription = existing || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(await pushKey()) })
-    const saved = await pushSubscribe(buildSubscribePayload({ subscription, settings: prefs, userAgent: navigator.userAgent, tz: zone() }))
+    const saved = await pushSubscribe(buildSubscribePayload({ subscription, settings: prefs, userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, tz: zone() }))
     if (saved.device && saved.device.id) setDeviceId(saved.device.id)
     setSub(subscription)
     say(true, 'Notifications are on for this phone.')
@@ -80,10 +81,13 @@ export function SettingsView() {
   const age = (ts) => (ts ? getCore().fmtAge(Date.now() - ts) : 'never')
   const mine = getDeviceId()
   const status = notificationStatus({ supported: supported(), permission, subscribed: !!sub })
+  // On iOS push needs the Home Screen app (and 16.4+): say that instead of the generic "unsupported" text.
+  const hint = pushHint(platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, standalone: isStandalone(window), hasPush: supported() }))
   return html`<div class="settings">
     <section>
       <h3>Notifications</h3>
-      ${status.state === 'unsupported' ? html`<div class="sub">${status.text}</div>` : html`<div>
+      ${hint ? html`<div class="sub">${hint}</div>` : null}
+      ${status.state === 'unsupported' ? (hint ? null : html`<div class="sub">${status.text}</div>`) : html`<div>
         <div class="sub">${status.text}</div>
         <div class="row">
           ${sub
@@ -115,6 +119,11 @@ export function SettingsView() {
       ${quietError ? html`<div class="err" role="alert">${quietError}</div>` : null}
       <div class="row"><button class="btn" disabled=${busy} onClick=${() => save(prefs, 'Saved.')}>Save quiet hours</button></div>
     </section>
+    ${getToken() ? html`<section>
+      <h3>Pairing</h3>
+      <div class="sub">This phone is paired with the hub. Forgetting it here only signs this phone out; it stays in the desktop list until you revoke it there (Phone, then Revoke).</div>
+      <div class="row"><button class="btn bad" onClick=${() => { if (confirm('Sign this phone out? You will need a new code to pair it again.')) signOut() }}>Forget pairing</button></div>
+    </section>` : null}
     <section>
       <h3>Phones that get notifications</h3>
       ${devices === null ? html`<div class="sub">Loading…</div>` : devices.length === 0 ? html`<div class="sub">None yet.</div>` : devices.map((d) => html`<div class="device" key=${d.id}>
