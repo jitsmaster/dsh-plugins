@@ -431,7 +431,7 @@ Finding: the release APK first installed from a **stale build** (built before th
 | T1 https name over the tailnet, service worker | PASS | page loads in the TWA, service worker `activated`, `isSecureContext` true |
 | **T2** verified full screen, no flag | **PASS** | `adb-check`: last launch `TRUSTED_WEB_ACTIVITY`, address bar on screen: no; page `display-mode: standalone`; no Chrome flag set |
 | T3 wrong fingerprint shows the address bar | NOT RUN | needs a build signed with another key |
-| T5 push into the TWA, delegation on/off | **BLOCKED** | see below |
+| T5 push into the TWA, delegation on/off | **SKIPPED by the user (2026-10-16)** | see below |
 | T6 token survives and is shared with Chrome | PASS (inferred) | `rq-m.token` present at first TWA launch although the TWA had never run before (paired earlier in Chrome); survives force-stop and relaunch |
 | T7 Samsung Internet does not hijack launch | PASS | the TWA opened in Chrome's `CustomTabActivity` (Samsung Internet is installed) |
 | T8 adb install on Android 16 | PASS | `adb install -r` succeeded; no Play Protect block observed |
@@ -442,4 +442,4 @@ Finding: the release APK first installed from a **stale build** (built before th
 T5 notes:
 - With the old WebAPK installed, a hub test push (`POST /review-queue/v1/push/test`, screen off, status Dozing) was accepted by FCM and shown **under the WebAPK package**, not the TWA: an installed WebAPK for the same origin wins over the TWA, so uninstall it before testing delegation.
 - Uninstalling the WebAPK reset the notification permission to `default`. Chrome then showed its own prompt (delegation off: Chrome, not Android, asks). The prompt was dismissed, Chrome stored **denied** for the site, and the page stayed `denied` after a Chrome restart, also with delegation on and `POST_NOTIFICATIONS` granted through `adb shell pm grant`. adb taps are ignored on this phone and DevTools `Browser.setPermission`/`grantPermissions` have no effect on Android Chrome, so the site permission must be set by hand: Chrome ⋮ → Settings → Site settings → Notifications → Allow (or Clear & reset, then pair again).
-- Open: owner of the notification and tap target with delegation off vs on. `enable_notification_delegation` stays **false** until that is measured.
+- Decision (2026-10-16): the user skipped T5. Gate outcome: T2 passed, so the real APK ships with notification delegation **off** (`enable_notification_delegation` false); pushes go through Chrome. Delegation can be measured later by allowing the site's notifications and repeating the two runs.
