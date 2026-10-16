@@ -54,6 +54,8 @@ A mic button sits next to every free-text box: the new-todo text, "Reply to this
 - **Code**: [lib/mobile/dictation.js](../lib/mobile/dictation.js) (`dictationSupport`, `mergeDictation`, `dictationError`, `createDictation`) is pure and tested with a fake recognition class; it has no network, no api.js and no endpoint, so it cannot send. `Mic` in views.js is the only user. Real-device check: T11 in [hub.md](hub.md) 11.3.
 
 ## iPhone
+Step-by-step deployment guide: [iphone.md](iphone.md).
+
 On an iPhone the app is the web page itself, installed to the Home Screen: no store, no Mac, no developer account.
 1. **Tailscale**: install the Tailscale iOS app, sign in to the same tailnet and turn it on. The phone must reach the HTTPS name from `publicUrl` (`https://<pc>.<tailnet>.ts.net/review-queue/m/`).
 2. **Open it in Safari** (not Chrome for iOS: only Safari offers Add to Home Screen with the standalone app), then **Share, Add to Home Screen**, name it. Until it is installed the page shows a one-time banner with these steps (dismiss it with *Dismiss*; remembered in `localStorage` key `rq-m.install-hint-dismissed`).
