@@ -419,3 +419,27 @@ Gate: T2 and T5 are still the decision. The APK is ready for them: install the *
 
 ## 16. Risks
 R1 hub is a single point of failure for the phone (mitigated: standalone fallback, local stores). R2 plugin host is Electron and `process.execPath` is not Node (8.1 resolution order, test in H2). R3 TWA verification on a private host unproven (M0 gate, fallbacks). R4 Samsung Internet hijacks the launch (pin Chrome, T7). R5 Windows ACL commands may fail (reported, secret still loopback-only). R6 Android SDK folder read-only, no licences, only `source.properties`: copy to a writable SDK root and run `sdkmanager --licenses` with JDK 17. R7 dangling `JAVA_HOME` (set per run by `build.ps1`). R8 620 KB queue file makes naive per-change writes slow (debounce, measure in H1). R9 store-adapter divergence from [store.js](../store.js) semantics (contract tests in H2). R10 developer-verification rules for sideloaded apps may arrive in 2027 (adb stays; recheck at H5).
+
+### 11.5 Results on the real phone (Samsung SM-S918U, Android 16, Chrome 155, 2026-10-16)
+
+Release APK `dev.dsh.reviewqueue` (signed with the `rq` key, https start URL `https://awang-lpt2.taile1279d.ts.net/review-queue/m/`), phone on Tailscale.
+
+Finding: the release APK first installed from a **stale build** (built before the `ManageDataLauncherActivity` manifest fix) and crashed at launch with `Component class ...ManageDataLauncherActivity does not exist`. `build.ps1 -Release` was re-run (JDK 17 at `C:\Users\awang\tools\jdk-17`); always rebuild before installing.
+
+| Test | Result | Evidence |
+| --- | --- | --- |
+| T1 https name over the tailnet, service worker | PASS | page loads in the TWA, service worker `activated`, `isSecureContext` true |
+| **T2** verified full screen, no flag | **PASS** | `adb-check`: last launch `TRUSTED_WEB_ACTIVITY`, address bar on screen: no; page `display-mode: standalone`; no Chrome flag set |
+| T3 wrong fingerprint shows the address bar | NOT RUN | needs a build signed with another key |
+| T5 push into the TWA, delegation on/off | **BLOCKED** | see below |
+| T6 token survives and is shared with Chrome | PASS (inferred) | `rq-m.token` present at first TWA launch although the TWA had never run before (paired earlier in Chrome); survives force-stop and relaunch |
+| T7 Samsung Internet does not hijack launch | PASS | the TWA opened in Chrome's `CustomTabActivity` (Samsung Internet is installed) |
+| T8 adb install on Android 16 | PASS | `adb install -r` succeeded; no Play Protect block observed |
+| T9 WebAPK from Add to Home screen | PASS (observed) | Chrome had minted a WebAPK for the private tailnet host on 2026-10-15 (`org.chromium.webapk.ab16a329686517f8d_v2`) |
+| T10 mobile UA, width, view guard | PASS | UA `Mozilla/5.0 (Linux; Android 10; K) ... Chrome/155.0.0.0 Mobile Safari/537.36`, `innerWidth` 384, no "Desktop site" banner |
+| T11 mic in the TWA | PARTIAL | `SpeechRecognition` exists in the page; the permission prompt and dictation were not exercised (needs a tap) |
+
+T5 notes:
+- With the old WebAPK installed, a hub test push (`POST /review-queue/v1/push/test`, screen off, status Dozing) was accepted by FCM and shown **under the WebAPK package**, not the TWA: an installed WebAPK for the same origin wins over the TWA, so uninstall it before testing delegation.
+- Uninstalling the WebAPK reset the notification permission to `default`. Chrome then showed its own prompt (delegation off: Chrome, not Android, asks). The prompt was dismissed, Chrome stored **denied** for the site, and the page stayed `denied` after a Chrome restart, also with delegation on and `POST_NOTIFICATIONS` granted through `adb shell pm grant`. adb taps are ignored on this phone and DevTools `Browser.setPermission`/`grantPermissions` have no effect on Android Chrome, so the site permission must be set by hand: Chrome ⋮ → Settings → Site settings → Notifications → Allow (or Clear & reset, then pair again).
+- Open: owner of the notification and tap target with delegation off vs on. `enable_notification_delegation` stays **false** until that is measured.
