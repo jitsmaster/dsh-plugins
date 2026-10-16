@@ -251,14 +251,14 @@ const permissionItem = () => ({ type: 'permission', sessionId: 'sp', sessionTitl
 
 test('count tallies the open items by type and ignores resolved ones', () => {
   const { store, queue } = setup()
-  assert.deepEqual(queue.count(), { total: 0, byType: { question: 0, permission: 0, completed: 0, 'pr-merged': 0, todo: 0 } })
+  assert.deepEqual(queue.count(), { total: 0, byType: { question: 0, permission: 0, completed: 0, 'pr-merged': 0, todo: 0, paused: 0 } })
   const a = store.add(completed())
   store.add(completed({ sessionId: 's2' }))
   store.add(questionItem())
   store.add(permissionItem())
-  assert.deepEqual(queue.count(), { total: 4, byType: { question: 1, permission: 1, completed: 2, 'pr-merged': 0, todo: 0 } })
+  assert.deepEqual(queue.count(), { total: 4, byType: { question: 1, permission: 1, completed: 2, 'pr-merged': 0, todo: 0, paused: 0 } })
   store.resolve(a.id, { kind: 'reviewed' })
-  assert.deepEqual(queue.count(), { total: 3, byType: { question: 1, permission: 1, completed: 1, 'pr-merged': 0, todo: 0 } })
+  assert.deepEqual(queue.count(), { total: 3, byType: { question: 1, permission: 1, completed: 1, 'pr-merged': 0, todo: 0, paused: 0 } })
 })
 
 test('first is the oldest open item, or undefined for an empty queue', () => {

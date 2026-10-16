@@ -53,6 +53,12 @@ A mic button sits next to every free-text box: the new-todo text, "Reply to this
 - **Errors** appear under the box: permission blocked (`not-allowed`, `service-not-allowed`: allow the microphone in Chrome's site settings), "Didn't hear anything" (`no-speech`), no microphone (`audio-capture`), speech service unreachable (`network`), language not supported; `aborted` is silent.
 - **Code**: [lib/mobile/dictation.js](../lib/mobile/dictation.js) (`dictationSupport`, `mergeDictation`, `dictationError`, `createDictation`) is pure and tested with a fake recognition class; it has no network, no api.js and no endpoint, so it cannot send. `Mic` in views.js is the only user. Real-device check: T11 in [hub.md](hub.md) 11.3.
 
+## Paused sessions (read only)
+Sessions a DSH restart cut off in the middle of work are listed as items of type `paused` (the detection, resume and dismiss are described in [hub.md](hub.md) 6.7). The phone **shows** them and never acts on them: it cannot resume or dismiss (the paused routes are not in `DEVICE_ACTIONS`, so they answer 403 `desktop-only`; no code of the phone page calls them) and no push is sent for them.
+- **Indicator**: the header reads "N waiting · ⏸ M paused" (paused sessions do not raise the waiting count); the Waiting list starts with a banner "M sessions were paused by a restart. Resume or dismiss them at the PC." and a **Show** button that sets the *Paused* filter chip.
+- **Card**: chip *Paused*; the facts the desktop card shows (why it is listed, how long ago it last wrote, a tool call that may be half done, the last request) and "To resume this session, use the Task list on the PC."
+- **Code**: `pausedNote`, `pausedView` and the `paused` count of `listModel` in [lib/mobile/model.js](../lib/mobile/model.js) (the facts and the count come from `pausedFacts` / `pausedCount` of the overlay's `exports.shared`); `PausedBody` in views.js.
+
 ## iPhone
 Step-by-step deployment guide: [iphone.md](iphone.md).
 

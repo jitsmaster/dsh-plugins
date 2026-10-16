@@ -63,6 +63,8 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     reopen: (id) => action('reopen', { id }, () => local.reopen(id)),
     reply: (id, text) => action('reply', { id, text }, () => local.reply(id, text)),
     archive: (id) => action('archive', { id }, () => local.archive(id)),
+    resumePaused: (id) => action('paused-resume', { id }, () => local.resumePaused(id)),
+    dismissPaused: (id) => action('paused-dismiss', { id }, () => local.dismissPaused(id)),
     addTodo: (text, opts = {}) => action('todo', { text, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sparc === true, { sparc: true }) }, () => local.addTodo(text, opts)),
     confirmTodo: (id, opts = {}) => action('todo-confirm', { id, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }) }, () => local.confirmTodo(id, opts)),
     cancelTodo: (id) => action('todo-cancel', { id }, () => local.cancelTodo(id)),
@@ -70,5 +72,6 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     notifyPrMerged: (info) => local.notifyPrMerged(info),
     todoIdle: () => local.todoIdle(),
     uiCommand: (cmd) => local.uiCommand(cmd),
+    scanPaused: () => local.scanPaused(), // the session logs are on this PC: always this app that scans
   }
 }

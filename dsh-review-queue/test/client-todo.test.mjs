@@ -217,7 +217,7 @@ test('source: the header has "+ New todo" next to Resolved, the form and the car
   assert.match(body, /Open session/)
   assert.match(body, /onClick: \(\) => openSession\(item\)/)
   assert.ok(!/useEffect\([^)]*openSession/.test(body), 'the session is never opened by itself')
-  assert.match(source, /"pr-merged", "todo"\]/, 'the filter bar knows the todo type')
+  assert.match(source, /"pr-merged", "todo", "paused"\]/, 'the filter bar knows the todo type')
 })
 
 test('todoSelect: the dropdown shows the suggested workspace selected, the user pick wins, and there is a placeholder only when nothing is chosen', () => {

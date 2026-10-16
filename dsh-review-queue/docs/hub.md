@@ -125,7 +125,7 @@ Status: built H1-H4 (hub, agent bridge, proxy/launcher/plugin wiring, overlay de
 
 ### 6.2 Command routing (the tricky part)
 
-Commands: `answer, late-answer, approve, approve-similar, deny, reply, archive, todo-suggest, todo-start, todo-cancel` (owner executes) and `apply` (hub tells the owner about a hub-local change; no result). Hub-local: `reviewed, reopen`. Not exposed to the phone: `read, stop, ui, focus` (403 `local-only`).
+Commands: `answer, late-answer, approve, approve-similar, deny, reply, archive, paused-resume, paused-dismiss, todo-suggest, todo-start, todo-cancel` (owner executes) and `apply` (hub tells the owner about a hub-local change; no result). Hub-local: `reviewed, reopen`. Not exposed to the phone: `read, stop, ui, focus` (403 `local-only`).
 
 ```
 POST /review-queue/v1/<action> {id, ...}               // role: device | desktop
@@ -154,6 +154,7 @@ agent loop: GET /hub/v1/agent/commands?after=<seq>&wait=25000  -> [cmd...]
 | late-answer | 15 s | uses `userQuestions.answer` |
 | reply | 35 s | `controller.prompt` already has its own 30 s signal |
 | archive | 35 s | registry call |
+| paused-resume | 35 s | `controller.prompt` on the session (own 30 s signal); paused-dismiss 10 s |
 | todo-* | 10 s (accept) | the work continues in the background and shows as item state, as today |
 
 Commands run one at a time per instance, in order; the agent caches the last 200 results by `cid` so a re-delivery after a lost response returns the same answer. Commands are in memory only; a hub restart fails pending ones with `unknown-outcome`.
@@ -203,6 +204,20 @@ Kind `session-ended` is the existing resolution ([lib/client.js](../lib/client.j
 
 ### 6.6 Overlay delta (the only client change; all additive, old servers ignore it)
 (a) render `snap.notice` as a one-line banner (fallback notices, 10); (b) add `&visible=1` to the long-poll URL when `document.visibilityState === 'visible'` (presence for the notifier: today the overlay polls from page load even when hidden, so "polling" cannot mean "looking"); (c) three entries in its error text map: `owner-offline, owner-away, owner-timeout`. Tests first in the existing client tests.
+
+### 6.7 Paused sessions after a restart
+
+A DSH restart or crash leaves sessions cut off in the middle of work. Their logs (`~/.dsh/sessions/--<cwd>--/<id>/session.v4.jsonl.zstd`, concatenated zstd frames of JSON lines) say so, and the task list offers to resume them. New item type **`paused`** (read-only for the phone), written by the agent and owned by the instance that scanned; it uses the normal ops, so the hub and the phone get it like any item. Code: [paused.js](../paused.js); the plugin wiring is in [index.js](../index.js).
+
+- **What counts** (`classifyLog`, ported from the vault note *How To Tell A DSH Session Was Cut Off*): the last turn has no `turn/end` (`open-turn`); the last `turn/end` is `interrupted` with no later turn (`interrupted`); a message queued for the **next turn** was never consumed (`pending-inbox`; next-step notices from hooks, the working directory and reminders are left in finished sessions all the time and are ignored); the last frame is half written (`torn`). Not a cut: stopped by the user, error, parent abort, cap handoff, max tokens. Subagents (`origin: subagent`) never. Only logs written in the last **3 days** (`MAX_AGE_MS`).
+- **Never a live session.** A log is read only when its session is not live (not seen by this app's capture, not in `ctx.get('agents').list()`), not archived, and either last written **before this app started** (a restart: nothing of that process is running) or at least **2 minutes** ago (`STALE_MS`). Logs over 64 MB are skipped; the scan yields to the event loop between logs and reads nothing else. Needs `zlib.zstdDecompressSync` (Node 22.15+); without it the scan fails as a whole (`no-zstd`) and changes nothing.
+- **When.** At startup (`pausedStartMs`, 5 s), once more after the quiet time (`pausedRescanMs`, `STALE_MS` + 15 s: sessions the host loaded right after the restart), and on demand (`POST /v1/paused-scan`, the overlay's **Find paused**; local to the app, never through the hub). Every scan reconciles: a new cut session gets an item, a changed one is updated in place, one that is not cut off any more is resolved `recovered`. A restart does not cancel paused items (`cancelStalePending` skips them); the next scan decides.
+- **Item**: `{ type: 'paused', sessionId, sessionTitle, workspace: <cwd>, payload: { lastWrite, kinds, reason, turn, danglingCalls, pending, lastUser, lastAssistant } }`. It is not "waiting on you": `waitingCount` and `count().total` leave it out; `count().byType.paused` and the overlay's "⏸ N paused" carry it. No push is sent for it.
+- **Resume** (`POST /v1/paused-resume {id}`, command `paused-resume` to the owner): `controller.prompt({ requestId: 'resume-…', sessionId, mode: 'queue', content: [{ type: 'text', text: RESUME_PROMPT }] })`, the same call a card reply uses (DSH restores a cold session for it), then the item resolves `resumed`. `RESUME_PROMPT` (one constant in paused.js): "Resume the work this session was doing when it was cut off. First check git status and git log in its worktree and the last tool calls, because the last tool may have half-applied, then continue." A session DSH no longer has gives 409 `session-gone` and the item ends. **Dismiss** (`POST /v1/paused-dismiss`) resolves it `dismissed`.
+- **Dismissed stays dismissed**: resume and dismiss both record `{ sessionId: lastWrite }` in `<stateDir>/paused-dismissed.json` (kept 7 days). A session stays quiet until its log is written again; a later cut is a new case. Caveat: if DSH itself writes to a dismissed log later (for example the crash-repair closer on the next load of that session) its last write moves and it can reappear once.
+- **Resume all** (overlay only): the header button "Resume all (N)" asks first ("Resume all N paused sessions, 3 at a time?"); then `runResumeAll` (lib/client.js) sends the prompts so that at most `RESUME_AT_A_TIME` = 3 sessions are working: a place is given back when the session has a new done / question / permission item since its resume, when the resume was refused, or after 5 minutes. **Stop** starts no new one. The routes are the per-card ones, so in hub mode it is the same command path.
+- **Phone**: read only. It gets the items in the snapshot (chip *Paused*, filter chip, a banner "N sessions were paused by a restart. Resume or dismiss them at the PC.", a card with the facts); `DEVICE_ACTIONS` is unchanged, so `paused-resume` / `paused-dismiss` are 403 `desktop-only`. See [mobile.md](mobile.md).
+- **Owner gone**: nothing special: the items stay with the owner like todos; the next app's startup scan creates its own and the hub's 24 h orphan rule expires the old ones.
 
 ## 7. Data model and persistence
 

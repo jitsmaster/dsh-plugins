@@ -21,6 +21,8 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     deny: (c) => queue.deny(c.itemId),
     reply: (c) => queue.reply(c.itemId, c.args.text),
     archive: (c) => queue.archive(c.itemId),
+    'paused-resume': (c) => queue.resumePaused(c.itemId),
+    'paused-dismiss': (c) => queue.dismissPaused(c.itemId),
     'todo-suggest': (c) => queue.addTodo(c.args.text, { sparc: c.args.sparc, workspaces: c.args.workspaces }),
     'todo-cancel': (c) => queue.cancelTodo(c.itemId),
     'open-session': (c) => (typeof openSession === 'function' ? openSession(c.args.sessionId) : { ok: false, error: 'no-controller' }),

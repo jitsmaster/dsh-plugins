@@ -41,7 +41,7 @@ test('connected: reads come from the mirror, in hub order with global positions,
   const s = queue.snapshot()
   assert.equal(s.snapshotId, 'e:1')
   assert.deepEqual(s.open.map((i) => [i.id, i.position, i.ownerLabel, typeof i.title, typeof i.spoken.headline]), [['a', 1, 'DSH :1', 'string', 'string'], ['b', 2, 'DSH :2', 'string', 'string']])
-  assert.deepEqual(queue.count(), { total: 2, byType: { question: 0, permission: 0, completed: 2, 'pr-merged': 0, todo: 0 } })
+  assert.deepEqual(queue.count(), { total: 2, byType: { question: 0, permission: 0, completed: 2, 'pr-merged': 0, todo: 0, paused: 0 } })
   assert.equal(queue.first().id, 'a')
   assert.equal(queue.openTarget().sessionId, 's1')
   assert.deepEqual(local.calls, [])

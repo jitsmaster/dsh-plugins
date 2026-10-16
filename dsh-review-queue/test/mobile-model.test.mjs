@@ -28,7 +28,7 @@ test('the shared helpers carry what the phone list needs, so the phone has no ru
   assert.equal(typeof core.filterBarVisible, 'function')
   assert.equal(typeof core.todoLine, 'function')
   assert.equal(typeof core.todoCardState, 'function')
-  assert.deepEqual(Array.from(core.FILTER_TYPES), ['all', 'completed', 'question', 'permission', 'pr-merged', 'todo'])
+  assert.deepEqual(Array.from(core.FILTER_TYPES), ['all', 'completed', 'question', 'permission', 'pr-merged', 'todo', 'paused'])
 })
 
 test('the waiting count leaves out a todo that is starting, exactly like the desktop header', () => {
@@ -41,7 +41,7 @@ test('the waiting count leaves out a todo that is starting, exactly like the des
 
 test('chips are the desktop filter chips (including Todo) with the same labels, and the active one is marked', () => {
   const m = listModel(core, { open: [], resolved: [] }, { type: 'todo', query: '' })
-  assert.deepEqual(Array.from(m.chips, (c) => c.label), ['All', 'Done', 'Question', 'Permission', 'PR merged', 'Todo'])
+  assert.deepEqual(Array.from(m.chips, (c) => c.label), ['All', 'Done', 'Question', 'Permission', 'PR merged', 'Todo', 'Paused'])
   assert.deepEqual(Array.from(m.chips.filter((c) => c.on), (c) => c.type), ['todo'])
 })
 

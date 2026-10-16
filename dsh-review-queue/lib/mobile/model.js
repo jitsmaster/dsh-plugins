@@ -14,13 +14,27 @@ export function listModel(core, snap, filter) {
   const open = snap ? snap.open : []
   const resolved = snap ? snap.resolved : []
   return {
-    waiting: core.waitingCount(open), // a todo that is being started does not wait on the user
+    waiting: core.waitingCount(open), // a todo that is being started, or a paused session, does not wait on the user
+    paused: core.pausedCount(open), // sessions a restart cut off: read only here, resumed at the PC
     open: core.filterItems(open, f),
     resolved: core.filterItems(resolved, f),
     resolvedCount: resolved.length,
     barVisible: core.filterBarVisible(snap, f),
     chips: core.FILTER_TYPES.map((type) => ({ type, label: type === 'all' ? 'All' : core.typeLabel(type), on: (f.type || 'all') === type })),
   }
+}
+
+/** The indicator line for sessions a restart cut off (undefined for none). The phone only lists them: acting on them is for the PC. */
+export function pausedNote(n) {
+  if (!n) return undefined
+  return n === 1
+    ? '1 session was paused by a restart. Resume or dismiss it at the PC.'
+    : n + ' sessions were paused by a restart. Resume or dismiss them at the PC.'
+}
+
+/** The read-only card of a paused session: the facts the desktop card shows (core.pausedFacts) and where to act. No actions. */
+export function pausedView(core, item, now) {
+  return { facts: core.pausedFacts(item, now), note: 'To resume this session, use the Task list on the PC.' }
 }
 
 /** The read-only todo card: the task, SPARC, and the same sentence the desktop card shows for the state (no workspaces are loaded here). */

@@ -10,7 +10,7 @@ import { riskOf } from '../risk.js'
 
 const HUB_LOCAL = ['reviewed', 'reopen']
 /** Value: the item must still be open (an expired question can still be answered late, any session can be opened). */
-const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'open-session': false }
+const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'paused-resume': true, 'paused-dismiss': true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'open-session': false }
 export const ACTION_KINDS = [...HUB_LOCAL, 'todo', ...Object.keys(OWNER_ACTIONS)]
 
 const risksOf = (item) => (item.type === 'permission' ? riskOf({ toolName: item.payload?.toolName, detail: item.payload?.detail ?? item.payload?.summary, path: item.payload?.path, workspace: item.workspace }) : [])

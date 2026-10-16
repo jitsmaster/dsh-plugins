@@ -476,6 +476,7 @@ export function cancelStalePending(store, { only } = {}) {
       else if (item.suggesting) store.update(item.id, { suggesting: false })
       continue
     }
+    if (item.type === 'paused') continue // the next scan of the session logs decides whether it is still cut off
     if (item.type !== 'completed' && item.type !== 'pr-merged' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) n++
   }
   return n

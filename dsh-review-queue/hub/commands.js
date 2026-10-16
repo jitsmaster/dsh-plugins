@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 
 export const TIMEOUT_MS = Object.freeze({
   answer: 10_000, deny: 10_000, approve: 10_000, 'approve-similar': 10_000, 'late-answer': 15_000, reply: 35_000, archive: 35_000,
-  'todo-suggest': 10_000, 'todo-start': 10_000, 'todo-cancel': 10_000, 'open-session': 10_000, apply: 10_000,
+  'paused-resume': 35_000, 'paused-dismiss': 10_000, 'todo-suggest': 10_000, 'todo-start': 10_000, 'todo-cancel': 10_000, 'open-session': 10_000, apply: 10_000,
 })
 const DEFAULT_TIMEOUT_MS = 10_000
 

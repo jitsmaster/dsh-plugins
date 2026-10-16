@@ -4,7 +4,7 @@ import { state, subscribe, set, act, getCore, loadWorkspaces, startTodo, NEW_TOD
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { listModel, screenFor, todoCardModel } from './model.js'
+import { listModel, pausedNote, pausedView, screenFor, todoCardModel } from './model.js'
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
@@ -254,6 +254,15 @@ function TodoBody({ item }) {
   </div>`
 }
 
+/** A session a restart cut off: read only. The phone shows why it is listed; resuming or dismissing it is done at the PC. */
+function PausedBody({ item }) {
+  const v = pausedView(getCore(), item, now())
+  return html`<div>
+    ${v.facts.map((f, i) => html`<div class=${i === 0 ? 'text' : 'sub'} key=${i}>${f}</div>`)}
+    <div class="sub">${v.note}</div>
+  </div>`
+}
+
 // ---- screens ----------------------------------------------------------------------------------------------------
 
 function ItemRow({ item }) {
@@ -281,8 +290,10 @@ function WaitingList() {
   const all = st.snap ? st.snap.open : []
   const model = listModel(c, st.snap, st.filter)
   const shown = model.open
+  const note = pausedNote(model.paused)
   return html`<div>
     <div class="row todo-link"><a class="btn pri" href="#/new">+ New todo</a></div>
+    ${note ? html`<div class="banner paused-note" role="status">⏸ ${note} <button class="btn" type="button" onClick=${() => set({ filter: { ...st.filter, type: 'paused' } })}>Show</button></div>` : null}
     ${model.barVisible ? html`<${FilterBar} model=${model} />` : null}
     ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
   </div>`
@@ -349,7 +360,7 @@ function ItemView({ id }) {
   const item = open || resolved
   if (!item) return html`<div class="empty">${st.snap ? 'That item is no longer here.' : 'Loading…'}<div class="row"><a class="btn" href="#/">Back to the list</a></div></div>`
   const late = resolved && item.type === 'question' && item.resolution && item.resolution.kind === 'expired'
-  const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'todo' ? TodoBody : CompletedBody
+  const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'todo' ? TodoBody : item.type === 'paused' ? PausedBody : CompletedBody
   return html`<article class="card">
     <div class="top"><${Chip} type=${item.type} /><span class="age">${resolved ? ageOf(item, 'resolvedAt') : ageOf(item)}</span></div>
     <h2>${c.cardTitle(item)}</h2>
@@ -388,7 +399,7 @@ export function App() {
   // iPhone in a Safari tab: say once how to install the Home Screen app (the only place push works on iOS).
   const install = hintGone ? null : installHint(platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, standalone: isStandalone(window) }))
   return html`<div class="app">
-    <header><h1>Task list</h1><span class="count">${count} waiting</span></header>
+    <header><h1>Task list</h1><span class="count">${count} waiting${model.paused ? html` · <span class="paused-count">⏸ ${model.paused} paused</span>` : null}</span></header>
     ${guard ? html`<div class="banner view-guard">${guard.message}</div>` : null}
     ${install ? html`<div class="banner install-hint">${install} <button class="btn" type="button" onClick=${() => { dismissInstallHint(); setHintGone(true) }}>Dismiss</button></div>` : null}
     ${st.error ? html`<div class="banner">${st.error}</div>` : null}

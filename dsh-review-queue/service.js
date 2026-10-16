@@ -6,19 +6,21 @@ import { randomUUID } from 'node:crypto'
 import { spokenFor, titleFor, fullTextFor, chunkForSpeech } from './speech.js'
 import { riskOf } from './risk.js'
 import { createTodos } from './todo.js'
+import { RESUME_PROMPT } from './paused.js'
 
 const MAX_REPLY = 4000
-const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo']
-/** A todo being started is not waiting on the user. */
-const needsUser = (item) => !(item.type === 'todo' && item.state === 'starting')
+const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo', 'paused']
+/** A todo being started, or a session paused by a restart (it has its own count), is not waiting on the user. */
+const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && item.state === 'starting')
 
 // Show/hide commands for the browsers. The default state is module-level so that re-creating the queue inside one server run
 // (a plugin reload) does not reset the sequence: a tab that already saw seq N would otherwise ignore every later command.
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, titlesOf, sparcText, suggestTimeoutMs, log, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, titlesOf, sparcText, suggestTimeoutMs, log, paused, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log })
+  const resuming = new Set() // paused items whose resume prompt is on its way
   let focusId
   let reading // id of the item being read aloud
   let readOpen = false // the item being read was in the queue when reading started
@@ -121,6 +123,40 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       store.resolve(id, { kind: 'archived', by: 'card' })
       return { ok: true }
     },
+    /**
+     * Resumes a paused session: prompts the session itself (the same call a reply uses) with the standard resume prompt, queued, then
+     * closes the item. The session stays out of the list until its log is written again.
+     */
+    async resumePaused(id) {
+      const item = openItem(id)
+      if (!item || resuming.has(id)) return { ok: false, error: 'not-open' }
+      if (item.type !== 'paused') return { ok: false, error: 'not-paused' }
+      const controller = controllerOf()
+      if (!controller?.prompt) return { ok: false, error: 'no-controller' }
+      resuming.add(id)
+      try {
+        const request = { requestId: 'resume-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: RESUME_PROMPT }] }
+        await controller.prompt(request, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
+      } catch (error) {
+        // DSH no longer has the session (deleted): nothing to resume.
+        if (error?.code === 'session/not-found') { store.resolve(id, { kind: 'session-ended' }); return { ok: false, error: 'session-gone' } }
+        return { ok: false, error: String(error?.message ?? error) }
+      } finally { resuming.delete(id) }
+      paused?.markHandled(item)
+      store.resolve(id, { kind: 'resumed', by: 'card' })
+      return { ok: true }
+    },
+    /** Dismisses a paused session: it stays out of the list until its log is written again. */
+    dismissPaused(id) {
+      const item = openItem(id)
+      if (!item) return { ok: false, error: 'not-open' }
+      if (item.type !== 'paused') return { ok: false, error: 'not-paused' }
+      paused?.markHandled(item)
+      store.resolve(id, { kind: 'dismissed', by: 'card' })
+      return { ok: true }
+    },
+    /** Looks for sessions cut off by a restart now (the agent also does at startup): { ok, added, updated, resolved, total }. */
+    scanPaused: async () => (paused ? paused.scan() : { ok: false, error: 'no-scanner' }),
     /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc? }) -> { ok, id, state }; confirmTodo(id, { workspaceId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). */
     addTodo: (text, opts) => todos.add(text, opts),
     confirmTodo: (id, opts) => todos.confirm(String(id), opts),
@@ -130,9 +166,10 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
     /** Open items only: how many wait in total and per type. */
     count() {
       const byType = Object.fromEntries(TYPES.map((t) => [t, 0]))
-      const open = store.snapshot().open.filter(needsUser)
-      for (const item of open) if (item.type in byType) byType[item.type]++
-      return { total: open.length, byType }
+      const all = store.snapshot().open
+      for (const item of all) if (item.type in byType && needsUser(item)) byType[item.type]++
+      byType.paused = all.filter((i) => i.type === 'paused').length
+      return { total: all.filter(needsUser).length, byType }
     },
     /** The oldest open item (position 1), or undefined. */
     first: () => store.snapshot().open[0],

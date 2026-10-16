@@ -7,6 +7,11 @@
  * one list; `hub: false` or env DSH_RQ_HUB=0 keeps the plugin standalone exactly as it was. Config: `hubPort` (env DSH_RQ_HUB_PORT, default
  * 47615), `hubNode` (the node executable that runs the hub), `instanceLabel` (how this app is named, default "DSH :<port>").
  *
+ * Paused sessions (paused.js): at startup and again after the quiet time the plugin scans ~/.dsh/sessions for sessions a restart cut off and lists
+ * them (type 'paused'); `paused: false` or env DSH_RQ_PAUSED=0 turns it off, and it is off in node --test runs unless `pausedScan` (a replacement
+ * for the scan, called with { root, startedAt, liveIds, skipIds }) is given. `pausedStartMs` (default 5000) and `pausedRescanMs`
+ * (default the quiet time plus 15 s, 0 = never) time the two scans.
+ *
  * `taskbarBadge` (default on, Windows only; env DSH_RQ_TASKBAR=0 turns it off): the number of waiting items as a badge on the app's taskbar button (taskbar.js).
  *
  * Config (all optional): `sparcCommandPath` (the modes:sparc command file a "Use SPARC" todo inlines, default ~/.claude/commands/modes/sparc.md), `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
@@ -34,11 +39,13 @@ import { createRouter, PREFIX } from './server.js'
 import { createPushStore, loadOrCreateVapid, jsonFileIo } from './hub/push.js'
 import { createPushRoutes } from './hub/push-routes.js'
 import { createFileLog } from './filelog.js'
+import { STALE_MS, createDismissals, createPausedTracker, scanSessionLogs } from './paused.js'
 import { createTaskbarBadge } from './taskbar.js'
 
 export const name = 'review-queue'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+const safe = (fn) => { try { return fn() } catch { return undefined } }
 
 /** Atomic-ish JSON file: write a temp file, then rename over the target. */
 function fileIo(file) {
@@ -148,12 +155,32 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     return [...ids]
   }
   const speaker = config.speaker ?? reader
-  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, titlesOf, sparcText, log, ...(config.ui ? { ui: config.ui } : {}) })
+  // Paused sessions: what a restart cut off, from the session logs. A session this app has seen or has loaded is live; an archived one is skipped.
+  const startedAt = Date.now()
+  const pausedWanted = typeof config.pausedScan === 'function' || config.paused === true
+    || (config.paused !== false && process.env.DSH_RQ_PAUSED !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
+  const archivedIds = () => new Set((safe(() => registryOf()?.archivedSessionIds) ?? []).map(String))
+  const liveSessionIds = () => new Set([...capture.seenSessionIds(), ...(safe(() => agentsOf()?.list?.()) ?? []).map((a) => a?.id).filter((id) => typeof id === 'string')])
+  const pausedScan = () => (config.pausedScan ?? scanSessionLogs)({ root: join(dshHome, 'sessions'), startedAt, liveIds: liveSessionIds(), skipIds: archivedIds() })
+  const paused = pausedWanted
+    ? createPausedTracker({
+      store, scan: pausedScan, log,
+      dismissals: createDismissals({ io: stateDir ? fileIo(join(stateDir, 'paused-dismissed.json')) : undefined }),
+    })
+    : undefined
+  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, titlesOf, sparcText, log, paused, ...(config.ui ? { ui: config.ui } : {}) })
+  const pausedTimers = []
+  if (paused) {
+    const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }
+    later(config.pausedStartMs ?? 5000)
+    const again = config.pausedRescanMs ?? STALE_MS + 15_000
+    if (again > 0) later((config.pausedStartMs ?? 5000) + again)
+  }
 
   const pruneTimer = setInterval(() => store.prune(), 3600_000)
   pruneTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(pruneTimer); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(pruneTimer); pausedTimers.forEach(clearTimeout); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.

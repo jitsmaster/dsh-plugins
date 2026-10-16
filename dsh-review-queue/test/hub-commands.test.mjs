@@ -14,7 +14,7 @@ const approve = { kind: 'approve', itemId: 'i1', args: { via: 'phone', confirmed
 test('the timeouts are the 6.2 table', () => {
   assert.deepEqual(
     { ...TIMEOUT_MS },
-    { answer: 10_000, deny: 10_000, approve: 10_000, 'approve-similar': 10_000, 'late-answer': 15_000, reply: 35_000, archive: 35_000, 'todo-suggest': 10_000, 'todo-start': 10_000, 'todo-cancel': 10_000, 'open-session': 10_000, apply: 10_000 },
+    { answer: 10_000, deny: 10_000, approve: 10_000, 'approve-similar': 10_000, 'late-answer': 15_000, reply: 35_000, archive: 35_000, 'paused-resume': 35_000, 'paused-dismiss': 10_000, 'todo-suggest': 10_000, 'todo-start': 10_000, 'todo-cancel': 10_000, 'open-session': 10_000, apply: 10_000 },
   )
 })
 

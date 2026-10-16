@@ -84,6 +84,9 @@ window.__ModuleLoader__.load({
 				case "superseded": return "Replaced by a newer result";
 				case "no-action": return "Hidden: nothing for you to do (judged from the message; Reopen if it was wrong)";
 				case "replied": return r.by === "session" ? "You continued the session" : "You replied";
+				case "resumed": return "Resumed";
+				case "dismissed": return "Dismissed";
+				case "recovered": return "No longer cut off (it continued or ended)";
 				case "session-ended": return "Session ended";
 				case "cancelled": return r.by === "restart" ? "Cancelled when the server restarted" : "Cancelled";
 				default: return "Resolved";
@@ -250,7 +253,7 @@ window.__ModuleLoader__.load({
 		/** The long-poll token: what this tab has already seen. The server answers "unchanged" only while all four parts still match. */
 		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0);
 
-		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", todo: "Todo" };
+		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", todo: "Todo", paused: "Paused" };
 		const typeLabel = (t) => TYPE[t] || t;
 		const recommended = (q, label) => /\(recommended\)/i.test(label);
 
@@ -293,10 +296,62 @@ window.__ModuleLoader__.load({
 				default: return "";
 			}
 		}
-		/** What waits on the user: a todo that is being started does not. */
-		const waitingCount = (open) => (open || []).filter((i) => !(i.type === "todo" && i.state === "starting")).length;
+		/** What waits on the user: a todo that is being started does not, and a session paused by a restart has its own count. */
+		const waitingCount = (open) => (open || []).filter((i) => i.type !== "paused" && !(i.type === "todo" && i.state === "starting")).length;
+		/** How many sessions a restart cut off (open paused items). */
+		const pausedCount = (open) => (open || []).filter((i) => i.type === "paused").length;
+		/** The lines a paused card shows: why, how long ago, a tool call that may be half done, the last request. The phone card shows the same. */
+		function pausedFacts(item, now) {
+			const p = (item && item.payload) || {};
+			const facts = [p.reason || "Cut off by a restart or crash", "Last activity " + fmtAge(now - (p.lastWrite || 0))];
+			if (p.danglingCalls && p.danglingCalls.length) facts.push("The last tool call had no result and may be half done: " + p.danglingCalls.join(", "));
+			if (p.lastUser) facts.push("Last request: " + p.lastUser);
+			return facts;
+		}
+		// ---- Resume all: confirm, then a few sessions at a time ------------------------------------------
+		/** Sessions resumed at a time (the same number as RESUME_CONCURRENCY in paused.js; a test keeps them equal). */
+		const RESUME_AT_A_TIME = 3;
+		/** A resumed session that does not report back (a done, question or permission item) frees its place after this long. */
+		const RESUME_SLOT_MS = 5 * 60 * 1000;
+		const resumeAllText = (n) => (n === 1 ? "Resume 1 paused session? It gets the standard resume prompt." : "Resume all " + n + " paused sessions, " + RESUME_AT_A_TIME + " at a time? Each one gets the standard resume prompt.");
+		/** A resumed session has stopped working again when it has a new done, question or permission item since the resume. */
+		function settledAfter(snap, item, since) {
+			if (!snap) return false;
+			return [...(snap.open || []), ...(snap.resolved || [])].some((i) => i.sessionId === item.sessionId && (i.type === "completed" || i.type === "question" || i.type === "permission") && i.createdAt >= since);
+		}
+		/**
+		 * Resumes items with at most `limit` working at a time: a place is taken when a resume is sent and given back when the session has settled
+		 * (settled(item) resolves), when the resume was refused, or after slotMs. Aborting starts no new one. Never throws.
+		 * Returns { total, started, ok, failed: [{ id, error }], cancelled }; onProgress gets { total, started, ok, failed, running }.
+		 */
+		async function runResumeAll({ items, limit = RESUME_AT_A_TIME, resume, settled, signal, onProgress, slotMs = RESUME_SLOT_MS }) {
+			const p = { total: items.length, started: 0, ok: 0, failed: 0, running: 0 };
+			const failed = [];
+			let next = 0;
+			const report = () => { if (onProgress) onProgress({ ...p }); };
+			const aborted = () => !!(signal && signal.aborted);
+			const abortWait = new Promise((resolve) => { if (signal) signal.addEventListener("abort", resolve, { once: true }); });
+			async function lane() {
+				while (next < items.length && !aborted()) {
+					const item = items[next++];
+					p.started++; p.running++; report();
+					let r;
+					try { r = await resume(item); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+					if (r && r.ok) {
+						p.ok++;
+						let timer;
+						const slot = new Promise((resolve) => { timer = setTimeout(resolve, slotMs); });
+						await Promise.race([Promise.resolve().then(() => settled(item)).catch(() => {}), slot, abortWait]);
+						clearTimeout(timer);
+					} else { p.failed++; failed.push({ id: item.id, error: (r && r.error) || "failed" }); }
+					p.running--; report();
+				}
+			}
+			await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+			return { total: p.total, started: p.started, ok: p.ok, failed, cancelled: aborted() && p.started < items.length };
+		}
 		/** The filter chips, in order ("all" first); the phone page draws the same set. */
-		const FILTER_TYPES = ["all", "completed", "question", "permission", "pr-merged", "todo"];
+		const FILTER_TYPES = ["all", "completed", "question", "permission", "pr-merged", "todo", "paused"];
 		/** The filter bar shows from four items in all (waiting + resolved), and always while a type or a search is active. */
 		function filterBarVisible(snap, f) {
 			const total = snap ? snap.open.length + snap.resolved.length : 0;
@@ -349,6 +404,7 @@ window.__ModuleLoader__.load({
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined }, workspaces: null, todoPick: {},
+			resumeAll: null, scanNote: undefined, scanning: false,
 		};
 		const listeners = new Set();
 		let version = 0;
@@ -447,6 +503,7 @@ window.__ModuleLoader__.load({
 			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so the answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
 			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
+			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.",
 			"no-workspace": "Pick a workspace first.", "unknown-workspace": "That workspace no longer exists.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
 		};
 
@@ -517,6 +574,47 @@ window.__ModuleLoader__.load({
 			return ok;
 		}
 		const cancelTodo = (item) => act("/v1/todo-cancel", { id: item.id }, item.id, { advance: true });
+		/** Resumes one paused session; { ok } or { ok: false, error: code }. */
+		async function resumeOne(item) {
+			try {
+				const res = await fetch(API + "/v1/paused-resume", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: item.id }) });
+				const j = await res.json().catch(() => ({}));
+				return res.ok ? { ok: true } : { ok: false, error: (j && j.error) || "HTTP " + res.status };
+			} catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+		}
+		const pausedOpen = () => (state.snap ? state.snap.open.filter((i) => i.type === "paused") : []);
+		const askResumeAll = () => { const n = pausedOpen().length; if (n) set({ resumeAll: { phase: "confirm", total: n } }); };
+		const closeResumeAll = () => set({ resumeAll: null });
+		let resumeAbort;
+		/** After the user confirmed: resumes every paused session, a few at a time; each place is held until its session reports back. */
+		async function startResumeAll() {
+			const items = pausedOpen();
+			if (!items.length) { set({ resumeAll: null }); return; }
+			resumeAbort = new AbortController();
+			const since = {};
+			set({ resumeAll: { phase: "running", total: items.length, progress: { total: items.length, started: 0, ok: 0, failed: 0, running: 0 } } });
+			const result = await runResumeAll({
+				items, signal: resumeAbort.signal,
+				resume: (item) => { since[item.id] = Date.now() + state.skew; return resumeOne(item); },
+				settled: (item) => new Promise((resolve) => {
+					const check = () => { if (settledAfter(state.snap, item, since[item.id])) { off(); resolve(); } };
+					const off = subscribe(check);
+					check();
+				}),
+				onProgress: (progress) => { if (state.resumeAll && state.resumeAll.phase === "running") set({ resumeAll: { ...state.resumeAll, progress } }); },
+			});
+			set({ resumeAll: { phase: "done", total: items.length, result } });
+		}
+		const stopResumeAll = () => { if (resumeAbort) resumeAbort.abort(); };
+		/** Looks for sessions a restart cut off, now. */
+		async function scanPaused() {
+			set({ scanning: true, scanNote: undefined });
+			try {
+				const res = await fetch(API + "/v1/paused-scan", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" });
+				const j = await res.json().catch(() => ({}));
+				set({ scanning: false, scanNote: res.ok ? (j.added ? "Found " + j.added + " paused session" + (j.added === 1 ? "" : "s") + "." : "No new paused sessions.") : errorText(res.status, j) });
+			} catch (e) { set({ scanning: false, scanNote: "Request failed: " + String((e && e.message) || e) }); }
+		}
 		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
 
 		// =====================================================================================
@@ -532,7 +630,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
 			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}"
-			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.todo{color:var(--rq-accent)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
+			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
 			+ ".rq-text{white-space:pre-wrap;word-break:break-word}.rq-clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}"
@@ -712,12 +810,25 @@ window.__ModuleLoader__.load({
 				(s === "starting" || s === "started") && item.sessionId && hostApi.openSession ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", onClick: () => openSession(item) }, "Open session")) : null);
 		}
 
+		/** A session a restart cut off: why it is listed, then Resume (prompts the session itself) or Dismiss (it stays dismissed). */
+		function PausedBody({ item, full }) {
+			const st = useStore();
+			const busy = st.busy[item.id];
+			const facts = pausedFacts(item, useNow(false));
+			return h(React.Fragment, null,
+				h("div", { className: "rq-text" }, facts[0]),
+				(full ? facts.slice(1) : facts.slice(1, 2)).map((f, n) => h("div", { key: n, className: "rq-sub" }, f)),
+				h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn pri", disabled: busy, title: "Prompt the session to check its worktree and continue where it stopped", onClick: () => act("/v1/paused-resume", { id: item.id }, item.id, { advance: true }) }, busy ? "Resuming…" : "Resume"),
+					h("button", { className: "rq-btn", disabled: busy, title: "Do not resume it; it stays out of the list", onClick: () => act("/v1/paused-dismiss", { id: item.id }, item.id, { advance: true }) }, "Dismiss")));
+		}
+
 		function Card({ item, forceFull, selected, onSelect }) {
 			const st = useStore();
 			const now = useNow(item.type === "question" && !!item.expiresAt);
 			const full = forceFull || !!st.expanded[item.id];
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
-			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "todo" ? TodoBody : CompletedBody;
+			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "todo" ? TodoBody : item.type === "paused" ? PausedBody : CompletedBody;
 			const reading = !!(st.snap && st.snap.reading === item.id);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },
@@ -813,8 +924,12 @@ window.__ModuleLoader__.load({
 		function Head({ snap, extra }) {
 			const st = useStore();
 			const n = snap ? waitingCount(snap.open) : 0;
+			const paused = snap ? pausedCount(snap.open) : 0;
 			return h("div", { className: "rq-head" }, h("h2", null, "Task list"), h("span", { className: "rq-count" }, n),
+				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
 				h("span", { className: "rq-grow" }),
+				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
+				h("button", { className: "rq-link", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"),
 				h("button", { className: "rq-link", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				h("button", { className: "rq-link", onClick: () => set({ showResolved: !st.showResolved, showPhone: false }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
 				h("button", { className: "rq-link", title: "Pair a phone and manage the paired phones", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
@@ -844,6 +959,19 @@ window.__ModuleLoader__.load({
 			return words ? h("div", { className: "rq-notice rq-notice-" + (n.level === "warn" ? "warn" : "info"), role: "status" }, words) : null;
 		}
 
+		/** The Resume all bar: the confirmation with the count, the progress while it runs, the outcome. Also the note of the last scan. */
+		function ResumeAllBar() {
+			const st = useStore();
+			const r = st.resumeAll;
+			if (!r && !st.scanNote) return null;
+			if (!r) return h("div", { className: "rq-sub", style: { padding: "6px 14px" }, role: "status" }, st.scanNote, " ", h("button", { className: "rq-link", onClick: () => set({ scanNote: undefined }) }, "✕"));
+			let body;
+			if (r.phase === "confirm") body = [h("span", { key: "t" }, resumeAllText(r.total)), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "y", className: "rq-btn pri", onClick: startResumeAll }, r.total === 1 ? "Resume" : "Resume all"), h("button", { key: "n", className: "rq-link", onClick: closeResumeAll }, "Cancel")];
+			else if (r.phase === "running") body = [h("span", { key: "t" }, "Resuming: " + r.progress.started + " of " + r.total + " started, " + r.progress.running + " working…"), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "s", className: "rq-btn", onClick: stopResumeAll }, "Stop")];
+			else body = [h("span", { key: "t" }, "Resumed " + r.result.ok + " of " + r.total + (r.result.failed.length ? "; " + r.result.failed.length + " could not be resumed (" + r.result.failed.map((f) => f.error).filter((e, n, all) => all.indexOf(e) === n).join(", ") + ")" : "") + (r.result.cancelled ? "; stopped" : "") + "."), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "c", className: "rq-link", onClick: closeResumeAll }, "Close")];
+			return h("div", { className: "rq-todoform", role: "status" }, h("div", { className: "rq-row" }, body));
+		}
+
 		function Panel() {
 			const st = useStore();
 			const snap = st.snap;
@@ -854,7 +982,7 @@ window.__ModuleLoader__.load({
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : h("div", { className: "rq-empty" }, snap ? none : "Loading…");
 			const extra = h("button", { className: "rq-link", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
 			if (st.showPhone) return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h("div", { className: "rq-body" }, h(PhoneHost)));
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(TodoForm), h(FilterBar, { snap }),
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
@@ -928,13 +1056,14 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended, waitingCount, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
+		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo });
+		Object.assign(exports.__test, { RESUME_AT_A_TIME, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;
 	}

@@ -99,7 +99,7 @@ test('a session archived elsewhere takes its merged-PR item out of the list', ()
 test('count() reports merged PRs by type', () => {
   const { queue } = setup()
   queue.notifyPrMerged(info())
-  assert.deepEqual(queue.count(), { total: 1, byType: { question: 0, permission: 0, completed: 0, 'pr-merged': 1, todo: 0 } })
+  assert.deepEqual(queue.count(), { total: 1, byType: { question: 0, permission: 0, completed: 0, 'pr-merged': 1, todo: 0, paused: 0 } })
 })
 
 test('a merged-PR item survives a restart (only questions and permissions are cancelled)', () => {
