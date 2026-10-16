@@ -37,7 +37,7 @@ A **mobile-first PWA** served by this plugin, reached over Tailscale HTTPS and i
 ### Client
 - The pure card logic now inside lib/client.js (resolution text, filters, answer validation, error text, drafts) moves to a shared module used by both the DSH overlay and the phone page; the overlay keeps its tests. The phone views are new (list, card, confirm sheet, install and notification set-up, connection banner).
 - Connection loss: a banner, backoff reconnect, unsent replies and half-picked answers stay in local storage (as on desktop). An action that fails because the item changed shows the same text as the desktop.
-- Read aloud: `speechSynthesis` with the `spoken.full` text the snapshot already carries.
+- Read aloud: `speechSynthesis` with the `spoken.full` text the snapshot already carries. On Android (Chrome and the TWA) that is the device's own TextToSpeech engine. On iPhone and iPad the button is not drawn.
 - No Open session button on the phone.
 - New todo and dictation: see the two sections below.
 

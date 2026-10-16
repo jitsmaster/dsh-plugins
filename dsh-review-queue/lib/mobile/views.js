@@ -94,7 +94,8 @@ function Sheet({ title, lines = [], mono, risks = [], confirmLabel, hold, onConf
 
 function ReadAloud({ item }) {
   const [on, setOn] = useState(false)
-  if (typeof speechSynthesis === 'undefined' || !item.spoken) return null
+  // Android: Chrome's speechSynthesis is the device's own TextToSpeech engine. iPhone / iPad: no Read aloud button at all.
+  if (platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }).ios || typeof speechSynthesis === 'undefined' || !item.spoken) return null
   useEffect(() => () => { if (on) speechSynthesis.cancel() }, [on])
   const toggle = () => {
     if (on) { speechSynthesis.cancel(); setOn(false); return }

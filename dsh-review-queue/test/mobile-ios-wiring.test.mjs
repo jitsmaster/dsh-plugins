@@ -135,3 +135,10 @@ test('the "+ New todo" button has clear space below it so it never touches the f
   const m = /margin-bottom\s*:\s*(\d+)px/.exec(rule[1])
   assert.ok(m && Number(m[1]) >= 16, 'margin-bottom is at least 16px')
 })
+
+test('the Read aloud button is not drawn on iOS (Android speaks with the device TTS, iOS has no button)', () => {
+  const body = views.slice(views.indexOf('function ReadAloud('), views.indexOf('function Mic('))
+  assert.match(body, /platformInfo\([^)]*\)\.ios\s*\|\|\s*typeof speechSynthesis === 'undefined'/)
+  assert.match(body, /return null/)
+  assert.ok(body.indexOf('platformInfo(') < body.indexOf('useEffect('), 'decided before any effect is registered')
+})
