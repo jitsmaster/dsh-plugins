@@ -241,6 +241,8 @@ Single writer: only the hub process writes `hub/*`; agents write only their own 
 
 ## 8. Lifecycle
 
+Live check (2026-10-16): after two DSH restarts the hub snapshot held `paused` items for three cut-off sessions (open turn with a dangling `run_code`), Resume from the card prompted the existing session with the resume prompt and the item closed as `resumed` (the sessions continued), and a later scan closed one item as `recovered` after the user had typed into the session. Two apps listed the same session once each (one item per owner); the second scan reconciles them.
+
 ### 8.1 Start, lock, discovery
 ```
 ensureHub():                                        // called from apply() and every 60 s while degraded
