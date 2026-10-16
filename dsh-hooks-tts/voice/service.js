@@ -17,10 +17,6 @@ const BOWL_FILE = fileURLToPath(new URL('../assets/bowl.wav', import.meta.url))
 const CHIME_TEXT = 'Singing bowl.'
 /** How long a POST to the STT daemon may take before it counts as unavailable (it normally answers within ms). */
 const STT_REQUEST_TIMEOUT_MS = 5000
-/** Minimum time between two ensureStt calls (the launcher's own start throttle is separate). */
-const STT_RETRY_MS = 30_000
-/** After a result other than 'running' (down, starting, failed) the next probe comes sooner. */
-const STT_RETRY_DOWN_MS = 10_000
 
 /** Short random id for voice requests and conversations. */
 const uuid8 = () => randomUUID().slice(0, 8)
@@ -47,7 +43,6 @@ export function createVoiceService({
   createFlow = createVoiceFlow,
   trace = () => {},
   fetchImpl = globalThis.fetch,
-  ensureStt,
   record = () => {},
   requestTimeoutMs = STT_REQUEST_TIMEOUT_MS,
   summaryOf,
@@ -66,9 +61,6 @@ export function createVoiceService({
   let client
   let error
   let lastTranscript
-  let sttState
-  let sttBusy = false // an ensureStt call is in flight
-  let sttNextAt = 0 // earliest time of the next ensureStt call
   let handles = [] // session handles as the decider last saw them: [{ handle, id }]
   const approvals = createVoiceApprovals({ enabled, summaryOf })
 
@@ -241,13 +233,6 @@ export function createVoiceService({
         if (flow.active()) flow.abort('disabled')
         safe(() => speaker?.stop())
       }
-      // Throttled: reconcile runs every 5 s, and a TCP probe of a daemon that is down (or still starting) that often is waste.
-      if (!on) sttNextAt = 0
-      else if (ensureStt && client?.state !== 'connected' && !sttBusy && now() >= sttNextAt) {
-        sttBusy = true
-        Promise.resolve().then(ensureStt).then((r) => { sttState = r }, (e) => { sttState = 'failed: ' + (e?.message ?? e) })
-          .finally(() => { sttBusy = false; sttNextAt = now() + (sttState === 'running' ? STT_RETRY_MS : STT_RETRY_DOWN_MS) })
-      }
       if (on && !client) startClient()
       else if (!on && client) {
         client.stop()
@@ -259,7 +244,6 @@ export function createVoiceService({
       connection: client?.state ?? 'disconnected',
       busy: client?.busy ?? false,
       error,
-      stt: sttState,
       lastTranscript,
       pendingApprovals: approvals.pending(),
       flow: flow.snapshot(),

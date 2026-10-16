@@ -113,7 +113,7 @@ New voice/decider.js (replaces llm-router.js; pickModel/parseReply moved here)
   them must never be followed. The cached model pick is dropped on error AND on timeout; listProviders/listModels run under
   listTimeoutMs (= timeoutMs) and a provider that times out is skipped.
   speaker.js spawns Windows PowerShell by absolute path (%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe); index.js
-  coerces config.sttPort to an integer 1-65535 (else 8890) before it is used in URLs (stt-launcher.js normalizePort).
+  coerces config.sttPort to an integer 1-65535 (else 8890) before it is used in URLs (stt-port.js normalizePort).
 
 New voice/actions.js (pure; validation + phrasing + execution mapping)
   validateAction(raw, {sessions, target, peek, slashNames}) · readBack(action) · resultText(action, result)
@@ -160,7 +160,7 @@ Changed
   "Press Ctrl+Alt+V and speak; every request is read back and needs two yeses."
 Deleted: voice/dispatcher.js, voice/llm-router.js, voice/commands.js (grammar, describeMatch, makeMatch,
   resolveSession, catalog), test/voice-dispatcher.test.mjs, test/voice-llm-router.test.mjs, test/voice-commands.test.mjs.
-Kept untouched: approvals.js, client.js, stt-launcher.js, alerts.js, headline.js, voiceLog, controller + runSlash
+Kept untouched: approvals.js, client.js, alerts.js, headline.js, voiceLog, controller + runSlash
   wrappers, stop-speak.ps1 (Stop hook stays male; flow does not use it).
 
 ## 3. Action schema (LLM output, single JSON line)
@@ -371,7 +371,7 @@ test/voice-speaker.test.mjs (rewritten): S1 one worker spawned for many lines; J
   respawns · S4 per-request timeout → 'timeout' · S5 too many respawns → one-shot mode · S6 stop() kills worker
 test/voice-service.test.mjs (updated): SV1 listen POSTs JSON {context,window_s} with bearer · SV2 GUI control('listen')
   still posts without body · SV3 busy() true while flow active · SV4 agentDisposed clears selected and aborts flow
-  targeting it · SV5 transcripts reach flow.handle; logs typed 'flow' · keep reconcile/ensureStt/secret tests
+  targeting it · SV5 transcripts reach flow.handle; logs typed 'flow' · keep reconcile/secret tests
 test/voice-scripts.test.mjs: SC1 speak-worker.ps1 pure ASCII, emits ready/start/status lines
   (fake TTS URL) · SC2 Invoke-KokoroTts without -OnPlaybackStart unchanged (existing tests stay green) · R1 legacy callers clear a newer stop flag · R3 worker answers `muted` while tts-muted.flag exists · R9 worker keeps a fresh tts-priority-pending.flag
 Regression tests: voice-flow R3 muted lines end silently / R5 execute timeout (fake timers) · voice-speaker R3 `muted` passes through · voice-headline R10 permission alert names up to 80 chars

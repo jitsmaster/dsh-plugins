@@ -57,7 +57,7 @@ async function withApplied(fn) {
         return new Proxy(function () {}, { get: () => undefined, apply: () => undefined })
       },
     })
-    apply(ctx, { stateDir, configPath, sttAutoStart: false })
+    apply(ctx, { stateDir, configPath })
     const voiceTick = () => { for (const t of timers.filter((x) => x.ms === 5000)) t.fn() }
     const socketEvent = (type) => { sockets[0].onmessage({ data: JSON.stringify({ type }) }) }
     const hookSpawns = () => spawns.filter((s) => s.cmd === 'hook-cmd')

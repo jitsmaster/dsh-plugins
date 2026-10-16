@@ -332,29 +332,6 @@ test('SV5 the flow speaks through the speak worker', async () => {
   assert.deepEqual(h.spoken, [['I heard: x. Is that right?', VOICE]])
 })
 
-test('reconcile asks the launcher to ensure STT only while enabled and not connected', async () => {
-  const calls = []
-  const h = make({ ensureStt: async () => { calls.push('ensure'); return 'started' } })
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.deepEqual(calls, ['ensure'])
-  h.sock().onopen({})
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.deepEqual(calls, ['ensure'])
-  h.state.enabled = false
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.deepEqual(calls, ['ensure'])
-})
-
-test('an ensureStt failure never breaks reconcile', async () => {
-  const h = make({ ensureStt: async () => { throw new Error('x') } })
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.equal(h.svc.status().running, true)
-})
-
 test('SV9 the flow cancels speech through the speak worker (barge-in / abort silence queued and in-flight lines)', () => {
   const h = make()
   h.svc.reconcile()
@@ -461,58 +438,6 @@ test('SV10 the flow classifies answers step-aware: the read-back step takes only
   assert.equal(h.flow.deps.classify('confirm', 'decision'), 'yes')
 })
 
-
-test('O10 ensureStt is not asked again while a request is in flight or within the retry delay', async () => {
-  let t = 1_000_000
-  const calls = []
-  let release
-  const h = make({ now: () => t, ensureStt: () => new Promise((resolve) => { calls.push('ensure'); release = () => resolve('failed') }) })
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.equal(calls.length, 1, 'in flight: not asked again')
-  release()
-  await new Promise((r) => setImmediate(r))
-  t += 5000
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.equal(calls.length, 1, 'within the retry delay')
-  t += 5000
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.equal(calls.length, 2, 'after a failure it asks again within 10 s')
-})
-
-test('O10 once the daemon answers (running) the next probe waits 30 s', async () => {
-  let t = 1_000_000
-  const calls = []
-  const h = make({ now: () => t, ensureStt: async () => { calls.push('ensure'); return 'running' } })
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  t += 10_000
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.equal(calls.length, 1)
-  t += 20_000
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.equal(calls.length, 2)
-})
-
-test('O10 turning voice off and on again asks right away', async () => {
-  let t = 1_000_000
-  const calls = []
-  const h = make({ now: () => t, ensureStt: async () => { calls.push('ensure'); return 'started' } })
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  h.state.enabled = false
-  h.svc.reconcile()
-  h.state.enabled = true
-  h.svc.reconcile()
-  await new Promise((r) => setImmediate(r))
-  assert.equal(calls.length, 2)
-})
 
 const sockEvent = (h, type) => h.sock().onmessage({ data: JSON.stringify({ type }) })
 

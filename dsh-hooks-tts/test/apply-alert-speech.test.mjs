@@ -56,7 +56,7 @@ async function withApplied(fn, { config = {}, settings = { ttsEnabled: true }, m
         return new Proxy(function () {}, { get: () => undefined, apply: () => undefined })
       },
     })
-    apply(ctx, { stateDir, configPath, sttAutoStart: false, ttsUrl: 'http://tts.test/tts', ttsSpeed: 1.2, ...config })
+    apply(ctx, { stateDir, configPath, ttsUrl: 'http://tts.test/tts', ttsSpeed: 1.2, ...config })
     const cleanups = effects.map((e) => e.setup())
     const agent = { id: 'sess-1', session: { header: { cwd: tmpdir() }, deriveMessages: () => [{ role: 'assistant', content: 'All finished.' }] } }
     const stop = () => handlers.get('agent/turn-stopping')({ agent, signal: undefined })

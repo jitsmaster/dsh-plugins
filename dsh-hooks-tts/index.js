@@ -13,7 +13,7 @@
  */
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,7 +34,7 @@ import { createVoiceService } from './voice/service.js'
 import { createDecider } from './voice/decider.js'
 import { createSpeakWorker } from './voice/speaker.js'
 import { createAlertSpeech, speechModeOf } from './alert-speech.js'
-import { createSttLauncher, normalizePort } from './voice/stt-launcher.js'
+import { normalizePort } from './voice/stt-port.js'
 import { createToolSummaries } from './voice/tool-summaries.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
@@ -320,24 +320,9 @@ export function apply(ctx, baseConfig = {}) {
   // Voice control: the STT service's transcripts drive sessions (see voice/service.js). Off unless settings.voiceControl.
   const voiceAgents = new Map()
   const controllerOf = () => ctx.get('sessionController') ?? ctx.sessionController
-  // Start the STT daemon together with DSH when voice control is on (config.sttAutoStart: false opts out).
-  // The port is interpolated into URLs, so anything but an integer 1-65535 falls back to the default.
+  // DSH does not start the STT daemon (it takes ~3 GB); start it by hand when wanted. The port is interpolated into URLs,
+  // so anything but an integer 1-65535 falls back to the default.
   const sttPort = normalizePort(config.sttPort)
-  const sttLauncher = config.sttAutoStart === false ? undefined : createSttLauncher({
-    dir: config.sttDir ?? 'D:\\dev\\ai\\STT',
-    configFile: config.sttConfig ?? 'config.example.toml',
-    port: sttPort,
-    probe: async (port) => { try { return (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1500) })).ok } catch { return false } },
-    exists: existsSync,
-    spawnDetached: (cmd, args, opts) => {
-      const log = openSync(join(stateDir, 'stt-service.log'), 'a')
-      try {
-        spawn(cmd, args, { ...opts, detached: true, stdio: ['ignore', log, log], windowsHide: true, env: baseEnv }).unref()
-      } finally { closeSync(log) }
-    },
-    readLock: () => { try { return readFileSync(join(stateDir, 'stt-starting'), 'utf8') } catch { return undefined } },
-    writeLock: (v) => { try { writeFileSync(join(stateDir, 'stt-starting'), String(v)) } catch { /* best effort */ } },
-  })
   // What each pending tool call will do, recorded before the approval request so a spoken approve/deny can say what is being
   // approved. Security: keyed by session + tool + call id with an argument hash, dropped when the call settles (voice/tool-summaries.js).
   // Voice off: nothing is read back, so no call is summarised or hashed. settings.get() is mtime-cached (one stat per call, the file
@@ -409,7 +394,6 @@ export function apply(ctx, baseConfig = {}) {
       return (ctx.get('commands')?.list(agent) ?? []).map((c) => ({ name: c.name, description: c.description ?? '' }))
     },
     record: voiceLog,
-    ensureStt: sttLauncher ? async () => { const r = await sttLauncher.ensure(); if (r === 'started') ctx.logger.info('hooks-tts: started the STT service'); return r } : undefined,
     enabled: voiceControlOn,
     // The singing bowl played while the LLM decides (instead of a spoken line); read per decision, no restart. Default on.
     decideChime: () => settings.get().decideChime !== false,
