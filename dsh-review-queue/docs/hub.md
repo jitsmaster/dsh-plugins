@@ -38,7 +38,7 @@ Status: built H1-H4 (hub, agent bridge, proxy/launcher/plugin wiring, overlay de
 | --- | --- |
 | Tailscale | Installed: `C:\Program Files\Tailscale\tailscale.exe` 1.102.4, service Running, on PATH. Tailnet name of this PC: **`awang-lpt2.taile1279d.ts.net`** (MagicDNS suffix `taile1279d.ts.net`); the node has the `https` capability, so serve certificates are available. `tailscale serve status` = "No serve config". Other nodes: `admins-mac-mini` (macOS) and `node` (android, 100.103.0.32), probably the phone. |
 | serve command | `tailscale serve --bg --https=443 http://127.0.0.1:47615` (check: `tailscale serve status`; remove: `tailscale serve --https=443 off`). Serve config is per node and per HTTPS port: if DSH itself is ever published on 443 too, give the hub `--https=8443` and use that origin everywhere (assetlinks, TWA start URL). Not Funnel. May need an elevated shell the first time (verify in M0). |
-| Android SDK | `C:\Program Files (x86)\Android\android-sdk`: platforms **android-34, android-35**; build-tools **35.0.0**; cmdline-tools **12.0**; platform-tools (adb 1.0.41, 34.0.5). No Android 36 platform (the phone runs Android 16 = API 36; compileSdk/targetSdk 35 is fine). The folder is not writable for the current user (TrustedInstaller/Administrators ACL, not elevated), has no `licenses/` and no `package.xml` files (only `source.properties`); AGP does not need a licence for packages that are already installed, but if it insists on installing anything it cannot write there (risk R6). |
+| Android SDK | `C:\Program Files (x86)\Android\android-sdk`: platforms **android-34, android-35**; build-tools **35.0.0**; cmdline-tools **12.0**; platform-tools (adb 1.0.41, 34.0.5). No Android 36 platform (the phone runs Android 16 = API 36; compileSdk/targetSdk 35 is fine). The folder is not writable for the current user (TrustedInstaller/Administrators ACL, not elevated), has no `licenses/` and no `package.xml` files (only `source.properties`); AGP does not need a licence for packages that are already installed, but if it insists on installing anything it cannot write there (risk R6). | **Update 2026-10-15**: the SDK actually used is `C:\Users\awang\AppData\Local\Android\Sdk` (user-writable, licences accepted); `platforms;android-36` was installed there with `sdkmanager` (JDK 17) because `androidbrowserhelper` 2.7.4 needs androidx.core 1.17.0 (compileSdk 36); R6 did not bite.
 | JDK | `java` on PATH = Microsoft OpenJDK **11.0.16.1**; also a JDK 8 under `C:\Program Files\Android\jdk`. **`JAVA_HOME` is set to `C:\Program Files\Java\jdk-21`, which does not exist**, so `gradlew.bat` would stop with "invalid JAVA_HOME". AGP 8.x needs **JDK 17+**, so JDK 11 cannot build the app. Get Temurin 17 (zip, no admin: adoptium.net, version 17) or `winget install Microsoft.OpenJDK.17`, and let `android/build.ps1` set JAVA_HOME per run. |
 | Gradle | None on PATH. Bootstrap the wrapper once from `gradle-8.13-bin.zip` (`gradle wrapper --gradle-version 8.13`) and commit `gradlew`, `gradlew.bat`, `gradle/wrapper/*`. |
 | Node | v24.21.0 on PATH. DSH runs plugins inside its own process (Electron or Node); the hub launcher must not assume `process.execPath` is plain Node (see 8.1). |
@@ -317,7 +317,7 @@ Instance mode machine: `starting -> hub | standalone`; `hub -> degraded` on hub 
 ```
 android/
   settings.gradle.kts  build.gradle.kts  gradle.properties  gradlew  gradlew.bat  gradle/wrapper/*
-  app/build.gradle.kts            compileSdk 35, targetSdk 35, minSdk 26, namespace, applicationId from props
+  app/build.gradle.kts            compileSdk 36, targetSdk 36, minSdk 26, namespace, applicationId from props
   app/src/main/AndroidManifest.xml   LauncherActivity (DEFAULT_URL, LAUNCHING_BROWSER=com.android.chrome,
                                      asset_statements, ADDITIONAL_TRUSTED_ORIGINS if any), DelegationService (notification
                                      delegation, behind a boolean resource), POST_NOTIFICATIONS; no autoVerify, no INTERNET
@@ -352,6 +352,35 @@ Throwaway: 30-line Node server answering `/.well-known/assetlinks.json`, a manif
 | T12 | iPhone: Add to Home Screen, opens standalone in mobile layout, pairing, queue, answer, reply with mic (no auto-send), New todo, push arrives (iOS 16.4+, installed app only) |
 
 **Gate**: T2 and T5 pass: build the real APK (H5), delegation on if T5 shows it better. T2 fails but T4 passes: ask the user whether a flag-dependent TWA is acceptable. Otherwise **fallback F1**: the APK is a Custom Tab launcher (no DAL needed; address bar visible, push through Chrome) or **F2**: plain Chrome "Add to Home screen" PWA only (needs a WebAPK; Google's minting service may be unable to fetch a private host's icons, so Chrome may create only a shortcut: unverified, test as T9). F1/F2 drop the assetlinks work but the hub, pairing and push stand unchanged.
+
+### 11.4 Results of the first build and emulator run (2026-10-15, H5 part 1)
+
+Versions: Gradle 8.13 (wrapper jar from the gradle/gradle v8.13.0 tag), AGP 8.13.2, JDK 17 (`C:\Users\awang\tools\jdk-17`), `androidbrowserhelper` 2.7.4 with its own androidx.browser 1.10.0 / core 1.17.0, **compileSdk and targetSdk 36** (platform 36 installed with sdkmanager; build-tools 35.0.0), minSdk 26. Chrome on the emulator 133.0.6943.137.
+
+Findings that changed the code:
+- The earlier pins (browser 1.8.0, core 1.16.0, compileSdk 35) built green but **crashed at launch**: `NoSuchMethodError WindowCompat.enableEdgeToEdge` (the library calls core 1.17.0). Pins removed, compileSdk/targetSdk 36 (the version assertion in `test/android-project.test.mjs` was the only test edit).
+- The library then crashed with `ManageDataLauncherActivity does not exist`; the manifest now declares it (Bubblewrap does the same) and sets it as `manageSpaceActivity`.
+- Hub restart: `POST /hub/v1/shutdown` needs `Content-Type: application/json` (a body-less request gets 415 and nothing happens).
+
+| Test | Result | Why / evidence |
+| --- | --- | --- |
+| T1 https name loads over the tailnet, service worker | NOT RUN | needs the phone on Tailscale; the emulator reached the hub over `adb reverse` on loopback only. The PWA page itself loaded on the emulator (queue list, todos) |
+| T2 verified full screen, no flag | NOT RUN | needs the real phone and the https name. On the emulator the loopback URL cannot be verified (Chrome: `Verification failed ... as not https or localhost`), so it fell back to a Custom Tab with an address bar, as expected for localDebug |
+| T3 wrong fingerprint shows the address bar | NOT RUN | real phone |
+| T4 flag fallback | NOT RUN | only if T2 fails |
+| T5 Web Push into the TWA, delegation on/off | NOT RUN | real phone, Tailscale, screen off |
+| T6 localStorage token survives and is shared with Chrome | NOT RUN | real phone (the emulator page ran in a Custom Tab, a different case) |
+| T7 Samsung Internet does not hijack launch | NOT RUN | needs the Samsung (LAUNCHING_BROWSER is pinned to Chrome; the emulator launch went to Chrome) |
+| T8 adb install works on Android 16 | PARTIAL | adb install of the localDebug APK succeeded on the Android 16 (API 36) emulator; the Samsung R5CW30PD58H was not connected, Play Protect / developer verification not observed |
+| T9 WebAPK / Add to Home screen | NOT RUN | only if F2 is needed |
+| T10 mobile user agent, innerWidth | NOT RUN | real phone (emulator Custom Tab not measured) |
+| T11 mic button in the TWA | NOT RUN | real phone |
+| T12 iPhone | NOT RUN | no iPhone |
+| Build debug / release / localDebug | PASS | all three assemble; `apksigner verify --print-certs` OK; debug and localDebug use the debug key, release the `rq` key |
+| Launch on pixel7_api36 (localDebug) | PASS with fallback | `TwaLauncher: Launching Trusted Web Activity` then Chrome verification failed for the loopback http origin, so a **Custom Tab** (address bar, X button) showed the PWA task list; `adb-check.ps1` reports `TRUSTED_WEB_ACTIVITY` as the requested mode and `address bar on screen: yes`. Chrome needed its first-run screen dismissed once |
+| assetlinks | PASS | `/.well-known/assetlinks.json` lists `dev.dsh.reviewqueue` with the release and debug SHA-256 fingerprints after the hub restart |
+
+Gate: T2 and T5 are still the decision. The APK is ready for them: install the **release** or **debug** APK (https start URL from `hub.config.json` `publicUrl`) with `android/install.ps1`; on the phone, Tailscale must be on, because the https name resolves only there.
 
 ## 12. Migration
 1. First hub start: if `hub/queue.json` is missing and `queue.json` (v1) exists: copy to `hub/queue.v1-import-<ts>.json`, load items; open question/permission items become `session-ended` (their promises died with the old process); completed, pr-merged, todo stay open as orphans (6.3 adoption by session id). Resolved items keep their 7-day retention. The old file is left untouched (an old plugin build may still write it; the import runs once).

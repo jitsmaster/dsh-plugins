@@ -1,0 +1,19 @@
+# Gradle and Android Studio output
+build/
+.gradle/
+.idea/
+local.properties
+local-tools.json
+
+# Signing material never goes into git
+keystore.properties
+*.jks
+*.keystore
+
+# Generated from hub.config.json by tools/gen-resources.mjs (build.ps1 runs it)
+app/src/main/res/values/twa.xml
+app/src/localDebug/res/values/twa.xml
+
+# Downloaded build tools
+*.apk
+*.aab

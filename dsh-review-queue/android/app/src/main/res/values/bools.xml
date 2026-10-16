@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- true makes Chrome delegate Web Push notifications to this app (DelegationService). Default off until M0 test T5 shows it is better. -->
+    <bool name="enable_notification_delegation">false</bool>
+</resources>

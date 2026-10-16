@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- same dark as the phone page's theme_color and the PWA icon -->
+    <color name="status_bar">#14161A</color>
+    <color name="ic_launcher_background">#14161A</color>
+</resources>
