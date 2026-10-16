@@ -653,7 +653,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
 			+ ".rq-filter{flex:none;display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--rq-border);flex-wrap:wrap}.rq-fchip{padding:3px 12px;border-radius:9px;border:1px solid var(--rq-border)!important;font-size:12px;color:var(--rq-mute)}"
 			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
-			+ ".rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
+			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
 			+ ".rq-split{flex:1;min-height:0;display:grid;grid-template-columns:minmax(260px,360px) 1fr}.rq-side{border-right:1px solid var(--rq-border);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:4px}"
 			+ ".rq-detail{overflow:auto;padding:16px 20px}.rq-row-i{display:flex;flex-direction:column;gap:2px;text-align:left;border:1px solid transparent!important;border-radius:8px;padding:8px 10px}"
 			+ ".rq-row-i:hover{background:var(--rq-hover)}.rq-row-i.sel{background:var(--rq-layer2);border-color:var(--rq-border)!important}"
@@ -928,11 +928,11 @@ window.__ModuleLoader__.load({
 			return h("div", { className: "rq-head" }, h("h2", null, "Task list"), h("span", { className: "rq-count" }, n),
 				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
 				h("span", { className: "rq-grow" }),
+				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
-				h("button", { className: "rq-link", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"),
-				h("button", { className: "rq-link", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
-				h("button", { className: "rq-link", onClick: () => set({ showResolved: !st.showResolved, showPhone: false }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
-				h("button", { className: "rq-link", title: "Pair a phone and manage the paired phones", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
+				h("button", { className: "rq-btn", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"),
+				h("button", { className: "rq-btn", onClick: () => set({ showResolved: !st.showResolved, showPhone: false }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
+				h("button", { className: "rq-btn", title: "Pair a phone and manage the paired phones (opens a window)", "aria-haspopup": "dialog", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
 				extra);
 		}
 
@@ -950,6 +950,14 @@ window.__ModuleLoader__.load({
 			useEffect(() => { loadPhonePanel().then((C) => setLoaded(() => C), (e) => setFailed(String((e && e.message) || e))); }, []);
 			if (Loaded) return h(Loaded);
 			return h("div", { className: failed ? "rq-err" : "rq-sub", style: { padding: "12px 20px" } }, failed ? "The phone panel could not be loaded (" + failed + "). Restart DSH if the plugin was just updated." : "Loading…");
+		}
+
+		/** The Phone window: a dialog over the task list (the list stays under it), closed by its Close button, Esc or a click outside it. */
+		function PhoneDialog() {
+			return h("div", { className: "rq-modal-back", "data-rq": "phone-dialog", onMouseDown: (e) => { if (e.target === e.currentTarget) set({ showPhone: false }); } },
+				h("div", { className: "rq-modal", role: "dialog", "aria-modal": "true", "aria-label": "Phone" },
+					h("div", { className: "rq-head" }, h("h2", null, "Phone"), h("span", { className: "rq-grow" }), h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => set({ showPhone: false }) }, "✕ Close")),
+					h("div", { className: "rq-body" }, h(PhoneHost))));
 		}
 
 		/** The hub's one-line notice (phone sync off, hub unreachable); nothing when the snapshot carries none. */
@@ -980,9 +988,8 @@ window.__ModuleLoader__.load({
 			const none = snap && snap.open.length ? "Nothing matches this filter." : "Nothing waiting on you.";
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : h("div", { className: "rq-empty" }, snap ? none : "Loading…");
-			const extra = h("button", { className: "rq-link", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			if (st.showPhone) return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h("div", { className: "rq-body" }, h(PhoneHost)));
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), h(FilterBar, { snap }),
+			const extra = h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
