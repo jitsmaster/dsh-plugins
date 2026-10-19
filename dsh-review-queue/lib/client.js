@@ -96,6 +96,14 @@ window.__ModuleLoader__.load({
 
 		/** Enter sends a reply; Shift+Enter is a new line and Enter during IME composition belongs to the IME. */
 		const isSendKey = (e) => !!e && e.key === "Enter" && !e.shiftKey && !e.isComposing;
+		/** Enter in a question's "Other answer…" box: the answers to send, or undefined (do nothing). Plain Enter only (no modifier, no IME keyCode 229),
+		 *  this box has text, and every other question already has an answer (buildAnswers is the Send answer button's own check). */
+		function enterAnswers(e, questions, drafts, qid) {
+			if (!isSendKey(e) || e.ctrlKey || e.altKey || e.metaKey || e.keyCode === 229) return undefined;
+			const d = drafts && drafts[qid];
+			if (!d || !(d.custom || "").trim()) return undefined;
+			return buildAnswers(questions, drafts);
+		}
 		/** Heading of a card: the task title, else the session title. */
 		const cardTitle = (item) => (item && (item.title || item.sessionTitle)) || "Untitled";
 
@@ -770,6 +778,14 @@ window.__ModuleLoader__.load({
 			return Date.now() + state.skew;
 		}
 
+		/** Send a question card's answers (the Send answer button and Enter in a box); a draft is forgotten once they are sent. One send at a time per card. */
+		async function sendAnswers(item, path, answers) {
+			if (state.busy[item.id]) return false;
+			if (!(await act(path, { id: item.id, answers }, item.id, { advance: path === "/v1/answer" }))) return false;
+			set({ drafts: { ...state.drafts, [item.id]: undefined } });
+			return true;
+		}
+
 		function QuestionBody({ item, full, path = "/v1/answer", sendLabel = "Send answer" }) {
 			const st = useStore();
 			const questions = item.payload.questions || [];
@@ -797,10 +813,10 @@ window.__ModuleLoader__.load({
 							onClick: () => setDraft(q.id, toggleChoice(d, o.label, !!q.multiSelect)), "aria-pressed": d.selected.includes(o.label),
 						}, h("span", null, d.selected.includes(o.label) ? (q.multiSelect ? "☑" : "◉") : (q.multiSelect ? "☐" : "○")),
 							h("span", null, h("span", null, recommended(q, o.label) ? h("span", { className: "rq-star" }, "★ ") : null, o.label), o.description ? h("div", { className: "d" }, o.description) : null))),
-						h("input", { className: "rq-input", placeholder: "Other answer…", value: d.custom || "", disabled: busy, onChange: (e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value }) }));
+						h("input", { className: "rq-input", placeholder: "Other answer…", value: d.custom || "", disabled: busy, onChange: (e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value }), onKeyDown: (e) => { const sendNow = enterAnswers(e.nativeEvent || e, questions, drafts, q.id); if (sendNow && !busy) { e.preventDefault(); sendAnswers(item, path, sendNow); } } }));
 				}),
 				h("div", { className: "rq-row" },
-					h("button", { className: "rq-btn pri", disabled: !answers || busy, onClick: async () => { if (await act(path, { id: item.id, answers }, item.id, { advance: path === "/v1/answer" })) set({ drafts: { ...state.drafts, [item.id]: undefined } }); } }, busy ? "Sending…" : sendLabel),
+					h("button", { className: "rq-btn pri", disabled: !answers || busy, onClick: () => sendAnswers(item, path, answers) }, busy ? "Sending…" : sendLabel),
 					!answers ? h("span", { className: "rq-sub" }, "Pick an option or type an answer for every question.") : null));
 		}
 
@@ -1121,7 +1137,7 @@ window.__ModuleLoader__.load({
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
 						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : null),
 						h("div", { className: "rq-narrow" }, list)),
-				st.showResolved ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Esc or Ctrl+Alt+L close"));
+				st.showResolved ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"));
 		}
 
 		/** The full-screen overlay: mounted once, in a root on document.body (the queue is global, not per session). */
@@ -1199,6 +1215,7 @@ window.__ModuleLoader__.load({
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll, askPower, closePower, runPower, POWER_TEXT, CloseMenu, PowerBar });
+		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;

@@ -1,6 +1,6 @@
 /**
  * The "Tune prompt" button of the new-todo form: the typed task is rewritten by the model with the rules of the user's prompt-tune
- * skill (steps 2 to 4 of its command file) and the result is put back in the box. Nothing is added to the Task list and nothing is
+ * skill (steps 2 to 4 of its command file, without the lines that ask for a rationale) and the result is put back in the box. Nothing is added to the Task list and nothing is
  * started; the user reads the result and can undo it. Same llm service and model pick as the summaries (summary.js) and the
  * workspace suggestions (todo.js).
  */
@@ -20,6 +20,9 @@ const ERROR_CHARS = 200
 /** What the client is told for any provider failure: the provider's own message can carry endpoints or key fragments and goes to the log only. */
 const LLM_ERROR = 'LLM error'
 const EMPTY_TEXT = 'empty'
+/** Last in the system prompt, so it wins over any rule above that asks for a rationale or a reason: the answer goes into the box as it is. */
+const OVERRIDE = 'OVERRIDE, wins over every rule above: output only the rewritten prompt, nothing else: no rationale, no explanation of what changed or why, no notes, '
+  + "no preface, no trailing section, and no 'because ...' reason after a suggested default. A Decide item is just '<question>? Suggested default: <X>.'"
 /** The most of the rules file that goes to the model (a hand-edited or wrong file must not blow up every request). */
 export const MAX_RULES_CHARS = 12000
 
@@ -31,7 +34,7 @@ The profile is concise by default, or thorough when the user asked for it.
 Count the paragraphs of the prompt. A single paragraph becomes one line of this formula: [VERB] [WHAT] in [WHERE]. [CONSTRAINT].
 More than one paragraph becomes a numbered task list, one self-contained item per distinct step, with a one-line header "[VERB] [WHAT] in [WHERE]." only when every paragraph shares one target.
 - concise: compress every constraint, qualifiers included, into one terse clause per line or item; the shortest correct wording.
-- thorough: expand the constraints into explicit sub-constraints (edge cases, output format, a verification step); a numbered list when the prompt bundles sub-steps. At most 3 open implementation choices, each as one question with a suggested default and its reason; leave out anything the code itself can settle.
+- thorough: expand the constraints into explicit sub-constraints (edge cases, output format, a verification step); a numbered list when the prompt bundles sub-steps. At most 3 open implementation choices, each as one question with a suggested default and nothing after it; leave out anything the code itself can settle.
 
 ## Always
 Preserve every detail of the prompt, hedges and qualifiers included ("something like", "roughly", "for now"): compress wording, never requirements.
@@ -43,8 +46,14 @@ The result is unambiguous, self-contained and free of anything the model would h
 const rulesFileOf = (path) => (path === undefined || path === null ? DEFAULT_RULES_PATH : typeof path === 'string' ? path : undefined)
 
 /**
- * The rules section of the prompt-tune command file (at most MAX_RULES_CHARS); the embedded copy when the path is not a string, or the file
- * is missing, unreadable or has no such section. Never throws.
+ * The rules the model may follow: every line that tells it to write or note a rationale is gone (the box takes the prompt and nothing else),
+ * and so is the ", because <reason>" clause of the Decide item template.
+ */
+const withoutRationale = (rules) => rules.split('\n').filter((line) => !/rationale/i.test(line)).join('\n').replace(/,[ \t]*because[ \t]*<[^>\n]*>/gi, '').replace(/\n{3,}/g, '\n\n')
+
+/**
+ * The rules section of the prompt-tune command file without its rationale instructions (at most MAX_RULES_CHARS); the embedded copy when the
+ * path is not a string, or the file is missing, unreadable or has no such section. Never throws.
  */
 export function loadRules(path) {
   const file = rulesFileOf(path)
@@ -53,7 +62,7 @@ export function loadRules(path) {
     const text = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
     const from = text.indexOf(SECTION_START)
     const to = text.indexOf(SECTION_END, from)
-    return from >= 0 && to > from ? text.slice(from, Math.min(to, from + MAX_RULES_CHARS)).trimEnd() : EMBEDDED_RULES
+    return from >= 0 && to > from ? withoutRationale(text.slice(from, to)).slice(0, MAX_RULES_CHARS).trimEnd() : EMBEDDED_RULES
   } catch { return EMBEDDED_RULES }
 }
 
@@ -79,25 +88,62 @@ function createRulesSource(path, log) {
 
 const FLAG_RE = /(^|\s)--(concise|thorough)\s*$/
 
-// A closing explanation the prompt-tune command tells the model to write ("Rationale: ...", step 4): "Rationale:" at a line start, or "Note(s):" as a
-// paragraph of its own, running to the end. Only a trailing block goes: the same words inside the prompt, or followed by more prompt, stay.
-const LABEL = String.raw`[ \t]*(?:[-*][ \t]+)?(?:\*\*|__)?`
-const TRAILING_RATIONALE = new RegExp(String.raw`(?:^|\n)` + LABEL + String.raw`rationale(?:\*\*|__)?[ \t]*:[^\n]*(?:\n[^\n]+)*$`, 'i')
-const TRAILING_NOTE = new RegExp(String.raw`\n[ \t]*\n` + LABEL + String.raw`notes?(?:\*\*|__)?[ \t]*:[^\n]*(?:\n[^\n]+)*$`, 'i')
+// A closing explanation of the rewrite (the model writes one although it is told not to): the last paragraph of the answer, from a label line to the end.
+// Only a trailing block goes: the same words inside the prompt, or followed by more prompt, stay. Which label lines count:
+//   "Rationale:" at any line start of the last paragraph (also as the whole answer);
+//   a wrapped label ("**Why:**", "*Why: ...*", "(Explanation: ...)", "*(Rationale: ...)*") under a line of the prompt, except Note(s);
+//   a plain label ("Changes:", "- Why:") or a Note(s) label as a paragraph of its own, or right after a '---' / '***' separator line;
+//   an italic or parenthesised remark that starts with Changed, Rewrote, I or This right after a separator line.
+// The separator in front of a removed block goes with it.
+const LABELS = 'rationale|notes?|changes|changed|what changed|why|explanation|summary of changes|reasoning'
+const BULLET = String.raw`^[ \t]*(?:[-*+][ \t]+)?`
+const PLAIN_LABEL = new RegExp(BULLET + '(' + LABELS + ')[ \\t]*:', 'i')
+const WRAPPED_LABEL = new RegExp(BULLET + String.raw`(?:\*\*|__|\*\(|_\(|\(|\*|_)[ \t]*` + '(' + LABELS + ')' + String.raw`(?:\*\*|__|\*|_)?[ \t]*:`, 'i')
+const WRAPPED_REMARK = /^[ \t]*(?:\*\*|__|\*\(|_\(|\(|\*|_)[ \t]*(?:Changed|Rewrote|I|This)\b/
+const SEPARATOR = /^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/
+const isBlank = (line) => line.trim() === ''
+const isRationale = (label) => label.toLowerCase() === 'rationale'
+const isNote = (label) => /^notes?$/i.test(label)
 
-function withoutTrailingNotes(text) {
-  let out = text
-  for (let n = 0; n < 4; n++) {
-    const next = out.replace(TRAILING_RATIONALE, '').replace(TRAILING_NOTE, '').trimEnd()
-    if (next === out) break
-    out = next
+/** The line where the closing explanation starts, or -1. */
+function closingBlockStart(lines) {
+  let p = lines.length
+  while (p > 0 && !isBlank(lines[p - 1])) p--
+  const afterSeparator = (i) => { let j = i - 1; while (j >= 0 && isBlank(lines[j])) j--; return j >= 0 && SEPARATOR.test(lines[j]) }
+  for (let i = p; i < lines.length; i++) {
+    const line = lines[i]
+    const plain = PLAIN_LABEL.exec(line)
+    const wrapped = WRAPPED_LABEL.exec(line)
+    const label = (plain ?? wrapped)?.[1]
+    const own = (i === p && p > 0) || afterSeparator(i) // a paragraph of its own, or right after a separator
+    if (label !== undefined && (isRationale(label) || own || (wrapped && !isNote(label) && i > 0))) return i
+    if (WRAPPED_REMARK.test(line) && afterSeparator(i)) return i
   }
-  return out
+  return -1
 }
 
-/** The model answer as a prompt: no trailing rationale/note, no surrounding code fence, no leading label ("Optimized:", "Tuned prompt:"). */
+function withoutTrailingNotes(text) {
+  let lines = text.split('\n')
+  for (let n = 0; n < 6; n++) {
+    const at = closingBlockStart(lines)
+    if (at < 0) break
+    lines = lines.slice(0, at)
+    while (lines.length && (isBlank(lines.at(-1)) || SEPARATOR.test(lines.at(-1)))) lines.pop()
+  }
+  return lines.join('\n').trimEnd()
+}
+
+// A Decide item is "<question>? Suggested default: <X>." with no reason: the ", because ..." / "; because ..." clause after the default goes, up to the end of its
+// sentence (a full stop followed by a capital or a digit) or of its line; the closing punctuation stays.
+const DEFAULT_REASON = /[,;][ \t]*because\b[^\n]*?([.!?])(?=[ \t]+[A-Z0-9]|[ \t]*(?:\n|$))|[,;][ \t]*because\b[^\n]*/g
+const withoutDefaultReasons = (text) => text.split('\n').map((line) => {
+  const at = line.indexOf('Suggested default:')
+  return at < 0 ? line : line.slice(0, at) + line.slice(at).replace(DEFAULT_REASON, (_all, stop) => stop ?? '')
+}).join('\n')
+
+/** The model answer as a prompt: no trailing rationale/explanation block, no reason after a suggested default, no surrounding code fence, no leading label ("Optimized:", "Tuned prompt:"). */
 function cleanAnswer(raw) {
-  const unlabeled = withoutTrailingNotes(raw.trim()).replace(/^(?:optimized|tuned prompt)\s*:\s*/i, '')
+  const unlabeled = withoutDefaultReasons(withoutTrailingNotes(raw.trim())).replace(/^(?:optimized|tuned prompt)\s*:\s*/i, '')
   const fenced = /^```[^\n]*\n([\s\S]*?)\n?```$/.exec(unlabeled)
   return (fenced && !fenced[1].includes('```') ? fenced[1] : unlabeled).trim()
 }
@@ -132,7 +178,7 @@ export function createTuner({ llm, rulesText, rulesPath, timeoutMs = 60000, maxT
     if (!m) { if (chosen === mine) chosen = undefined; throw new Error(NO_MODEL) }
     const system = 'You rewrite the prompt the user gives you, following the rules below. Profile: ' + profile + '.\n'
       + 'Answer with only the rewritten prompt: no preface, no rationale, no code fence around it. Never ask a question: when the prompt is ambiguous, make a best effort. '
-      + "Keep the user's wording where it is already clear, preserve every detail and invent nothing.\n\n" + (rulesText ?? rules())
+      + "Keep the user's wording where it is already clear, preserve every detail and invent nothing.\n\n" + (rulesText ?? rules()) + '\n\n' + OVERRIDE
     const prepared = await llm.prepareCall({ provider: m.provider, model: m.model, maxTokens }, signal)
     let out = ''
     for await (const chunk of prepared.stream({

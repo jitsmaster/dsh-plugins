@@ -17,6 +17,11 @@
         # that step silent. DEFAULT only (like the settings below): a value saved in ~/.dsh/tts/settings.json wins; re-read at every decision.
         # decideChime: true
         skipSubagents: true
+        # --- Keep the computer awake while DSH runs (a small hidden helper process; no admin rights) ---
+        # DEFAULTS only: a value saved in ~/.dsh/tts/settings.json wins, and changing it there through the settings API starts/stops the helper live.
+        # keepAwake: true
+        # The display may still turn off; true also keeps the screen on.
+        # keepDisplayOn: false
         # --- Obsidian session-start note (optional; the hook does nothing unless set) ---
         # obsidianVault: C:\path\to\your\vault
         # --- Context cap / auto-resume ---

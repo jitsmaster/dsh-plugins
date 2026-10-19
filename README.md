@@ -86,6 +86,24 @@ Defaults live in [`dsh-hooks-tts/cordis.patch.yml`](dsh-hooks-tts/cordis.patch.y
 
 Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tts/settings.json`, re-read on every step): `contextCapTokens`, `warnPercent`, `ttsEnabled`, `autoResumeHandoff`, `handoffAhead`, `pollPrComments`, `alwaysFullAccess`, `decideChime` (voice control: singing bowl while the LLM decides, default on). A saved value wins over the config default.
 
+### Keep the computer awake
+
+While the DSH server runs, the computer is kept from going to sleep (idle sleep), not only while a session is working. It is on by default.
+
+- **Windows:** a tiny hidden PowerShell helper (`scripts/keep-awake.ps1`) holds a `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` request and renews it every 30 s. No admin rights are needed. The helper exits by itself when DSH is gone (also after a crash), and the plugin stops it when it shuts down.
+- **macOS:** `caffeinate -i -w <dsh pid>`. **Linux:** `systemd-inhibit --what=sleep ... sleep infinity` when `systemd-inhibit` exists (after a hard kill of DSH this inhibitor lingers until you log out or reboot). Elsewhere, or when the command fails, one line is logged and DSH carries on.
+- **The display may still turn off** and the screen may lock; only system sleep is blocked. Closing the lid and a manual Sleep still sleep the machine.
+- A helper that dies is restarted up to 3 times, then given up (logged as `hooks-tts: keep-awake: ...`).
+
+Settings (config default in `cordis.patch.yml`, runtime value in `~/.dsh/tts/settings.json`, which wins):
+
+| Key | Meaning | Default |
+| --- | --- | --- |
+| `keepAwake` | Keep the computer awake while DSH runs. `false` disables it. | `true` |
+| `keepDisplayOn` | Also keep the display on (`ES_DISPLAY_REQUIRED`; Windows). | `false` |
+
+A change made through the settings API (`POST` to the status service's `/settings`, as the *Hooks and Usage* page does) starts or stops the helper immediately. After editing `settings.json` by hand, or changing the `cordis.patch.yml` default, restart the DSH server. To disable it for good, put `"keepAwake": false` in `~/.dsh/tts/settings.json` (or `keepAwake: false` in `~/.dsh/tts/config.local.json`).
+
 ### Verify
 
 - **Status pill:** select a session; the bottom-right pill shows `Context Window â€¦` and `âŽ‡ <worktree>`.
