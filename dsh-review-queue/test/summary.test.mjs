@@ -209,3 +209,22 @@ test('needsUser keeps the strong triggers', () => {
   assert.equal(needsUser('The build failed: I cannot find the dependency foo.'), true)
   assert.equal(needsUser('Build failed: missing dependency foo.'), false) // a bare failure word is no longer a trigger; the model and the tail words decide
 })
+
+test('the prompt asks for the sentences the user must act on in <u>**...**</u>', async () => {
+  const seen = {}
+  await createSummarizer({ llm: fakeLlm({ seen }) }).summarize('Did things.')
+  assert.match(seen.req.system, /<u>\*\*/)
+  assert.match(seen.req.system, /only .*act on|must act on/i)
+})
+
+test('a summary keeps the model\'s <u>**...**</u> action sentence and strips other markdown', async () => {
+  const reply = 'TITLE: Deploy fix\nACTIONABLE: yes\nSUMMARY: Fixed the **deploy**. <u>**Restart the service and try it.**</u>'
+  const r = await createSummarizer({ llm: fakeLlm({ reply }) }).summarize('Fixed it. Please restart.')
+  assert.equal(r.text, 'Fixed the deploy. <u>**Restart the service and try it.**</u>')
+})
+
+test('the fallback keeps the action sentence of the reply\'s last paragraph', async () => {
+  const r = await createSummarizer({ llm: fakeLlm({ fail: true }) }).summarize('Did a lot.\n\nAll set. <u>**Which option do you want?**</u>')
+  assert.equal(r.source, 'fallback')
+  assert.equal(r.text, 'All set. <u>**Which option do you want?**</u>')
+})

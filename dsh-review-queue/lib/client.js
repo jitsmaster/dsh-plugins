@@ -188,17 +188,18 @@ window.__ModuleLoader__.load({
 		/** Inline markdown -> tokens. Only http(s) links stay links; anything else keeps just its text. */
 		function mdInline(text) {
 			const out = [];
-			const re = /`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|\*([^*\s][^*]*)\*/g;
+			const re = /<u>\s*(?:\*\*([^*]+)\*\*|([^<*]+?))\s*<\/u>|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|\*([^*\s][^*]*)\*/g;
 			const pushText = (s) => { if (!s) return; const prev = out[out.length - 1]; if (prev && prev.t === "text") prev.text += s; else out.push({ t: "text", text: s }); };
 			let last = 0;
 			let m;
 			const src = String(text == null ? "" : text);
 			while ((m = re.exec(src))) {
 				pushText(src.slice(last, m.index));
-				if (m[1] !== undefined) out.push({ t: "code", text: m[1] });
-				else if (m[2] !== undefined) out.push({ t: "b", text: m[2] });
-				else if (m[3] !== undefined) { if (/^https?:\/\//i.test(m[4])) out.push({ t: "a", text: m[3], href: m[4] }); else pushText(m[3]); }
-				else out.push({ t: "i", text: m[5] });
+				if (m[1] !== undefined || m[2] !== undefined) out.push({ t: "bu", text: (m[1] !== undefined ? m[1] : m[2]).trim() }); // an action item for the user: bold and underlined
+				else if (m[3] !== undefined) out.push({ t: "code", text: m[3] });
+				else if (m[4] !== undefined) out.push({ t: "b", text: m[4] });
+				else if (m[5] !== undefined) { if (/^https?:\/\//i.test(m[6])) out.push({ t: "a", text: m[5], href: m[6] }); else pushText(m[5]); }
+				else out.push({ t: "i", text: m[7] });
 				last = re.lastIndex;
 			}
 			pushText(src.slice(last));
@@ -820,16 +821,21 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Markdown as React elements (no HTML injection: text goes through React, links are http(s) only). */
-		function Md({ text }) {
-			const inline = (s) => mdInline(s).map((tok, i) => {
+		function mdNodes(s) {
+			return mdInline(s).map((tok, i) => {
 				switch (tok.t) {
 					case "b": return h("strong", { key: i }, tok.text);
+					case "bu": return h("strong", { key: i, className: "rq-action", style: { textDecoration: "underline" } }, tok.text);
 					case "i": return h("em", { key: i }, tok.text);
 					case "code": return h("code", { key: i, className: "rq-code" }, tok.text);
 					case "a": return h("a", { key: i, href: tok.href, target: "_blank", rel: "noopener noreferrer" }, tok.text);
 					default: return tok.text;
 				}
 			});
+		}
+
+		function Md({ text }) {
+			const inline = mdNodes;
 			return h("div", { className: "rq-md" }, mdBlocks(text).map((b, i) => {
 				switch (b.t) {
 					case "h": return h("div", { key: i, className: "rq-h rq-h" + Math.min(b.level, 3) }, inline(b.text));
@@ -848,7 +854,7 @@ window.__ModuleLoader__.load({
 			const reply = st.replies[item.id] || "";
 			const send = async () => { if (await act("/v1/reply", { id: item.id, text: reply }, item.id, { advance: true })) set({ replies: { ...state.replies, [item.id]: "" } }); };
 			return h(React.Fragment, null,
-				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.summary || "Finished."),
+				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.summary ? mdNodes(item.summary) : "Finished."),
 				full ? h(React.Fragment, null,
 					item.payload && item.payload.reply ? h("details", { open: detailsOpen(st.replyOpen, item), onToggle: (e) => { const now = !!e.currentTarget.open; if (now !== detailsOpen(state.replyOpen, item)) set({ replyOpen: { ...state.replyOpen, [item.id]: now } }); } }, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-replybox" }, h(Md, { text: item.payload.reply }))) : null,
 					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (reply.trim() && !busy) send(); } } })) : null,

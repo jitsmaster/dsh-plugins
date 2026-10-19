@@ -131,6 +131,7 @@ Answers: 200 `{ok:true}`; 400 for bad input (`bad-answer`, `bad-decision`, `empt
 - Request body 64 KB; reply text 4000 characters; stored text per field 20,000 characters.
 - Resolved items are pruned after 7 days (hourly).
 - Summaries use the host's LLM service when available and fall back to the last paragraph of the reply. The same call gives the `ACTIONABLE` verdict; without it nothing is ever hidden.
+- **Action items stand out.** The summary model puts every sentence that tells you what to do or answer in `<u>**...**</u>`, and a fallback summary keeps such a sentence from the reply's last paragraph. Desktop and phone cards show it bold and underlined (the full reply does the same for `<u>**...**</u>`); spoken read-outs and search treat it as plain words.
 
 ## Develop
 

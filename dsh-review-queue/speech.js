@@ -6,12 +6,26 @@
 
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\u{E0000}-\u{E007F}\u115F\u1160\u3164\uFFA0\uFE00-\uFE0F]/gu
 
-/** Plain, single-line text: no markdown, no hidden characters, optionally capped by words or characters. */
-export function cleanText(value, { maxWords, maxChars } = {}) {
+// An action item is written <u>**text**</u> (bold and underlined). Plain text drops the tags; keepAction carries them through as
+// \u0001 text \u0002 (control characters, removed from the input first, so a reply cannot forge them) and writes them back at the end.
+const ACTION_SPAN = /<u>\s*(?:\*\*([^*]*?)\*\*|([^<*]*?))\s*<\/u>/gi
+const ACTION_OPEN = '\u0001'
+const ACTION_CLOSE = '\u0002'
+
+/**
+ * Plain, single-line text: no markdown, no hidden characters, optionally capped by words or characters.
+ * keepAction: leave `<u>**...**</u>` action items in (for text a screen shows, never for speech); a span the cap cuts is closed.
+ */
+export function cleanText(value, { maxWords, maxChars, keepAction = false } = {}) {
   if (typeof value !== 'string') return ''
   let text = value.normalize('NFKC')
     .replace(/\r\n|\r|\n|\t/g, ' ')
     .replace(UNSAFE, '')
+    .replace(ACTION_SPAN, (_, bold, bare) => {
+      const inner = (bold ?? bare ?? '').trim()
+      return inner ? (keepAction ? ACTION_OPEN + inner + ACTION_CLOSE : inner) : ''
+    })
+    .replace(/<\/?u>/gi, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
@@ -25,13 +39,19 @@ export function cleanText(value, { maxWords, maxChars } = {}) {
     if (words.length > maxWords) { text = words.slice(0, maxWords).join(' '); cut = true }
   }
   if (maxChars !== undefined && text.length > maxChars) { text = text.slice(0, maxChars).trimEnd(); cut = true }
-  return cut ? text + '...' : text
+  if (cut) text += '...'
+  if (keepAction) {
+    const opened = text.split(ACTION_OPEN).length - text.split(ACTION_CLOSE).length
+    if (opened > 0) text += ACTION_CLOSE.repeat(opened)
+    text = text.replaceAll(ACTION_OPEN, '<u>**').replaceAll(ACTION_CLOSE, '**</u>')
+  }
+  return text
 }
 
 /** The last non-empty paragraph of a reply, markdown removed; '' for nothing. */
-export function lastParagraph(text) {
+export function lastParagraph(text, { keepAction = false } = {}) {
   if (typeof text !== 'string') return ''
-  const paragraphs = text.split(/\r?\n\s*\r?\n/).map((p) => cleanText(p)).filter(Boolean)
+  const paragraphs = text.split(/\r?\n\s*\r?\n/).map((p) => cleanText(p, { keepAction })).filter(Boolean)
   return paragraphs.at(-1) ?? ''
 }
 
@@ -152,6 +172,7 @@ export function speakable(value) {
     .replace(/\t/g, ' ')
     .replace(UNSAFE, '')
     .replace(/^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/, '')
+    .replace(/<\/?u>/gi, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')

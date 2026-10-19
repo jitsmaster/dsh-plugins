@@ -172,3 +172,25 @@ test('the first body chunk keeps the early-start limit even after a lead chunk',
   assert.ok(chunks[1].length <= 50)
   assert.ok(chunks.slice(2).every((c) => c.length <= 80))
 })
+
+test('action-item markup (<u>**...**</u>) is plain words for speech', () => {
+  assert.equal(cleanText('Ask: <u>**Proceed with A or B?**</u> Thanks.'), 'Ask: Proceed with A or B? Thanks.')
+  assert.equal(cleanText('<u>plain underline</u>'), 'plain underline')
+  assert.equal(lastParagraph('Done.\n\n<u>**Restart the service.**</u>'), 'Restart the service.')
+})
+
+test('cleanText keepAction keeps the marked sentences and nothing else of the markup', () => {
+  assert.equal(cleanText('Done **it**. <u>**Restart the service.**</u> Then <u>x</u>', { keepAction: true }), 'Done it. <u>**Restart the service.**</u> Then <u>**x**</u>')
+  assert.equal(cleanText('a <u>** spaced out **</u> b', { keepAction: true }), 'a <u>**spaced out**</u> b')
+})
+
+test('cleanText keepAction never leaves a span open when it cuts the text', () => {
+  const out = cleanText('Please <u>**' + 'word '.repeat(30) + '**</u>', { keepAction: true, maxChars: 30 })
+  assert.ok(out.startsWith('Please <u>**'), out)
+  assert.ok(out.endsWith('**</u>'), out)
+  assert.equal(out.split('<u>').length, out.split('</u>').length)
+})
+
+test('lastParagraph keepAction keeps the marked part of the last paragraph', () => {
+  assert.equal(lastParagraph('Done.\n\nAll set. <u>**Restart it.**</u>', { keepAction: true }), 'All set. <u>**Restart it.**</u>')
+})
