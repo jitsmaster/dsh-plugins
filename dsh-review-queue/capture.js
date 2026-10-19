@@ -4,7 +4,8 @@
  * on-screen answerer exactly like voice approval does: whichever answers first wins, the other is ignored.
  * Nothing here may break the host: every handler falls through to next() when anything goes wrong.
  */
-import { recommendedOf, lastParagraph, cleanText } from './speech.js'
+import { recommendedOf, cleanText } from './speech.js'
+import { fallbackSummary } from './summary.js'
 import { toolDetail } from './risk.js'
 import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
 import { DEFAULT_AUTO_ANSWER_LEAD_MS, autoAnswerText, recommendedAnswers, shownLabel } from './autoanswer.js'
@@ -339,7 +340,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     // only this hard upper bound keeps a verdict that never comes from piling cards up.
     trimDone(item.sessionId, keep * 2)
     // The card is usable at once with the fallback; the model summary replaces it when it arrives.
-    guard(() => store.update(item.id, { summary: lastParagraph(reply), summarySource: 'fallback' }))
+    guard(() => store.update(item.id, { summary: fallbackSummary(reply), summarySource: 'fallback' }))
     void summarizer.summarize(reply, { signal: controller.signal, request }).then((r) => {
       if (r?.text) guard(() => store.update(item.id, { summary: r.text, summarySource: r.source, ...(r.title ? { title: r.title } : {}) }))
       if (typeof r?.actionable === 'boolean') guard(() => store.update(item.id, { actionable: r.actionable }))

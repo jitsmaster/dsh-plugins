@@ -204,7 +204,7 @@ function CompletedBody({ item }) {
   const reply = st.replies[item.id] || ''
   const send = async () => { if (await act('/v1/reply', { id: item.id, text: reply }, item.id)) { set({ replies: { ...state.replies, [item.id]: '' } }); go('/') } }
   return html`<div>
-    <div class="text">${item.summary ? inlineNodes(item.summary) : 'Finished.'}</div>
+    <div class="text" style="white-space:pre-line">${item.summary ? inlineNodes(item.summary) : 'Finished.'}</div>
     ${item.payload && item.payload.reply ? html`<details open=${(item.payload.reply || '').length < 1500}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <textarea class="input ta" placeholder="Reply to this session…" value=${reply} disabled=${busy} onInput=${(e) => set({ replies: { ...st.replies, [item.id]: e.target.value } })}></textarea>
     <div class="row">
