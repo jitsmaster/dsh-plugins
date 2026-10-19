@@ -18,8 +18,8 @@ const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, tuner, titlesOf, sparcText, suggestTimeoutMs, log, paused, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
-  const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log })
+export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, tuner, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+  const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
   let tuning = false // a Tune prompt call is on its way: one at a time per service (each is a paid model call)
   let focusId
