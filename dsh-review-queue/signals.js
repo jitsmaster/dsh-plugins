@@ -14,5 +14,16 @@ export function replyAnswers(content) {
 	return answers.filter((a) => a && typeof a.id === 'string' && Array.isArray(a.selected)).map((a) => ({ id: a.id, selected: a.selected.filter((v) => typeof v === 'string'), ...(typeof a.custom === 'string' && a.custom ? { custom: a.custom } : {}) }))
 }
 
-/** A message the user typed (source 'user', or no source), as opposed to injected context, goal rounds or a reply to a question. */
-export const isHumanMessage = (message) => !message?.source || message.source.kind === 'user'
+/**
+ * The host stamps every sessionController.prompt as source { kind: 'user', rpcId: <requestId> }, whoever sent it. These are the request id
+ * prefixes of the prompts this plugin family sends on its own (PR polling ticks, resume after a restart, a started todo, a handoff): they
+ * are not the user typing. 'review-' (a reply typed on a card) and 'voice-' (a spoken reply) are user-driven and are deliberately absent.
+ */
+const PROGRAMMATIC_PROMPT_ID = /^(?:pr-poll|resume|todo|handoff)-/
+
+/** A message the user typed (source 'user', or no source), as opposed to injected context, goal rounds, a prompt a plugin sent or a reply to a question. */
+export const isHumanMessage = (message) => {
+	const source = message?.source
+	if (!source) return true
+	return source.kind === 'user' && !(typeof source.rpcId === 'string' && PROGRAMMATIC_PROMPT_ID.test(source.rpcId))
+}

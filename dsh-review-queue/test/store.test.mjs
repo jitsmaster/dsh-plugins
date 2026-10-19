@@ -185,3 +185,75 @@ test('restore skips malformed items and replaces what was there', () => {
   store.restore({ seq: 9, items: [null, { id: 5, type: 'question' }, { id: 'x' }, { id: 'ok', type: 'question', seq: 1, createdAt: 1, status: 'open' }] })
   assert.deepEqual(store.list().map((i) => i.id), ['ok'])
 })
+
+// ---- peekOpen(sessionId): the open items of one session without cloning every item (the agent/pre-step handler runs it for every step of every session) ----
+const peeked = (store, sessionId) => store.peekOpen(sessionId).map((i) => i.id)
+const listed = (store, sessionId) => store.list({ status: 'open' }).filter((i) => i.sessionId === sessionId).map((i) => i.id)
+
+test('peekOpen gives the open items of that session only, oldest first, and nothing for an unknown session', () => {
+  const { store, tick } = make()
+  const a1 = store.add(q({ sessionId: 'a' })); tick()
+  store.add(q({ sessionId: 'b' })); tick()
+  const a2 = store.add({ type: 'completed', sessionId: 'a', payload: { reply: 'x' } })
+  const a3 = store.add(q({ sessionId: 'a' }))
+  store.resolve(a3.id, { kind: 'answered' })
+  assert.deepEqual(peeked(store, 'a'), [a1.id, a2.id])
+  assert.deepEqual(store.peekOpen('nope'), [])
+  assert.deepEqual(store.peekOpen(undefined), [])
+})
+
+test('peekOpen does not clone: no structuredClone call, the same live item each time (and not the copy list() hands out)', (t) => {
+  const { store } = make()
+  store.add(q({ sessionId: 'a' })); store.add(q({ sessionId: 'a' })); store.add(q({ sessionId: 'b' }))
+  const spy = t.mock.method(globalThis, 'structuredClone')
+  const first = store.peekOpen('a')
+  const second = store.peekOpen('a')
+  assert.equal(spy.mock.callCount(), 0, 'no clone')
+  assert.equal(first[0], second[0], 'the same object')
+  spy.mock.restore()
+  assert.notEqual(first[0], store.list({ status: 'open' })[0], 'list() still hands out copies')
+})
+
+test('peekOpen follows every way an item opens or closes: resolve, reopen, resolveSession, reconcile, update, restore', () => {
+  const { store, tick } = make()
+  const a1 = store.add(q({ sessionId: 'a' })); tick()
+  const a2 = store.add(q({ sessionId: 'a' })); tick()
+  const b1 = store.add(q({ sessionId: 'b' })); tick()
+  store.resolve(a1.id, { kind: 'answered' })
+  assert.deepEqual(peeked(store, 'a'), [a2.id], 'resolve')
+  store.reopen(a1.id)
+  assert.deepEqual(peeked(store, 'a'), [a1.id, a2.id], 'reopen puts it back in its old place')
+  store.update(a2.id, { sessionId: 'b' })
+  assert.deepEqual([peeked(store, 'a'), peeked(store, 'b')], [[a1.id], [a2.id, b1.id]], 'a patch that moves the item to another session')
+  store.update(b1.id, { status: 'resolved' })
+  assert.deepEqual(peeked(store, 'b'), [a2.id], 'a patch that changes the status')
+  store.resolveSession('a', { kind: 'session-ended' })
+  assert.deepEqual(peeked(store, 'a'), [], 'resolveSession')
+  store.reconcile(new Set())
+  assert.deepEqual(peeked(store, 'b'), [], 'reconcile')
+  store.restore({ seq: 9, items: [{ id: 'x', seq: 1, type: 'question', sessionId: 'c', status: 'open', createdAt: 5 }, { id: 'y', seq: 2, type: 'question', sessionId: 'c', status: 'resolved', createdAt: 6 }] })
+  assert.deepEqual([peeked(store, 'c'), peeked(store, 'a')], [['x'], []], 'restore rebuilds it')
+})
+
+test('peekOpen works on a store loaded from its file, and agrees with list() after every step of a mixed run', () => {
+  let text
+  const writer = make({ io: { read: () => undefined, write: (s) => { text = s } } })
+  writer.store.add(q({ sessionId: 'a' })); writer.store.add(q({ sessionId: 'a' })); writer.store.add(q({ sessionId: 'b' }))
+  let m = 0
+  const { store, tick } = make({ io: { read: () => text, write() {} }, uuid: () => 'new' + ++m })
+  assert.deepEqual([peeked(store, 'a').length, peeked(store, 'b').length], [2, 1], 'loaded')
+  const ids = []
+  for (let i = 0; i < 12; i++) { tick(); ids.push(store.add(q({ sessionId: ['a', 'b', 'c'][i % 3] })).id) }
+  for (const id of ids.filter((_, i) => i % 4 === 0)) store.resolve(id, { kind: 'answered' })
+  store.resolveSession('b', { kind: 'session-ended' })
+  store.reopen(ids[0])
+  store.prune()
+  for (const s of ['a', 'b', 'c']) assert.deepEqual(peeked(store, s), listed(store, s), s)
+})
+
+test('an item added under an id that is already used replaces the earlier one in peekOpen too', () => {
+  const { store } = make()
+  store.add(q({ sessionId: 'a' }), { id: 'same' })
+  store.add(q({ sessionId: 'b' }), { id: 'same' })
+  assert.deepEqual([store.peekOpen('a').length, store.peekOpen('b').length], [0, 1])
+})

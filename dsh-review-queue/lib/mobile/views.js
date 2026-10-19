@@ -38,15 +38,20 @@ const ageOf = (item, key = 'createdAt') => getCore().fmtAge(now() - (item[key] |
 
 function Chip({ type }) { return html`<span class=${'chip ' + type}>${getCore().typeLabel(type)}</span>` }
 
-function Md({ text }) {
-  const c = getCore()
-  const inline = (s) => c.mdInline(s).map((tok) => {
+function inlineNodes(s) {
+  return getCore().mdInline(s).map((tok) => {
     if (tok.t === 'b') return html`<strong>${tok.text}</strong>`
+    if (tok.t === 'bu') return html`<strong class="action" style="text-decoration:underline">${tok.text}</strong>`
     if (tok.t === 'i') return html`<em>${tok.text}</em>`
     if (tok.t === 'code') return html`<code>${tok.text}</code>`
     if (tok.t === 'a') return html`<a href=${tok.href} target="_blank" rel="noopener noreferrer">${tok.text}</a>`
     return tok.text
   })
+}
+
+function Md({ text }) {
+  const c = getCore()
+  const inline = inlineNodes
   return html`<div class="md">${c.mdBlocks(text).map((b) => {
     if (b.t === 'h') return html`<div class=${'h h' + Math.min(b.level, 3)}>${inline(b.text)}</div>`
     if (b.t === 'ul') return html`<ul>${b.items.map((i) => html`<li>${inline(i)}</li>`)}</ul>`
@@ -202,7 +207,7 @@ function CompletedBody({ item }) {
   const busy = st.busy[item.id]
   // Writing back to the session is the composer under the card (ItemView): this body keeps the summary, the full reply and Reviewed.
   return html`<div>
-    <div class="text">${item.summary || 'Finished.'}</div>
+    <div class="text">${item.summary ? inlineNodes(item.summary) : 'Finished.'}</div>
     ${item.payload && item.payload.reply ? html`<details open=${(item.payload.reply || '').length < 1500}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>

@@ -21,6 +21,7 @@ import { startStatusService } from './status.js'
 import { installContextCap } from './cap.js'
 import { installPrPoller } from './pr.js'
 import { installAskUserTuning } from './ask.js'
+import { installActionItemFormatting } from './action-items.js'
 import { createWorktreeTracker } from './worktrees.js'
 import { createSettings } from './settings.js'
 import { createGroups } from './groups.js'
@@ -315,6 +316,7 @@ export function apply(ctx, baseConfig = {}) {
   }
   contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, handoffs, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId) })
   installAskUserTuning(ctx, { skip, makeMessage })
+  installActionItemFormatting(ctx, { skip, makeMessage })
   installHoldTitles(ctx, { skip, stateDir: dirname(settings.path) })
 
   // Voice control: the STT service's transcripts drive sessions (see voice/service.js). Off unless settings.voiceControl.

@@ -1,8 +1,10 @@
 /**
  * PR state for a session. A session titled "PR <n>" is in PR state: it is never auto-respawned
  * (see cap.js) and, while the "Poll PR comments" setting is on, its Azure DevOps pull request is polled
- * every 10 minutes. New or changed review threads are queued into the SAME session as a message that
- * starts the `ado-pr-implement` skill up to its own user-approval gate.
+ * every 10 minutes. With the host's Schedule service the trigger is ONE visible Automation task per session named
+ * "PR <id> comment poll", whose tick this plugin handles itself (see pr-schedule.js); otherwise, or when the task
+ * cannot be created, a timer is the trigger. New or changed review threads are queued into the SAME session as a
+ * message that starts the `ado-pr-implement` skill up to its own user-approval gate.
  *
  * The poll ends only when the PR is completed or abandoned: an approval or a clean CI review does not stop it, since
  * later comments, pushes and CI runs still need handling before the merge.
@@ -16,6 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { stripHold } from './hold.js'
+import { createPrSchedule, installPrScheduleHooks, taskTitle, textOf } from './pr-schedule.js'
 
 export const PR_TITLE = /^PR \d+/
 const ADO_REPO = 'https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc'
@@ -39,8 +42,6 @@ export function mergedStartText(prId) {
     'Start the remaining work now, as described in your first message (no question needed): if you have not started yet, create your own worktree from the latest origin/develop and work only there; if you already started, rebase onto origin/develop for the tasks marked "(after merge)". Continue in SPARC mode.',
   ].join('\n')
 }
-
-const textOf = (content) => (typeof content === 'string' ? content : (content ?? []).filter((b) => b?.type === 'text').map((b) => b.text).join(''))
 
 /** The session's current title, read live on every call; undefined when unavailable. */
 function titleOf(ctx, agent) {
@@ -145,6 +146,12 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   const entries = new Map()
   /** agent.id -> { prId, seen, suggested, spawned }: survives stop(), so a merged PR's suggestion is never re-sent. */
   const states = new Map()
+  /**
+   * prId -> seen map of a stopped entry (disposed, archived, replaced), kept for the process lifetime so that a session
+   * that registers again does not announce every unresolved thread a second time. Bounded: the oldest PR goes first.
+   */
+  const retainedSeen = new Map()
+  const MAX_RETAINED_SEEN = 200
   /** Diagnostic trail shared with the auto-resume flow: <stateDir>/spawn.log. Never receives credentials. */
   const trace = (line) => {
     try { appendFileSync(join(dirname(settings.path), 'spawn.log'), `${new Date().toISOString()} pr-poll ${line}\n`) } catch { /* best effort */ }
@@ -169,11 +176,47 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     finishedPrs.add(String(prId))
     try { writeFileSync(finishedFile, JSON.stringify([...finishedPrs].slice(-500))) } catch (error) { trace(`could not save finished PRs: ${scrub(error)}`) }
   }
+  // The 10-minute trigger: one Automation task per PR session (absent Schedule service: the setInterval fallback below).
+  const prSchedule = createPrSchedule({ getSchedule: () => ctx.get('schedule'), stateDir: dirname(settings.path), trace: (line) => trace(scrub(line)), intervalSeconds: Math.round(intervalMs / 1000) })
+  const reportTask = (what) => (error) => trace(`${what}: ${scrub(error)}`)
+  /** The setInterval trigger of an entry: the fallback when there is no Schedule service or its task cannot be created. */
+  function armTimer(entry) {
+    if (entry.timer) return
+    entry.timer = setInterval(() => { void poll(entry.agent.id) }, intervalMs)
+    entry.timer.unref?.()
+  }
+  function disarmTimer(entry) {
+    if (!entry.timer) return
+    clearInterval(entry.timer)
+    entry.timer = undefined
+  }
+  /**
+   * Fire-and-forget (never awaited from a listener): make sure the session's poll task exists. A failure (or a service that
+   * went away) arms the timer for that entry so the session is still polled; a task that exists again clears it.
+   */
+  function ensureTask(sessionId, prId) {
+    const current = () => { const entry = entries.get(sessionId); return entry?.prId === String(prId) ? entry : undefined }
+    prSchedule.ensureTask(sessionId, prId).then((taskId) => {
+      const entry = current()
+      if (!entry) return
+      if (taskId === undefined) armTimer(entry)
+      else disarmTimer(entry)
+    }, (error) => {
+      reportTask(`could not create the poll task of ${sessionId}; polling by timer instead`)(error)
+      const entry = current()
+      if (entry) armTimer(entry)
+    })
+  }
+  /** Whether the entry's trigger is the Automation task (service present, setting on, no timer fallback). */
+  const taskTriggered = (entry) => prSchedule.available() && settings.get().pollPrComments && !entry.timer
+  const dropTasks = (sessionId) => { void prSchedule.deleteTasks(sessionId).catch(reportTask(`could not delete the poll task of ${sessionId}`)) }
+
   /** Stop the poll of a PR that is over, and remember that. */
   function finish(id, reason) {
     const entry = entries.get(id)
     if (entry) markFinished(entry.prId)
     stop(id, reason)
+    dropTasks(id)
   }
 
   function stop(id, reason) {
@@ -181,6 +224,9 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     if (!entry) return
     clearInterval(entry.timer)
     entries.delete(id)
+    retainedSeen.delete(entry.prId)
+    retainedSeen.set(entry.prId, entry.seen)
+    if (retainedSeen.size > MAX_RETAINED_SEEN) retainedSeen.delete(retainedSeen.keys().next().value)
     trace(`stopped polling PR ${entry.prId} for ${id}: ${reason}`)
   }
 
@@ -193,10 +239,15 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     const existing = entries.get(agent.id)
     if (existing && existing.prId === String(prId)) {
       for (const [t, c] of seenEntries) if (!existing.seen.has(t)) existing.seen.set(t, c)
+      // Neither a timer nor a task (the task was deleted, the session was unarchived, the setting was switched on by hand): create it again.
+      if (taskTriggered(existing) && !prSchedule.hasTasks(agent.id)) ensureTask(agent.id, existing.prId)
       return
     }
     if (existing) stop(agent.id, 'replaced by another PR')
-    const entry = { agent, prId: String(prId), seen: new Map(seenEntries), ciReported: new Set(), conflictFor: undefined, timer: undefined, inFlight: undefined, restored }
+    // What an earlier registration of this PR already announced wins over the marker's list.
+    const seen = new Map(retainedSeen.get(String(prId)) ?? [])
+    for (const [t, c] of seenEntries) if (!seen.has(t)) seen.set(t, c)
+    const entry = { agent, prId: String(prId), seen, ciReported: new Set(), conflictFor: undefined, timer: undefined, inFlight: undefined, restored }
     // A resumed marker carrying resume=suggested/spawned means the merged-PR suggestion was already made.
     // An existing state for the same PR (poll stopped after the merge, then re-registered) is kept, never reset.
     const prior = states.get(agent.id)?.prId === entry.prId ? states.get(agent.id) : undefined
@@ -206,9 +257,14 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       suggested: Boolean(prior?.suggested || resume),
       spawned: Boolean(prior?.spawned || resume === 'spawned'),
     })
-    entry.timer = setInterval(() => { void poll(agent.id) }, intervalMs)
-    entry.timer.unref?.()
     entries.set(agent.id, entry)
+    if (prSchedule.available()) {
+      // The Automation task is the trigger; with the setting off nothing is created (switching it on restores the tasks).
+      if (settings.get().pollPrComments) ensureTask(agent.id, entry.prId)
+      trace(`polling PR ${entry.prId} for ${agent.id} every ${Math.round(intervalMs / 1000)}s by Automation task "${taskTitle(entry.prId)}"`)
+      return
+    }
+    armTimer(entry)
     trace(`polling PR ${entry.prId} for ${agent.id} every ${Math.round(intervalMs / 1000)}s`)
   }
 
@@ -256,11 +312,15 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
 
   async function pollOnce(id) {
     const entry = entries.get(id)
-    if (!entry || !settings.get().pollPrComments) return
+    if (!entry) return
+    if (!settings.get().pollPrComments) {
+      if (prSchedule.available()) dropTasks(id) // Poll PR comments is off: the task has no purpose
+      return
+    }
     const pat = env.AZURE_DEVOPS_EXT_PAT
     if (!pat) { trace(`no AZURE_DEVOPS_EXT_PAT; skipping PR ${entry.prId}`); return }
     try {
-      const base = `${ADO_REPO}/pullRequests/${entry.prId}`
+      const base = `${ADO_REPO}/pullRequests/${encodeURIComponent(entry.prId)}`
       const pr = await getJson(`${base}?api-version=7.1`, pat)
       // A session restored after a restart whose PR is already merged is stopped quietly: its suggestion (if any) was
       // made before the restart, and old PR sessions must not be asked again.
@@ -353,17 +413,25 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   }
 
   // A resumed session re-registers from a PR-POLL marker; a session already titled "PR <n>" is picked up
-  // on its next step (covers a host restart, which loses the in-memory poll list).
-  ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
+  // on its next step (covers a host restart, which loses the in-memory poll list, an archive followed by an unarchive, and a
+  // task the user deleted in the Automation UI or that could not be created: the first step of a turn checks the task).
+  ctx.on('agent/pre-step', async ({ agent, messages, step }, next) => {
     if (!skip(agent)) {
       try {
         const marker = parsePollMarker((messages ?? []).map((m) => textOf(m.content)).join('\n'))
         if (marker) {
           await renameToPr(agent, marker.id)
           register(agent, marker.id, marker.seen, marker.resume)
-        } else if (!entries.has(agent.id)) {
+        } else {
           const m = PR_TITLE.exec(titleOf(ctx, agent) ?? '')
-          if (m) register(agent, /\d+/.exec(m[0])[0])
+          const prId = m ? /\d+/.exec(m[0])[0] : undefined
+          const had = entries.get(agent.id)
+          if (prId && (!had || had.prId === prId)) {
+            // register() itself re-creates a missing task of a task-triggered entry; otherwise check it on the first step of a turn.
+            const registerCreates = had && taskTriggered(had) && !prSchedule.hasTasks(agent.id)
+            register(agent, prId)
+            if (had && !registerCreates && (step ?? 1) <= 1 && prSchedule.available() && settings.get().pollPrComments) ensureTask(agent.id, prId)
+          }
         }
       } catch (error) { trace(`pre-step registration failed: ${scrub(error)}`) }
     }
@@ -405,7 +473,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       const registry = ctx.get('workspaceRegistry')
       query = ctx.get('sessionQuery')
       if (!registry?.list || !query?.readTitleSnapshots) return 0
-      ids = [...new Set(registry.list().flatMap((w) => w.sessionIds ?? []))]
+      const archived = new Set((registry.archivedSessionIds ?? []).map(String))
+      ids = [...new Set(registry.list().flatMap((w) => w.sessionIds ?? []))].filter((id) => !archived.has(String(id)))
     } catch (error) { trace(`restore unavailable: ${scrub(error)}`); return 0 }
     let restored = 0
     for (let i = 0; i < ids.length; i += 50) { // batches keep a large session list from stalling the host
@@ -526,13 +595,13 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   async function checkWaitsOnce(pat) {
     for (const [sessionId, prId] of [...waitMap]) {
       try {
-        const pr = await getJson(`${ADO_REPO}/pullRequests/${prId}?api-version=7.1`, pat)
+        const pr = await getJson(`${ADO_REPO}/pullRequests/${encodeURIComponent(prId)}?api-version=7.1`, pat)
         const merged = pr?.status === 'completed'
         if (!merged && pr?.status !== 'abandoned') continue
         // The PR is over: nothing left to poll for it in any PR session.
         markFinished(prId)
         const prSessionIds = []
-        for (const [eid, e] of [...entries]) if (e.prId === String(prId)) { prSessionIds.push(eid); stop(eid, merged ? 'PR merged (wait check)' : 'PR abandoned (wait check)') }
+        for (const [eid, e] of [...entries]) if (e.prId === String(prId)) { prSessionIds.push(eid); stop(eid, merged ? 'PR merged (wait check)' : 'PR abandoned (wait check)'); dropTasks(eid) }
         if (merged) { await handleMerged(prId, prSessionIds); continue }
         const text = [
           `PR ${prId} was abandoned.`,
@@ -550,6 +619,47 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   }
   armWaits()
   signal?.addEventListener('abort', () => { if (waitTimer) clearInterval(waitTimer) }, { once: true })
+
+  // ---- Automation task wiring (see pr-schedule.js): tick -> poll, archive / rename / setting clean-up ----
+  /** Whether the workspace registry lists the session as archived (false when the registry is missing or throws). */
+  function isArchived(sessionId) {
+    try {
+      const ids = ctx.get('workspaceRegistry')?.archivedSessionIds
+      return Array.isArray(ids) ? ids.map(String).includes(String(sessionId)) : (ids?.has?.(String(sessionId)) ?? false)
+    } catch { return false }
+  }
+  /** A tick of our task: poll now. A finished PR or the setting being off deletes the task instead; a session that is not registered yet (e.g. after a restart) is registered first. */
+  function onScheduleTick(sessionId, prId, agent) {
+    // The interceptor runs before the archived-session gate, so an archived session's leftover tick is dropped here: no
+    // registration, no poll, and its tasks go. A failing lookup is not "archived".
+    if (isArchived(sessionId)) { trace(`dropped a tick of ${sessionId}: session is archived`); dropTasks(sessionId); return }
+    // A tick is only ever polled for the session that received it; never key an entry by another agent.
+    if (agent?.id !== sessionId) { trace(`skipped a tick of ${sessionId} delivered to ${agent?.id ?? 'no agent'}`); return }
+    if (!settings.get().pollPrComments || finishedPrs.has(String(prId))) { dropTasks(sessionId); return }
+    if (!entries.has(sessionId)) register(agent, prId)
+    void poll(sessionId)
+  }
+  installPrScheduleHooks(ctx, {
+    schedule: prSchedule,
+    onTick: onScheduleTick,
+    onTitleAway: (sessionId) => { stop(sessionId, 'title is no longer a PR title'); dropTasks(sessionId) },
+    onArchived: (sessionId) => stop(sessionId, 'session archived'),
+    isPrTitle: (title) => PR_TITLE.test(stripHold(typeof title === 'string' ? title : '') ?? ''),
+    archivedIds: () => ctx.get('workspaceRegistry')?.archivedSessionIds,
+    trace: (line) => trace(scrub(line)),
+  })
+  // Poll PR comments on -> off deletes every task of ours; off -> on brings them back for the live and the restored PR sessions.
+  const unsubscribeSettings = settings.subscribe?.((next, previous) => {
+    if (!prSchedule.available() || Boolean(next.pollPrComments) === Boolean(previous.pollPrComments)) return
+    if (!next.pollPrComments) {
+      for (const sessionId of new Set([...prSchedule.sessionIds(), ...entries.keys()])) dropTasks(sessionId)
+      return
+    }
+    for (const [sessionId, entry] of entries) ensureTask(sessionId, entry.prId)
+    restoredIds.clear()
+    void restore().catch((error) => trace(`restore after switching the poll on failed: ${scrub(error)}`))
+  }, reportTask('settings listener failed'))
+  signal?.addEventListener('abort', () => unsubscribeSettings?.(), { once: true })
 
   return {
     register,

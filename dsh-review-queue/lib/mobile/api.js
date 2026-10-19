@@ -8,7 +8,7 @@ import { TOKEN_KEY, authFailureText, hubBase, isAuthFailure, pairBody, pairError
 import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
 import { pollWaitMs } from './model.js'
-import { emptyTodoDraft } from './todo-form.js'
+import { bindDraftFlush, dropStaleWorkspace, emptyTodoDraft, loadTodoDraft, saveTodoDraft } from './todo-form.js'
 import {
   POST_TIMEOUT_MS, THREAD_TIMEOUT_MS, applyEarlier, applyNewest, expirePending, markSent, mergeMessages, pendingMessage, pollDelay, postErrorText, postKeyFor, postPayload, removeMessage,
   sameThread, shouldPoll, threadErrorText, threadPayload, touchThreads, trimThread,
@@ -33,8 +33,8 @@ const storage = {
 export const state = {
   ready: false, snap: null, error: null, auth: false, needsPairing: false, pairMessage: null, skew: 0,
   drafts: {}, replies: {}, busy: {}, errors: {}, filter: { type: 'all', query: '' }, version: 0,
-  // The "+ New todo" form: the draft survives moving between screens (cleared after a successful start); the workspace dropdown's list.
-  todoDraft: emptyTodoDraft(), workspaces: null, workspacesError: null,
+  // The "+ New todo" form: the draft survives moving between screens, a reload and a crash (saved on every change, cleared after a successful start); the workspace dropdown's list.
+  todoDraft: loadTodoDraft(storage), workspaces: null, workspacesError: null,
   // The chat thread of each session item that was opened: { messages, hasMore, cursor, loading, loadingEarlier, error, offline }.
   threads: {},
 }
@@ -46,6 +46,7 @@ export function set(patch) {
   state.version++
   if ('drafts' in patch || 'replies' in patch) { clearTimeout(saveTimer); saveTimer = setTimeout(save, 300) }
   if ('filter' in patch) storage.set(LS_FILTER, JSON.stringify(state.filter))
+  if ('todoDraft' in patch) saveTodoDraft(storage, state.todoDraft) // at once, no timer: a crash right after a keystroke loses nothing
   for (const l of [...listeners]) l()
 }
 /** Writes the drafts to the page storage now (the page is going away: the 300 ms timer of set() may never run). */
@@ -149,12 +150,14 @@ export async function loadWorkspaces() {
     const body = await res.json().catch(() => null)
     if (handleAuthFailure(res.status, body)) return
     if (!res.ok) { set({ workspacesError: core.errorText(res.status, body || {}) }); return }
-    set({ workspaces: Array.isArray(body && body.workspaces) ? body.workspaces : [], workspacesError: null })
+    const workspaces = Array.isArray(body && body.workspaces) ? body.workspaces : []
+    const draft = dropStaleWorkspace(state.todoDraft, workspaces) // a restored draft may name a workspace that is gone
+    set({ workspaces, workspacesError: null, ...(draft !== state.todoDraft ? { todoDraft: draft } : {}) })
   } catch (e) { set({ workspacesError: 'Request failed: ' + String((e && e.message) || e) }) }
 }
 
-/** The unsent "+ New todo" form is thrown away (after a successful start). */
-export const clearTodoDraft = () => set({ todoDraft: emptyTodoDraft() })
+/** The unsent "+ New todo" form is thrown away, in state and on disk (after a successful start). */
+export const clearTodoDraft = () => set({ todoDraft: emptyTodoDraft() }) // set() writes the saved draft at once
 
 /** Id under which the "+ New todo" form keeps its busy flag and error in state. */
 export const NEW_TODO_ID = 'new-todo'
@@ -380,6 +383,7 @@ export async function init() {
   core = await loadCore()
   load()
   set({ ready: false })
+  bindDraftFlush(window, document, () => saveTodoDraft(storage, state.todoDraft)) // the latest text once more when the page goes away or to the background
   document.addEventListener('visibilitychange', () => { if (!document.hidden && current) current.abort() }) // a phone that slept has a dead connection
   window.addEventListener('online', () => { if (current) current.abort() })
   window.addEventListener('offline', () => { if (current) current.abort() }) // a long-poll on a dead link would otherwise hide the outage for up to 20 s

@@ -11,7 +11,7 @@ window.__ModuleLoader__.load({
 		const ANCHOR_ID = "review-queue";
 		// Same origin as the page: the plugin registers /review-queue on the Host web server.
 		const API = "/review-queue";
-		const LS = { overlay: "dsh-review-queue.overlay", drafts: "dsh-review-queue.drafts", toggles: "dsh-review-queue.toggles" };
+		const LS = { overlay: "dsh-review-queue.overlay", drafts: "dsh-review-queue.drafts", toggles: "dsh-review-queue.toggles", todoDraft: "dsh-review-queue.todoDraft" };
 		const WAIT_MS = 20000;
 
 		// =====================================================================================
@@ -65,14 +65,14 @@ window.__ModuleLoader__.load({
 		const detachedNote = (item) => (item && item.type === "question" && item.detached ? "The live request ended; your answer is sent to the session." : undefined);
 
 		/** Done items that left the list without the user acting on them can go back in. */
-		const isReopenable = (it) => !!(it && it.type === "completed" && it.resolution && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action"));
+		const isReopenable = (it) => !!(it && it.type === "completed" && it.resolution && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action" || it.resolution.kind === "trimmed"));
 
 		/** One line for a resolved item: what happened to it. */
 		function resolutionText(item) {
 			const r = item.resolution || {};
 			const where = r.by === "card" ? "here" : r.by === "screen" ? "on screen" : r.by === "session" ? "in the session" : "";
 			switch (r.kind) {
-				case "answered": return "Answered" + (where ? " " + where : "") + (r.answers ? ": " + answerText(r.answers) : "");
+				case "answered": if (r.by === "auto") return "Answered automatically with the recommended option" + (r.answers ? ": " + answerText(r.answers) : ""); return "Answered" + (where ? " " + where : "") + (r.answers ? ": " + answerText(r.answers) : "");
 				case "late-answered": return "Answered late" + (r.answers ? ": " + answerText(r.answers) : "");
 				case "confirmed": return "Confirmed the recommended option" + (r.answers ? ": " + answerText(r.answers) : "");
 				case "expired": return r.assumed && r.assumed.length ? "Expired; recommended option taken: " + r.assumed.join(", ") : "Expired; the assistant carried on";
@@ -83,6 +83,7 @@ window.__ModuleLoader__.load({
 				case "archived": return r.by === "elsewhere" ? "Session archived elsewhere" : "Session archived";
 				case "superseded": return "Replaced by a newer result";
 				case "no-action": return "Hidden: nothing for you to do (judged from the message; Reopen if it was wrong)";
+				case "trimmed": return "Hidden: the session had more than " + (r.limit ? r.limit + " " : "") + "open done results (Reopen to bring it back)";
 				case "replied": return r.by === "session" ? "You continued the session" : "You replied";
 				case "resumed": return "Resumed";
 				case "dismissed": return "Dismissed";
@@ -187,17 +188,18 @@ window.__ModuleLoader__.load({
 		/** Inline markdown -> tokens. Only http(s) links stay links; anything else keeps just its text. */
 		function mdInline(text) {
 			const out = [];
-			const re = /`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|\*([^*\s][^*]*)\*/g;
+			const re = /<u>\s*(?:\*\*([^*]+)\*\*|([^<*]+?))\s*<\/u>|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|\*([^*\s][^*]*)\*/g;
 			const pushText = (s) => { if (!s) return; const prev = out[out.length - 1]; if (prev && prev.t === "text") prev.text += s; else out.push({ t: "text", text: s }); };
 			let last = 0;
 			let m;
 			const src = String(text == null ? "" : text);
 			while ((m = re.exec(src))) {
 				pushText(src.slice(last, m.index));
-				if (m[1] !== undefined) out.push({ t: "code", text: m[1] });
-				else if (m[2] !== undefined) out.push({ t: "b", text: m[2] });
-				else if (m[3] !== undefined) { if (/^https?:\/\//i.test(m[4])) out.push({ t: "a", text: m[3], href: m[4] }); else pushText(m[3]); }
-				else out.push({ t: "i", text: m[5] });
+				if (m[1] !== undefined || m[2] !== undefined) out.push({ t: "bu", text: (m[1] !== undefined ? m[1] : m[2]).trim() }); // an action item for the user: bold and underlined
+				else if (m[3] !== undefined) out.push({ t: "code", text: m[3] });
+				else if (m[4] !== undefined) out.push({ t: "b", text: m[4] });
+				else if (m[5] !== undefined) { if (/^https?:\/\//i.test(m[6])) out.push({ t: "a", text: m[5], href: m[6] }); else pushText(m[5]); }
+				else out.push({ t: "i", text: m[7] });
 				last = re.lastIndex;
 			}
 			pushText(src.slice(last));
@@ -371,6 +373,13 @@ window.__ModuleLoader__.load({
 			const t = String(text || "").trim();
 			return !t ? "Type the task first." : t.length > TODO_MAX ? "That is too long." : undefined;
 		}
+		/** The Tune prompt button works on a text that is there and while nothing else is going on. */
+		const canTune = (f) => !!f && !f.busy && !f.tuning && !!String(f.text || "").trim();
+		/** The form after a tune answer { ok, text } | { ok: false, error }: the tuned text replaces the text and the FIRST text typed is kept as original (for Undo); a failure changes nothing but the message. */
+		function nextFormAfterTune(f, result) {
+			if (!result.ok) return { ...f, tuning: false, error: result.error };
+			return { ...f, text: result.text, original: f.original || f.text, tuning: false, error: undefined };
+		}
 		/** The Open session control of a resolved card: a BUTTON for a started todo, the small link for the rest, none without a session or host. */
 		function openControl(it, hostHasOpen) { return resolvedOpenAction(it, hostHasOpen) !== "open" ? "none" : it.type === "todo" ? "button" : "link"; }
 
@@ -398,13 +407,23 @@ window.__ModuleLoader__.load({
 				return { expanded: obj(j && j.expanded), reply: obj(j && j.reply) };
 			} catch (_e) { return { expanded: {}, reply: {} }; }
 		}
+		/** The unsent todo form (text, workspace, SPARC, open, the text before a tune) is restored after a reload or a crash; busy, error and tuning never are. */
+		function loadTodoForm() {
+			const form = { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined };
+			try {
+				const j = JSON.parse(storage.get(LS.todoDraft) || "null");
+				if (!j || typeof j !== "object" || Array.isArray(j)) return form;
+				const str = (v) => (typeof v === "string" ? v : "");
+				return { ...form, open: j.open === true, text: str(j.text), workspaceId: str(j.workspaceId), sparc: j.sparc === true, ...(str(j.original) ? { original: j.original } : {}) };
+			} catch (_e) { return form; }
+		}
 		const saved = loadSaved();
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
-			todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined }, workspaces: null, todoPick: {},
-			resumeAll: null, scanNote: undefined, scanning: false,
+			todoForm: loadTodoForm(), workspaces: null, todoPick: {},
+			resumeAll: null, scanNote: undefined, scanning: false, power: null,
 		};
 		const listeners = new Set();
 		let version = 0;
@@ -421,8 +440,22 @@ window.__ModuleLoader__.load({
 			clearTimeout(toggleTimer);
 			toggleTimer = setTimeout(() => storage.set(LS.toggles, JSON.stringify({ expanded: state.expanded, reply: state.replyOpen })), 300);
 		}
+		/** Writes the todo form draft NOW (no timer: a crash right after a keystroke must not lose it). The text is never shortened. */
+		function saveTodoForm() {
+			const f = state.todoForm;
+			storage.set(LS.todoDraft, JSON.stringify({ text: f.text, workspaceId: f.workspaceId, sparc: !!f.sparc, open: !!f.open, ...(f.original ? { original: f.original } : {}) }));
+		}
+		/** The page going away or to the background saves the draft once more; returns the remover. */
+		function installDraftFlush(win, doc) {
+			const onHide = () => { if (doc.visibilityState === "hidden") saveTodoForm(); };
+			win.addEventListener("pagehide", saveTodoForm);
+			win.addEventListener("beforeunload", saveTodoForm);
+			doc.addEventListener("visibilitychange", onHide);
+			return () => { win.removeEventListener("pagehide", saveTodoForm); win.removeEventListener("beforeunload", saveTodoForm); doc.removeEventListener("visibilitychange", onHide); };
+		}
 		function set(patch) {
 			Object.assign(state, patch);
+			if ("todoForm" in patch) saveTodoForm();
 			if ("drafts" in patch || "replies" in patch) scheduleSave();
 			if ("expanded" in patch || "replyOpen" in patch) scheduleToggleSave();
 			version++;
@@ -503,7 +536,7 @@ window.__ModuleLoader__.load({
 			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so the answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
 			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
-			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.",
+			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-desktop": "This is not the DSH desktop app (or it cannot be found), so there is nothing to quit. Nothing was paused.", "no-power": "Pausing and quitting is not available in this app.",
 			"no-workspace": "Pick a workspace first.", "unknown-workspace": "That workspace no longer exists.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
 			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "busy": "A message to that session is already on its way. Try again in a moment.",
 		};
@@ -546,19 +579,26 @@ window.__ModuleLoader__.load({
 		async function loadWorkspaces() {
 			try {
 				const res = await fetch(API + "/v1/workspaces", { credentials: "same-origin" });
-				if (res.ok) { const j = await res.json(); if (j && Array.isArray(j.workspaces)) set({ workspaces: j.workspaces }); }
+				if (res.ok) { const j = await res.json(); if (j && Array.isArray(j.workspaces)) { set({ workspaces: j.workspaces }); dropStaleWorkspace(j.workspaces); } }
 			} catch (_e) { /* keep what we have */ }
+		}
+		/** A restored draft may name a workspace that is gone: once a non-empty list is known and lacks it, the pick falls back to "Choose for me" (an empty list may just not be loaded yet). */
+		function dropStaleWorkspace(list) {
+			const id = state.todoForm.workspaceId;
+			if (id && list.length && !list.some((w) => w && w.id === id)) patchForm({ workspaceId: "" });
 		}
 		/** The list again when none was loaded or the loaded one is empty: the app may not have had its workspaces yet when it was first asked. */
 		function ensureWorkspaces() { return state.workspaces && state.workspaces.length ? undefined : loadWorkspaces(); }
 		/** Why the dropdown has nothing but "Choose for me": a list that loaded empty is said so; nothing before it loaded or while it has entries. */
 		const workspacesNote = (list) => (Array.isArray(list) && !list.length ? "No workspace is listed yet (the app may still be loading them). Choose for me works without one." : undefined);
-		function openTodoForm() { patchForm({ open: true, error: undefined }); loadWorkspaces(); }
-		const closeTodoForm = () => patchForm({ open: false, error: undefined });
+		// Each tune takes a number; closing or reopening the form takes the next one, so the answer of a tune from before is ignored and cannot overwrite the saved draft.
+		let tuneSeq = 0;
+		function openTodoForm() { if (!state.todoForm.open) tuneSeq++; patchForm({ open: true, error: undefined }); loadWorkspaces(); }
+		function closeTodoForm() { tuneSeq++; patchForm({ open: false, error: undefined, tuning: false }); }
 		/** Adds the todo (POST /v1/todo). A workspace starts it at once; "Choose for me" waits for the confirm card. */
 		async function submitTodo() {
 			const f = state.todoForm;
-			if (f.busy) return false;
+			if (f.busy || f.tuning) return false;
 			const problem = todoFormProblem(f.text);
 			if (problem) { patchForm({ error: problem }); return false; }
 			patchForm({ busy: true, error: undefined });
@@ -566,6 +606,31 @@ window.__ModuleLoader__.load({
 			if (error) { patchForm({ busy: false, error }); return false; }
 			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined } });
 			return true;
+		}
+		/** The tuned text (POST /v1/todo-tune); { ok, text } or { ok: false, error }. */
+		async function requestTune(text) {
+			try {
+				const res = await fetch(API + "/v1/todo-tune", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
+				const j = await res.json().catch(() => ({}));
+				if (res.ok && j && j.ok && typeof j.text === "string") return { ok: true, text: j.text };
+				if (j && j.error === "busy") return { ok: false, error: "A tune is already running." }; // the shared "busy" code reads differently for a post to a session (ERRORS)
+				if (!res.ok && (res.status !== 409 || (j && j.error === "busy"))) return { ok: false, error: errorText(res.status, j) };
+				return { ok: false, error: "Could not tune the prompt: " + ((j && j.error) || "unexpected answer") };
+			} catch (e) { return { ok: false, error: "Request failed: " + String((e && e.message) || e) }; }
+		}
+		/** The Tune prompt button: the model rewrites the text and the result goes in the box (Undo tune brings the typed text back). */
+		async function tuneTodo() {
+			if (!canTune(state.todoForm)) return false;
+			const mine = ++tuneSeq;
+			patchForm({ tuning: true, error: undefined });
+			const result = await requestTune(state.todoForm.text);
+			if (mine !== tuneSeq) return false; // the form was closed or reopened meanwhile: the late text is not wanted
+			set({ todoForm: nextFormAfterTune(state.todoForm, result) });
+			return !!result.ok;
+		}
+		function undoTune() {
+			const { original, ...rest } = state.todoForm;
+			if (original) set({ todoForm: { ...rest, text: original, error: undefined } });
 		}
 		/** Start (or Retry) a todo in the picked workspace, else the suggested or given one. */
 		async function confirmTodo(item, pick) {
@@ -616,6 +681,25 @@ window.__ModuleLoader__.load({
 				set({ scanning: false, scanNote: res.ok ? (j.added ? "Found " + j.added + " paused session" + (j.added === 1 ? "" : "s") + "." : "No new paused sessions.") : errorText(res.status, j) });
 			} catch (e) { set({ scanning: false, scanNote: "Request failed: " + String((e && e.message) || e) }); }
 		}
+		// ---- Pause all and quit, and Quit (the Close menu) -----------------------------------------------
+		const POWER_TEXT = {
+			pause: "Pause every running session, remember them (they come back here as paused sessions) and quit DSH?",
+			quit: "Quit DSH? Sessions that are working are cut off; after the restart they show up here as paused sessions.",
+		};
+		const askPower = (kind) => set({ power: { phase: "confirm", kind } });
+		const closePower = () => set({ power: null });
+		/** After the user confirmed: POST /v1/pause-all (pause, record, quit) or /v1/quit (quit only). The desktop closes a moment after the answer. */
+		async function runPower() {
+			const p = state.power;
+			if (!p || p.phase !== "confirm") return false;
+			set({ power: { phase: "working", kind: p.kind } });
+			try {
+				const res = await fetch(API + (p.kind === "pause" ? "/v1/pause-all" : "/v1/quit"), { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" });
+				const j = await res.json().catch(() => ({}));
+				set({ power: res.ok ? { phase: "done", kind: p.kind, paused: j.paused } : { phase: "error", kind: p.kind, text: errorText(res.status, j) } });
+			} catch (e) { set({ power: { phase: "error", kind: p.kind, text: "Request failed: " + String((e && e.message) || e) } }); }
+			return true;
+		}
 		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
 
 		// =====================================================================================
@@ -654,6 +738,8 @@ window.__ModuleLoader__.load({
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
 			+ ".rq-filter{flex:none;display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--rq-border);flex-wrap:wrap}.rq-fchip{padding:3px 12px;border-radius:9px;border:1px solid var(--rq-border)!important;font-size:12px;color:var(--rq-mute)}"
 			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
+			+ ".rq-sbtn{position:relative;display:inline-flex}.rq-sb-main{border-top-right-radius:0;border-bottom-right-radius:0}.rq-sb-caret{border-top-left-radius:0;border-bottom-left-radius:0;margin-left:-1px;padding:6px 8px}"
+			+ ".rq-menu{position:absolute;right:0;top:100%;margin-top:4px;z-index:5;min-width:140px;display:flex;flex-direction:column;border:1px solid var(--rq-border);border-radius:8px;background:var(--rq-layer);box-shadow:0 8px 24px #0008;padding:4px}.rq-mi{text-align:left;padding:6px 12px;border-radius:6px}.rq-mi:hover{background:var(--rq-hover)}"
 			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
 			+ ".rq-split{flex:1;min-height:0;display:grid;grid-template-columns:minmax(260px,360px) 1fr}.rq-side{border-right:1px solid var(--rq-border);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:4px}"
 			+ ".rq-detail{overflow:auto;padding:16px 20px}.rq-row-i{display:flex;flex-direction:column;gap:2px;text-align:left;border:1px solid transparent!important;border-radius:8px;padding:8px 10px}"
@@ -737,16 +823,21 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Markdown as React elements (no HTML injection: text goes through React, links are http(s) only). */
-		function Md({ text }) {
-			const inline = (s) => mdInline(s).map((tok, i) => {
+		function mdNodes(s) {
+			return mdInline(s).map((tok, i) => {
 				switch (tok.t) {
 					case "b": return h("strong", { key: i }, tok.text);
+					case "bu": return h("strong", { key: i, className: "rq-action", style: { textDecoration: "underline" } }, tok.text);
 					case "i": return h("em", { key: i }, tok.text);
 					case "code": return h("code", { key: i, className: "rq-code" }, tok.text);
 					case "a": return h("a", { key: i, href: tok.href, target: "_blank", rel: "noopener noreferrer" }, tok.text);
 					default: return tok.text;
 				}
 			});
+		}
+
+		function Md({ text }) {
+			const inline = mdNodes;
 			return h("div", { className: "rq-md" }, mdBlocks(text).map((b, i) => {
 				switch (b.t) {
 					case "h": return h("div", { key: i, className: "rq-h rq-h" + Math.min(b.level, 3) }, inline(b.text));
@@ -765,7 +856,7 @@ window.__ModuleLoader__.load({
 			const reply = st.replies[item.id] || "";
 			const send = async () => { if (await act("/v1/reply", { id: item.id, text: reply }, item.id, { advance: true })) set({ replies: { ...state.replies, [item.id]: "" } }); };
 			return h(React.Fragment, null,
-				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.summary || "Finished."),
+				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.summary ? mdNodes(item.summary) : "Finished."),
 				full ? h(React.Fragment, null,
 					item.payload && item.payload.reply ? h("details", { open: detailsOpen(st.replyOpen, item), onToggle: (e) => { const now = !!e.currentTarget.open; if (now !== detailsOpen(state.replyOpen, item)) set({ replyOpen: { ...state.replyOpen, [item.id]: now } }); } }, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-replybox" }, h(Md, { text: item.payload.reply }))) : null,
 					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (reply.trim() && !busy) send(); } } })) : null,
@@ -910,12 +1001,14 @@ window.__ModuleLoader__.load({
 			if (!f.open) return null;
 			const note = workspacesNote(st.workspaces);
 			return h("div", { className: "rq-todoform" },
-				h("textarea", { className: "rq-ta", autoFocus: true, placeholder: "What should the new session do? (Ctrl+Enter adds it)", value: f.text, disabled: f.busy, onChange: (e) => patchForm({ text: e.target.value, error: undefined }), onKeyDown: (e) => { if (isSubmitKey(e.nativeEvent || e)) { e.preventDefault(); submitTodo(); } } }),
+				h("textarea", { className: "rq-ta", autoFocus: true, placeholder: "What should the new session do? (Ctrl+Enter adds it)", value: f.text, disabled: f.busy || f.tuning, onChange: (e) => patchForm({ text: e.target.value, error: undefined }), onKeyDown: (e) => { if (isSubmitKey(e.nativeEvent || e)) { e.preventDefault(); submitTodo(); } } }),
 				h("div", { className: "rq-row" },
 					h("select", { className: "rq-input rq-sel", value: f.workspaceId, disabled: f.busy, "aria-label": "Workspace", onChange: (e) => patchForm({ workspaceId: e.target.value }) }, h("option", { value: "" }, "Choose for me"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
 					h("label", { className: "rq-sub" }, h("input", { type: "checkbox", checked: !!f.sparc, disabled: f.busy, onChange: (e) => patchForm({ sparc: e.target.checked }) }), " Use SPARC"),
 					h("span", { className: "rq-grow" }),
-					h("button", { className: "rq-btn pri", disabled: f.busy || !f.text.trim(), onClick: submitTodo }, f.busy ? "Adding…" : "Add todo"),
+					h("button", { className: "rq-btn", title: "Rewrite the prompt with the prompt-tune rules and put the result in the box", disabled: !canTune(f), onClick: tuneTodo }, f.tuning ? "Tuning…" : "Tune prompt"),
+					f.original ? h("button", { className: "rq-link", title: "Put back the text you typed before tuning", disabled: f.busy || f.tuning, onClick: undoTune }, "Undo tune") : null,
+					h("button", { className: "rq-btn pri", disabled: f.busy || f.tuning || !f.text.trim(), onClick: submitTodo }, f.busy ? "Adding…" : "Add todo"),
 					h("button", { className: "rq-link", disabled: f.busy, onClick: closeTodoForm }, "Cancel")),
 				note ? h("div", { className: "rq-sub" }, note) : null,
 				f.error ? h("div", { className: "rq-err" }, f.error) : null,
@@ -932,6 +1025,7 @@ window.__ModuleLoader__.load({
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
 				h("button", { className: "rq-btn", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"),
+				h("button", { className: "rq-btn", "data-rq": "pause-all", title: "Pause every running session, remember them and quit DSH", disabled: !!st.power, onClick: () => askPower("pause") }, "Pause all & quit"),
 				h("button", { className: "rq-btn", onClick: () => set({ showResolved: !st.showResolved, showPhone: false }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
 				h("button", { className: "rq-btn", title: "Pair a phone and manage the paired phones (opens a window)", "aria-haspopup": "dialog", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
 				extra);
@@ -968,6 +1062,37 @@ window.__ModuleLoader__.load({
 			return words ? h("div", { className: "rq-notice rq-notice-" + (n.level === "warn" ? "warn" : "info"), role: "status" }, words) : null;
 		}
 
+		/** The Close button with a menu: Close (the default, the button itself) and Quit (closes the DSH desktop app, after a confirmation bar). */
+		function CloseMenu() {
+			const [open, setOpen] = useState(false);
+			useEffect(() => {
+				if (!open) return undefined;
+				const onDown = (e) => { if (!(e.target && e.target.closest && e.target.closest("[data-rq=close-menu]"))) setOpen(false); };
+				const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+				document.addEventListener("mousedown", onDown);
+				document.addEventListener("keydown", onKey, true);
+				return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey, true); };
+			}, [open]);
+			return h("span", { className: "rq-sbtn", "data-rq": "close-menu" },
+				h("button", { className: "rq-btn rq-sb-main", "data-rq": "close", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close"),
+				h("button", { className: "rq-btn rq-sb-caret", "data-rq": "close-more", title: "More", "aria-label": "More close options", "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen(!open) }, "▾"),
+				open ? h("div", { className: "rq-menu", role: "menu" },
+					h("button", { className: "rq-mi", role: "menuitem", "data-rq": "menu-close", onClick: () => { setOpen(false); setOverlay(false); } }, "Close"),
+					h("button", { className: "rq-mi", role: "menuitem", "data-rq": "menu-quit", title: "Close the DSH desktop app", onClick: () => { setOpen(false); askPower("quit"); } }, "Quit")) : null);
+		}
+
+		/** The bar of Pause all and quit / Quit: the confirmation, the wait, the outcome. */
+		function PowerBar() {
+			const p = useStore().power;
+			if (!p) return null;
+			let body;
+			if (p.phase === "confirm") body = [h("span", { key: "t" }, POWER_TEXT[p.kind]), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "y", className: "rq-btn pri", "data-rq": "power-go", onClick: runPower }, p.kind === "pause" ? "Pause all and quit" : "Quit"), h("button", { key: "n", className: "rq-link", onClick: closePower }, "Cancel")];
+			else if (p.phase === "working") body = [h("span", { key: "t" }, p.kind === "pause" ? "Pausing the running sessions, then closing DSH…" : "Closing DSH…")];
+			else if (p.phase === "done") body = [h("span", { key: "t" }, (p.kind === "pause" ? "Paused " + (p.paused || 0) + " running session" + (p.paused === 1 ? "" : "s") + ". " : "") + "DSH is closing."), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "c", className: "rq-link", onClick: closePower }, "✕")];
+			else body = [h("span", { key: "t", className: "rq-err" }, p.text), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "c", className: "rq-link", onClick: closePower }, "✕")];
+			return h("div", { className: "rq-todoform", role: "status", "data-rq": "power-bar" }, h("div", { className: "rq-row" }, body));
+		}
+
 		/** The Resume all bar: the confirmation with the count, the progress while it runs, the outcome. Also the note of the last scan. */
 		function ResumeAllBar() {
 			const st = useStore();
@@ -989,8 +1114,8 @@ window.__ModuleLoader__.load({
 			const none = snap && snap.open.length ? "Nothing matches this filter." : "Nothing waiting on you.";
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : h("div", { className: "rq-empty" }, snap ? none : "Loading…");
-			const extra = h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
+			const extra = h(CloseMenu);
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(PowerBar), h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
@@ -1056,9 +1181,11 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
 			stopped = false;
+			if (state.todoForm.open) ensureWorkspaces(); // a draft restored open needs its dropdown
 			ctx.effect(() => { pollLoop(); return () => { stopped = true; }; }, "review-queue: polling");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
 			ctx.effect(() => (typeof window === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installHotkey(window)), "review-queue: hotkey");
+			ctx.effect(() => (typeof window === "undefined" || typeof document === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installDraftFlush(window, document)), "review-queue: todo draft flush");
 			// order 1000: after every other utility, i.e. next to the right-sidebar (corner) button.
 			ctx.effect(() => ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({ name: "conversation.session.header.utilities", id: ANCHOR_ID, order: 1000, label: () => "Task list" }, HeaderAnchor)), "review-queue: header button");
 		}
@@ -1071,7 +1198,8 @@ window.__ModuleLoader__.load({
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo });
-		Object.assign(exports.__test, { RESUME_AT_A_TIME, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll });
+		Object.assign(exports.__test, { RESUME_AT_A_TIME, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll, askPower, closePower, runPower, POWER_TEXT, CloseMenu, PowerBar });
+		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;
 	}

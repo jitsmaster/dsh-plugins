@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createSummarizer } from '../summary.js'
+import { needsUser } from '../actionable.js'
 
 function fakeLlm({ models = [{ id: 'big-model' }, { id: 'claude-haiku-x' }], reply = 'Moved auth out. Tests pass.', fail, hang, seen = {} } = {}) {
   return {
@@ -139,9 +140,9 @@ test('the model says no but the message holds something for the user: it is show
   const showing = [
     'Pushed the fix; you need to restart DSH and test by voice.',
     'I found two approaches, which do you want?',
-    'Build failed: missing dependency foo, so nothing was committed.',
+    'The build is blocked by a missing dependency foo, so nothing was committed.',
     'Please review the PR before I merge it.',
-    'Fixed the parser. Next step: add the docs, I did not get to them.',
+    'Fixed the parser. The docs are not yet done, so there is still one open item.',
     'Tests pass. You can try it by hand with npm start.',
     'Blocked on the missing API key.',
     'Updated config. Let me know if you want the old behaviour back.',
@@ -151,6 +152,8 @@ test('the model says no but the message holds something for the user: it is show
 
 test('plain completions the model calls done are hidden', async () => {
   const hiding = [
+    'Reviewed the review module and added an error banner; next steps are in the plan I will carry out myself.',
+    "I'm still waiting for the helper process to report; I will continue when it does.",
     'Done: renamed the helper, all 120 tests pass, committed.',
     'Fixed the typo in the README and committed it.',
     'All 42 tests pass with 0 failures. Committed as abc1234.',
@@ -165,9 +168,63 @@ test('a failing, timing-out or absent model yields no verdict (so the item is sh
   assert.equal((await createSummarizer({}).summarize('Done: all good.')).actionable, undefined)
 })
 
-test('the prompt asks for the verdict conservatively', async () => {
+test('the prompt separates status updates and finished-work reports (no) from asks, decisions and blockers (yes)', async () => {
   const seen = {}
   await createSummarizer({ llm: fakeLlm({ seen }) }).summarize('x\n\ny')
   assert.match(seen.req.system, /ACTIONABLE: yes or no/)
-  assert.match(seen.req.system, /when in doubt/i)
+  assert.match(seen.req.system, /status/i)
+  assert.match(seen.req.system, /progress update/i)
+  assert.match(seen.req.system, /waiting/i)
+  assert.match(seen.req.system, /explicitly asks/i)
+  assert.match(seen.req.system, /manual step/i)
+  assert.match(seen.req.system, /not an action for the user/i)
+  assert.doesNotMatch(seen.req.system, /when in doubt/i)
+  assert.doesNotMatch(seen.req.system, /open next step/i)
+  assert.match(seen.req.system, /untrusted/i)
+  assert.match(seen.req.system, /TITLE:[\s\S]*ACTIONABLE:[\s\S]*SUMMARY:/)
+})
+
+// ---- the guard also keeps handoffs, pull requests and tickets in the list (the user must confirm or follow up on them) ----
+const HANDOFF = ['Done. The handoff document was written to D:/notes/next.md.', 'Wrote the hand-off note for the next session.', 'Handoff written.',
+  'Handed off the work to the next session.', 'We hand off the finished module to QA.', 'The work is handed-off.', 'Two handoffs are queued.', 'Wrote the handoffs.']
+const PULL_REQUEST = ['Opened PR 6545 against develop.', 'Created PR #12.', 'Pushed the branch and the pull request is up.', 'Merged pull request 88 into develop.', 'A pull request was opened for the renamed helper.']
+const TICKET = ['Updated AB#25742 with the results.', 'Linked the work item to the change.', 'Closed the ticket.', 'Commented on AB#100 and moved it along.']
+
+for (const [label, replies] of [['a handoff', HANDOFF], ['a pull request or PR id', PULL_REQUEST], ['a ticket or work item', TICKET]]) {
+  test('needsUser keeps a reply that mentions ' + label, () => {
+    for (const reply of replies) assert.equal(needsUser(reply), true, reply)
+  })
+  test('the model says no but the reply mentions ' + label + ': it is shown (the guard overrides)', async () => {
+    for (const reply of replies) assert.equal((await verdict(reply, 'no')).actionable, true, reply)
+  })
+}
+
+test('needsUser still lets the plain completions and the clean phrases through', () => {
+  for (const reply of ['Renamed the helper and all tests pass.', 'Renamed the helper, 0 failures, no errors.', 'Improved the parser and the print module; all tests pass.', 'Updated the prompt text and the ticker label.']) assert.equal(needsUser(reply), false, reply)
+})
+
+test('needsUser keeps the strong triggers', () => {
+  assert.equal(needsUser('Which port do you want?'), true)
+  assert.equal(needsUser(''), true)
+  assert.equal(needsUser('The build failed: I cannot find the dependency foo.'), true)
+  assert.equal(needsUser('Build failed: missing dependency foo.'), false) // a bare failure word is no longer a trigger; the model and the tail words decide
+})
+
+test('the prompt asks for the sentences the user must act on in <u>**...**</u>', async () => {
+  const seen = {}
+  await createSummarizer({ llm: fakeLlm({ seen }) }).summarize('Did things.')
+  assert.match(seen.req.system, /<u>\*\*/)
+  assert.match(seen.req.system, /only .*act on|must act on/i)
+})
+
+test('a summary keeps the model\'s <u>**...**</u> action sentence and strips other markdown', async () => {
+  const reply = 'TITLE: Deploy fix\nACTIONABLE: yes\nSUMMARY: Fixed the **deploy**. <u>**Restart the service and try it.**</u>'
+  const r = await createSummarizer({ llm: fakeLlm({ reply }) }).summarize('Fixed it. Please restart.')
+  assert.equal(r.text, 'Fixed the deploy. <u>**Restart the service and try it.**</u>')
+})
+
+test('the fallback keeps the action sentence of the reply\'s last paragraph', async () => {
+  const r = await createSummarizer({ llm: fakeLlm({ fail: true }) }).summarize('Did a lot.\n\nAll set. <u>**Which option do you want?**</u>')
+  assert.equal(r.source, 'fallback')
+  assert.equal(r.text, 'All set. <u>**Which option do you want?**</u>')
 })

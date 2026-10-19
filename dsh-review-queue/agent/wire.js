@@ -61,7 +61,7 @@ export function wireHub({ stateDir, port, hubNode, instanceKey, instanceId, labe
   function settleStale() {
     if (settled) return
     settled = true
-    const n = cancelStalePending(adapter, { only: staleIds })
+    const n = cancelStalePending(adapter, { only: staleIds, log })
     if (n) log('standalone: ' + n + ' stale request(s) of an earlier run ended')
   }
 

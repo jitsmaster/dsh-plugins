@@ -12,12 +12,12 @@ import { cancelStalePending } from '../capture.js'
 import { spokenFor, titleFor, fullTextFor } from '../speech.js'
 
 // A merged pull request becomes a task-list item that offers to archive the session that worked on it.
-function setup({ archive, archived = [] } = {}) {
+function setup({ archive, archived = [], log } = {}) {
   let n = 0
   const store = createStore({ uuid: () => 'i' + ++n })
   const calls = []
   const registry = { archivedSessionIds: archived, archiveSession: archive ?? (async (id, options) => { calls.push([id, options]) }) }
-  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => ({}), registryOf: () => registry, speaker: { speak: () => ({ ok: true }), stop() {} } })
+  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => ({}), registryOf: () => registry, speaker: { speak: () => ({ ok: true }), stop() {} }, log })
   return { store, queue, calls, registry }
 }
 const info = (extra = {}) => ({ prId: '5', prSessions: [{ id: 'p1', title: 'PR 5' }], followUps: [{ id: 'f1', title: 'feature - after PR 5' }], ...extra })
@@ -94,6 +94,26 @@ test('a session archived elsewhere takes its merged-PR item out of the list', ()
   registry.archivedSessionIds = ['p1']
   assert.equal(queue.snapshot().open.length, 0)
   assert.deepEqual(store.snapshot().resolved[0].resolution, { kind: 'archived', by: 'elsewhere' })
+})
+
+test('a session archived elsewhere logs the item it took out of the list', () => {
+  const logs = []
+  const { store, queue, registry } = setup({ log: (l) => logs.push(l) })
+  queue.notifyPrMerged(info())
+  const [item] = store.snapshot().open
+  registry.archivedSessionIds = ['p1']
+  queue.snapshot()
+  assert.ok(logs.some((l) => l.includes(item.id) && /archived/.test(l)), logs.join(' | '))
+})
+
+test('archiving a session DSH does not know closes the item as session-ended and logs it', async () => {
+  const logs = []
+  const { store, queue } = setup({ log: (l) => logs.push(l), archive: async () => { throw Object.assign(new Error('unknown'), { name: 'WorkspaceUnknownSessionError' }) } })
+  queue.notifyPrMerged(info())
+  const [item] = store.snapshot().open
+  assert.deepEqual(await queue.archive(item.id), { ok: false, error: 'no-session' })
+  assert.equal(store.get(item.id).resolution.kind, 'session-ended')
+  assert.ok(logs.some((l) => l.includes(item.id) && l.includes('session-ended')), logs.join(' | '))
 })
 
 test('count() reports merged PRs by type', () => {

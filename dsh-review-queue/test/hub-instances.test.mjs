@@ -110,6 +110,48 @@ test('the grace is configurable and a gone instance cannot poll', () => {
   assert.equal(instances.touch(A), undefined)
 })
 
+// ---- every close the hub makes by itself names the item and the reason in its log ----
+const closeLine = (logs, id) => logs.find((l) => l.includes(id))
+
+test('a gone owner\'s question is closed with a log line naming the item and the reason', () => {
+  const logs = []
+  const { clock, store, instances } = make({ log: (l) => logs.push(l) })
+  reg(instances)
+  const q = add(store, A, { type: 'question' })
+  idle(clock, instances, AWAY_MS + GRACE_MS + 1000)
+  const line = closeLine(logs, q)
+  assert.ok(line, logs.join(' | '))
+  assert.match(line, /session-ended/)
+})
+
+test('a restarted app\'s dead question is closed with a log line naming the item and the reason', () => {
+  const logs = []
+  const { store, instances } = make({ log: (l) => logs.push(l) })
+  reg(instances, A)
+  const q = add(store, A, { type: 'question' })
+  reg(instances, B)
+  assert.match(closeLine(logs, q) ?? '', /restarted/, logs.join(' | '))
+})
+
+test('an item the app no longer lists at a sync is closed with a log line naming the item and the reason', () => {
+  const logs = []
+  const { store, instances } = make({ log: (l) => logs.push(l) })
+  reg(instances)
+  const lost = add(store, A, { type: 'completed' })
+  reg(instances, A, { sync: { n: 1, openItems: [], resolvedItems: [], workspaces: [], sessionIds: [] } })
+  assert.match(closeLine(logs, lost) ?? '', /not-in-sync/, logs.join(' | '))
+})
+
+test('an orphan that outlived ORPHAN_KEEP_MS is closed with a log line naming the item and the reason', () => {
+  const logs = []
+  const { clock, store, instances } = make({ orphanKeepMs: 3_600_000, log: (l) => logs.push(l) })
+  reg(instances)
+  const c = add(store, A, { type: 'completed' })
+  idle(clock, instances, AWAY_MS + GRACE_MS + 1000)
+  idle(clock, instances, 3_601_000)
+  assert.match(closeLine(logs, c) ?? '', /orphan-expired/, logs.join(' | '))
+})
+
 test('the other items of a gone owner are ended after ORPHAN_KEEP_MS', () => {
   const { clock, store, instances } = make({ orphanKeepMs: 3_600_000 })
   reg(instances)

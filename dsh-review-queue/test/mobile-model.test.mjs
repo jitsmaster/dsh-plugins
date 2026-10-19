@@ -124,3 +124,14 @@ test('screenFor: a phone that must pair, or opened the pairing link, sees the pa
   assert.equal(screenFor({ needsPairing: false }, '/pairing-is-not-pair'), 'app')
   assert.equal(screenFor({}, '/'), 'app')
 })
+
+test('the phone words an automatic answer like the desktop does, through the shared resolutionText', () => {
+  assert.equal(core.resolutionText({ type: 'question', resolution: { kind: 'answered', by: 'auto' } }), 'Answered automatically with the recommended option')
+  assert.match(core.resolutionText({ type: 'question', resolution: { kind: 'answered', by: 'auto', answers: [{ id: 'q', selected: ['A (Recommended)'] }] } }), /^Answered automatically with the recommended option.*A \(Recommended\)/)
+})
+
+test('the phone card prints the resolution of a resolved item with that shared helper (no wording of its own)', () => {
+  const views = readFileSync(join(dirname(file), 'mobile', 'views.js'), 'utf8')
+  assert.match(views, /c\.resolutionText\(item\)/)
+  assert.match(views, /c\.resolutionText\(i\)/)
+})

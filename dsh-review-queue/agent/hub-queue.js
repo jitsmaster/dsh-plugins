@@ -75,5 +75,8 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     todoIdle: () => local.todoIdle(),
     uiCommand: (cmd) => local.uiCommand(cmd),
     scanPaused: () => local.scanPaused(), // the session logs are on this PC: always this app that scans
+    tuneTodo: (text) => local.tuneTodo(text), // this app's own model: never asked of the hub
+    pauseAll: () => local.pauseAll(), // the sessions and the desktop window are this app's: never asked of the hub
+    quitApp: () => local.quitApp(),
   }
 }

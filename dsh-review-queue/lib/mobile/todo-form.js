@@ -10,6 +10,44 @@ export const TODO_MAX = 4000
 /** A fresh draft: no text, "Choose for me", SPARC off. The draft is kept in state while the user moves between screens. */
 export const emptyTodoDraft = () => ({ text: '', workspaceId: '', sparc: false })
 
+/** The localStorage key of the unsent draft: the text is written there on every change, so a reload or a crash loses nothing. */
+export const TODO_DRAFT_KEY = 'rq-m.todoDraft'
+
+/** Writes the draft (text, workspaceId, sparc; nothing else, never shortened) at once. storage is { get, set }; a storage that throws (private mode, quota) is ignored. */
+export function saveTodoDraft(storage, draft) {
+  const { text, workspaceId, sparc } = { ...emptyTodoDraft(), ...draft }
+  try { storage.set(TODO_DRAFT_KEY, JSON.stringify({ text, workspaceId, sparc })) } catch { /* the draft stays in memory */ }
+}
+
+/** The saved draft; an empty one for nothing, corrupt or non-object data, and wrong field types fall back to the empty values. */
+export function loadTodoDraft(storage) {
+  let j
+  try { j = JSON.parse(storage.get(TODO_DRAFT_KEY) || 'null') } catch { j = null }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return emptyTodoDraft()
+  return { text: typeof j.text === 'string' ? j.text : '', workspaceId: typeof j.workspaceId === 'string' ? j.workspaceId : '', sparc: j.sparc === true }
+}
+
+/**
+ * The draft without a workspace the loaded list does not contain (the workspace was closed since the draft was saved): the dropdown then reads
+ * "Choose for me" instead of showing one thing and sending another. The same draft object comes back when nothing changes; an empty or missing list
+ * is "not known yet" (the app may not have its workspaces) and changes nothing.
+ */
+export function dropStaleWorkspace(draft, workspaces) {
+  if (!draft || !draft.workspaceId || !Array.isArray(workspaces) || !workspaces.length) return draft
+  return workspaces.some((w) => w && w.id === draft.workspaceId) ? draft : { ...draft, workspaceId: '' }
+}
+
+/** Throws the saved draft away (after a successful start). */
+export const forgetTodoDraft = (storage) => saveTodoDraft(storage, emptyTodoDraft())
+
+/** Calls flush when the page is going away (pagehide) or goes to the background (visibilitychange to hidden); returns the remover. */
+export function bindDraftFlush(win, doc, flush) {
+  const onHide = () => { if (doc.visibilityState === 'hidden' || doc.hidden === true) flush() }
+  win.addEventListener('pagehide', flush)
+  doc.addEventListener('visibilitychange', onHide)
+  return () => { win.removeEventListener('pagehide', flush); doc.removeEventListener('visibilitychange', onHide) }
+}
+
 /** The request body for POST /v1/todo, or the message to show instead. The workspace is sent only when one was picked. */
 export function newTodoPayload({ text, workspaceId, sparc } = {}) {
   const t = typeof text === 'string' ? text.trim() : ''
