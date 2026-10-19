@@ -33,7 +33,12 @@ function validate(partial) {
   return out
 }
 
-export function createSettings(stateDir, defaults) {
+/**
+ * @param {string} stateDir
+ * @param {object} [defaults]
+ * @param {(error: unknown) => void} [onError] - told about a subscriber that threw (unless the subscriber has its own).
+ */
+export function createSettings(stateDir, defaults, onError = () => {}) {
   const path = join(stateDir, 'settings.json')
   const base = { contextCapTokens: 400_000, warnPercent: 85, ttsEnabled: true, autoResumeHandoff: true, handoffAhead: true, alwaysFullAccess: false, pollPrComments: true, voiceControl: false, decideChime: true, ...validate(defaults) }
   let cached = { ...base }
@@ -56,12 +61,33 @@ export function createSettings(stateDir, defaults) {
     return cached
   }
 
+  /** Listeners told about every set() that changed a value: (next, previous) -> their optional onError. */
+  const listeners = new Map()
+
   function set(partial) {
-    const next = { ...get(), ...validate(partial) }
+    const previous = get()
+    const next = { ...previous, ...validate(partial) }
     writeFileSync(path, JSON.stringify(next, null, 2))
     mtime = -1 // force re-read on next get()
-    return get()
+    const saved = get()
+    if (Object.keys(saved).some((key) => saved[key] !== previous[key])) notify(saved, previous)
+    return saved
   }
 
-  return { get, set, path }
+  // A listener's failure never breaks set() or the other listeners; it is reported, and a failing report is ignored.
+  function notify(next, previous) {
+    for (const [listener, listenerOnError] of [...listeners]) {
+      try { listener(next, previous) } catch (error) {
+        try { (listenerOnError ?? onError)(error) } catch { /* the error sink itself failed: nothing left to tell */ }
+      }
+    }
+  }
+
+  /** Subscribe to changes made through set(); returns the unsubscribe function. `subscriberOnError` receives what the listener throws. */
+  function subscribe(listener, subscriberOnError) {
+    listeners.set(listener, subscriberOnError)
+    return () => { listeners.delete(listener) }
+  }
+
+  return { get, set, subscribe, path }
 }
