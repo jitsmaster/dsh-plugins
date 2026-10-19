@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync, openSync, closeSync, utimesSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, openSync, closeSync, utimesSync, existsSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fakeLlm, systemOf, userOf } from './todo-tune-helpers.mjs'
@@ -354,4 +354,156 @@ test('a trailing Rationale: or Note: block the real prompt-tune sections ask the
   }
   const only = await (await tuner({ llm: fakeLlm({ answer: 'Rationale: only this' }) })).tune('rough text')
   assert.deepEqual(only, { ok: false, error: 'the model returned nothing' }, 'an answer that is only a rationale is not a prompt')
+})
+
+// ---- only the final prompt goes in the box: no rationale from the rules, the system prompt or the answer ------------------------------------
+
+// A file shaped like the real prompt-tune command: step 2 says to note a malformed flag "in the rationale", step 4 ends with the instruction to write one,
+// and the Decide template carries a ", because <reason>" clause.
+const RATIONALE_FILE = ['## 2. Parse the profile flag', 'FLAG-MARKER: if a malformed flag was present, note in the rationale (step 4) that it was ignored.', 'AFTER-FLAG-MARKER', '',
+  '## 3. Judge ambiguity', 'AMBIG-MARKER', '', '## 4. Produce the rewrite', 'REWRITE-MARKER', '### Single paragraph: fixed formula', 'FORMULA-MARKER',
+  'DECIDE-MARKER each item is strictly one question plus one default, in exactly this shape: `<question>? Suggested default: <X>, because <reason the default is preferable>.`',
+  '### More than one paragraph', 'TASKLIST-MARKER', '', 'Write a one-line rationale explaining what changed and why (e.g. which slot was made explicit).', '',
+  '## 5. Show the before/after', 'SHOW-MARKER', 'The rationale is not posted as chat text.', ''].join('\n')
+
+test('loadRules leaves out every line that tells the model to write or note a rationale, and keeps the rewrite rules', async (t) => {
+  const { loadRules } = await load()
+  const file = join(tmp(t), 'p.md')
+  writeFileSync(file, RATIONALE_FILE)
+  const rules = loadRules(file)
+  assert.ok(!/rationale/i.test(rules), rules)
+  for (const marker of ['AFTER-FLAG-MARKER', '## 3. Judge ambiguity', 'AMBIG-MARKER', '## 4. Produce the rewrite', 'REWRITE-MARKER', 'FORMULA-MARKER', 'TASKLIST-MARKER']) assert.ok(rules.includes(marker), marker)
+  assert.ok(!rules.includes('SHOW-MARKER'))
+})
+
+test('loadRules removes the ", because <reason>" clause from the Decide item template', async (t) => {
+  const { loadRules } = await load()
+  const file = join(tmp(t), 'p.md')
+  writeFileSync(file, RATIONALE_FILE)
+  const rules = loadRules(file)
+  assert.ok(rules.includes('DECIDE-MARKER') && rules.includes('Suggested default: <X>.'), rules)
+  assert.ok(!/because/i.test(rules), rules)
+})
+
+test('the real prompt-tune command file, when this machine has it, gives the model no rationale instruction and keeps the rewrite rules', async () => {
+  const { loadRules, DEFAULT_RULES_PATH, EMBEDDED_RULES } = await load()
+  if (!existsSync(DEFAULT_RULES_PATH)) return
+  const rules = loadRules(DEFAULT_RULES_PATH)
+  if (rules === EMBEDDED_RULES) return // another layout of the file: covered by the embedded copy test
+  assert.ok(!/rationale/i.test(rules), rules.match(/.*rationale.*/i)?.[0])
+  assert.ok(!/because <reason/i.test(rules))
+  assert.match(rules, /Single paragraph: fixed formula/)
+  assert.match(rules, /Suggested default/)
+})
+
+test('the embedded rules ask for no rationale, reason or because clause', async () => {
+  const { EMBEDDED_RULES } = await load()
+  assert.doesNotMatch(EMBEDDED_RULES, /rationale|reason|because/i)
+  assert.match(EMBEDDED_RULES, /suggested default/i, 'the Decide idea is still there')
+})
+
+test('the system prompt ends with an override that wins over the rules: only the prompt, no rationale, no changes, no because after a default', async () => {
+  const seen = {}
+  await (await tuner({ llm: fakeLlm({ answer: 'x', seen }) })).tune('rough text')
+  const system = systemOf(seen)
+  const rulesAt = system.indexOf(RULES)
+  assert.ok(rulesAt >= 0)
+  const after = system.slice(rulesAt + RULES.length)
+  assert.match(after, /override|wins over|takes precedence|overrides/i, 'the override comes after the rules and says it wins')
+  assert.match(after, /only the rewritten prompt/i)
+  assert.match(after, /no rationale/i)
+  assert.match(after, /no explanation of what (was )?changed or why/i)
+  assert.match(after, /no notes/i)
+  assert.match(after, /no preface/i)
+  assert.match(after, /no trailing section/i)
+  assert.match(after, /no 'because/i)
+  assert.match(after, /<question>\? Suggested default: <X>\./)
+})
+
+test('a closing explanation of the rewrite is removed in every label form: Rationale, Note(s), Changes, Changed, What changed, Why, Explanation, Summary of changes, Reasoning', async () => {
+  const cases = [
+    'Changes: made the target explicit.', 'Changed: the verb only.', 'What changed: the target.', 'Why: the target was missing.', 'Explanation: the target was missing.',
+    'Summary of changes: one line.', 'Reasoning: the target was missing.', 'Notes: shortened.', 'WHY: explicit.', 'changes: explicit.',
+    'Changes:\n- the verb\n- the target', '**Changes:**\n- the verb', '**Why**: explicit.', '- Why: explicit.', '* **Reasoning:** explicit.',
+    '*Why: explicit.*', '*(Rationale: explicit.)*', '(Explanation: the target was missing.)', '_(Changes: verb.)_',
+  ]
+  for (const block of cases) for (const sep of ['\n\n', '\n\n---\n\n', '\n---\n', '\n\n***\n']) {
+    const raw = 'Do X in Y.' + sep + block
+    const r = await (await tuner({ llm: fakeLlm({ answer: raw }) })).tune('rough text')
+    assert.deepEqual(r, { ok: true, text: 'Do X in Y.' }, JSON.stringify(raw))
+  }
+})
+
+test('a wrapped label closes the answer even right under the last line of the prompt', async () => {
+  for (const block of ['**Why:** explicit.', '**Changes:** the verb.', '(Explanation: explicit.)', '*(Rationale: explicit.)*', '*Reasoning: explicit.*', '__Changed:__ the verb.']) {
+    const raw = 'Do X in Y.\n' + block
+    const r = await (await tuner({ llm: fakeLlm({ answer: raw }) })).tune('rough text')
+    assert.deepEqual(r, { ok: true, text: 'Do X in Y.' }, JSON.stringify(raw))
+  }
+})
+
+test('an italic or parenthesised closing remark right after a separator line is removed when it starts with Changed, Rewrote, I or This', async () => {
+  for (const remark of ['*(Changed the verb to be explicit.)*', '*Rewrote the prompt as one line.*', '_I made the target explicit._', '(This keeps every constraint.)', '*This keeps every constraint.*', '_(I added the target.)_']) {
+    for (const sep of ['\n\n---\n', '\n---\n', '\n\n***\n\n', '\n\n---\n\n']) {
+      const raw = 'Do X in Y.' + sep + remark
+      const r = await (await tuner({ llm: fakeLlm({ answer: raw }) })).tune('rough text')
+      assert.deepEqual(r, { ok: true, text: 'Do X in Y.' }, JSON.stringify(raw))
+    }
+  }
+})
+
+test('several closing blocks and their separator are all removed, the Decide list in front of them stays', async () => {
+  const decide = 'Add X.\n\nDecide (state your choice in the response):\n1. Which db? Suggested default: SQLite.\n2. Retry? Suggested default: yes.'
+  for (const tail of ['\n\n---\n\n*(Changed the verb.)*\n\nRationale: foo', '\n\nChanges:\n- a\n\n---\nWhy: b', '\n\nRationale: foo\n\nNote: bar\n\n---\n*I added the list.*']) {
+    const r = await (await tuner({ llm: fakeLlm({ answer: decide + tail }) })).tune('rough text')
+    assert.deepEqual(r, { ok: true, text: decide }, JSON.stringify(tail))
+  }
+})
+
+test('words like rationale, note, why, changed and because inside the prompt, a normal last sentence and text followed by more prompt are not cut', async () => {
+  const keep = [
+    'Do X in Y.\n\nChanged files must keep their mode.',
+    'Do X in Y.\n\nWhy is the cache stale? Find out.',
+    'Do X in Y.\nWhy: keep this',
+    'Do X in Y.\nChanges: keep this',
+    'Do X in Y.\n(Note: Safari only)',
+    'Do X in Y.\n\nChanges: keep this\n\nThen Z.',
+    'Do X in Y.\n\nWhy: keep this\n\nThen Z.',
+    'Do X in Y.\n\n---\n\nThen Z.',
+    'Do X in Y.\n\n---\nThis one is part of the prompt.',
+    'Do X in Y.\n\n---\n*Keep this italic line.*',
+    'Do X in Y.\n\n---\n(Isolate the test first.)',
+    'Explain the rationale and note: the because clause stays.',
+    'Review the changes: summary of changes goes in the PR.',
+    'Do X in Y because the API changed.',
+    'Fix the bug in a.js. Keep the diff small because reviewers are busy.',
+    'Do not log the rationale; note: the reason is in the ticket.',
+    'Why: keep this', 'Changes: keep this', 'Explanation of the algorithm stays\nin the docs.',
+    '1. Why does it fail?\n2. Fix it.',
+    'Do X in Y.\n\nReasoning models are slow; use a cheap one.',
+  ]
+  for (const raw of keep) {
+    const r = await (await tuner({ llm: fakeLlm({ answer: raw }) })).tune('rough text')
+    assert.deepEqual(r, { ok: true, text: raw }, JSON.stringify(raw))
+  }
+})
+
+test('a ", because <reason>" or "; because <reason>" after a Suggested default is removed, the closing period stays', async () => {
+  const cases = [
+    ['1. Which db? Suggested default: SQLite, because it needs no server.', '1. Which db? Suggested default: SQLite.'],
+    ['2. Retry? Suggested default: yes; because the tests are flaky.', '2. Retry? Suggested default: yes.'],
+    ['Q? Suggested default: yes, because it is safe', 'Q? Suggested default: yes'],
+    ['Q? Suggested default: A, because X. Another sentence.', 'Q? Suggested default: A. Another sentence.'],
+    ['Q? Suggested default: A, because of e.g. the cost, v1.2 and more.', 'Q? Suggested default: A.'],
+    ['- Q one? Suggested default: A, because x.\n- Q two? Suggested default: B, because y.', '- Q one? Suggested default: A.\n- Q two? Suggested default: B.'],
+    ['Q? Suggested default: A, because X.\nNext line, because Y stays.', 'Q? Suggested default: A.\nNext line, because Y stays.'],
+    ['Should we retry, because of flaky tests? Suggested default: yes.', 'Should we retry, because of flaky tests? Suggested default: yes.'],
+    ['Q? Suggested default: A.\nUse B because it is faster, because it is simpler.', 'Q? Suggested default: A.\nUse B because it is faster, because it is simpler.'],
+    ['Fix the cache, because it is stale.', 'Fix the cache, because it is stale.'],
+    ['Q? Suggested default: A because X.', 'Q? Suggested default: A because X.'],
+  ]
+  for (const [raw, expected] of cases) {
+    const r = await (await tuner({ llm: fakeLlm({ answer: raw }) })).tune('rough text')
+    assert.deepEqual(r, { ok: true, text: expected }, JSON.stringify(raw))
+  }
 })
