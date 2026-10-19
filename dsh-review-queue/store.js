@@ -32,6 +32,29 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
 
   const order = (a, b) => a.createdAt - b.createdAt || a.seq - b.seq
 
+  // Performance: the open items per session, so the per-step lookup of the capture reads one small set instead of cloning every item.
+  // Every status or session change of an item goes through reindex.
+  const openBy = new Map() // sessionId -> Set of the live open items of that session
+  const indexedAs = new Map() // item id -> the sessionId it is indexed under
+
+  function unindex(item) {
+    const was = indexedAs.get(item.id)
+    if (was === undefined) return
+    const set = openBy.get(was)
+    set?.delete(item)
+    if (set && !set.size) openBy.delete(was)
+    indexedAs.delete(item.id)
+  }
+
+  function reindex(item) {
+    unindex(item)
+    if (item.status !== 'open' || typeof item.sessionId !== 'string') return
+    const set = openBy.get(item.sessionId) ?? new Set()
+    set.add(item)
+    openBy.set(item.sessionId, set)
+    indexedAs.set(item.id, item.sessionId)
+  }
+
   // The live items, not copies: for a caller that serialises them at once (the hub's file) and must not mutate them.
   const dump = () => ({ seq, items: [...items.values()] })
 
@@ -43,8 +66,10 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
   /** Replace everything with saved state; items without an id or a type are skipped. */
   function restore(data) {
     items.clear()
+    openBy.clear()
+    indexedAs.clear()
     for (const item of data.items) {
-      if (item && typeof item.id === 'string' && typeof item.type === 'string') items.set(item.id, item)
+      if (item && typeof item.id === 'string' && typeof item.type === 'string') { items.set(item.id, item); reindex(item) }
     }
     seq = Number.isFinite(data.seq) ? data.seq : items.size
   }
@@ -75,7 +100,10 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     /** opts.id / opts.createdAt: an item captured elsewhere keeps its id and time (the hub). */
     add(input, { id, createdAt } = {}) {
       const item = { ...capped(input), id: id ?? uuid(), seq: ++seq, status: 'open', createdAt: createdAt ?? now() }
+      const replaced = items.get(item.id) // an id given twice replaces the earlier item: it must leave the index too
+      if (replaced) unindex(replaced)
       items.set(item.id, item)
+      reindex(item)
       changed()
       return copy(item)
     },
@@ -85,6 +113,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       const item = items.get(id)
       if (!item) return false
       Object.assign(item, capped(patch))
+      reindex(item)
       changed()
       return true
     },
@@ -95,6 +124,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       item.status = 'open'
       delete item.resolvedAt
       delete item.resolution
+      reindex(item)
       changed()
       return true
     },
@@ -105,6 +135,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       item.status = 'resolved'
       item.resolvedAt = now()
       item.resolution = { ...resolution }
+      reindex(item)
       changed()
       return true
     },
@@ -112,7 +143,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       let any = false
       for (const item of items.values()) {
         if (item.sessionId === sessionId && item.status === 'open') {
-          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { ...resolution }; any = true
+          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { ...resolution }; reindex(item); any = true
         }
       }
       if (any) changed()
@@ -123,7 +154,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       let any = false
       for (const item of items.values()) {
         if (item.status === 'open' && !liveIds.has(item.sessionId)) {
-          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { kind: 'session-ended' }; any = true
+          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { kind: 'session-ended' }; reindex(item); any = true
         }
       }
       if (any) changed()
@@ -139,6 +170,11 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       }
       return undefined
     },
+    /**
+     * The LIVE open items of one session, oldest first (no copies: the caller must not mutate them). For the hot per-step check of the
+     * capture; everything else uses list() / get(), which hand out copies.
+     */
+    peekOpen: (sessionId) => [...(openBy.get(sessionId) ?? [])].sort(order),
     list: ({ status } = {}) => [...items.values()].filter((i) => status === undefined || i.status === status).sort(order).map(copy),
     /** Open items, oldest first, each with its position (1 = oldest); resolved items, newest first. */
     snapshot() {

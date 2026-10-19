@@ -323,18 +323,15 @@ test('a permission item keeps the full command and the path of the tool call', a
   assert.equal(store.snapshot().open[1].payload.path, 'D:/x/a.md')
 })
 
-test('a newer result from the same session replaces the older unreviewed ones', async () => {
+test('a newer result from the same session leaves the older unreviewed ones open: nothing is replaced', async () => {
   const { store, fire, agent } = setup()
   await fire('agent/turn-stopping', { agent: agent('a1', 'First result.') })
   await fire('agent/turn-stopping', { agent: agent('a1', 'Second result.') })
   await fire('agent/turn-stopping', { agent: agent('a2', 'Other session.') })
   const snap = store.snapshot()
-  assert.deepEqual(snap.open.map((i) => i.payload.reply), ['Second result.', 'Other session.'])
-  const newest = snap.open.find((i) => i.payload.reply === 'Second result.')
-  assert.equal(newest.earlier, 1)
-  const old = snap.resolved.find((i) => i.payload.reply === 'First result.')
-  assert.deepEqual({ kind: old.resolution.kind, by: old.resolution.by }, { kind: 'superseded', by: 'newer' })
-  assert.equal(snap.open.find((i) => i.payload.reply === 'Other session.').earlier, undefined)
+  assert.deepEqual(snap.open.map((i) => i.payload.reply), ['First result.', 'Second result.', 'Other session.'])
+  assert.equal(snap.resolved.length, 0)
+  assert.ok(snap.open.every((i) => i.earlier === undefined), 'no card claims to replace earlier results')
 })
 
 // ---- RULE 1: done items with nothing for the user are hidden at capture time ----
@@ -395,22 +392,26 @@ test('an item the user already reviewed or replied to before the verdict is left
   assert.equal(st.snapshot().resolved[0].resolution.kind, 'replied')
 })
 
-test('hiding the newer item brings back the older done items it had replaced', async () => {
-  const verdicts = [{ text: 'Needs a decision.', source: 'llm', actionable: true }, { text: 'Renamed.', source: 'llm', actionable: false }]
+test('hiding a done item still brings back older done items that legacy data records as superseded by it', async () => {
+  const logs = []
   const handlers = {}
   const ctx = { on: (n, f) => { handlers[n] = f }, get: () => undefined }
+  let n = 0
   let t = 1000
-  const store = createStore({ now: () => ++t })
-  installCapture(ctx, { store, summarizer: { summarize: async () => verdicts.shift() } })
-  const turn = (reply) => handlers['agent/turn-stopping']({ agent: { id: 'a1', session: { deriveMessages: () => [{ role: 'assistant', content: reply }] } } })
-  await turn('Which port do you want?')
-  await settle()
-  await turn('Done: renamed it, tests pass.')
+  const store = createStore({ now: () => ++t, uuid: () => 'u' + ++n })
+  let verdict
+  const gate = new Promise((resolve) => { verdict = resolve }) // the model's verdict arrives only after the legacy record is in place
+  installCapture(ctx, { store, log: (l) => logs.push(l), summarizer: { summarize: async () => { await gate; return { text: 'Renamed.', source: 'llm', actionable: false } } } })
+  await handlers['agent/turn-stopping']({ agent: { id: 'a1', session: { deriveMessages: () => [{ role: 'assistant', content: 'Done: renamed it, tests pass.' }] } } })
+  const added = store.snapshot().open[0] // the new result: its id is read, not assumed
+  const old = store.add({ type: 'completed', sessionId: 'a1', payload: { reply: 'Which port do you want?' } })
+  assert.equal(store.resolve(old.id, { kind: 'superseded', by: 'newer', newerId: added.id }), true)
+  verdict()
   await settle()
   const snap = store.snapshot()
   assert.deepEqual(snap.open.map((i) => i.payload.reply), ['Which port do you want?'])
-  assert.equal(snap.open[0].earlier, undefined)
   assert.equal(snap.resolved.find((i) => i.payload.reply === 'Done: renamed it, tests pass.').resolution.kind, 'no-action')
+  assert.ok(logs.some((l) => /brought back 1/.test(l)), logs.join('|'))
 })
 
 // ---- RULE 2: a question handled in its own session leaves the list at once ----

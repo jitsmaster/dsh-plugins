@@ -68,6 +68,7 @@ test('stale requests of an earlier run: with no hub, only what was there before 
   await p.inState('standalone')
   assert.equal(p.store.get(stale).status, 'resolved')
   assert.equal(p.store.get(stale).resolution.by, 'restart')
+  assert.ok(readFileSync(join(world.dir, 'review-queue.log'), 'utf8').includes(stale), 'the log names the stale item it cancelled, not only a count')
   const fresh = p.question('s-new')
   assert.equal(p.store.get(fresh.id).status, 'open')
   await new Promise((r) => setTimeout(r, 250)) // later retries do not cancel it

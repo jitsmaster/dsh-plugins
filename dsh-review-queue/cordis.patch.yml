@@ -3,5 +3,6 @@
     - id: review-queue
       name: dsh-review-queue
       # All optional (README, Config): hub (false = standalone), hubPort (47615), hubNode, instanceLabel,
-      # stateDir, ttsClient, voice, sparcCommandPath, dev, pushSubject.
+      # stateDir, ttsClient, voice, sparcCommandPath, dev, pushSubject, questionAutoAnswer (true), questionAutoAnswerLeadSeconds (10), questionWindowSeconds (120), doneKeepPerSession (20).
+      # promptTunePath (~/.claude/skills/prompt-tune/commands/prompt-tune.md; rules of the "+ New todo" Tune prompt button, embedded copy when missing).
       config: {}

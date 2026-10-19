@@ -31,6 +31,7 @@ import { createStoreAdapter } from './agent/store-adapter.js'
 import { wireHub } from './agent/wire.js'
 import { createStore } from './store.js'
 import { createSummarizer } from './summary.js'
+import { createTuner } from './todo-tune.js'
 import { installCapture, cancelStalePending } from './capture.js'
 import { createReviewQueue } from './service.js'
 import { createReader } from './reader.js'
@@ -41,6 +42,8 @@ import { createPushRoutes } from './hub/push-routes.js'
 import { createFileLog } from './filelog.js'
 import { STALE_MS, createDismissals, createPausedTracker, scanSessionLogs } from './paused.js'
 import { createTaskbarBadge } from './taskbar.js'
+import { createDesktop } from './desktop.js'
+import { createPauseRecord, logMtimeOf, mergeCandidates, pausedByUserCandidates, pauseRunningSessions } from './userpause.js'
 
 export const name = 'review-queue'
 
@@ -106,14 +109,23 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     log('hub on')
   } else {
     store = createStore({ io: stateDir ? fileIo(join(stateDir, 'queue.json')) : undefined })
-    cancelStalePending(store) // with the hub on, the hub settles the dead requests of an earlier run (agent/wire.js)
+    cancelStalePending(store, { log }) // with the hub on, the hub settles the dead requests of an earlier run (agent/wire.js)
   }
   store.prune()
 
   const llmService = () => { try { return ctx.get?.('llm') ?? ctx.llm } catch { return undefined } }
   const llm = { listProviders: () => llmService().listProviders(), listModels: (p) => llmService().listModels(p), prepareCall: (...a) => llmService().prepareCall(...a) }
   const summarizer = createSummarizer({ llm, log })
-  const capture = installCapture(ctx, { store, summarizer, log })
+  // The new-todo form's Tune prompt button: the same llm service, rules from config.promptTunePath (default: the prompt-tune skill file, else an embedded copy).
+  const tuner = createTuner({ llm, rulesPath: config.promptTunePath, log })
+  // Question auto-answer: questionAutoAnswer (default on), questionAutoAnswerLeadSeconds (0 = off) and questionWindowSeconds (the window of a question
+  // the model gave no timeout: must match the ask_user_question timeout row). A value that is not a finite number in range is passed on as undefined: capture.js applies its defaults.
+  const msOf = (seconds, zeroOk) => (Number.isFinite(seconds) && (seconds > 0 || (zeroOk && seconds === 0)) ? seconds * 1000 : undefined)
+  const capture = installCapture(ctx, {
+    store, summarizer, log, autoAnswer: config.questionAutoAnswer !== false,
+    autoAnswerLeadMs: msOf(config.questionAutoAnswerLeadSeconds, true), defaultWindowMs: msOf(config.questionWindowSeconds, false),
+    keepDone: config.doneKeepPerSession, // capture.js falls back to its default (20) for anything that is not a positive integer
+  })
   const controllerOf = () => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } }
   // The play button speaks through the sibling dsh-hooks-tts plugin's TTS client (same server, mute switch and stop hotkey).
   const reader = createReader({
@@ -161,14 +173,29 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     || (config.paused !== false && process.env.DSH_RQ_PAUSED !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
   const archivedIds = () => new Set((safe(() => registryOf()?.archivedSessionIds) ?? []).map(String))
   const liveSessionIds = () => new Set([...capture.seenSessionIds(), ...(safe(() => agentsOf()?.list?.()) ?? []).map((a) => a?.id).filter((id) => typeof id === 'string')])
-  const pausedScan = () => (config.pausedScan ?? scanSessionLogs)({ root: join(dshHome, 'sessions'), startedAt, liveIds: liveSessionIds(), skipIds: archivedIds() })
+  // Pause all remembers the sessions it paused (userpause.js) and the scan lists them as paused until they run again.
+  const pauseRecord = createPauseRecord({ io: stateDir ? fileIo(join(stateDir, 'paused-by-user.json')) : undefined })
+  const sessionsRoot = join(dshHome, 'sessions')
+  const pausedScan = async () => {
+    const result = await (config.pausedScan ?? scanSessionLogs)({ root: sessionsRoot, startedAt, liveIds: liveSessionIds(), skipIds: archivedIds() })
+    if (!pauseRecord.size) return result
+    return mergeCandidates(result, await pausedByUserCandidates({ record: pauseRecord, logMtime: (id) => logMtimeOf(sessionsRoot, id), skipIds: archivedIds() }))
+  }
   const paused = pausedWanted
     ? createPausedTracker({
       store, scan: pausedScan, log,
       dismissals: createDismissals({ io: stateDir ? fileIo(join(stateDir, 'paused-dismissed.json')) : undefined }),
     })
     : undefined
-  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, titlesOf, sparcText, log, paused, ...(config.ui ? { ui: config.ui } : {}) })
+  const desktop = config.desktop ?? createDesktop({
+    spawn, script: join(HERE, 'scripts', 'desktop-quit.ps1'), log,
+    powershell: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  })
+  const power = {
+    canQuit: () => desktop.canQuit(), quitSoon: () => desktop.quitSoon(),
+    pauseSessions: () => pauseRunningSessions({ controller: controllerOf(), record: pauseRecord, titlesOf, log }),
+  }
+  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, tuner, titlesOf, sparcText, log, paused, power, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }

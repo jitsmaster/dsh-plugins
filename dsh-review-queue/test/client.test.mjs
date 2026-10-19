@@ -288,3 +288,16 @@ test('only reviewed, replaced and hidden done items can be reopened', () => {
   assert.equal(r('completed', 'replied'), false)
   assert.equal(r('question', 'no-action'), false)
 })
+
+test('resolutionText says a question was answered automatically with the recommended option', () => {
+  assert.equal(T.resolutionText({ type: 'question', resolution: { kind: 'answered', by: 'auto' } }), 'Answered automatically with the recommended option')
+  const withAnswers = T.resolutionText({ type: 'question', resolution: { kind: 'answered', by: 'auto', answers: [{ id: 'q', selected: ['A (Recommended)'] }] } })
+  assert.match(withAnswers, /^Answered automatically with the recommended option/)
+  assert.match(withAnswers, /A \(Recommended\)/)
+  assert.doesNotMatch(withAnswers, /^Answered:/)
+})
+
+test('an automatic answer does not change how the other answered kinds read', () => {
+  assert.equal(T.resolutionText({ resolution: { kind: 'answered', by: 'card', answers: [{ id: 'q', selected: ['B'] }] } }), 'Answered here: B')
+  assert.equal(T.resolutionText({ resolution: { kind: 'answered', by: 'screen' } }), 'Answered on screen')
+})

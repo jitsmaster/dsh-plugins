@@ -25,6 +25,19 @@ test('cancelStalePending without a scope is unchanged: every open question and p
   assert.deepEqual([store.get(a.id).status, store.get(b.id).status], ['resolved', 'resolved'])
 })
 
+test('cancelStalePending logs the id and type of every item it ends, and nothing for the ones it leaves', () => {
+  const logs = []
+  const store = createStore()
+  const q = store.add({ type: 'question', sessionId: 's1', payload: {} })
+  const p = store.add({ type: 'permission', sessionId: 's2', payload: {} })
+  const d = store.add({ type: 'completed', sessionId: 's3', payload: {} })
+  assert.equal(cancelStalePending(store, { log: (line) => logs.push(line) }), 2)
+  assert.equal(logs.length, 2, logs.join(' | '))
+  assert.ok(logs.some((l) => l.includes(q.id) && l.includes('question')), logs.join(' | '))
+  assert.ok(logs.some((l) => l.includes(p.id) && l.includes('permission')), logs.join(' | '))
+  assert.ok(!logs.some((l) => l.includes(d.id)))
+})
+
 test('a scoped todo that was starting becomes failed, one outside the scope is left alone', () => {
   const store = createStore()
   const old = store.add({ type: 'todo', state: 'starting', payload: {} })

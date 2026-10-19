@@ -16,7 +16,7 @@ const cand = (id, over = {}) => ({
 })
 const memIo = () => { const io = { text: undefined, read: () => io.text, write: (t) => { io.text = t } }; return io }
 
-function setup({ candidates = [], controller, io = memIo(), now = () => 5000, retentionMs } = {}) {
+function setup({ candidates = [], controller, io = memIo(), now = () => 5000, retentionMs, log } = {}) {
   let n = 0
   const store = createStore({ uuid: () => 'i' + ++n })
   const scans = { result: { ok: true, candidates }, calls: 0, gate: undefined }
@@ -24,7 +24,7 @@ function setup({ candidates = [], controller, io = memIo(), now = () => 5000, re
   const tracker = createPausedTracker({ store, dismissals, now, scan: async () => { scans.calls++; await scans.gate; return scans.result } })
   const prompts = []
   const ctl = controller ?? { prompt: async (request, signal) => { prompts.push({ request, signal }) } }
-  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => ctl, speaker: { speak: () => ({ ok: true }), stop() {} }, paused: tracker })
+  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => ctl, speaker: { speak: () => ({ ok: true }), stop() {} }, paused: tracker, log })
   return { store, queue, tracker, dismissals, scans, prompts, io, now }
 }
 const openPaused = (store) => store.snapshot().open.filter((i) => i.type === 'paused')
@@ -160,6 +160,15 @@ test('Resume of a session DSH no longer has ends the item (session-gone); anothe
   const id2 = openPaused(busy.store)[0].id
   assert.deepEqual(await busy.queue.resumePaused(id2), { ok: false, error: 'writer held' })
   assert.equal(busy.store.get(id2).status, 'open')
+})
+
+test('Resume of a session DSH no longer has logs the item it closed as session-ended', async () => {
+  const logs = []
+  const gone = setup({ candidates: [cand('s1')], log: (l) => logs.push(l), controller: { prompt: async () => { throw Object.assign(new Error('nope'), { code: 'session/not-found' }) } } })
+  await gone.tracker.scan()
+  const id = openPaused(gone.store)[0].id
+  await gone.queue.resumePaused(id)
+  assert.ok(logs.some((l) => l.includes(id) && l.includes('session-ended')), logs.join(' | '))
 })
 
 test('Dismiss refuses what is not an open paused item', async () => {

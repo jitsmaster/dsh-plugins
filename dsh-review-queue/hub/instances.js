@@ -58,11 +58,18 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     keyToId.set(inst.key, inst.id)
   }
 
+  /** The hub ends an item by itself: it says which and why in its log. */
+  function endItem(item, reason) {
+    if (!store.resolve(item.id, { kind: 'session-ended', by: 'hub', reason })) return false
+    log('session-ended ' + item.type + ' ' + item.id + ' (' + reason + ')')
+    return true
+  }
+
   /** Questions and permissions of an owner whose process is gone can never be answered. Idempotent. */
   function settle(inst, reason) {
     let ended = 0
     for (const item of store.list({ status: 'open' })) {
-      if (item.owner === inst.id && ENDED.has(item.type) && store.resolve(item.id, { kind: 'session-ended', by: 'hub', reason })) ended++
+      if (item.owner === inst.id && ENDED.has(item.type) && endItem(item, reason)) ended++
     }
     return ended
   }
@@ -110,7 +117,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     for (const cur of store.list({ status: 'open' })) {
       if (cur.owner !== inst.id || mentioned.has(cur.id)) continue
       if (inst.handed.has(cur.id)) { handOver(inst, cur, out); continue } // the app never got it (a lost answer): hand it over again
-      if (store.resolve(cur.id, { kind: 'session-ended', by: 'hub', reason: 'not-in-sync' })) out.ended++
+      if (endItem(cur, 'not-in-sync')) out.ended++
     }
     inst.sessionIds = strings(sync.sessionIds)
     inst.workspaces = cleanWorkspaces(sync.workspaces)
@@ -150,7 +157,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
   }
 
   function expireOrphans(inst) {
-    for (const item of store.list({ status: 'open' })) if (item.owner === inst.id) store.resolve(item.id, { kind: 'session-ended', by: 'hub', reason: 'orphan-expired' })
+    for (const item of store.list({ status: 'open' })) if (item.owner === inst.id) endItem(item, 'orphan-expired')
   }
 
   const instances = {

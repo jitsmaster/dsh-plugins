@@ -7,10 +7,13 @@
 import { recommendedOf, lastParagraph, cleanText } from './speech.js'
 import { toolDetail } from './risk.js'
 import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
+import { DEFAULT_AUTO_ANSWER_LEAD_MS, autoAnswerText, recommendedAnswers, shownLabel } from './autoanswer.js'
 
 const TOOL_ARG_KEYS = ['command', 'file_path', 'path', 'url', 'pattern', 'query']
 const MAX_NOTES = 200
 const MAX_SEEN = 500
+/** The most open done cards one session keeps: a session that never gets a human message (schedule ticks, goal rounds) would pile them up. */
+export const DEFAULT_KEEP_DONE = 20
 
 /** One short line saying what a tool call will do: "shell: git push", "write: D:/a.md", or just the tool name. */
 export function summarizeTool(name, args) {
@@ -32,14 +35,19 @@ const textOf = (content) => {
 const MAX_REQUEST = 2000
 
 /**
- * How long DSH waits for an answer when the model passes no timeout (tool-ask-user's Config.timeout, 120 s). The tool's config is
- * not exposed to other plugins, so this is only used to recognise a timeout after the fact (see classifyClose), never to set an expiry.
+ * How long DSH waits for an answer when the model passes no timeout: the ask_user_question row's configured timeout (tool-ask-user
+ * Config.timeout, 120 s unless changed). The tool's config is not exposed to other plugins, so this default is only a guess that the
+ * installCapture option defaultWindowMs (config questionWindowSeconds) overrides for the auto-answer timer; classifyClose uses it
+ * to recognise a timeout after the fact. It never sets an item's expiry.
  */
 const DEFAULT_ASK_WINDOW_MS = 120_000
 const WINDOW_SLACK_BEFORE_MS = 3_000
 const WINDOW_SLACK_AFTER_MS = 5_000
 const SYSTEM_CODE = /^(E[A-Z0-9]+|UND_ERR_\w+)$/ // ETIMEDOUT and friends: a network timeout is not the question's timeout
 const PAIR_WINDOW_MS = 10 * 60 * 1000
+
+/** A value for a one-line log entry: whitespace collapsed, capped. */
+const oneLine = (value) => String(value ?? '').replace(/\s+/g, ' ').slice(0, 120)
 
 const stringOf = (value) => (typeof value === 'string' ? value : undefined)
 const codeOf = (e) => stringOf(e?.code)
@@ -113,10 +121,32 @@ function isDefaultAnswer(questions, clean) {
   })
 }
 
-export function installCapture(ctx, { store, summarizer, log = () => {}, now = Date.now }) {
+/**
+ * How long the auto-answer waits before it acts on a question, as the window of its wait in ms; undefined when it must not act: the request
+ * is not a timed wait (legacy blocking ask, indefinite card-keyed ask), the model passed timeout -1 (no deadline), or a question carries a
+ * presentation intent (plan review). A positive timeout the model passed is the window; with none, the configured default window.
+ */
+function answerWindowMs(req, seconds, defaultWindowMs) {
+  if (req.wait?.timed !== true || seconds === -1) return undefined
+  if ((req.questions ?? []).some((q) => q?.intent !== undefined)) return undefined
+  return seconds > 0 ? seconds * 1000 : defaultWindowMs
+}
+
+/**
+ * autoAnswer / autoAnswerLeadMs: a pending TIMED question (wait.timed) whose every sub-question marks a recommended option is answered with
+ * those options this long before its deadline; 0 or autoAnswer false leaves every question to the user. The deadline is the ask's own
+ * positive timeout, else defaultWindowMs (the ask_user_question row's timeout: the plugin cannot read it, so config questionWindowSeconds
+ * must match it). Known limitation: the plugin cannot see the card's "Take time" or an editing hold, so it may answer while the user is
+ * still working on the card.
+ * keepDone: how many open done cards ('completed') one session keeps (default 20, an invalid value falls back to it); past it the oldest is
+ * resolved as 'trimmed' and logged.
+ */
+export function installCapture(ctx, { store, summarizer, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE }) {
+  const keep = Number.isInteger(keepDone) && keepDone > 0 ? keepDone : DEFAULT_KEEP_DONE
   const children = new Set()
+  const autoTimers = new Set() // pending auto-answer timers, cleared when their question ends and on dispose
   const pending = new Map() // item id -> { type, ... }
-  const timeouts = boundedMap(MAX_NOTES) // question callId -> seconds
+  const timeouts = boundedMap(MAX_NOTES) // question callId -> the ask's timeout in seconds, or -1 (no deadline)
   const toolNotes = boundedMap(MAX_NOTES) // tool callId -> summary line
   const controller = new AbortController()
   const handlers = {}
@@ -141,8 +171,25 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     try { return ctx.get?.('sessionTitle')?.get(agent?.session)?.title } catch { return undefined }
   }
   const baseOf = (agent) => ({ sessionId: agent.id, sessionTitle: titleOf(agent) ?? agent.devTitle ?? '', workspace: agent.session?.header?.cwd })
+  const nameOf = (item) => item?.title || item?.sessionTitle || item?.id // how a log line names an item
   const guard = (fn, fallback) => {
     try { return fn() } catch (error) { log('capture: ' + (error?.message ?? error)); return fallback }
+  }
+  // Performance: the open items of one session without copying the whole store (every step of every session asks); a store without peekOpen falls back to list().
+  const openOf = (sessionId) => (typeof store.peekOpen === 'function' ? store.peekOpen(sessionId) : store.list({ status: 'open' }).filter((i) => i.sessionId === sessionId))
+
+  /**
+   * The session keeps at most `limit` open done cards (default `keep`): the oldest beyond that are resolved as 'trimmed' (with the limit that
+   * hid them), each with a log line. Only open cards count, so a card already hidden as no-action takes no place. Memory: the list cannot grow
+   * without bound.
+   */
+  function trimDone(sessionId, limit = keep) {
+    guard(() => {
+      const cards = openOf(sessionId).filter((i) => i.type === 'completed')
+      for (const old of cards.slice(0, Math.max(0, cards.length - limit))) {
+        if (store.resolve(old.id, { kind: 'trimmed', by: 'auto', limit })) log('capture: trimmed done item "' + nameOf(old) + '" (' + old.id + ') of session ' + sessionId + ': the session has more than ' + limit + ' open done items')
+      }
+    })
   }
 
   on('subagent/start', (info) => { if (info?.id) children.add(info.id) })
@@ -165,7 +212,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
   on('tools/pre-execute', async (exec, next) => {
     guard(() => {
       if (exec?.name === 'ask_user_question' && exec.callId !== undefined && exec.agent?.id !== undefined) noteAsk(exec.agent.id, exec.callId)
-      if (exec?.name === 'ask_user_question' && Number.isInteger(exec.arguments?.timeout) && exec.arguments.timeout > 0) timeouts.set(exec.callId, exec.arguments.timeout)
+      if (exec?.name === 'ask_user_question' && Number.isInteger(exec.arguments?.timeout) && (exec.arguments.timeout > 0 || exec.arguments.timeout === -1)) timeouts.set(exec.callId, exec.arguments.timeout)
       else if (exec?.callId) {
         const path = [exec.arguments?.file_path, exec.arguments?.path].find((v) => typeof v === 'string' && v)
         toolNotes.set(exec.callId, { summary: summarizeTool(exec.name, exec.arguments), detail: toolDetail(exec.name, exec.arguments), path })
@@ -185,17 +232,20 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     try {
       item = store.add({
         type: 'question', ...baseOf(agent), key: callId,
-        ...(seconds ? { expiresAt: startedAt + seconds * 1000 } : {}),
+        ...(seconds > 0 ? { expiresAt: startedAt + seconds * 1000 } : {}),
         payload: { questions: req.questions ?? [], callId },
       })
     } catch (error) { log('capture: ' + error); return next() }
     if (callId !== undefined) timeouts.delete(callId)
     return new Promise((resolve, reject) => {
       let done = false
+      let timer
+      const clearAuto = () => { clearTimeout(timer); autoTimers.delete(timer) }
       const finish = (fn) => {
         if (done) return false
         done = true
         pending.delete(item.id)
+        clearAuto()
         req.signal?.removeEventListener('abort', onAbort)
         fn()
         return true
@@ -204,8 +254,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       const closeOut = (reason, source) => guard(() => {
         const elapsedMs = now() - startedAt
         const verdict = classifyClose(reason, { source, elapsedMs, expiresAt: item.expiresAt, now: now() })
-        const text = (v) => String(v ?? '').replace(/\s+/g, ' ').slice(0, 120)
-        log('capture: question ' + item.id + ' ended without an answer: name=' + text(reason?.name) + ' code=' + text(reason?.code) + ' message="' + text(messageOf(reason)) + '" after ' + Math.round(elapsedMs / 1000) + 's via ' + source + ' -> ' + verdict.kind + ' (' + verdict.basis + ')')
+        log('capture: question ' + item.id + ' ended without an answer: name=' + oneLine(reason?.name) + ' code=' + oneLine(reason?.code) + ' message="' + oneLine(messageOf(reason)) + '" after ' + Math.round(elapsedMs / 1000) + 's via ' + source + ' -> ' + verdict.kind + ' (' + verdict.basis + ')')
         if (verdict.kind === 'timeout') store.resolve(item.id, { kind: 'expired', assumed: (req.questions ?? []).map(recommendedOf).filter(Boolean) })
         else if (verdict.kind === 'cancelled') store.resolve(item.id, { kind: 'cancelled' })
         else store.update(item.id, { detached: true })
@@ -213,12 +262,20 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       const onAbort = () => finish(() => { const reason = req.signal.reason; closeOut(reason, 'abort'); reject(reason ?? new Error('aborted')) })
       pending.set(item.id, {
         type: 'question', questions: req.questions ?? [],
-        answer: (answers) => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by: 'card', answers })); resolve({ answers }) }),
+        answer: (answers, by = 'card') => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by, answers })); resolve({ answers }) }),
         // The session handled it (a reply there, the call returned): the item leaves now, the request itself is still DSH's to settle.
-        handledElsewhere: (resolution) => { pending.delete(item.id); return guard(() => store.resolve(item.id, resolution), false) },
+        handledElsewhere: (resolution) => { pending.delete(item.id); clearAuto(); return guard(() => store.resolve(item.id, resolution), false) },
       })
       if (req.signal?.aborted) return void onAbort()
       req.signal?.addEventListener('abort', onAbort, { once: true })
+      // Shortly before the question would time out, the recommended options are taken for the user (like a card answer), and a done card says so.
+      const windowMs = autoAnswer && autoAnswerLeadMs > 0 ? answerWindowMs(req, seconds, defaultWindowMs) : undefined
+      const delay = windowMs === undefined ? 0 : startedAt + windowMs - autoAnswerLeadMs - now()
+      if (delay > 0) {
+        timer = setTimeout(() => autoAnswerQuestion(item, req.questions ?? []), delay)
+        timer.unref?.()
+        autoTimers.add(timer)
+      }
       Promise.resolve().then(() => next()).then(
         (result) => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by: 'screen', answers: result?.answers })); resolve(result) }),
         (error) => finish(() => { closeOut(error, 'rejection'); reject(error) }),
@@ -249,7 +306,8 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
         return true
       }
       const kindOf = (outcome) => (outcome === 'rejected' ? 'denied' : String(outcome).startsWith('allowed') ? 'approved' : 'cancelled')
-      const onAbort = () => finish(() => { guard(() => store.resolve(item.id, { kind: 'cancelled' })); resolve('cancelled') })
+      const cancel = (why) => guard(() => { store.resolve(item.id, { kind: 'cancelled' }); log('capture: permission ' + item.id + ' cancelled: ' + why) })
+      const onAbort = () => finish(() => { cancel('the request was aborted'); resolve('cancelled') })
       pending.set(item.id, {
         type: 'permission',
         decide: (decision) => finish(() => {
@@ -261,7 +319,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       req.signal?.addEventListener('abort', onAbort, { once: true })
       Promise.resolve().then(() => next()).then(
         (outcome) => finish(() => { guard(() => store.resolve(item.id, { kind: kindOf(outcome), by: 'screen' })); resolve(outcome) }),
-        (error) => finish(() => { guard(() => store.resolve(item.id, { kind: 'cancelled' })); reject(error) }),
+        (error) => finish(() => { cancel('the request failed: ' + oneLine(messageOf(error))); reject(error) }),
       )
     })
   })
@@ -277,31 +335,30 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     if (!reply) return
     const item = guard(() => store.add({ type: 'completed', ...baseOf(agent), payload: { reply, ...(request ? { request } : {}) } }))
     if (!item) return
-    // A newer result from the same session replaces its older unreviewed ones (they stay in Resolved, and can be reopened).
-    const older = guard(() => store.list({ status: 'open' }).filter((o) => o.type === 'completed' && o.sessionId === agent.id && o.id !== item.id), [])
-    let replaced = 0
-    for (const o of older) if (guard(() => store.resolve(o.id, { kind: 'superseded', by: 'newer', newerId: item.id }), false)) replaced++
-    if (replaced) guard(() => store.update(item.id, { earlier: replaced }))
+    // Memory: the cap proper applies after the summarizer's verdict (a card hidden as no-action must not push a real one out); until then
+    // only this hard upper bound keeps a verdict that never comes from piling cards up.
+    trimDone(item.sessionId, keep * 2)
     // The card is usable at once with the fallback; the model summary replaces it when it arrives.
     guard(() => store.update(item.id, { summary: lastParagraph(reply), summarySource: 'fallback' }))
     void summarizer.summarize(reply, { signal: controller.signal, request }).then((r) => {
       if (r?.text) guard(() => store.update(item.id, { summary: r.text, summarySource: r.source, ...(r.title ? { title: r.title } : {}) }))
       if (typeof r?.actionable === 'boolean') guard(() => store.update(item.id, { actionable: r.actionable }))
       if (r?.actionable === false) hideNoAction(item.id)
-    }, () => {})
+      trimDone(item.sessionId) // the verdict is in: count the cards still open
+    }, () => trimDone(item.sessionId)) // a failed summary keeps the card with its fallback summary, so the cap applies to it
   })
 
   /**
    * Rule: a finished message with nothing for the user does not stay in the list. It is resolved (kind 'no-action'), so it
    * is still found under Resolved with its summary, can be reopened, and a log line names it. Only while it is still open:
-   * an item the user already reviewed or replied to keeps that resolution. Items it had replaced come back, because the
-   * older message may be the one that needs the user.
+   * an item the user already reviewed or replied to keeps that resolution. Items that older data records as replaced by it come
+   * back, because the older message may be the one that needs the user (nothing is replaced by a newer result any more).
    */
   function hideNoAction(id) {
     guard(() => {
       const item = store.get(id)
       if (!store.resolve(id, { kind: 'no-action', by: 'auto' })) return
-      log('capture: hid done item "' + (item?.title || item?.sessionTitle || id) + '" (no action needed): ' + String(item?.summary ?? '').slice(0, 160))
+      log('capture: hid done item "' + nameOf(item) + '" (no action needed): ' + String(item?.summary ?? '').slice(0, 160))
       let back = 0
       for (const o of store.list({ status: 'resolved' })) {
         if (o.type === 'completed' && o.sessionId === item.sessionId && o.resolution?.kind === 'superseded' && o.resolution.newerId === id && store.reopen(o.id)) back++
@@ -310,18 +367,22 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     })
   }
 
-  // The user typed into the session again: its finished-work cards have been answered.
+  // The user typed into the session again: its finished-work cards have been answered. Only a message the user wrote counts: injected
+  // context (background jobs, reminders, goal rounds) and a reply to a question do not.
   on('agent/pre-step', async ({ agent, messages } = {}, next) => {
     guard(() => {
       if (!agent || !messages?.length) return
-      for (const item of store.list({ status: 'open' })) {
-        if (item.type === 'completed' && item.sessionId === agent.id) store.resolve(item.id, { kind: 'replied', by: 'session' })
-      }
+      const human = messages.some(isHumanMessage)
+      const open = openOf(agent.id)
       // A question of that session the user answered there: a reply to it, or a plain message of their own.
-      for (const item of store.list({ status: 'open' })) {
-        if (item.type !== 'question' || item.sessionId !== agent.id) continue
-        const answered = messages.some((m) => (m?.source?.kind === 'user-question-reply' ? m.source.callId === item.key : isHumanMessage(m)))
-        if (answered && !detachedInFlight.has(item.id)) closeOpen(item.id, { kind: 'answered', by: 'session' })
+      for (const item of open) {
+        if (item.type !== 'question') continue
+        const answered = human || messages.some((m) => m?.source?.kind === 'user-question-reply' && m.source.callId === item.key)
+        if (answered && !detachedInFlight.has(item.id)) closeOpen(item.id, { kind: 'answered', by: 'session' }, 'the user answered in the session')
+      }
+      if (!human) return
+      for (const item of open) {
+        if (item.type === 'completed' && store.resolve(item.id, { kind: 'replied', by: 'session' })) log('capture: done item "' + nameOf(item) + '" closed: the user replied in the session')
       }
     })
     return next()
@@ -340,9 +401,31 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
   }, { global: true })
 
   /** Close an open question item from outside its request: through its pending entry when it has one, else (detached) directly. */
-  function closeOpen(id, resolution) {
+  function closeOpen(id, resolution, why) {
     const entry = pending.get(id)
-    return entry ? entry.handledElsewhere(resolution) : guard(() => store.resolve(id, resolution), false)
+    const closed = entry ? entry.handledElsewhere(resolution) : guard(() => store.resolve(id, resolution), false)
+    if (closed) log('capture: question ' + id + ' closed by session: ' + why)
+    return closed
+  }
+
+  /**
+   * The recommended options, taken shortly before the question's deadline: settles the request like a card answer, then adds a done card
+   * that says what was decided (not summarized, never hidden as no-action; the user's next message in the session closes it).
+   */
+  function autoAnswerQuestion(item, questions) {
+    guard(() => {
+      const answers = recommendedAnswers(questions)
+      const clean = answers && cleanAnswers(questions, answers)
+      if (!clean) return void log('capture: question ' + item.id + ' not auto-answered: no usable recommended answer for it')
+      if (!pending.get(item.id)?.answer(clean, 'auto')) return void log('capture: question ' + item.id + ' not auto-answered: its request is no longer pending')
+      log('capture: question ' + item.id + ' auto-answered with the recommended option: ' + clean.map((a) => a.selected.map(shownLabel).join(', ')).join(' | '))
+      const text = autoAnswerText(questions, clean)
+      store.add({
+        type: 'completed', sessionId: item.sessionId, sessionTitle: item.sessionTitle, workspace: item.workspace, title: 'Question auto-answered',
+        summary: text, summarySource: 'auto', actionable: true, payload: { reply: text },
+      })
+      trimDone(item.sessionId)
+    })
   }
 
   /**
@@ -385,10 +468,10 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     if (!item) return
     if (item.status === 'open') {
       if (result && isPendingResult(result.content)) {
-        closeOpen(item.id, { kind: 'expired', assumed: (item.payload?.questions ?? []).map(recommendedOf).filter(Boolean) })
+        closeOpen(item.id, { kind: 'expired', assumed: (item.payload?.questions ?? []).map(recommendedOf).filter(Boolean) }, 'its wait ran out and the assistant carried on')
       } else {
         const a = answers?.length ? answers : replyAnswers(result?.content)
-        closeOpen(item.id, { kind: 'answered', by: 'session', ...(a?.length ? { answers: a } : {}) })
+        closeOpen(item.id, { kind: 'answered', by: 'session', ...(a?.length ? { answers: a } : {}) }, 'answered in the session')
       }
     } else if (answers) {
       store.update(item.id, { resolution: { ...item.resolution, kind: 'answered', by: 'session', ...(answers.length ? { answers } : {}) } })
@@ -399,7 +482,8 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     if (!agent) return
     children.delete(agent.id)
     seen.delete(agent.id)
-    guard(() => store.resolveSession(agent.id, { kind: 'session-ended' }))
+    const open = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === agent.id).length, 0)
+    if (guard(() => store.resolveSession(agent.id, { kind: 'session-ended' }), false)) log('capture: session-ended: closed ' + open + ' open item(s) of session ' + agent.id)
   })
 
   return {
@@ -457,7 +541,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     seenSessionIds: () => [...seen],
     /** The registered event handlers by name (the dev route drives the real code path through them). */
     handlers,
-    dispose() { controller.abort() },
+    dispose() { controller.abort(); autoTimers.forEach(clearTimeout); autoTimers.clear() },
   }
 }
 
@@ -465,9 +549,9 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
  * After a restart no request is waiting any more: open questions and permission requests can no longer be answered
  * from here, so they leave the queue. Finished-work and merged-PR items stay. A todo stays too; one that was being started
  * is a failed one now (Retry starts it, reusing a session that was already created). With { only: Set<id> } just those items
- * are looked at.
+ * are looked at; with { log } every item it cancels is named there.
  */
-export function cancelStalePending(store, { only } = {}) {
+export function cancelStalePending(store, { only, log } = {}) {
   let n = 0
   for (const item of store.list({ status: 'open' })) {
     if (only && !only.has(item.id)) continue // only: the ids that existed before this process (an item of this process has a live request)
@@ -477,7 +561,10 @@ export function cancelStalePending(store, { only } = {}) {
       continue
     }
     if (item.type === 'paused') continue // the next scan of the session logs decides whether it is still cut off
-    if (item.type !== 'completed' && item.type !== 'pr-merged' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) n++
+    if (item.type !== 'completed' && item.type !== 'pr-merged' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) {
+      n++
+      log?.('capture: ' + item.type + ' ' + item.id + ' cancelled: its request died with the earlier process')
+    }
   }
   return n
 }

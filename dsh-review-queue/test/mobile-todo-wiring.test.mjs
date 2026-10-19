@@ -110,8 +110,8 @@ test('the new-todo form reloads the workspaces on a failure and says why when no
 
 test('api.js keeps the todo draft in state across screens and clears it after a successful start', () => {
   assert.match(api, /import\s*\{[^}]*\bemptyTodoDraft\b[^}]*\}\s*from\s*['"]\.\/todo-form\.js['"]/)
-  assert.match(api, /todoDraft:\s*emptyTodoDraft\(\)/, 'initial state')
-  assert.ok((api.match(/emptyTodoDraft\(\)/g) || []).length >= 2, 'reset to an empty draft somewhere besides the initial state')
+  assert.match(api, /todoDraft:\s*loadTodoDraft\(storage\)/, 'initial state: the saved draft (an empty one when nothing was saved, see mobile-todo-draft.test.mjs)')
+  assert.match(api, /todoDraft:\s*emptyTodoDraft\(\)/, 'reset to an empty draft after a successful start')
   assert.match(views, /todoDraft/)
 })
 

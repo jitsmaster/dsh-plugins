@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { spokenFor, titleFor, fullTextFor, chunkForSpeech } from './speech.js'
 import { riskOf } from './risk.js'
-import { createTodos } from './todo.js'
+import { createTodos, MAX_TODO } from './todo.js'
 import { RESUME_PROMPT } from './paused.js'
 
 const MAX_REPLY = 4000
@@ -18,9 +18,10 @@ const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, titlesOf, sparcText, suggestTimeoutMs, log, paused, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, tuner, titlesOf, sparcText, suggestTimeoutMs, log, paused, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log })
   const resuming = new Set() // paused items whose resume prompt is on its way
+  let tuning = false // a Tune prompt call is on its way: one at a time per service (each is a paid model call)
   let focusId
   let reading // id of the item being read aloud
   let readOpen = false // the item being read was in the queue when reading started
@@ -53,7 +54,7 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
     let archived
     try { archived = new Set((registryOf()?.archivedSessionIds ?? []).map(String)) } catch { return }
     if (!archived.size) return
-    for (const item of store.snapshot().open) if (item.type === 'pr-merged' && archived.has(String(item.sessionId))) store.resolve(item.id, { kind: 'archived', by: 'elsewhere' })
+    for (const item of store.snapshot().open) if (item.type === 'pr-merged' && archived.has(String(item.sessionId)) && store.resolve(item.id, { kind: 'archived', by: 'elsewhere' })) log?.('service: merged-PR item ' + item.id + ' closed: its session was archived elsewhere')
   }
 
   return {
@@ -117,7 +118,7 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       try {
         await registry.archiveSession(item.sessionId, { stopActivity: true })
       } catch (error) {
-        if (error?.name === 'WorkspaceUnknownSessionError') { store.resolve(id, { kind: 'session-ended' }); return { ok: false, error: 'no-session' } }
+        if (error?.name === 'WorkspaceUnknownSessionError') { store.resolve(id, { kind: 'session-ended' }); log?.('service: item ' + id + ' closed as session-ended: DSH does not know its session (archive)'); return { ok: false, error: 'no-session' } }
         return { ok: false, error: String(error?.message ?? error) }
       }
       store.resolve(id, { kind: 'archived', by: 'card' })
@@ -139,7 +140,7 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
         await controller.prompt(request, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
       } catch (error) {
         // DSH no longer has the session (deleted): nothing to resume.
-        if (error?.code === 'session/not-found') { store.resolve(id, { kind: 'session-ended' }); return { ok: false, error: 'session-gone' } }
+        if (error?.code === 'session/not-found') { store.resolve(id, { kind: 'session-ended' }); log?.('service: item ' + id + ' closed as session-ended: DSH no longer has its session (resume)'); return { ok: false, error: 'session-gone' } }
         return { ok: false, error: String(error?.message ?? error) }
       } finally { resuming.delete(id) }
       paused?.markHandled(item)
@@ -157,11 +158,47 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
     },
     /** Looks for sessions cut off by a restart now (the agent also does at startup): { ok, added, updated, resolved, total }. */
     scanPaused: async () => (paused ? paused.scan() : { ok: false, error: 'no-scanner' }),
+    /**
+     * Pause all and quit: cancels every running top-level session, remembers them (they come back as paused items after the restart) and closes the DSH
+     * desktop app. Refused, with nothing paused, when there is no desktop to close. power = { canQuit, pauseSessions, quitSoon } (userpause.js, desktop.js).
+     * -> { ok: true, paused, quitting: true } | { ok: false, error }
+     */
+    async pauseAll() {
+      if (typeof power?.pauseSessions !== 'function') return { ok: false, error: 'no-power' }
+      if (!(await power.canQuit())) return { ok: false, error: 'no-desktop' }
+      let result
+      try { result = await power.pauseSessions() } catch (error) { return { ok: false, error: String(error?.message ?? error).slice(0, 200) } }
+      if (!result?.ok) return { ok: false, error: result?.error ?? 'failed' }
+      try { await paused?.scan() } catch { /* the next scan after the restart lists them */ }
+      power.quitSoon()
+      return { ok: true, paused: result.paused, quitting: true }
+    },
+    /** Quit: closes the DSH desktop app (the Close menu). Running sessions are not paused first; the paused scan lists the cut-off ones after the restart. */
+    async quitApp() {
+      if (typeof power?.quitSoon !== 'function') return { ok: false, error: 'no-power' }
+      if (!(await power.canQuit())) return { ok: false, error: 'no-desktop' }
+      power.quitSoon()
+      return { ok: true, quitting: true }
+    },
     /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc? }) -> { ok, id, state }; confirmTodo(id, { workspaceId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). */
     addTodo: (text, opts) => todos.add(text, opts),
     confirmTodo: (id, opts) => todos.confirm(String(id), opts),
     cancelTodo: (id) => todos.cancel(String(id)),
     todoIdle: () => todos.idle(),
+    /** The "Tune prompt" button: the text rewritten with the prompt-tune rules, { ok, text } | { ok: false, error }. Adds nothing to the list; this app's own model, so never forwarded to the hub. */
+    async tuneTodo(text) {
+      const body = typeof text === 'string' ? text.trim() : ''
+      if (!body) return { ok: false, error: 'empty' }
+      if (body.length > MAX_TODO) return { ok: false, error: 'too-long' }
+      if (typeof tuner?.tune !== 'function') return { ok: false, error: 'no model available' }
+      if (tuning) return { ok: false, error: 'busy' }
+      tuning = true
+      try { return await tuner.tune(body) } catch (error) {
+        // Security: the provider's message can carry endpoints or key fragments; the client gets a generic text, the detail only the log.
+        log?.('service: tune failed: ' + String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 300))
+        return { ok: false, error: 'LLM error' }
+      } finally { tuning = false }
+    },
     workspaces: () => todos.workspaces(),
     /** Open items only: how many wait in total and per type. */
     count() {
@@ -222,12 +259,12 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       if (was !== undefined) emit()
       return { ok: true }
     },
-    /** A misclicked Reviewed, a result replaced by a newer one, or one hidden as needing no action goes back into the queue. */
+    /** A misclicked Reviewed, a result replaced by a newer one, or one hidden as needing no action (or trimmed by the per-session cap) goes back into the queue. */
     reopen(id) {
       const item = store.get(id)
       if (!item) return { ok: false, error: 'not-found' }
       const kind = item.resolution?.kind
-      if (item.type !== 'completed' || item.status !== 'resolved' || (kind !== 'reviewed' && kind !== 'superseded' && kind !== 'no-action')) return { ok: false, error: 'not-reopenable' }
+      if (item.type !== 'completed' || item.status !== 'resolved' || (kind !== 'reviewed' && kind !== 'superseded' && kind !== 'no-action' && kind !== 'trimmed')) return { ok: false, error: 'not-reopenable' }
       return store.reopen(id) ? { ok: true } : { ok: false, error: 'not-reopenable' }
     },
     /** Approve this request and every identical open one of the same session; never a risky one. */
