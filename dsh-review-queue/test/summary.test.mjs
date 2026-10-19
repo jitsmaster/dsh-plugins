@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createSummarizer, fallbackSummary } from '../summary.js'
+import { createSummarizer } from '../summary.js'
 import { needsUser } from '../actionable.js'
 
 function fakeLlm({ models = [{ id: 'big-model' }, { id: 'claude-haiku-x' }], reply = 'Moved auth out. Tests pass.', fail, hang, seen = {} } = {}) {
@@ -220,20 +220,11 @@ test('the prompt asks for the sentences the user must act on in <u>**...**</u>',
 test('a summary keeps the model\'s <u>**...**</u> action sentence and strips other markdown', async () => {
   const reply = 'TITLE: Deploy fix\nACTIONABLE: yes\nSUMMARY: Fixed the **deploy**. <u>**Restart the service and try it.**</u>'
   const r = await createSummarizer({ llm: fakeLlm({ reply }) }).summarize('Fixed it. Please restart.')
-  assert.equal(r.text, 'Fixed the deploy.\n\n<u>**Restart the service and try it.**</u>')
+  assert.equal(r.text, 'Fixed the deploy. <u>**Restart the service and try it.**</u>')
 })
 
 test('the fallback keeps the action sentence of the reply\'s last paragraph', async () => {
   const r = await createSummarizer({ llm: fakeLlm({ fail: true }) }).summarize('Did a lot.\n\nAll set. <u>**Which option do you want?**</u>')
   assert.equal(r.source, 'fallback')
-  assert.equal(r.text, 'All set.\n\n<u>**Which option do you want?**</u>')
-})
-
-test('the action sentences always form their own last paragraph, in the model summary and the fallback', async () => {
-  const reply = 'SUMMARY: <u>**Which option do you want?**</u> Both layouts work. <u>**Reply A or B.**</u>'
-  const r = await createSummarizer({ llm: fakeLlm({ reply }) }).summarize('x')
-  assert.equal(r.text, 'Both layouts work.\n\n<u>**Which option do you want?**</u> <u>**Reply A or B.**</u>')
-  assert.equal(fallbackSummary('Did a lot.\n\nAll set. <u>**Pick one?**</u>'), 'All set.\n\n<u>**Pick one?**</u>')
-  assert.equal(fallbackSummary('Did a lot.\n\nAll set, nothing to do.'), 'All set, nothing to do.')
-  assert.equal(fallbackSummary(''), '')
+  assert.equal(r.text, 'All set. <u>**Which option do you want?**</u>')
 })

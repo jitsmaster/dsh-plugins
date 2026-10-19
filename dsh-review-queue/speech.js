@@ -48,20 +48,6 @@ export function cleanText(value, { maxWords, maxChars, keepAction = false } = {}
   return text
 }
 
-const ACTION_ITEM = /<u>\*\*[^*]*?\*\*<\/u>/g
-
-/**
- * A summary (already cleaned with keepAction) with its `<u>**...**</u>` action items moved out of the sentence flow into their own
- * last paragraph, so what the user must do is never buried in the text: "what was done\n\n<action items>". No action item: unchanged.
- */
-export function actionParagraph(text) {
-  if (typeof text !== 'string') return ''
-  const items = text.match(ACTION_ITEM)
-  if (!items) return text
-  const rest = text.replace(ACTION_ITEM, ' ').replace(/(^|\s)[.,;:!?]+(?=\s|$)/g, '$1').replace(/\s+/g, ' ').trim()
-  return rest ? rest + '\n\n' + items.join(' ') : items.join(' ')
-}
-
 /** The last non-empty paragraph of a reply, markdown removed; '' for nothing. */
 export function lastParagraph(text, { keepAction = false } = {}) {
   if (typeof text !== 'string') return ''

@@ -33,6 +33,7 @@ import { createStore } from './store.js'
 import { createSummarizer } from './summary.js'
 import { createTuner } from './todo-tune.js'
 import { installCapture, cancelStalePending } from './capture.js'
+import { installTicketSessions } from './ticket-session.js'
 import { createReviewQueue } from './service.js'
 import { createReader } from './reader.js'
 import { listWorkspaces } from './todo.js'
@@ -127,6 +128,8 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     keepDone: config.doneKeepPerSession, // capture.js falls back to its default (20) for anything that is not a positive integer
   })
   const controllerOf = () => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } }
+  // A prompt typed into a session that mentions an Azure DevOps ticket renames the session "Fix: <ticket title> - <number>" (off with ticketSessionTitles: false).
+  installTicketSessions(ctx, { controllerOf, log, enabled: () => config.ticketSessionTitles !== false })
   // The play button speaks through the sibling dsh-hooks-tts plugin's TTS client (same server, mute switch and stop hotkey).
   const reader = createReader({
     spawn,

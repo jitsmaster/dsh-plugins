@@ -4,7 +4,7 @@
  * paragraph. The reply is untrusted data, sent as such. Sentences the user must act on come back as `<u>**...**</u>` (the screens
  * show them bold and underlined; speech strips the tags).
  */
-import { actionParagraph, cleanText, lastParagraph } from './speech.js'
+import { cleanText, lastParagraph } from './speech.js'
 import { needsUser } from './actionable.js'
 
 const PREFER = [/haiku/i, /flash|mini|lite|small|fast|nano/i]
@@ -33,11 +33,8 @@ function parseAnswer(out) {
   const title = t ? cleanText(t[1], { maxWords: 12, maxChars: 100 }) : ''
   const s = /^[ \t]*summary:[ \t]*([\s\S]*)$/im.exec(out)
   const body = s ? s[1] : t ? out.replace(t[0], '') : out
-  return { title, actionable, text: actionParagraph(cleanText(body, { maxChars: 500, keepAction: true })) }
+  return { title, actionable, text: cleanText(body, { maxChars: 500, keepAction: true }) }
 }
-
-/** The summary without a model: the reply's last paragraph, its action items (if any) as a paragraph of their own. */
-export const fallbackSummary = (reply) => actionParagraph(cleanText(lastParagraph(reply, { keepAction: true }), { maxChars: 500, keepAction: true }))
 
 export const within = (promise, ms, signal) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('timed out')), ms)
@@ -84,7 +81,7 @@ export function createSummarizer({ llm, model: override, timeoutMs = 10000, maxT
   return {
     /** @returns {Promise<{ text: string, title?: string, source: 'llm' | 'fallback', model?: string }>} */
     async summarize(reply, { signal, request } = {}) {
-      const fallback = () => ({ text: fallbackSummary(reply), source: 'fallback' })
+      const fallback = () => ({ text: cleanText(lastParagraph(reply, { keepAction: true }), { maxChars: 500, keepAction: true }), source: 'fallback' })
       if (typeof reply !== 'string' || !reply.trim()) return { text: '', source: 'fallback' }
       const ac = new AbortController()
       const stop = () => ac.abort()

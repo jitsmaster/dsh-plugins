@@ -6,11 +6,13 @@
  *   started           resolved, remembers the sessionId
  *   failed            open, shows the error; Retry is a confirm again (a session that was already created is reused)
  *   cancelled         resolved
+ * A task that mentions an Azure DevOps ticket starts a session titled "Fix: <ticket title> - <number>" (ado-ticket.js).
  * A workspace the user gave starts at once; otherwise nothing is ever created without an explicit confirm.
  */
 import { randomUUID } from 'node:crypto'
 import { cleanText } from './speech.js'
 import { pickModel, within } from './summary.js'
+import { ticketTitleFor } from './ado-ticket.js'
 
 export const MAX_TODO = 4000
 /** The time the model pass gets: reasoning models can take a while before they answer. */
@@ -197,7 +199,7 @@ export function sparcPrompt(text, skill) {
   return typeof skill === 'string' && skill.trim() ? head + '\n\n--- modes:sparc skill content ---\n' + skill : head + '\nInvoke Skill(modes:sparc) if available.'
 }
 
-export function createTodos({ store, controllerOf, registryOf = () => undefined, llm, titlesOf, sparcText = () => '', suggestTimeoutMs = SUGGEST_TIMEOUT_MS, uuid = () => randomUUID().slice(0, 8), log = () => {} }) {
+export function createTodos({ store, controllerOf, registryOf = () => undefined, llm, titlesOf, sparcText = () => '', suggestTimeoutMs = SUGGEST_TIMEOUT_MS, uuid = () => randomUUID().slice(0, 8), log = () => {}, ticketTitleOf = (text) => ticketTitleFor(text, { log }) }) {
   const running = new Set()
   const track = (promise) => { running.add(promise); promise.finally(() => running.delete(promise)); return promise }
   const suggestByModel = createSuggester({ llm, titlesOf, timeoutMs: suggestTimeoutMs })
@@ -223,7 +225,10 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
         if (typeof sessionId !== 'string' || !sessionId) throw new Error('the session was not created')
         store.update(id, { sessionId })
       }
-      const title = todoTitle(item.text)
+      // A task that mentions an Azure DevOps ticket is titled "Fix: <ticket title> - <number>"; the lookup never throws and never blocks the start for long.
+      let ticketTitle
+      try { ticketTitle = await ticketTitleOf(item.text) } catch (error) { log('todo: ticket title failed: ' + (error?.message ?? error)) }
+      const title = ticketTitle || todoTitle(item.text)
       try { await sc.rename?.({ sessionId, title }) } catch (error) { log('todo: rename failed: ' + (error?.message ?? error)) }
       const text = item.sparc ? sparcPrompt(item.text, sparcText()) : item.text
       await sc.prompt({ requestId: 'todo-' + uuid(), sessionId, mode: 'queue', content: [{ type: 'text', text }] }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
