@@ -39,6 +39,7 @@ import { normalizePort } from './voice/stt-port.js'
 import { createToolSummaries } from './voice/tool-summaries.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
+import { createKeepAwake } from './keep-awake.js'
 
 export const name = 'hooks-tts'
 
@@ -192,7 +193,10 @@ export function apply(ctx, baseConfig = {}) {
     await Promise.allSettled([...pending])
   }, 'hooks-tts: abort running hooks')
 
-  const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens, decideChime: typeof config.decideChime === 'boolean' ? config.decideChime : undefined })
+  const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens, decideChime: typeof config.decideChime === 'boolean' ? config.decideChime : undefined, keepAwake: typeof config.keepAwake === 'boolean' ? config.keepAwake : undefined, keepDisplayOn: typeof config.keepDisplayOn === 'boolean' ? config.keepDisplayOn : undefined })
+  // Keep the computer awake while DSH runs (a hidden helper process; settings keepAwake / keepDisplayOn, live). Started with the plugin, stopped on dispose.
+  const keepAwake = createKeepAwake({ settings, log: (line) => ctx.logger.info(`hooks-tts: ${line}`) })
+  ctx.effect(() => { keepAwake.start(); return () => keepAwake.stop() }, 'hooks-tts: keep awake')
   const worktrees = createWorktreeTracker(stateDir)
   const alerts = createAlerts()
   const groups = createGroups(stateDir, { trace: (line) => ctx.logger.warn(`hooks-tts: ${line}`) })
