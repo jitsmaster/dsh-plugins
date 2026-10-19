@@ -88,11 +88,11 @@ test('reply refuses empty or oversized text, non-completed items and a missing c
   assert.equal(store.get(c.id).status, 'open')
 })
 
-test('a failing prompt leaves the item open and reports the error', async () => {
+test('a failing prompt leaves the item open and reports the fixed code post-failed, never the text of the error', async () => {
   const { store } = setup()
-  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => ({ prompt: async () => { throw new Error('session closed') } }) })
+  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => ({ prompt: async () => { throw new Error('session closed: C:\\secret\\path') } }) })
   const c = store.add(completed())
-  assert.deepEqual(await queue.reply(c.id, 'hi'), { ok: false, error: 'session closed' })
+  assert.deepEqual(await queue.reply(c.id, 'hi'), { ok: false, error: 'post-failed' })
   assert.equal(store.get(c.id).status, 'open')
 })
 

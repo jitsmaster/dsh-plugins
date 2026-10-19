@@ -71,11 +71,11 @@ test('the phone sees paused items in the list but may not resume or dismiss them
   assert.deepEqual((await a.poll(0, 0)).json.commands, [])
 })
 
-test('DEVICE_ACTIONS is unchanged: no paused action is on the phone list', () => {
+test('DEVICE_ACTIONS has no paused action on the phone list', () => {
   const http = readFileSync(join(root, 'hub', 'http.js'), 'utf8')
   const m = /const DEVICE_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(http)
   const actions = m[1].split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean).sort()
-  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'deny', 'late-answer', 'reopen', 'reply', 'reviewed', 'todo', 'todo-cancel', 'todo-confirm'])
+  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'deny', 'late-answer', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
 })
 
 test('a paused item sends no push: the phone is told nothing about it', () => {

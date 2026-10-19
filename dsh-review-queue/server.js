@@ -56,6 +56,8 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/reviewed': (b) => queue.markReviewed(String(b.id)),
     '/v1/archive': (b) => queue.archive(String(b.id)),
     '/v1/reply': (b) => queue.reply(String(b.id), b.text),
+    '/v1/thread': (b) => queue.thread(String(b.id), { before: b.before, limit: b.limit, after: b.after }),
+    '/v1/post': (b) => queue.post(String(b.id), b.text, { key: b.key }),
     '/v1/read': (b) => queue.read(String(b.id)),
     '/v1/stop': () => queue.stop(),
     '/v1/ui': (b) => queue.uiCommand(b.cmd),

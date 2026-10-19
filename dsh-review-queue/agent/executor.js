@@ -1,6 +1,8 @@
 /**
  * Runs the hub's commands (docs/hub.md 6.2) against this app's own services, one at a time in the order given, and remembers the
  * last 200 results by cid: a command delivered again after a lost response gets the same answer and does not run twice.
+ * `thread` is the exception: it only reads and may run any number of times, so it runs at once (a slow log read never delays an approve behind
+ * it) and its result is not kept (a chat page would push the results that matter out of the 200).
  * Nothing here throws; a failure is the answer { ok: false, error }.
  */
 const CACHE_SIZE = 200
@@ -20,6 +22,8 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     'approve-similar': (c) => queue.approveSimilar(c.itemId, c.args),
     deny: (c) => queue.deny(c.itemId),
     reply: (c) => queue.reply(c.itemId, c.args.text),
+    thread: (c) => queue.thread(c.itemId, c.args),
+    post: (c) => queue.post(c.itemId, c.args.text, { key: c.args.key }),
     archive: (c) => queue.archive(c.itemId),
     'paused-resume': (c) => queue.resumePaused(c.itemId),
     'paused-dismiss': (c) => queue.dismissPaused(c.itemId),
@@ -48,6 +52,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
   return {
     /** @returns {Promise<{ ok: boolean, error?: string }>} */
     execute(cmd) {
+      if (cmd?.kind === 'thread') return run(cmd)
       const known = cache.get(cmd?.cid)
       if (known) return known
       const result = chain.then(() => run(cmd))

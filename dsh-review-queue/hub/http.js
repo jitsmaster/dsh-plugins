@@ -19,9 +19,12 @@ const LOCAL_ONLY = new Set(['read', 'stop', 'ui', 'focus'])
 /**
  * What a paired phone may do with an item. It may start todos (todo, todo-confirm, todo-cancel: hub/routing.js sends them to the
  * owner app, or for "Choose for me" to the most recently desktop-active one) but never open sessions: open-session, and every action
- * not listed here, stays on the desktop (403 desktop-only).
+ * not listed here, stays on the desktop (403 desktop-only). thread and post are the chat view of a session (docs/mobile.md "Chat thread").
  */
-const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'todo', 'todo-confirm', 'todo-cancel'])
+const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'todo', 'todo-confirm', 'todo-cancel', 'thread', 'post'])
+
+/** The audit line of a phone's post (docs/hub.md 6.8): the device, the item and the length of the text. The text itself is never logged; the item id is client input, so it is cut to safe characters. */
+const postAudit = (deviceId, body) => 'post: device ' + deviceId + ' item ' + String(body.id).replace(/[^A-Za-z0-9_-]/g, '?').slice(0, 40) + ' chars ' + (typeof body.text === 'string' ? body.text.length : 0)
 
 /** @param {{ hub: any, log?: (line: string) => void }} deps */
 export function createHttp({ hub, log = () => {} }) {
@@ -96,6 +99,7 @@ export function createHttp({ hub, log = () => {} }) {
     if (!originOk(req)) return send(res, 403, { error: 'bad-origin' })
     const body = await readJson(req)
     if (!body.value) return send(res, body.status, { error: 'bad-request' })
+    if (kind === 'post' && who.deviceId) log(postAudit(who.deviceId, body.value)) // a phone can prompt any session: leave a trace of who, which item and how long, never the text
     return outcome(res, await hub.act(kind, body.value, { role: who.role, caller }))
   }
 

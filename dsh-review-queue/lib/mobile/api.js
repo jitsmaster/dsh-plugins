@@ -9,6 +9,10 @@ import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
 import { pollWaitMs } from './model.js'
 import { emptyTodoDraft } from './todo-form.js'
+import {
+  POST_TIMEOUT_MS, THREAD_TIMEOUT_MS, applyEarlier, applyNewest, expirePending, markSent, mergeMessages, pendingMessage, pollDelay, postErrorText, postKeyFor, postPayload, removeMessage,
+  sameThread, shouldPoll, threadErrorText, threadPayload, touchThreads, trimThread,
+} from './thread.js'
 
 /** The plugin prefix on this host ("/review-queue", or behind a public URL prefix). */
 export const API = location.pathname.replace(/\/m\/.*$/, '')
@@ -31,6 +35,8 @@ export const state = {
   drafts: {}, replies: {}, busy: {}, errors: {}, filter: { type: 'all', query: '' }, version: 0,
   // The "+ New todo" form: the draft survives moving between screens (cleared after a successful start); the workspace dropdown's list.
   todoDraft: emptyTodoDraft(), workspaces: null, workspacesError: null,
+  // The chat thread of each session item that was opened: { messages, hasMore, cursor, loading, loadingEarlier, error, offline }.
+  threads: {},
 }
 const listeners = new Set()
 export const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l) } }
@@ -42,6 +48,8 @@ export function set(patch) {
   if ('filter' in patch) storage.set(LS_FILTER, JSON.stringify(state.filter))
   for (const l of [...listeners]) l()
 }
+/** Writes the drafts to the page storage now (the page is going away: the 300 ms timer of set() may never run). */
+export function saveNow() { clearTimeout(saveTimer); save() }
 function save() {
   const keep = core.pruneSaved({ drafts: state.drafts, replies: state.replies }, { open: Object.keys({ ...state.drafts, ...state.replies }).map((id) => ({ id })), resolved: [] })
   storage.set(LS_SAVED, JSON.stringify(keep))
@@ -166,6 +174,206 @@ export async function startTodo(body) {
   if (failure) return { ok: false, ...failure }
   clearTodoDraft()
   return { ok: true }
+}
+
+// ---- chat thread (docs/mobile.md "Chat thread"): the past conversation of a session item, follow-up posts, the 5 s refresh -----------
+// Nothing here logs: message text never leaves state (the views) and the requests.
+
+const emptyThread = () => ({ messages: [], hasMore: false, cursor: undefined, loading: false, loadingEarlier: false, error: null, offline: false })
+const threadOf = (id) => state.threads[id] || emptyThread()
+/** Merges the patch into the thread; when the result looks the same to the view (messages by object, paging, flags) nothing is set and nothing renders. True when the state changed. */
+function setThread(id, patch) {
+  const next = { ...threadOf(id), ...patch }
+  if (state.threads[id] && sameThread(state.threads[id], next)) return false
+  set({ threads: { ...state.threads, [id]: next } })
+  return true
+}
+const hasLoaded = (id) => threadOf(id).messages.some((m) => !m.pending)
+/** The id of the newest message of the log that the thread shows (a pending bubble is not in the log), or undefined. */
+const newestShown = (id) => threadOf(id).messages.filter((m) => !m.pending).at(-1)?.id
+
+// Thread requests in flight: cut off after THREAD_TIMEOUT_MS, and aborted when the page goes away or the phone comes back online (the connection they
+// were started on is dead or stale, like the snapshot long-poll above): a hung request would otherwise hold the "reading" guard for good.
+const inflight = new Set()
+const abortThreadFetches = () => { for (const ac of [...inflight]) ac.abort() }
+let hooked = false
+function hookPage() {
+  if (hooked || typeof document === 'undefined' || typeof window === 'undefined') return
+  hooked = true
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) abortThreadFetches()
+    if (poll.id === null) return
+    clearPollTimer()
+    if (!document.hidden) pollTick() // back on screen: refresh at once, then at the poll pace
+  })
+  window.addEventListener('pagehide', () => { abortThreadFetches(); clearPollTimer() })
+  window.addEventListener('online', abortThreadFetches)
+}
+
+/** POST /v1/thread. { page } on success; { unchanged: true } for the answer to `after`; { auth: true } when the phone was sent back to pairing; { aborted: true } when the page cut it off; else { error: words, offline }. */
+async function threadRequest(body) {
+  hookPage()
+  const ac = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; ac.abort() }, THREAD_TIMEOUT_MS)
+  inflight.add(ac)
+  try {
+    const res = await call(API + '/v1/thread', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal })
+    const json = await res.json().catch(() => null)
+    if (handleAuthFailure(res.status, json)) return { auth: true }
+    if (res.ok && json && json.ok !== false && json.unchanged === true) return { unchanged: true }
+    if (res.ok && json && json.ok !== false && Array.isArray(json.messages)) return { page: json }
+    return { error: threadErrorText(json && json.error), offline: false }
+  } catch {
+    if (timedOut) return { error: threadErrorText('timeout'), offline: true }
+    if (ac.signal.aborted) return { aborted: true }
+    return { error: threadErrorText('offline'), offline: true }
+  } finally { clearTimeout(timer); inflight.delete(ac) }
+}
+const settled = (id, page) => ({ ...applyNewest(threadOf(id), page), error: null, offline: false })
+
+const reading = new Set() // item ids whose newest page is being read (a load or a refresh): one request at a time
+const readingEarlier = new Set()
+let opened = [] // the ids of the threads in state, the one opened last at the end
+
+/** Remembers that this thread was opened and forgets the threads opened longest ago beyond the limit. */
+function openThread(id) {
+  const { order, evict } = touchThreads(opened.filter((k) => k in state.threads), id)
+  opened = order
+  if (!evict.length) return
+  const keep = { ...state.threads }
+  for (const k of evict) delete keep[k]
+  set({ threads: keep })
+}
+
+/** Opens the chat of an item: the first load shows a loading state; a chat that is already loaded keeps its messages and refreshes silently. */
+export async function loadThread(id) {
+  openThread(id)
+  if (reading.has(id)) return
+  if (hasLoaded(id)) return refreshThread(id)
+  reading.add(id)
+  setThread(id, { loading: true, error: null, offline: false })
+  try {
+    const r = await threadRequest(threadPayload(id))
+    if (r.page) setThread(id, { ...settled(id, r.page), loading: false })
+    else if (r.aborted) setThread(id, { loading: false, error: threadErrorText('offline'), offline: true }) // the next refresh of the open screen fills it in
+    else setThread(id, { loading: false, ...(r.auth ? {} : { error: r.error, offline: r.offline }) })
+  } finally { reading.delete(id) }
+}
+
+/**
+ * The refresh: no loading state; a failure keeps what is shown and only sets the note (error, offline). It asks with `after` (the newest message shown), so a log
+ * with nothing new is answered without a page, and it changes no state when nothing changed.
+ * @returns {Promise<'changed' | 'unchanged' | 'failed' | 'busy'>}
+ */
+export async function refreshThread(id) {
+  if (reading.has(id)) return 'busy'
+  reading.add(id)
+  try {
+    const r = await threadRequest(threadPayload(id, { after: newestShown(id) }))
+    if (r.page) { const next = settled(id, r.page); return setThread(id, { ...next, messages: expirePending(next.messages, Date.now()) }) ? 'changed' : 'unchanged' }
+    if (r.unchanged) return setThread(id, { messages: expirePending(threadOf(id).messages, Date.now()), error: null, offline: false }) ? 'changed' : 'unchanged'
+    if (!r.auth && !r.aborted) setThread(id, { error: r.error, offline: r.offline })
+    return 'failed'
+  } finally { reading.delete(id) }
+}
+
+/** "Load earlier": the page before the oldest message shown, put in front of it. */
+export async function loadEarlier(id) {
+  const t = threadOf(id)
+  if (!t.hasMore || t.cursor === undefined || readingEarlier.has(id)) return
+  readingEarlier.add(id)
+  setThread(id, { loadingEarlier: true })
+  try {
+    const r = await threadRequest(threadPayload(id, { before: t.cursor }))
+    if (r.page) setThread(id, { ...applyEarlier(threadOf(id), r.page), loadingEarlier: false, error: null })
+    else setThread(id, { loadingEarlier: false, ...(r.auth || r.aborted || r.unchanged ? {} : { error: r.error }) })
+  } finally { readingEarlier.delete(id) }
+}
+
+/**
+ * Sends a follow-up to the item's session (POST /v1/post): a pending bubble shows at once. Accepted: the draft (state.replies) is cleared when it still is the posted text (a newer draft stays), the
+ * bubble waits (marked sent) until the log shows the message, and the thread is refreshed right away. Refused: the bubble goes, the draft stays and
+ * state.errors[id] says why. A post in flight for the item ignores a second call; one that is not answered in POST_TIMEOUT_MS is given up (busy is released,
+ * the error says it may have arrived). The screen is never left: only a done item changes state (on the server).
+ * @returns {Promise<{ ok: boolean }>}
+ */
+export async function postFollowUp(id, text) {
+  const body = typeof text === 'string' ? text.trim() : ''
+  if (!body || state.busy[id]) return { ok: false }
+  const sending = postKeyFor(failedPosts.get(id), body)
+  failedPosts.set(id, sending)
+  const bubble = pendingMessage(body, Date.now())
+  setThread(id, { messages: mergeMessages(threadOf(id).messages, [bubble]) })
+  set({ busy: { ...state.busy, [id]: true }, errors: { ...state.errors, [id]: undefined } })
+  const ac = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; ac.abort() }, POST_TIMEOUT_MS)
+  let error
+  try {
+    const res = await call(API + '/v1/post', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(postPayload(id, body, sending.key)), signal: ac.signal })
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      error = handleAuthFailure(res.status, j) ? 'Signed out: pair this phone again.' : postErrorText(j && j.error) || core.errorText(res.status, j)
+    }
+  } catch (e) { error = timedOut ? POST_TIMEOUT_TEXT : 'Request failed: ' + String((e && e.message) || e) } finally { clearTimeout(timer) }
+  if (error) {
+    setThread(id, { messages: removeMessage(threadOf(id).messages, bubble.id) })
+    set({ busy: { ...state.busy, [id]: false }, errors: { ...state.errors, [id]: error } })
+    return { ok: false }
+  }
+  failedPosts.delete(id) // accepted: the next message is a new one, with a new key
+  setThread(id, { messages: markSent(threadOf(id).messages, bubble.id) })
+  const typedSince = (state.replies[id] || '').trim() !== body // more typed (or the draft changed) while the post was in flight: keep it
+  set({ replies: typedSince ? state.replies : { ...state.replies, [id]: '' }, busy: { ...state.busy, [id]: false } })
+  if (poll.id === id) { poll.unchanged = 0; schedulePoll() } // the user is active: back to the 5 s pace
+  await refreshThread(id)
+  return { ok: true }
+}
+// item id -> { text, key } of the last post that was not accepted: a retry of that text reuses the key, so a post that did arrive is not sent twice (docs/mobile.md)
+const failedPosts = new Map()
+const POST_TIMEOUT_TEXT = 'No answer in time. The message may have been sent: check the conversation before sending it again.'
+
+// The refresh timer: one timer at a time, timed from the end of the last refresh (never overlapping), only while the page is visible, the
+// route is the item's screen, the item still has a session and the phone is paired. The item screen starts it and stops it when it goes.
+const poll = { id: null, timer: null, unchanged: 0 } // unchanged: refreshes in a row that brought nothing new (they slow the pace, pollDelay)
+const routeNow = () => (location.hash || '').replace(/^#/, '') || '/'
+const pageVisible = () => typeof document === 'undefined' || !document.hidden
+const findItem = (id) => (state.snap ? state.snap.open.find((i) => i.id === id) || state.snap.resolved.find((i) => i.id === id) : undefined)
+const clearPollTimer = () => { if (poll.timer) { clearTimeout(poll.timer); poll.timer = null } }
+const schedulePoll = () => { clearPollTimer(); if (poll.id !== null) poll.timer = setTimeout(pollTick, pollDelay(poll.unchanged)) }
+
+async function pollTick() {
+  poll.timer = null
+  const id = poll.id
+  if (id === null) return
+  if (!shouldPoll({ route: routeNow(), visible: pageVisible(), item: findItem(id), paused: state.needsPairing })) {
+    if (pageVisible()) poll.id = null // the screen is gone (or the phone must pair again): nothing more to refresh; a hidden page resumes when it is shown
+    return
+  }
+  const result = await refreshThread(id)
+  if (poll.id === id) {
+    if (result === 'changed') poll.unchanged = 0
+    else if (result === 'unchanged') poll.unchanged++
+    schedulePoll()
+  }
+}
+
+/** Starts the refresh of the open chat of this item (the screen loads the first page itself): every 5 s, slower while nothing changes. */
+export function startThreadPolling(id) {
+  hookPage()
+  poll.id = id
+  poll.unchanged = 0
+  schedulePoll()
+}
+/**
+ * Stops the refresh (the item screen was left) and trims that item's thread to its newest messages, so a chat that was read a long way back does not stay in
+ * memory. With the id of another item than the polled one only that thread is trimmed and the refresh goes on.
+ */
+export function stopThreadPolling(id) {
+  const target = id === undefined ? poll.id : id
+  if (target === poll.id) { poll.id = null; poll.unchanged = 0; clearPollTimer() }
+  if (target !== null && state.threads[target]) setThread(target, trimThread(state.threads[target]))
 }
 
 export async function init() {

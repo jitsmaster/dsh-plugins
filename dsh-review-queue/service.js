@@ -7,8 +7,12 @@ import { spokenFor, titleFor, fullTextFor, chunkForSpeech } from './speech.js'
 import { riskOf } from './risk.js'
 import { createTodos } from './todo.js'
 import { RESUME_PROMPT } from './paused.js'
+import { isSessionId } from './thread.js'
+import { postKeyOf } from './post-key.js'
 
 const MAX_REPLY = 4000
+const MAX_POST_KEYS = 200 // idempotency keys of accepted phone posts that are remembered
+const POST_KEY_TTL_MS = 10 * 60_000
 const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo', 'paused']
 /** A todo being started, or a session paused by a restart (it has its own count), is not waiting on the user. */
 const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && item.state === 'starting')
@@ -18,9 +22,11 @@ const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, titlesOf, sparcText, suggestTimeoutMs, log, paused, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, titlesOf, sparcText, suggestTimeoutMs, log, paused, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log })
   const resuming = new Set() // paused items whose resume prompt is on its way
+  const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)
+  const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
   let focusId
   let reading // id of the item being read aloud
   let readOpen = false // the item being read was in the queue when reading started
@@ -46,6 +52,45 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
   const openItem = (id) => {
     const item = store.get(id)
     return item?.status === 'open' ? item : undefined
+  }
+
+  /** A todo has no session of its own yet, whatever its sessionId says. */
+  const hasSession = (item) => item.type !== 'todo' && typeof item.sessionId === 'string' && item.sessionId !== ''
+
+  /**
+   * Queues the text as a prompt of the item's session; undefined when sent, else the refusal { ok: false, error }. A session this app's controller
+   * does not know is no-session; any other controller failure is the fixed code post-failed (its text can carry a path or content and goes to a
+   * phone): only its code or name is logged.
+   */
+  const promptSession = async (item, text) => {
+    const body = typeof text === 'string' ? text.trim() : ''
+    if (!body) return { ok: false, error: 'empty' }
+    if (body.length > MAX_REPLY) return { ok: false, error: 'too-long' }
+    const controller = controllerOf()
+    if (!controller?.prompt) return { ok: false, error: 'no-controller' }
+    try {
+      await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: body }] }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
+    } catch (error) {
+      // The controller of this app does not know the session: the card says so in words, and the item stays for an app that does.
+      if (error?.code === 'session/not-found') return { ok: false, error: 'no-session' }
+      log?.('post: ' + String(error?.code ?? error?.name ?? 'error').slice(0, 40))
+      return { ok: false, error: 'post-failed' }
+    }
+    return undefined
+  }
+
+  /** The answer for a key whose first attempt was accepted (and is still remembered), else undefined. */
+  const seenPostKey = (key) => {
+    const known = key === undefined ? undefined : postKeys.get(key)
+    if (!known) return undefined
+    if (now() - known.at > POST_KEY_TTL_MS) { postKeys.delete(key); return undefined }
+    return { ...known.result, duplicate: true }
+  }
+  const rememberPostKey = (key, result) => {
+    if (key === undefined) return
+    postKeys.delete(key)
+    postKeys.set(key, { at: now(), result })
+    while (postKeys.size > MAX_POST_KEYS) postKeys.delete(postKeys.keys().next().value) // the oldest first (Map keeps insertion order)
   }
 
   /** A merged-PR item whose session was archived somewhere else (the sidebar menu) has nothing left to offer. */
@@ -272,20 +317,60 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       const item = openItem(id)
       if (!item) return { ok: false, error: 'not-open' }
       if (item.type !== 'completed') return { ok: false, error: 'not-completed' }
-      const body = typeof text === 'string' ? text.trim() : ''
-      if (!body) return { ok: false, error: 'empty' }
-      if (body.length > MAX_REPLY) return { ok: false, error: 'too-long' }
-      const controller = controllerOf()
-      if (!controller?.prompt) return { ok: false, error: 'no-controller' }
-      try {
-        await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: body }] }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
-      } catch (error) {
-        // The controller of this app does not know the session: the card says so in words, and the item stays for an app that does.
-        if (error?.code === 'session/not-found') return { ok: false, error: 'no-session' }
-        return { ok: false, error: String(error?.message ?? error) }
-      }
+      const refused = await promptSession(item, text)
+      if (refused) return refused
       store.resolve(id, { kind: 'replied', by: 'card' })
       return { ok: true }
+    },
+    /**
+     * The chat view of the phone: the last text messages of the session of any item that has one (open or resolved, never a todo), read
+     * from the session log. { before, limit } page back (see thread.js). -> { ok, sessionId, title, messages, hasMore, cursor? } or { ok: false, error }.
+     * after (a message id, the newest page only, i.e. no before): when the newest message of the log IS that id the answer is { ok: true, unchanged: true } and no
+     * page is sent (the phone polls every few seconds; a log that grew or no longer has that message gets the page). The text of a logged message never changes.
+     * sessionId is only given by a command of the hub (agent/executor.js): an ownerless open item is read by the coordinator, whose store does not
+     * hold it, so the hub names the session (the hub has already refused a todo, hub/routing.js). It is used only when this store has no such item
+     * (an empty title then) and only when it is a valid session id (thread.js isSessionId); server.js never passes it on.
+     */
+    async thread(id, { before, limit, after, sessionId } = {}) {
+      const item = store.get(id) ?? (isSessionId(sessionId) ? { sessionId } : undefined)
+      if (!item) return { ok: false, error: 'not-found' }
+      if (!hasSession(item)) return { ok: false, error: 'no-session' }
+      if (typeof threadOf !== 'function') return { ok: false, error: 'no-reader' }
+      let read
+      try { read = await threadOf({ sessionId: item.sessionId, before, limit }) } catch (error) {
+        log?.('thread: ' + String(error?.code ?? error?.name ?? 'error').slice(0, 40)) // the code only: an error message can carry a path or content
+        return { ok: false, error: 'unreadable' }
+      }
+      if (!read?.ok) return { ok: false, error: read?.error ?? 'unreadable' }
+      if (!Number.isFinite(before) && Number.isInteger(after) && after >= 0 && read.messages.at(-1)?.id === after) return { ok: true, unchanged: true } // the phone already shows the newest message
+      return { ok: true, sessionId: item.sessionId, title: item.sessionTitle ?? '', messages: read.messages, hasMore: read.hasMore, ...(read.cursor === undefined ? {} : { cursor: read.cursor }) }
+    },
+    /**
+     * A follow-up typed into the chat view: queued as a prompt of the item's session like a reply (same limits). An open completed item is
+     * resolved as replied, exactly as by reply; any other item (another type, or already resolved) keeps its state. Whatever the item, a session
+     * takes one post at a time: while one is on its way another post for the same session id is busy (released when it settles). A paused item
+     * takes none: resuming it is done at the PC (resumePaused), whose guard, markHandled and resolve a plain prompt would skip.
+     * key (the phone's idempotency key, post-key.js; an invalid one is ignored): a repeat of a key whose first attempt was ACCEPTED is answered
+     * { ok: true, duplicate: true } without prompting again, so a retry after a lost answer does not send the message twice. Failed attempts are
+     * not remembered; the last 200 keys of the last 10 minutes are kept in memory.
+     */
+    async post(id, text, { key } = {}) {
+      const item = store.get(id)
+      if (!item) return { ok: false, error: 'not-found' }
+      if (!hasSession(item)) return { ok: false, error: 'not-a-session' }
+      if (item.type === 'paused') return { ok: false, error: 'paused' }
+      const idem = postKeyOf(key)
+      const repeat = seenPostKey(idem)
+      if (repeat) return repeat
+      if (posting.has(item.sessionId)) return { ok: false, error: 'busy' }
+      posting.add(item.sessionId)
+      try {
+        const refused = await promptSession(item, text)
+        if (refused) return refused
+        if (openItem(id)?.type === 'completed') store.resolve(id, { kind: 'replied', by: 'card' })
+        rememberPostKey(idem, { ok: true })
+        return { ok: true }
+      } finally { posting.delete(item.sessionId) }
     },
     getFocus: () => focusId,
     setFocus(id) {

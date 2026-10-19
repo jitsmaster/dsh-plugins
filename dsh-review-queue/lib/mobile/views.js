@@ -1,6 +1,6 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
-import { html, useState, useEffect, useRef } from './vendor/preact-htm.js'
-import { state, subscribe, set, act, getCore, loadWorkspaces, startTodo, NEW_TODO_ID } from './api.js'
+import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
+import { state, subscribe, set, act, getCore, loadWorkspaces, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow } from './api.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
@@ -8,6 +8,7 @@ import { listModel, pausedNote, pausedView, screenFor, todoCardModel } from './m
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
+import { bubbleChanged, canPost, createDraftBuffer, hasThread, isNearBottom, scrollPlan } from './thread.js'
 import { TODO_MAX, newTodoPayload, todoErrorText, workspaceChoices, workspacesNote } from './todo-form.js'
 
 export function useStore() {
@@ -111,8 +112,10 @@ function ReadAloud({ item }) {
 /**
  * Dictation button next to a free-text box: tap to listen, tap again to stop. The recognised text goes to onText (the box's draft setter),
  * after the text already in the box; the user reviews it and presses the normal Send button. Hidden when the browser cannot do speech to text.
+ * The owner can halt the dictation (the ref `halt` is filled with a function): the composer does before it posts. It also halts by itself when the
+ * button gets disabled (a post or an answer is running) and when it is removed: a result that lands after that must not reach the box.
  */
-function Mic({ text, onText, disabled }) {
+function Mic({ text, onText, disabled, halt }) {
   const [on, setOn] = useState(false)
   const [problem, setProblem] = useState(null)
   const latest = useRef(onText)
@@ -122,7 +125,9 @@ function Mic({ text, onText, disabled }) {
   const ios = platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }).ios
   if (dictation.current === undefined) dictation.current = createDictation({ win: window, ios, onText: (t) => latest.current(t), onState: setOn, onError: setProblem })
   const d = dictation.current
-  useEffect(() => () => { if (d) d.stop() }, []) // leaving the screen releases the microphone
+  if (halt) halt.current = () => { if (d) d.halt() }
+  useEffect(() => { if (disabled && d) d.halt() }, [disabled]) // a post or an answer is running: nothing more may reach the box
+  useEffect(() => () => { if (d) d.halt() }, []) // leaving the screen releases the microphone, and a late result lands nowhere
   if (!d) return null
   return html`<div class="micwrap">
     <button class=${'btn mic' + (on ? ' on' : '')} type="button" aria-pressed=${on} aria-label=${on ? 'Stop dictation' : 'Dictate'} disabled=${disabled}
@@ -193,18 +198,13 @@ function PermissionBody({ item }) {
 }
 
 function CompletedBody({ item }) {
-  const c = getCore()
   const st = useStore()
   const busy = st.busy[item.id]
-  const reply = st.replies[item.id] || ''
-  const send = async () => { if (await act('/v1/reply', { id: item.id, text: reply }, item.id)) { set({ replies: { ...state.replies, [item.id]: '' } }); go('/') } }
+  // Writing back to the session is the composer under the card (ItemView): this body keeps the summary, the full reply and Reviewed.
   return html`<div>
     <div class="text">${item.summary || 'Finished.'}</div>
     ${item.payload && item.payload.reply ? html`<details open=${(item.payload.reply || '').length < 1500}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
-    <textarea class="input ta" placeholder="Reply to this session…" value=${reply} disabled=${busy} onInput=${(e) => set({ replies: { ...st.replies, [item.id]: e.target.value } })}></textarea>
     <div class="row">
-      <${Mic} text=${reply} disabled=${busy} onText=${(t) => set({ replies: { ...state.replies, [item.id]: t } })} />
-      <button class="btn pri" disabled=${busy || !reply.trim()} onClick=${send}>${busy ? 'Sending…' : 'Send reply'}</button>
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>
     </div>
   </div>`
@@ -261,6 +261,141 @@ function PausedBody({ item }) {
   return html`<div>
     ${v.facts.map((f, i) => html`<div class=${i === 0 ? 'text' : 'sub'} key=${i}>${f}</div>`)}
     <div class="sub">${v.note}</div>
+  </div>`
+}
+
+// ---- chat thread (docs/mobile.md "Chat thread") ----------------------------------------------------------------------------------
+
+/** One message: the user's text as plain pre-wrapped text on the right, the assistant's rendered as markdown on the left. */
+function Bubble({ m }) {
+  const user = m.role === 'user'
+  const when = m.pending ? (m.sent ? 'Sent' : 'Sending…') : m.time > 1e12 ? getCore().fmtAge(now() - m.time) : ''
+  return html`<div class=${'bubble ' + (user ? 'user' : 'assistant') + (m.pending ? ' pending' : '')}>
+    ${user ? html`<div class="utext">${m.text}</div>` : html`<${Md} text=${m.text} />`}
+    ${m.truncated ? html`<div class="sub trunc">… the rest of this message is not shown.</div>` : null}
+    ${when ? html`<div class="meta">${when}</div>` : null}
+  </div>`
+}
+
+/** A component that is drawn again only when `changed(oldProps, newProps)` says so (the vendored preact has no memo): a poll that brings nothing new re-renders no bubble. */
+function onlyWhen(changed, Inner) {
+  return class extends Component {
+    shouldComponentUpdate(next) { return changed(this.props, next) }
+    render(props) { return h(Inner, props) }
+  }
+}
+const MemoBubble = onlyWhen(bubbleChanged, Bubble)
+
+/**
+ * The past conversation of the item's session: newest 40 messages, Load earlier, the 5 s refresh. Conversation mounts it only while its section is
+ * open, so the first load and the polling start when the section opens and stop when it closes (or the screen is left).
+ */
+function ThreadView({ item }) {
+  const st = useStore()
+  const id = item.id
+  const t = st.threads[id]
+  const messages = t ? t.messages : []
+  const box = useRef(null)
+  const near = useRef(true) // was the reader at the bottom before the last change?
+  const seen = useRef({ count: 0, lastId: undefined })
+  const anchor = useRef(null) // distance from the bottom while an earlier page is loading: the reader keeps their place
+  const [pill, setPill] = useState(0)
+  const minute = Math.floor(now() / 60000) // the age under a bubble moves on once a minute
+  useEffect(() => { loadThread(id); startThreadPolling(id); return () => stopThreadPolling() }, [id])
+  const toBottom = () => { const el = box.current; if (el) el.scrollTop = el.scrollHeight }
+  useLayoutEffect(() => {
+    const el = box.current
+    const prev = seen.current
+    const last = messages.length ? messages[messages.length - 1] : undefined
+    seen.current = { count: messages.length, lastId: last && last.id }
+    if (!el || !messages.length) return
+    if (anchor.current !== null) { el.scrollTop = el.scrollHeight - anchor.current; if (messages.length > prev.count) anchor.current = null; return }
+    if (!prev.count) { toBottom(); near.current = true; return }
+    const plan = scrollPlan({ wasNearBottom: near.current, added: messages.length - prev.count, posted: !!last && last.pending === true && last.id !== prev.lastId })
+    if (plan.stick) toBottom()
+    else if (plan.pill) setPill((n) => n + plan.pill)
+  }, [messages])
+  // The box can change size without a new message (the card above it shrinks, the keyboard opens): a reader who was at the bottom stays there.
+  const shown = messages.length > 0
+  useEffect(() => {
+    const el = box.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    const watcher = new ResizeObserver(() => { if (near.current) toBottom() })
+    watcher.observe(el)
+    return () => watcher.disconnect()
+  }, [shown])
+  const earlier = async () => { const el = box.current; if (el) anchor.current = el.scrollHeight - el.scrollTop; await loadEarlier(id); anchor.current = null }
+  const onScroll = () => { const el = box.current; if (!el) return; near.current = isNearBottom(el); if (near.current) setPill(0) }
+  if (!t || (t.loading && !messages.length)) return html`<div class="thread"><div class="empty" role="status">Loading the conversation…</div></div>`
+  if (t.error && !messages.length) return html`<div class="thread"><div class="empty"><div class="err" role="alert">${t.error}</div><div class="row"><button class="btn" onClick=${() => loadThread(id)}>Retry</button></div></div></div>`
+  if (!messages.length) return html`<div class="thread"><div class="empty">No messages yet.</div></div>`
+  return html`<div class="thread">
+    <div class="thread-scroll" ref=${box} onScroll=${onScroll}>
+      ${t.hasMore ? html`<button class="btn thread-more" disabled=${t.loadingEarlier} onClick=${earlier}>${t.loadingEarlier ? 'Loading…' : 'Load earlier'}</button>` : null}
+      ${messages.map((m) => html`<${MemoBubble} key=${m.id} m=${m} minute=${minute} />`)}
+    </div>
+    ${pill ? html`<button class="pill" onClick=${() => { toBottom(); near.current = true; setPill(0) }}>↓ ${pill} new message${pill === 1 ? '' : 's'}</button>` : null}
+    ${t.error ? html`<div class="thread-note sub" role="status">${t.error}</div>` : null}
+  </div>`
+}
+
+/** The conversation as a collapsible section below the card's actions: open for done and resolved items, closed where the buttons matter. */
+function Conversation({ item, defaultOpen }) {
+  const st = useStore()
+  const [open, setOpen] = useState(defaultOpen)
+  const t = st.threads[item.id]
+  const n = t ? t.messages.filter((m) => !m.pending).length : 0
+  return html`<details class="conversation" open=${open} onToggle=${(e) => setOpen(e.currentTarget.open)}>
+    <summary>Conversation${n ? ' (' + n + (t.hasMore ? '+' : '') + ')' : ''}</summary>
+    ${open ? html`<${ThreadView} item=${item} />` : null}
+  </details>`
+}
+
+/** Grows the box with its text; the style caps it at about five lines (then it scrolls). */
+function autoGrow(el) {
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = el.scrollHeight + 'px'
+}
+
+/**
+ * The box under the card: write a follow-up to the session. Enter is a newline; Send posts; the mic only fills the box. While a post runs the
+ * box is read-only, not disabled: a disabled box loses the focus and the phone's keyboard closes.
+ */
+function Composer({ item }) {
+  const st = useStore()
+  const id = item.id
+  const busy = !!st.busy[id]
+  const stored = st.replies[id] || ''
+  const box = useRef(null)
+  const buffer = useRef(null)
+  const micHalt = useRef(null) // the Mic fills it: Send halts a running dictation before it posts
+  if (buffer.current === null) buffer.current = createDraftBuffer({ read: () => state.replies[id] || '', write: (text) => set({ replies: { ...state.replies, [id]: text } }) })
+  const [draft, setShown] = useState(() => buffer.current.value())
+  // Typing (and the dictation, which writes many times a second) stays in this component: the store, and so every view, hears of the draft 250 ms after the last change.
+  // Dictated text is ignored while a post of this item runs (read live: the recognition calls back between renders): a late result must not come back as a draft.
+  const setDraft = (text) => { if (state.busy[id]) return; buffer.current.set(text); setShown(text) }
+  const flush = () => buffer.current.flush()
+  // A change from outside (an accepted post cleared the draft) is taken over, unless a write of the typed text is waiting.
+  useEffect(() => { const next = buffer.current.adopt(stored); if (next !== undefined) setShown(next) }, [stored])
+  useEffect(() => {
+    const b = buffer.current
+    const leave = () => { b.flush(); saveNow() }
+    const hidden = () => { if (document.hidden) leave() }
+    window.addEventListener('pagehide', leave)
+    document.addEventListener('visibilitychange', hidden)
+    return () => { window.removeEventListener('pagehide', leave); document.removeEventListener('visibilitychange', hidden); b.dispose() }
+  }, [])
+  useLayoutEffect(() => autoGrow(box.current), [draft])
+  const send = async () => { if (micHalt.current) micHalt.current(); buffer.current.flush(); await postFollowUp(id, state.replies[id] || '') }
+  return html`<div class="composer">
+    ${st.errors[id] ? html`<div class="err" role="alert">${st.errors[id]}</div>` : null}
+    <div class="composer-row">
+      <textarea class="input composer-input" ref=${box} rows="1" placeholder="Message this session…" aria-label="Message to this session" value=${draft} readOnly=${busy}
+        onInput=${(e) => setDraft(e.target.value)} onBlur=${flush}></textarea>
+      <${Mic} text=${draft} disabled=${busy} onText=${setDraft} halt=${micHalt} />
+      <button class="btn pri send" type="button" disabled=${busy || !draft.trim()} onClick=${send}>${busy ? 'Sending…' : 'Send'}</button>
+    </div>
   </div>`
 }
 
@@ -362,6 +497,8 @@ function ItemView({ id }) {
   if (!item) return html`<div class="empty">${st.snap ? 'That item is no longer here.' : 'Loading…'}<div class="row"><a class="btn" href="#/">Back to the list</a></div></div>`
   const late = resolved && item.type === 'question' && item.resolution && item.resolution.kind === 'expired'
   const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'todo' ? TodoBody : item.type === 'paused' ? PausedBody : CompletedBody
+  const chat = hasThread(item) // every item with a session (not a todo): its conversation below the actions
+  const writable = canPost(item) // and a composer at the bottom, except for a paused one (it is resumed at the PC)
   return html`<article class="card">
     <div class="top"><${Chip} type=${item.type} /><span class="age">${resolved ? ageOf(item, 'resolvedAt') : ageOf(item)}</span></div>
     <h2>${c.cardTitle(item)}</h2>
@@ -371,8 +508,10 @@ function ItemView({ id }) {
       ${late ? html`<details><summary class="sub">Answer now (late)</summary><${QuestionBody} item=${item} path="/v1/late-answer" sendLabel="Send late answer" /></details>` : null}
       ${c.isReopenable(item) ? html`<div class="row"><button class="btn" disabled=${st.busy[item.id]} onClick=${async () => { if (await act('/v1/reopen', { id: item.id }, item.id)) go('/') }}>Reopen</button></div>` : null}
     </div>`}
-    ${st.errors[item.id] ? html`<div class="err">${st.errors[item.id]}</div>` : null}
+    ${chat ? html`<${Conversation} key=${item.id} item=${item} defaultOpen=${!!resolved || item.type === 'completed'} />` : null}
+    ${st.errors[item.id] && !writable ? html`<div class="err">${st.errors[item.id]}</div>` : null}
     <div class="row"><${ReadAloud} item=${item} /><a class="btn" href=${resolved ? '#/resolved' : '#/'}>Back</a></div>
+    ${writable ? html`<${Composer} key=${item.id} item=${item} />` : null}
   </article>`
 }
 

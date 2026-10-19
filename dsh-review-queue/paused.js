@@ -25,8 +25,9 @@ export const MAX_AGE_MS = 3 * 24 * 3600 * 1000
 export const RESUME_CONCURRENCY = 3
 export const MAX_LOG_BYTES = 64 * 1024 * 1024
 const DISMISS_RETENTION_MS = 7 * 24 * 3600 * 1000
-const SESSION_LOG = 'session.v4.jsonl.zstd'
-const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+export const SESSION_LOG = 'session.v4.jsonl.zstd'
+/** The first bytes of every zstd frame. */
+export const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 const CLIP = 160
 
 const clip = (s, n = CLIP) => (s.length > n ? s.slice(0, n) + '…' : s)
@@ -41,27 +42,44 @@ const textOf = (content) => (Array.isArray(content) ? content : [])
  * A frame that cannot be read to the end of the file (a write that was cut short) ends the reading: torn.
  * @returns {{ records: object[], torn: boolean }}
  */
-export function parseLog(bytes, { unzip = zlib.zstdDecompressSync } = {}) {
+export function parseLog(bytes, opts) {
+  const { records, torn } = parseLogFrames(bytes, opts)
+  return { records, torn }
+}
+
+/**
+ * parseLog that also says where the complete frames end: end is the byte offset after the last frame that decoded and whose lines all parsed,
+ * complete the number of records up to it. A reader that appends to a log can continue from end later (thread.js); a frame cut short, or one with
+ * a broken line, is not counted in either (its records before the break are still in records).
+ * @returns {{ records: object[], torn: boolean, end: number, complete: number }}
+ */
+export function parseLogFrames(bytes, { unzip = zlib.zstdDecompressSync } = {}) {
   if (typeof unzip !== 'function') throw new Error('no zstd codec in this runtime')
   const starts = []
-  for (let i = bytes.indexOf(MAGIC); i >= 0; i = bytes.indexOf(MAGIC, i + 4)) starts.push(i)
-  if (!starts.length) return { records: [], torn: bytes.length > 0 }
+  for (let i = bytes.indexOf(ZSTD_MAGIC); i >= 0; i = bytes.indexOf(ZSTD_MAGIC, i + 4)) starts.push(i)
+  if (!starts.length) return { records: [], torn: bytes.length > 0, end: 0, complete: 0 }
   const records = []
+  let end = 0
+  let complete = 0
   for (let k = 0; k < starts.length; k++) {
     let text
+    let frameEnd = 0
     for (let j = k + 1; j <= starts.length && text === undefined; j++) {
+      frameEnd = j < starts.length ? starts[j] : bytes.length
       try {
-        text = unzip(bytes.subarray(starts[k], j < starts.length ? starts[j] : bytes.length)).toString('utf8')
+        text = unzip(bytes.subarray(starts[k], frameEnd)).toString('utf8')
         k = j - 1
       } catch { /* a frame cut at a false magic: join the next piece */ }
     }
-    if (text === undefined) return { records, torn: true }
+    if (text === undefined) return { records, torn: true, end, complete }
     for (const line of text.split('\n')) {
       if (!line) continue
-      try { records.push(JSON.parse(line)) } catch { return { records, torn: true } }
+      try { records.push(JSON.parse(line)) } catch { return { records, torn: true, end, complete } }
     }
+    end = frameEnd
+    complete = records.length
   }
-  return { records, torn: false }
+  return { records, torn: false, end, complete }
 }
 
 // ---- classifying a log ---------------------------------------------------------------------------------------------

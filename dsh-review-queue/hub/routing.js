@@ -4,13 +4,17 @@
  * command. reviewed and reopen are hub-local transitions and only tell the owner. Todos are routed by workspace owner.
  * Answers { ok, ... } with the error codes server.js outcome() maps (owner-offline, owner-away, owner-timeout, unknown-outcome).
  * An open item without an owner (the legacy import) whose session no app reports is tried by the coordinator: it is handed the item and
- * becomes its owner, or answers no-session, which the card gets as session-unavailable (the item stays ownerless).
+ * becomes its owner, or answers no-session, which the card gets as session-unavailable (the item stays ownerless). A post is only taken that
+ * way for a done item (it resolves it); to any other ownerless open item it answers session-unavailable at once. open-session and thread
+ * (a view and a read) are only sent to the coordinator: it is not handed the item and does not become its owner. thread and post of a todo are
+ * refused here (no-session, not-a-session) before anything is sent: the coordinator, which does not hold the item, could not tell.
  */
 import { riskOf } from '../risk.js'
+import { postKeyOf } from '../post-key.js'
 
 const HUB_LOCAL = ['reviewed', 'reopen']
-/** Value: the item must still be open (an expired question can still be answered late, any session can be opened). */
-const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'paused-resume': true, 'paused-dismiss': true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'open-session': false }
+/** Value: the item must still be open (an expired question can still be answered late, any session can be opened, the chat of a finished item can be read and continued). */
+const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'paused-resume': true, 'paused-dismiss': true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'open-session': false, thread: false, post: false }
 export const ACTION_KINDS = [...HUB_LOCAL, 'todo', ...Object.keys(OWNER_ACTIONS)]
 
 const risksOf = (item) => (item.type === 'permission' ? riskOf({ toolName: item.payload?.toolName, detail: item.payload?.detail ?? item.payload?.summary, path: item.payload?.path, workspace: item.workspace }) : [])
@@ -47,7 +51,7 @@ export function createRouting({ store, queue, instances, commands }) {
   const argsFor = (kind, body, via, item) => ({
     answer: { answers: body.answers }, 'late-answer': { answers: body.answers },
     approve: { via, confirmed: body.confirmed === true, held: body.held === true }, 'approve-similar': { via, confirmed: body.confirmed === true },
-    reply: { text: body.text }, 'open-session': { sessionId: item.sessionId },
+    reply: { text: body.text }, 'open-session': { sessionId: item.sessionId }, thread: { before: body.before, limit: body.limit, after: body.after, sessionId: item.sessionId }, post: { text: body.text, ...(postKeyOf(body.key) === undefined ? {} : { key: body.key }) },
   })[kind] ?? {}
 
   /**
@@ -67,9 +71,11 @@ export function createRouting({ store, queue, instances, commands }) {
 
   /** The coordinator takes an ownerless open item (it is handed a copy first, commands of one app run in order), runs the action and keeps it on success. */
   async function actOnOrphan(kind, item, body, via, caller) {
+    // A post resolves only a done item (as replied), so only that one is worth taking: any other type would be adopted without anything to show for it.
+    if (kind === 'post' && item.type !== 'completed') return { ok: false, error: 'session-unavailable' }
     const coordinator = instances.coordinator(caller)
     if (!coordinator) return { ok: false, error: 'owner-offline' }
-    if (kind === 'open-session') return send(coordinator, { kind, itemId: item.id, args: argsFor(kind, body, via, item) })
+    if (kind === 'open-session' || kind === 'thread') return send(coordinator, { kind, itemId: item.id, args: argsFor(kind, body, via, item) }) // a view or a read: the item is not adopted
     store.setOwner(item.id, coordinator.id)
     void commands.enqueue(coordinator.id, { kind: 'apply', args: { change: { op: 'adopt', item: store.get(item.id) } }, wait: false })
     const result = await runOwned(kind, store.get(item.id), body, via)
@@ -128,6 +134,7 @@ export function createRouting({ store, queue, instances, commands }) {
       if (HUB_LOCAL.includes(kind)) return hubLocal(kind, id)
       const item = store.get(id)
       if (!item) return { ok: false, error: 'not-found' }
+      if (item.type === 'todo' && (kind === 'thread' || kind === 'post')) return { ok: false, error: kind === 'thread' ? 'no-session' : 'not-a-session' } // a todo has no session of its own yet, whatever its sessionId says
       if (OWNER_ACTIONS[kind] === true && item.status !== 'open') return { ok: false, error: 'not-open' }
       const via = role === 'device' ? 'phone' : 'desktop'
       const refused = guard(kind, item, body, via)

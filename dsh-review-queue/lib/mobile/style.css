@@ -129,6 +129,38 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 .md pre { padding: 10px 12px; background: #0f1114; border: 1px solid var(--line); border-radius: 8px; overflow: auto; }
 .md pre code { padding: 0; background: none; }
 
+/* ---- chat thread: the conversation of a session, and the composer under the card ---- */
+.conversation { margin: 14px 0 0; }
+.conversation > summary { font-weight: 600; }
+.thread { position: relative; }
+.thread .empty { padding: 20px 8px; }
+.thread-scroll { display: flex; flex-direction: column; gap: 10px; max-height: min(60dvh, 560px); overflow-y: auto; overscroll-behavior: contain; padding: 4px 2px 8px; }
+.thread-more { flex: none; align-self: center; }
+.bubble { flex: none; max-width: 88%; padding: 8px 12px; border-radius: 16px; overflow-wrap: anywhere; content-visibility: auto; contain-intrinsic-size: auto 80px; }
+.bubble.user { align-self: flex-end; background: #1c3328; border-bottom-right-radius: 4px; }
+.bubble.assistant { align-self: flex-start; background: var(--panel2); border-bottom-left-radius: 4px; }
+.bubble.pending { opacity: .7; }
+.bubble .utext { white-space: pre-wrap; }
+.bubble .md > :last-child { margin-bottom: 0; }
+.bubble .meta { margin-top: 4px; color: var(--dim); font-size: 12px; }
+.bubble.user .meta { text-align: right; }
+.bubble .trunc { margin-top: 4px; }
+.pill { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); min-height: 36px; padding: 0 14px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: inherit; font-size: 14px; font-weight: 700; box-shadow: 0 2px 8px rgba(0, 0, 0, .5); }
+.thread-note { margin-top: 6px; padding: 6px 10px; background: var(--panel2); border-radius: 8px; }
+
+.composer { position: sticky; bottom: calc(var(--nav) + env(safe-area-inset-bottom)); z-index: 4; margin: 12px -14px -14px; padding: 10px 14px; background: var(--panel); border-top: 1px solid var(--line); border-radius: 0 0 var(--r) var(--r); }
+.composer .err { margin: 0 0 8px; }
+.composer-row { display: flex; align-items: flex-end; gap: 8px; }
+.composer-input { flex: 1; min-width: 0; min-height: var(--tap); max-height: calc(5 * 1.45em + 22px); resize: none; overflow-y: auto; }
+.composer-input[readonly] { opacity: .6; }
+.composer-row .micwrap { position: relative; }
+.composer-row .micwrap .sub { position: absolute; right: 0; bottom: calc(100% + 6px); width: max-content; max-width: 70vw; padding: 4px 8px; background: var(--panel2); border-radius: 8px; }
+.send { flex: none; min-height: var(--tap); }
+/* A text field outside the composer has the focus (view-guard.js watchTyping): the bar gives its room to the keyboard. The composer sticks to the edge then. */
+body.typing nav { display: none; }
+body.typing .app { padding-bottom: 0; }
+body.typing .composer { bottom: 0; }
+
 /* ---- settings ---- */
 .settings section { margin: 0 0 14px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); }
 .settings label.switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: var(--tap); }

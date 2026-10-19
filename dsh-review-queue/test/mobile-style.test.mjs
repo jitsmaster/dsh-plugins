@@ -35,3 +35,17 @@ test('the hold button label stays readable on the progress fill', () => {
 test('the dim text colour has AA contrast on the page and on the card colours', () => {
   for (const bg of ['bg', 'panel', 'panel2']) assert.ok(contrast(variable('dim'), variable(bg)) >= 4.5, bg)
 })
+
+test('the chat bubbles keep AA contrast: text on the user bubble, text on the assistant bubble, and the new-messages pill', () => {
+  assert.ok(contrast(variable('text'), colour(rule('.bubble.user'), 'background')) >= 4.5, 'user bubble')
+  assert.ok(contrast(variable('text'), colour(rule('.bubble.assistant'), 'background')) >= 4.5, 'assistant bubble')
+  assert.ok(contrast(variable('dim'), colour(rule('.bubble.user'), 'background')) >= 4.5, 'time on the user bubble')
+  assert.ok(contrast(variable('accent-ink'), colour(rule('.pill'), 'background')) >= 4.5, 'pill')
+})
+
+test('the Send button and the composer text box are at least 48 px tall', () => {
+  for (const sel of ['.composer-input', '.send']) {
+    const min = /min-height:\s*(?:(\d+)px|var\(--tap\))/.exec(rule(sel))
+    assert.ok(min && (min[1] === undefined || Number(min[1]) >= 48), sel)
+  }
+})

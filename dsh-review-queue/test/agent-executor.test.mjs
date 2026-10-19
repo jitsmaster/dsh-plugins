@@ -97,3 +97,70 @@ test('commands run one at a time, in the order they were given', async () => {
   await Promise.all([slow, quick])
   assert.deepEqual(order, ['start a', 'end a', 'deny b'])
 })
+
+// ---- thread is a read: not serialized, not remembered ----------------------------------------------------------------------------------
+
+test('a slow thread read does not delay an approve queued after it', async () => {
+  const order = []
+  let release
+  const gate = new Promise((r) => { release = r })
+  const executor = createExecutor({
+    queue: { thread: async () => { order.push('thread start'); await gate; order.push('thread end'); return { ok: true, messages: [] } }, approve: () => { order.push('approve'); return { ok: true } } },
+    adapter: {},
+  })
+  const slow = executor.execute(cmd('thread', 'a'))
+  const approved = await executor.execute(cmd('approve', 'b', { via: 'desktop' }))
+  assert.deepEqual(approved, { ok: true })
+  assert.deepEqual(order, ['thread start', 'approve'], 'the approve ran while the read was still going')
+  release()
+  assert.deepEqual(await slow, { ok: true, messages: [] })
+})
+
+test('a thread read does not wait for a slow command that was queued before it', async () => {
+  let release
+  const gate = new Promise((r) => { release = r })
+  const executor = createExecutor({ queue: { reply: async () => { await gate; return { ok: true } }, thread: () => ({ ok: true, messages: [] }) }, adapter: {} })
+  const slow = executor.execute(cmd('reply', 'a', { text: 'x' }))
+  assert.deepEqual(await executor.execute(cmd('thread', 'b')), { ok: true, messages: [] })
+  release()
+  await slow
+})
+
+test('the result of a thread read is not kept: the same cid reads again, and 200 reads push nothing out of the cache', async () => {
+  const reads = []
+  const approvals = []
+  const executor = createExecutor({
+    queue: { thread: (id) => { reads.push(id); return { ok: true, messages: [] } }, approve: (id) => { approvals.push(id); return { ok: true } } },
+    adapter: {},
+  })
+  const approve = cmd('approve', 'keep', { via: 'phone' })
+  await executor.execute(approve)
+  const read = cmd('thread', 'i1')
+  await executor.execute(read)
+  await executor.execute({ ...read })
+  assert.deepEqual(reads, ['i1', 'i1'])
+  for (let i = 0; i < 250; i++) await executor.execute(cmd('thread', 'r' + i))
+  await executor.execute({ ...approve })
+  assert.deepEqual(approvals, ['keep'], 'the approve is still answered from the cache')
+})
+
+test('a post is still serialized and cached by cid like any other accepted command', async () => {
+  const order = []
+  let release
+  const gate = new Promise((r) => { release = r })
+  const posts = []
+  const executor = createExecutor({
+    queue: { post: async (id, text) => { posts.push(text); order.push('post start'); await gate; order.push('post end'); return { ok: true } }, deny: () => { order.push('deny'); return { ok: true } } },
+    adapter: {},
+  })
+  const p = cmd('post', 'a', { text: 'hello' })
+  const first = executor.execute(p)
+  const queued = executor.execute(cmd('deny', 'b'))
+  await new Promise((r) => setTimeout(r, 30))
+  assert.deepEqual(order, ['post start'])
+  release()
+  await Promise.all([first, queued])
+  assert.deepEqual(order, ['post start', 'post end', 'deny'])
+  assert.deepEqual(await executor.execute({ ...p }), { ok: true })
+  assert.deepEqual(posts, ['hello'], 'delivered again after a lost response: it does not run twice')
+})

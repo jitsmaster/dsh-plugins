@@ -53,7 +53,7 @@ let haltRunning = null
  * One dictation controller (one per Mic button).
  * @param {{ win?: object, onText?: (text: string, isFinal: boolean) => void, onState?: (listening: boolean) => void,
  *   onError?: (message: string | null) => void, lang?: string, ios?: boolean }} opts
- * @returns {{ start: (base?: string) => void, stop: () => void, readonly listening: boolean } | null} null without speech recognition
+ * @returns {{ start: (base?: string) => void, stop: () => void, halt: () => void, readonly listening: boolean } | null} null without speech recognition
  */
 export function createDictation({ win, onText, onState, onError, lang, ios } = {}) {
   const Recognition = dictationSupport(win)
@@ -70,7 +70,10 @@ export function createDictation({ win, onText, onState, onError, lang, ios } = {
     if (haltRunning === halt) haltRunning = null
     setListening(false)
   }
-  /** Stops this dictation for good (another one is starting, or the screen is gone): abort drops what was not recognised yet. */
+  /**
+   * Stops this dictation for good (another one is starting, a send is about to happen, the box is disabled or the screen is gone): abort drops
+   * what was not recognised yet, and nothing the engine reports afterwards (a late result, an error, onend) reaches onText or onError.
+   */
   function halt() {
     const s = session
     if (!s || s.ended) return
@@ -115,11 +118,11 @@ export function createDictation({ win, onText, onState, onError, lang, ios } = {
       if (onError) onError('Could not start dictation.')
     }
   }
-  /** Asks the engine to stop: the last result still arrives, and onend turns the listening state off. */
+  /** Asks the engine to stop: the last result still arrives, and onend turns the listening state off (halt() is the one that drops it). */
   function stop() {
     if (!session || session.ended) return
     try { session.rec.stop() } catch { /* already stopped */ }
   }
 
-  return { start, stop, get listening() { return listening } }
+  return { start, stop, halt, get listening() { return listening } }
 }

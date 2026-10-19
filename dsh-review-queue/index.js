@@ -40,6 +40,7 @@ import { createPushStore, loadOrCreateVapid, jsonFileIo } from './hub/push.js'
 import { createPushRoutes } from './hub/push-routes.js'
 import { createFileLog } from './filelog.js'
 import { STALE_MS, createDismissals, createPausedTracker, scanSessionLogs } from './paused.js'
+import { readThread } from './thread.js'
 import { createTaskbarBadge } from './taskbar.js'
 
 export const name = 'review-queue'
@@ -168,7 +169,9 @@ export function createReviewQueuePlugin(ctx, config = {}) {
       dismissals: createDismissals({ io: stateDir ? fileIo(join(stateDir, 'paused-dismissed.json')) : undefined }),
     })
     : undefined
-  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, titlesOf, sparcText, log, paused, ...(config.ui ? { ui: config.ui } : {}) })
+  // The chat view of the phone reads the thread of a session from the same folder.
+  const threadOf = (opts) => readThread({ root: join(dshHome, 'sessions'), log, ...opts })
+  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, titlesOf, sparcText, log, paused, threadOf, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }

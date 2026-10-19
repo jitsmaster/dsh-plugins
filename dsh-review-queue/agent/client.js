@@ -1,7 +1,8 @@
 /**
  * The agent's connection to the hub (docs/hub.md 6.1, 10): register with a full sync of the local store, push ops from the outbox
  * (in batches, acknowledged by the hub, a full sync when the hub asks for one), long-poll commands (the poll is also the heartbeat),
- * run them one at a time and report the result after the ops they caused. Any failure degrades the client, which reconnects with a
+ * run them one at a time and report the result after the ops they caused (a `thread` command, a slow read that causes no ops, runs beside that
+ * line instead: at most 2 at once, the rest wait among the thread commands only). Any failure degrades the client, which reconnects with a
  * backoff (1 s to 10 s by default) and syncs again; the local store keeps everything meanwhile. States: stopped, connecting,
  * connected, degraded, upgrade-required (the hub is newer), superseded (a newer instance of this app replaced this one).
  * Sessions: every full sync lists the sessions this app can reach (sessionIds(): live agents, workspaces, captured), so the hub can hand it
@@ -17,6 +18,12 @@ const AGENT = '/hub/v1/agent/'
 const BATCH = 100
 const SEEN_CIDS = 500
 const CALL_TIMEOUT_MS = 45_000
+/** Thread reads in flight at once (they are slow reads that cause no ops; see runThreads). */
+const MAX_THREAD_READS = 2
+/** Thread commands that may wait for a slot; the next one is answered busy at once. */
+const MAX_THREADS_WAITING = 8
+/** A thread read that has not settled by then gives its slot back (its late result is discarded; the hub answered at its own timeout, 15 s). */
+const THREAD_READ_TIMEOUT_MS = 20_000
 const SESSION_CHECK_MS = 15_000
 const RESYNC_EVERY_MS = 60_000
 const sleep = (ms, signal) => new Promise((resolve) => {
@@ -26,14 +33,17 @@ const sleep = (ms, signal) => new Promise((resolve) => {
 
 /**
  * @param {{ baseUrl: string, secret: string, instanceKey: string, adapter: any, executor: any, instanceId?: string, label?: string, pluginVersion?: string, pid?: number,
- *   protocol?: number, workspaces?: () => any[], sessionIds?: () => string[], sessionCheckMs?: number, resyncEveryMs?: number, fetch?: typeof fetch, backoff?: { minMs: number, maxMs: number }, waitMs?: number, log?: (line: string) => void }} opts
+ *   protocol?: number, workspaces?: () => any[], sessionIds?: () => string[], sessionCheckMs?: number, resyncEveryMs?: number, fetch?: typeof fetch, backoff?: { minMs: number, maxMs: number }, waitMs?: number, log?: (line: string) => void,
+ *   now?: () => number, timers?: { setTimeout: Function, clearTimeout: Function } }} opts now and timers are for the thread queue (deadlines, the read timeout); tests inject them
  */
-export function createAgentClient({ baseUrl, secret, instanceKey, adapter, executor, instanceId = randomBytes(8).toString('hex'), label, pluginVersion, pid = process.pid, protocol = PROTOCOL, workspaces = () => [], sessionIds = () => [], sessionCheckMs = SESSION_CHECK_MS, resyncEveryMs = RESYNC_EVERY_MS, fetch, backoff = { minMs: 1000, maxMs: 10_000 }, waitMs = 25_000, log = () => {} }) {
+export function createAgentClient({ baseUrl, secret, instanceKey, adapter, executor, instanceId = randomBytes(8).toString('hex'), label, pluginVersion, pid = process.pid, protocol = PROTOCOL, workspaces = () => [], sessionIds = () => [], sessionCheckMs = SESSION_CHECK_MS, resyncEveryMs = RESYNC_EVERY_MS, fetch, backoff = { minMs: 1000, maxMs: 10_000 }, waitMs = 25_000, log = () => {}, now = Date.now, timers = globalThis }) {
   const transport = createTransport({ baseUrl, secret, protocol, instanceId, fetch })
   const mirror = createMirror({ transport, waitMs, backoff, log })
   const stateListeners = new Set()
   const seen = new Set() // cids already accepted
   const pending = []
+  const threads = [] // thread commands waiting for one of the MAX_THREAD_READS slots
+  let threadReads = 0
   let state = 'stopped'
   let running = false
   let connecting = false
@@ -80,6 +90,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     newCycle()
     mirror.stop()
     pending.length = 0
+    threads.length = 0
     connecting = false
     log('hub connection ended: ' + next)
     setState(next)
@@ -90,6 +101,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     setState('degraded')
     mirror.stop()
     pending.length = 0
+    threads.length = 0
     void connect()
   }
 
@@ -189,6 +201,13 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     if (seen.has(cmd.cid)) return
     seen.add(cmd.cid)
     if (seen.size > SEEN_CIDS) seen.delete(seen.values().next().value)
+    if (cmd.kind === 'thread') {
+      threads.push(cmd)
+      runThreads()
+      // Past the bound the newest one is turned away at once (late ones do not count: runThreads dropped them).
+      if (threads.length > MAX_THREADS_WAITING) { threads.pop(); void report(cmd.cid, { ok: false, error: 'busy' }) }
+      return
+    }
     pending.push(cmd)
     void drain()
   }
@@ -201,6 +220,32 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
       } catch { await sleep(backoff.minMs, ctl.signal) }
     }
     degrade('result')
+  }
+  /**
+   * Starts waiting thread commands while a slot is free. A thread read neither holds up the commands in drain() nor waits behind them: it causes
+   * no ops (nothing to flush first) and its result is reported on its own. A result that comes after the connection was replaced is dropped.
+   */
+  function runThreads() {
+    // A command past its deadline was answered by the hub itself (owner-timeout / unknown-outcome): reading it now would be for nobody.
+    for (let i = threads.length - 1; i >= 0; i--) if (Number.isFinite(threads[i].deadline) && now() >= threads[i].deadline) threads.splice(i, 1)
+    while (threads.length && threadReads < MAX_THREAD_READS && state === 'connected') {
+      const cmd = threads.shift()
+      const cycle = ctl
+      threadReads++
+      let released = false
+      const release = () => { if (released) return; released = true; threadReads--; runThreads() }
+      const timer = timers.setTimeout(release, THREAD_READ_TIMEOUT_MS) // a read that never settles frees its slot; its late result is dropped below
+      timer?.unref?.()
+      void (async () => {
+        try {
+          const result = await executor.execute(cmd)
+          if (!released && state === 'connected' && cycle === ctl) await report(cmd.cid, result)
+        } finally {
+          timers.clearTimeout(timer)
+          release()
+        }
+      })()
+    }
   }
   async function drain() {
     if (draining) return
@@ -245,6 +290,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
       newCycle()
       mirror.stop()
       pending.length = 0
+      threads.length = 0
       connecting = false
       setState('stopped')
     },

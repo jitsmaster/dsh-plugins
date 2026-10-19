@@ -76,3 +76,11 @@ test('the hub errors have their own words', () => {
   assert.equal(T.errorText(504, { ok: false, error: 'unknown-outcome' }), 'Sent, but no confirmation: refresh to check.')
   assert.match(T.errorText(403, { ok: false, error: 'local-only' }), /only .* on the computer/)
 })
+
+test('the codes of a follow-up to a session (post and reply) have their own words, not "Could not do that (code)"', () => {
+  const { T } = load()
+  assert.equal(T.errorText(409, { ok: false, error: 'post-failed' }), 'The message could not be sent to the session.')
+  assert.match(T.errorText(409, { ok: false, error: 'not-a-session' }), /not a session/i)
+  assert.match(T.errorText(409, { ok: false, error: 'paused' }), /Resume it at the PC first\./)
+  assert.match(T.errorText(409, { ok: false, error: 'busy' }), /already on its way|try again/i)
+})

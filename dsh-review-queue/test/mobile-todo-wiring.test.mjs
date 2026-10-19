@@ -157,10 +157,10 @@ test('the Mic button shows a listening state: aria-pressed, the .mic and .mic on
   assert.match(mic, /<button/)
 })
 
-test('the Mic stops listening when it is removed (unmount), so a left screen never keeps the microphone', () => {
+test('the Mic stops listening when it is removed (unmount), so a left screen never keeps the microphone (halt: abort, no late result)', () => {
   const mic = body(views, 'Mic')
   assert.match(mic, /useEffect\(/)
-  assert.match(mic, /return\s*\(\)\s*=>\s*[^;\n]*stop\(\)|=>\s*\{[^}]*\.stop\(\)/)
+  assert.match(mic, /return\s*\(\)\s*=>\s*[^;\n]*(?:stop|halt)\(\)|=>\s*\{[^}]*\.(?:stop|halt)\(\)/)
 })
 
 test('the Mic starts dictation from the current text and hands the recognised text to the box, and nothing else', () => {
@@ -180,20 +180,20 @@ test('dictation never sends: the Mic has no act/fetch/go/send, no endpoint and n
   assert.doesNotMatch(mic, /\bsubmit\w*\s*\(/i)
 })
 
-test('the three free-text boxes each have a Mic: the todo text, the session reply and every "Other answer…" input', () => {
+test('the three free-text boxes each have a Mic: the todo text, the session composer and every "Other answer…" input', () => {
   assert.match(body(views, 'NewTodoView'), /<\$\{Mic\}/)
-  const reply = body(views, 'CompletedBody')
+  const reply = body(views, 'Composer')
   assert.match(reply, /<\$\{Mic\}/)
-  assert.match(reply, /Reply to this session…/)
+  assert.match(reply, /Message this session…/)
   const question = body(views, 'QuestionBody')
   assert.match(question, /<\$\{Mic\}/)
   assert.match(question, /Other answer…/)
   assert.ok((views.match(/<\$\{Mic\}/g) || []).length >= 3, 'at least three uses')
 })
 
-test('a Mic callback only edits the draft: in the reply and answer boxes it uses the same setters as typing', () => {
-  const reply = body(views, 'CompletedBody')
-  assert.match(reply, /<\$\{Mic\}[^>]*onText=\$\{[^}]*(?:replies|set\()[^}]*\}/, 'the reply box is filled through the replies draft')
+test('a Mic callback only edits the draft: in the composer and answer boxes it uses the same setters as typing', () => {
+  const reply = body(views, 'Composer')
+  assert.match(reply, /<\$\{Mic\}[^>]*onText=\$\{setDraft\}/, 'the composer is filled through the same draft setter as typing')
   const question = body(views, 'QuestionBody')
   assert.match(question, /<\$\{Mic\}[^>]*onText=\$\{[^}]*(?:setDraft|custom)[^}]*\}/, 'an answer box is filled through setDraft')
   for (const src of [reply, question, body(views, 'NewTodoView')]) {

@@ -36,7 +36,7 @@ test('/m redirects to /m/ and /m/ serves the page', async () => {
 })
 
 test('scripts, styles, manifest, icons and the overlay bundle are served with the right types', async () => {
-  const types = { 'app.js': /javascript/, 'api.js': /javascript/, 'core.js': /javascript/, 'views.js': /javascript/, 'style.css': /text\/css/, 'manifest.webmanifest': /manifest\+json/, 'icon-192.png': /image\/png/, 'icon-512.png': /image\/png/, 'vendor/preact-htm.js': /javascript/, 'overlay.js': /javascript/, 'settings.js': /javascript/, 'hold.js': /javascript/, 'push-client.js': /javascript/, 'sw.js': /javascript/, 'auth.js': /javascript/, 'pairing.js': /javascript/, 'phone-panel.js': /javascript/ }
+  const types = { 'app.js': /javascript/, 'api.js': /javascript/, 'core.js': /javascript/, 'views.js': /javascript/, 'style.css': /text\/css/, 'manifest.webmanifest': /manifest\+json/, 'icon-192.png': /image\/png/, 'icon-512.png': /image\/png/, 'vendor/preact-htm.js': /javascript/, 'overlay.js': /javascript/, 'settings.js': /javascript/, 'hold.js': /javascript/, 'push-client.js': /javascript/, 'sw.js': /javascript/, 'auth.js': /javascript/, 'pairing.js': /javascript/, 'thread.js': /javascript/, 'phone-panel.js': /javascript/ }
   for (const [name, type] of Object.entries(types)) {
     const res = await fetch(base + '/m/' + name)
     assert.equal(res.status, 200, name)
