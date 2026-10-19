@@ -207,7 +207,7 @@ function CompletedBody({ item }) {
   const busy = st.busy[item.id]
   // Writing back to the session is the composer under the card (ItemView): this body keeps the summary, the full reply and Reviewed.
   return html`<div>
-    <div class="text">${item.summary ? inlineNodes(item.summary) : 'Finished.'}</div>
+    <div class="text" style="white-space:pre-line">${item.summary ? inlineNodes(item.summary) : 'Finished.'}</div>
     ${item.payload && item.payload.reply ? html`<details open=${(item.payload.reply || '').length < 1500}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>

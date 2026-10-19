@@ -856,7 +856,7 @@ window.__ModuleLoader__.load({
 			const reply = st.replies[item.id] || "";
 			const send = async () => { if (await act("/v1/reply", { id: item.id, text: reply }, item.id, { advance: true })) set({ replies: { ...state.replies, [item.id]: "" } }); };
 			return h(React.Fragment, null,
-				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.summary ? mdNodes(item.summary) : "Finished."),
+				h("div", { className: "rq-text" + (full ? "" : " rq-clamp"), style: { whiteSpace: "pre-line" } }, item.summary ? mdNodes(item.summary) : "Finished."), // pre-line: the action items sit in a paragraph of their own
 				full ? h(React.Fragment, null,
 					item.payload && item.payload.reply ? h("details", { open: detailsOpen(st.replyOpen, item), onToggle: (e) => { const now = !!e.currentTarget.open; if (now !== detailsOpen(state.replyOpen, item)) set({ replyOpen: { ...state.replyOpen, [item.id]: now } }); } }, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-replybox" }, h(Md, { text: item.payload.reply }))) : null,
 					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (reply.trim() && !busy) send(); } } })) : null,

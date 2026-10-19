@@ -21,6 +21,20 @@ import { stripHold } from './hold.js'
 import { createPrSchedule, installPrScheduleHooks, taskTitle, textOf } from './pr-schedule.js'
 
 export const PR_TITLE = /^PR \d+/
+/**
+ * The title the Task list (dsh-review-queue) gives a session started from an Azure DevOps ticket: "Fix: <ticket title> - <ticket number>",
+ * with the numbered-continuation suffix (" - 2") the plugin may have added. The ticket number has 3 or more digits, a counter at most 2.
+ */
+export const TICKET_TITLE = /^(Fix: .+ - \d{3,9})(?: - (\d{1,2}))?$/
+
+/**
+ * The title of the session that continues a PR: "PR <id>"; for ticket work ("Fix: <title> - <number>") the PR number is put in front of
+ * the original title: "PR <id> - Fix: <title> - <number>" (still a PR title, so the poll, the never-respawn rule and the PR lookups apply).
+ */
+export function prTitleFor(old, prId) {
+  const title = (stripHold(typeof old === 'string' ? old : '') ?? '').trim()
+  return TICKET_TITLE.test(title) && !PR_TITLE.test(title) ? `PR ${prId} - ${title}` : `PR ${prId}`
+}
 const ADO_REPO = 'https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc'
 /** Definition id of the CI AI-review pipeline ("AI review pipeline 80"). */
 const CI_PIPELINE_ID = 80
@@ -372,13 +386,15 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     return entry.inFlight
   }
 
-  /** Rename to "PR <id>" unless the title already is a PR title. Returns true when renamed. */
+  /** Rename to "PR <id>" (ticket work: "PR <id> - <title>") unless the title already is a PR title. Returns true when renamed. */
   async function renameToPr(agent, prId) {
-    if (PR_TITLE.test(titleOf(ctx, agent) ?? '')) return false
+    const old = titleOf(ctx, agent) ?? ''
+    if (PR_TITLE.test(old)) return false
     try {
       const sc = ctx.get('sessionController') ?? ctx.sessionController
-      await sc.rename({ sessionId: agent.id, title: `PR ${prId}` })
-      trace(`renamed ${agent.id} to "PR ${prId}"`)
+      const title = prTitleFor(old, prId)
+      await sc.rename({ sessionId: agent.id, title })
+      trace(`renamed ${agent.id} to "${title}"`)
       return true
     } catch (error) {
       trace(`rename failed: ${scrub(error)}`)

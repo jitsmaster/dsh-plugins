@@ -10,7 +10,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { isPrSession, PR_TITLE } from './pr.js'
+import { isPrSession, PR_TITLE, TICKET_TITLE, prTitleFor } from './pr.js'
 import { firstRequest, afterPrTitle } from './groups.js'
 import { recordSpawn } from './spawned.js'
 import { stripHold } from './hold.js'
@@ -111,7 +111,11 @@ export function continuationTitle(old) {
   old = stripHold(old)
   const m = /^(.*?)\s*-\s*(\d+)$/.exec(old)
   // A numbered "PR 12 - 2" would itself be PR-titled (never respawned, polled), so prefix instead.
-  return PR_TITLE.test(old) ? `Continue ${old}` : m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
+  if (PR_TITLE.test(old)) return `Continue ${old}`
+  // "Fix: <ticket title> - 12345": the ticket number is not a counter, so the first continuation adds one (" - 2").
+  const ticket = TICKET_TITLE.exec(old)
+  if (ticket) return `${ticket[1]} - ${ticket[2] ? Number(ticket[2]) + 1 : 2}`
+  return m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
 }
 
 export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups, waitForPr, handoffs }) {
@@ -423,7 +427,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         const titles = ctx.get('sessionTitle')
         const old = stripHold(titles?.get(agent.session)?.title)
         if (old) {
-          const next = job.kind === 'pr' ? `PR ${job.prId}` : job.kind === 'after' ? afterPrTitle(old, job.prId) : continuationTitle(old)
+          const next = job.kind === 'pr' ? prTitleFor(old, job.prId) : job.kind === 'after' ? afterPrTitle(old, job.prId) : continuationTitle(old)
           await sc.rename({ sessionId: created.sessionId, title: next })
           trace(`renamed "${old}" -> "${next}"`)
         } else trace('source has no title; not renaming')

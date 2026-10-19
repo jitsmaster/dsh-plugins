@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cleanText, lastParagraph, recommendedOf, spokenFor } from '../speech.js'
+import { actionParagraph, cleanText, lastParagraph, recommendedOf, spokenFor } from '../speech.js'
 
 test('cleanText strips control and invisible characters and collapses whitespace', () => {
   assert.equal(cleanText('a\u200Bb\u0007  c\n\n d'), 'ab c d')
@@ -193,4 +193,16 @@ test('cleanText keepAction never leaves a span open when it cuts the text', () =
 
 test('lastParagraph keepAction keeps the marked part of the last paragraph', () => {
   assert.equal(lastParagraph('Done.\n\nAll set. <u>**Restart it.**</u>', { keepAction: true }), 'All set. <u>**Restart it.**</u>')
+})
+
+test('actionParagraph moves the action items into their own last paragraph', () => {
+  assert.equal(actionParagraph('Done. <u>**Restart it.**</u> Thanks.'), 'Done. Thanks.\n\n<u>**Restart it.**</u>')
+  assert.equal(actionParagraph('<u>**Only this.**</u>'), '<u>**Only this.**</u>')
+  assert.equal(actionParagraph('Nothing to do.'), 'Nothing to do.')
+  assert.equal(actionParagraph('Done. <u>**Pick?**</u>.'), 'Done.\n\n<u>**Pick?**</u>')
+  assert.equal(actionParagraph(undefined), '')
+})
+
+test('speech reads a summary with a paragraph break as one run of words', () => {
+  assert.equal(cleanText('Done.\n\n<u>**Restart it.**</u>'), 'Done. Restart it.')
 })

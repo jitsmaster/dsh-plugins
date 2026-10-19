@@ -22,8 +22,8 @@ const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, tuner, titlesOf, sparcText, suggestTimeoutMs, log, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
-  const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log })
+export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, tuner, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+  const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
   const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)
   const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
