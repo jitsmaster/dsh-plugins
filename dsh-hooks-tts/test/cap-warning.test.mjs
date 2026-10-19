@@ -593,3 +593,15 @@ test('ahead: the handoff is spawned like any other once the note exists', async 
   await h.stop(365_000)
   assert.equal(h.calls.create, 1)
 })
+
+// ---- ticket sessions: "Fix: <ticket title> - <number>" ----
+
+test('prCreated: a ticket session gets "PR 42 - Fix: ... - 12345" for the PR session and "<title> - after PR 42" for the follow-up', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  const p = await startHandover(h, 'Fix: Login redirect loops - 12345')
+  writeFileSync(p.pr, '# pr\nMode: plain\n')
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
+  h.setPromptSink([])
+  await h.stop(10_000)
+  assert.deepEqual(h.calls.rename, [{ sessionId: 's2', title: 'PR 42 - Fix: Login redirect loops - 12345' }, { sessionId: 's3', title: 'Fix: Login redirect loops - 12345 - after PR 42' }])
+})
