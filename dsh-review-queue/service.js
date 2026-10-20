@@ -3,6 +3,7 @@
  * own except the focused item; items live in the store and pending requests in capture.
  */
 import { randomUUID } from 'node:crypto'
+import { safeReason } from './tip.js'
 import { spokenFor, titleFor, fullTextFor, chunkForSpeech, tipSentences } from './speech.js'
 import { riskOf } from './risk.js'
 import { createTodos, MAX_TODO } from './todo.js'
@@ -28,7 +29,7 @@ const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, tips, sessions, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, tips, tipExpand, sessions, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
   const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)
@@ -131,6 +132,14 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     for (const item of store.snapshot().open) if (item.type === 'pr-merged' && archived.has(String(item.sessionId)) && store.resolve(item.id, { kind: 'archived', by: 'elsewhere' })) log?.('service: merged-PR item ' + item.id + ' closed: its session was archived elsewhere')
   }
 
+  /** One call of the tip expander; a missing expander is no model, a throwing one a generic error (the provider's text can carry endpoints or key fragments: only the log gets a short detail). */
+  async function tipCall(call, method) {
+    if (typeof tipExpand?.[method] !== 'function') return { ok: false, error: 'no model available' }
+    try { return await call() } catch (error) {
+      log?.('service: tip action failed: ' + safeReason(error, new Set())) // the code or name only: a provider's message can carry an endpoint or a key
+      return { ok: false, error: 'LLM error' }
+    }
+  }
   /** The tip to show (asking for a new one when it is older than its slot); undefined without a generator or a tip. Never throws. */
   const tipNow = () => { try { return tips?.current() } catch { return undefined } }
 
@@ -179,9 +188,14 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       if (!speaker) return { ok: false, error: 'no-speaker' }
       // The title, then one chunk per sentence (an over-long sentence is still cut at spaces): the speaker plays them one after the other, so the tip is read a sentence at a time.
       const title = String(tip.title ?? '').trim()
-      const chunks = [...(title ? chunkForSpeech(/[.!?:;]$/.test(title) ? title : title + '.') : []), ...tipSentences(tip.body).flatMap((s) => chunkForSpeech(s))]
+      const longer = Array.isArray(tip.deeper?.paragraphs) ? tip.deeper.paragraphs : [] // the longer text (Go deeper) follows the body
+      const chunks = [...(title ? chunkForSpeech(/[.!?:;]$/.test(title) ? title : title + '.') : []), ...[tip.body, ...longer].flatMap((text) => tipSentences(text).flatMap((s) => chunkForSpeech(s)))]
       return speakAs(TIP_READING + tip.id, chunks, false)
     },
+    /** "Go deeper": a longer explanation of the current tip (tip-expand.js), kept on the tip: { ok, deeper } | { ok: false, error }. This app's own model, so never forwarded to the hub. */
+    tipDeeper: (id) => tipCall(() => tipExpand.deeper(String(id)), 'deeper'),
+    /** "Use in my code": a todo text that applies the current tip in a workspace (it only fills the New todo form): { ok, text, workspaceId, source } | { ok: false, error }. */
+    tipTodo: (id, workspaceId, opts) => tipCall(() => tipExpand.draft(String(id), workspaceId, opts), 'draft'),
     /** Ends the reading of the tip (not of an item): the hub list stopped being empty, so the tip is gone from the screen. */
     stopTip() {
       if (!isTipReading()) return { ok: true, stopped: false }

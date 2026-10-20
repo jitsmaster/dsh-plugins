@@ -6,20 +6,21 @@ import { createHubQueue } from '../agent/hub-queue.js'
 function make(connected = true) {
   const listeners = new Set()
   const local = {
-    tip: () => ({ id: 't1' }), stopTip: () => { local.stopped++ ; return { ok: true } }, stopped: 0, watched: 0, watchSessions: () => { local.watched++ }, snapshotArgs: [], readTip: (id) => ({ ok: true, from: 'local', id }), readingId: () => localReading,
+    tip: () => ({ id: 't1' }), stopTip: () => { local.stopped++ ; return { ok: true } }, stopped: 0, watched: 0, watchSessions: () => { local.watched++ }, snapshotArgs: [], tipDeeper: (id) => ({ ok: true, deeper: id }), tipTodo: (id, ws, opts) => ({ ok: true, id, ws, ...(opts ? { opts } : {}) }), readTip: (id) => ({ ok: true, from: 'local', id }), readingId: () => localReading,
     snapshot: (opts) => { local.snapshotArgs.push(opts); return { snapshotId: 'L', open: [], resolved: [], reading: localReading, tip: { id: 't1' } } },
     onChange: (l) => { listeners.add(l); return () => listeners.delete(l) }, stop: () => ({ ok: true }), uiState: () => ({ seq: 0 }),
   }
   let localReading
+  let hubWorkspaces = []
   let mirrorSnap = connected ? { snapshotId: 'e:1', open: [], resolved: [] } : undefined
   const mirrorListeners = new Set()
   const client = {
     state: connected ? 'connected' : 'stopped',
-    mirror: { ready: connected, snapshot: () => mirrorSnap, workspaces: () => [], onChange: (l) => { mirrorListeners.add(l); return () => mirrorListeners.delete(l) } },
+    mirror: { ready: connected, snapshot: () => mirrorSnap, workspaces: () => hubWorkspaces, onChange: (l) => { mirrorListeners.add(l); return () => mirrorListeners.delete(l) } },
     onState: () => () => {}, call: async () => ({ ok: true }),
   }
   const queue = createHubQueue({ local, client, speaker: { speak: () => ({ ok: true }), stop() {} }, controllerOf: () => ({}) })
-  return { queue, local, setReading: (v) => { localReading = v }, setMirror: (snap) => { mirrorSnap = snap; mirrorListeners.forEach((l) => l()) } }
+  return { queue, local, setHubWorkspaces: (list) => { hubWorkspaces = list }, setReading: (v) => { localReading = v }, setMirror: (snap) => { mirrorSnap = snap; mirrorListeners.forEach((l) => l()) } }
 }
 
 test('tip() and readTip() go to the local service in hub mode', () => {
@@ -68,4 +69,30 @@ test('a tip being read stops when the merged hub list stops being empty, even th
   assert.equal(local.stopped, 0, 'still empty: keep reading')
   setMirror({ snapshotId: 'e:3', open: [{ id: 'a', seq: 1, type: 'completed', status: 'open', createdAt: 1, sessionId: 's', summary: 'x', payload: {}, owner: 'bbbb2222' }], resolved: [] })
   assert.equal(local.stopped, 1)
+})
+
+test('tipDeeper() and tipTodo() go to the local service in hub mode (its own model, never the hub)', () => {
+  const { queue } = make(true)
+  assert.deepEqual(queue.tipDeeper('t1'), { ok: true, deeper: 't1' })
+  assert.deepEqual(queue.tipTodo('t1', 'w1'), { ok: true, id: 't1', ws: 'w1' })
+})
+
+test('in hub mode a workspace of the hub list (id "<app>/<id>") is drafted from its listed title, which the local registry does not know', () => {
+  const { queue, setHubWorkspaces } = make(true)
+  setHubWorkspaces([{ id: 'ab12/w1', title: 'Alpha (Laptop)' }, { id: 'cd34/w2', title: 'Beta' }])
+  assert.deepEqual(queue.tipTodo('t1', 'ab12/w1'), { ok: true, id: 't1', ws: 'ab12/w1', opts: { title: 'Alpha (Laptop)' } })
+  assert.deepEqual(queue.tipTodo('t1', 'cd34/w2'), { ok: true, id: 't1', ws: 'cd34/w2', opts: { title: 'Beta' } })
+})
+
+test('in hub mode an id that is not in the hub list gets no title (the local service refuses it)', () => {
+  const { queue, setHubWorkspaces } = make(true)
+  setHubWorkspaces([{ id: 'ab12/w1', title: 'Alpha' }])
+  assert.deepEqual(queue.tipTodo('t1', 'zzzz/w9'), { ok: true, id: 't1', ws: 'zzzz/w9' })
+  assert.deepEqual(queue.tipTodo('t1', undefined), { ok: true, id: 't1', ws: undefined })
+})
+
+test('without a hub no title is passed: the local registry is the only source', () => {
+  const { queue, setHubWorkspaces } = make(false)
+  setHubWorkspaces([{ id: 'ab12/w1', title: 'Alpha' }])
+  assert.deepEqual(queue.tipTodo('t1', 'ab12/w1'), { ok: true, id: 't1', ws: 'ab12/w1' })
 })

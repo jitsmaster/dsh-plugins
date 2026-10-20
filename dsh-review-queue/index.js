@@ -33,6 +33,7 @@ import { createStore } from './store.js'
 import { createSummarizer } from './summary.js'
 import { createTuner } from './todo-tune.js'
 import { createTipper, recentTopics } from './tip.js'
+import { createExpander } from './tip-expand.js'
 import { createSessionCounter } from './sessions.js'
 import { installCapture, cancelStalePending } from './capture.js'
 import { installTicketSessions } from './ticket-session.js'
@@ -205,9 +206,11 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   }
   // The tip of the day of the empty list (tip.js): this app's own model (none while the llm service is missing: built-in tips), steered by the recent work topics. config.tipDeps overrides parts for tests.
   const tipper = createTipper({ llm: () => (llmService() ? llm : undefined), topicsOf: () => recentTopics({ store, titlesOf }), log, ...(config.tipDeps ?? {}) })
+  // "Go deeper" and "Use in my code" on that tip (tip-expand.js): the same model and topics; config.tipExpandDeps overrides parts for tests.
+  const tipExpand = createExpander({ llm: () => (llmService() ? llm : undefined), tips: tipper, topicsOf: () => recentTopics({ store, titlesOf }), workspacesOf: () => listWorkspaces(registryOf) ?? [], log, ...(config.tipExpandDeps ?? {}) })
   // "N working / M open": this app's sessions from the session controller, cached for 2 s (sessions.js); config.sessionCounter: { ttlMs, minEmitMs } for tests.
   const sessionCounter = createSessionCounter({ controllerOf, registryOf, log, ...(config.sessionCounter ?? {}) })
-  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, tips: tipper, sessions: sessionCounter, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }

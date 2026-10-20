@@ -15,7 +15,7 @@ const ASSETLINKS = '/.well-known/assetlinks.json'
 const AGENT_PREFIX = '/hub/v1/agent/'
 const SHUTDOWN = '/hub/v1/shutdown'
 /** The desktop app owns the speakers, the screen and its own selection (D7): never the hub's business. */
-const LOCAL_ONLY = new Set(['read', 'read-tip', 'stop', 'ui', 'focus'])
+const LOCAL_ONLY = new Set(['read', 'read-tip', 'tip-deeper', 'tip-todo', 'stop', 'ui', 'focus'])
 /**
  * What a paired phone may do with an item. It may start todos (todo, todo-confirm, todo-cancel: hub/routing.js sends them to the
  * owner app, or for "Choose for me" to the most recently desktop-active one) but never open sessions: open-session, and every action

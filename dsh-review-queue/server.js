@@ -76,6 +76,8 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/post': (b) => queue.post(String(b.id), b.text, { key: b.key }),
     '/v1/read': (b) => queue.read(String(b.id)),
     '/v1/read-tip': (b) => queue.readTip(String(b.id)),
+    '/v1/tip-deeper': (b) => queue.tipDeeper(String(b.id)),
+    '/v1/tip-todo': (b) => queue.tipTodo(String(b.id), workspaceOf(b)),
     '/v1/stop': () => queue.stop(),
     '/v1/ui': (b) => queue.uiCommand(b.cmd),
     '/v1/reopen': (b) => queue.reopen(String(b.id)),

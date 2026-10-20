@@ -17,6 +17,9 @@ import { BUILTIN_TIPS } from './tip-builtin.js'
 export const CATEGORIES = Object.freeze(['algorithms', 'ai', 'agents'])
 export const TIP_TTL_MS = 5 * 60_000
 export const TIP_TIMEOUT_MS = 30_000
+/** A tip with its longer text open, or a todo drafted from it, stays on screen this long after the last such use (the 5 minute slot would replace it under the reader). */
+export const HOLD_MS = 15 * 60_000
+export const MAX_HOLDS = 3
 export const MAX_TITLE = 80
 export const MAX_BODY = 600
 const MIN_BODY = 20
@@ -35,7 +38,9 @@ const NOT_VALID = 'the answer is not a valid tip'
 const REPEATS = 'the answer repeats a recent tip'
 /** Reasons that are ours and safe to log; anything else is a provider's error, of which only the code or name is logged. */
 const OWN_REASONS = new Set(['timed out', NO_MODEL, NOT_VALID, REPEATS, NO_HAIKU])
-const reasonOf = (error) => (OWN_REASONS.has(error?.message) ? error.message : String(error?.code ?? error?.name ?? 'error').slice(0, 40))
+/** The part of an error that is safe to log: one of the given own reasons, else only the provider's code or name (also used by tip-expand.js). */
+export const safeReason = (error, own) => (own.has(error?.message) ? error.message : String(error?.code ?? error?.name ?? 'error').slice(0, 40))
+const reasonOf = (error) => safeReason(error, OWN_REASONS)
 
 // What must never reach the model as a topic, nor come back in a tip.
 const URL_RE = /\b(?:https?|ftp|file):\/\/\S+|\bwww\.\S+/gi
@@ -73,9 +78,14 @@ const ANSWER_NOISE = [BACKTICK, MD_LINK, MD_HEADING, SHELL_COMMAND, TELLS_TO_DO,
 
 const hits = (text, regexes) => regexes.some((re) => { re.lastIndex = 0; return re.test(text) })
 
+/** True when the text carries a URL, path, e-mail address or key-looking token: never allowed in anything the model writes for the screen. */
+export const hasLeak = (text) => hits(String(text ?? ''), ANSWER_LEAKS)
+/** True when the text is markup or an instruction to the reader (code, links, headings, shell commands, "run/install/open/visit this"). */
+export const hasNoise = (text) => hits(String(text ?? ''), ANSWER_NOISE)
+
 /** One work topic made harmless: leaks removed, odd characters turned into spaces, cut to a short phrase; '' when nothing is left. */
 // A topic that talks to the model (a session title can be anything somebody typed or pasted): dropped whole.
-const INSTRUCTION_LIKE = /\b(?:ignore|disregard|forget|instructions?|system prompt|assistant|override|you must|output)\b/i
+export const INSTRUCTION_LIKE = /\b(?:ignore|disregard|forget|instructions?|system prompt|assistant|override|you must|output)\b/i
 
 function cleanTopic(raw) {
   if (typeof raw !== 'string') return ''
@@ -103,18 +113,31 @@ export function sanitizeTopics(topics) {
   return out
 }
 
+/** The sanitized work topics from topicsOf() (waited for at most 5 s); [] when there is none, it fails or is slow (also used by tip-expand.js). */
+export async function topicHints(topicsOf, timeoutMs) {
+  if (typeof topicsOf !== 'function') return []
+  try { return sanitizeTopics(await within(Promise.resolve().then(() => topicsOf()), Math.min(timeoutMs, TOPICS_WAIT_MS))) } catch { return [] }
+}
+
+/** The first JSON object inside a model answer (it may sit in a code fence or after some prose), or undefined (also used by tip-expand.js). */
+export function jsonObjectOf(raw) {
+  const text = String(raw ?? '')
+  const from = text.indexOf('{')
+  const to = text.lastIndexOf('}')
+  if (from < 0 || to <= from) return undefined
+  try {
+    const data = JSON.parse(text.slice(from, to + 1))
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : undefined
+  } catch { return undefined }
+}
+
 /**
  * The model's answer as { title, body, category }, or undefined when it is not valid: JSON (also inside a code fence or after some prose) with a
  * title of 1 to 80 characters, a body of 20 to 600 and one of the three categories, and no URL, path, e-mail address or key-looking text in it.
  */
 export function parseTip(raw) {
-  const text = String(raw ?? '')
-  const from = text.indexOf('{')
-  const to = text.lastIndexOf('}')
-  if (from < 0 || to <= from) return undefined
-  let data
-  try { data = JSON.parse(text.slice(from, to + 1)) } catch { return undefined }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined
+  const data = jsonObjectOf(raw)
+  if (!data) return undefined
   if (typeof data.title !== 'string' || typeof data.body !== 'string' || !CATEGORIES.includes(data.category)) return undefined
   const title = data.title.replace(/\s+/g, ' ').trim()
   const body = data.body.replace(/\s+/g, ' ').trim()
@@ -160,11 +183,14 @@ const promptFor = (category, topics, avoid) => 'Category to cover: ' + category 
  *   without one every tip is built in. onChange: called when a model call settled.
  * @returns {{ current: () => object | undefined, peek: () => object | undefined, idle: () => Promise<void>, onChange: (l: () => void) => () => void }}
  */
-export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, now = Date.now, uuid = () => randomUUID().slice(0, 8), log = () => {}, timeoutMs = TIP_TIMEOUT_MS, ttlMs = TIP_TTL_MS, maxTokens = 500, onChange } = {}) {
+export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, now = Date.now, uuid = () => randomUUID().slice(0, 8), log = () => {}, timeoutMs = TIP_TIMEOUT_MS, ttlMs = TIP_TTL_MS, holdMs = HOLD_MS, maxTokens = 500, onChange } = {}) {
   let tip
   let inflight
   let chosen
   let turn = 0 // the category of the next tip: algorithms, ai, agents, algorithms ...
+  let heldId // the tip that is kept past its slot (its longer text is open, or a todo was drafted from it) ...
+  let heldUntil = 0 // ... until this time
+  let heldSince = 0 // ... and never longer than MAX_HOLDS hold times after the first hold, however often it is held again
   const recent = [] // titles of the last tips, oldest first (RECENT_MEMORY of them)
   const cursors = Object.fromEntries(CATEGORIES.map((c) => [c, 0]))
   const llmNow = () => { try { return typeof llmOrFn === 'function' ? llmOrFn() : llmOrFn } catch { return undefined } }
@@ -174,6 +200,7 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
 
   function install(base, source) {
     if (!base) return
+    if (tip && heldId === tip.id && now() < heldUntil) return // a tip that is held (the user clicked while this one was being made) stays
     tip = { id: uuid(), title: base.title, body: base.body, category: base.category, at: now(), source }
     const again = recent.findIndex((r) => r.toLowerCase() === base.title.toLowerCase())
     if (again >= 0) recent.splice(again, 1) // a title that comes back moves to the newest place
@@ -196,10 +223,7 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
     return builtin.find((b) => shownAt(b) < 0) ?? builtin.reduce((oldest, b) => (oldest && shownAt(b) >= shownAt(oldest) ? oldest : b), undefined)
   }
 
-  async function topics() {
-    if (typeof topicsOf !== 'function') return []
-    try { return sanitizeTopics(await within(Promise.resolve().then(() => topicsOf()), Math.min(timeoutMs, TOPICS_WAIT_MS))) } catch { return [] }
-  }
+  const topics = () => topicHints(topicsOf, timeoutMs)
 
   async function ask(llm, category, signal) {
     if (!llm) throw new Error(NO_MODEL)
@@ -234,10 +258,18 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
     emit()
   }
 
+  function holdTip(id) {
+    if (!tip || typeof id !== 'string' || tip.id !== id) return false
+    if (heldId === id && now() >= heldSince + MAX_HOLDS * holdMs) return false // the longest hold is over: it is replaced however often it is asked for
+    if (heldId !== id) { heldId = id; heldSince = now() }
+    heldUntil = Math.min(now() + holdMs, heldSince + MAX_HOLDS * holdMs)
+    return true
+  }
+
   return {
     /** The tip to show now (and the request for a new one when it is older than the slot): undefined until the first one exists. Never throws. */
     current() {
-      if (tip && now() - tip.at < ttlMs) return tip
+      if (tip && (now() - tip.at < ttlMs || (heldId === tip.id && now() < heldUntil))) return tip
       if (!inflight) {
         const category = CATEGORIES[turn++ % CATEGORIES.length]
         const llm = llmNow()
@@ -248,6 +280,15 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
     },
     /** The tip as it is, without asking for a new one. */
     peek: () => tip,
+    /** Keeps the current tip past its slot for HOLD_MS more; false when the id is not the current tip. */
+    hold: holdTip,
+    /** Puts the longer text (or a replacement of it) on the current tip, holds the tip and wakes the listeners; false when the id is not the current tip. */
+    attach(id, deeper) {
+      if (!holdTip(id)) return false
+      tip = { ...tip, deeper }
+      emit()
+      return true
+    },
     /** Resolves when no generation is in flight. */
     idle: () => inflight ?? Promise.resolve(),
     onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },

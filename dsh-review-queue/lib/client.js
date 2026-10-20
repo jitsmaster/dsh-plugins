@@ -11,7 +11,7 @@ window.__ModuleLoader__.load({
 		const ANCHOR_ID = "review-queue";
 		// Same origin as the page: the plugin registers /review-queue on the Host web server.
 		const API = "/review-queue";
-		const LS = { overlay: "dsh-review-queue.overlay", drafts: "dsh-review-queue.drafts", toggles: "dsh-review-queue.toggles", todoDraft: "dsh-review-queue.todoDraft" };
+		const LS = { overlay: "dsh-review-queue.overlay", drafts: "dsh-review-queue.drafts", toggles: "dsh-review-queue.toggles", todoDraft: "dsh-review-queue.todoDraft", tipWorkspace: "dsh-review-queue.tipWorkspace" };
 		const WAIT_MS = 20000;
 
 		// =====================================================================================
@@ -542,7 +542,7 @@ window.__ModuleLoader__.load({
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
-			todoForm: loadTodoForm(), workspaces: null, todoPick: {},
+			todoForm: loadTodoForm(), workspaces: null, todoPick: {}, tipDeeper: {}, tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false, power: null,
 		};
 		const listeners = new Set();
@@ -649,6 +649,15 @@ window.__ModuleLoader__.load({
 			} catch (e) { return "Request failed: " + String((e && e.message) || e); }
 			return undefined;
 		}
+		/** POST JSON and read the answer: { ok: true, body } on success, else { ok: false, error: words }. */
+		async function postJson(path, body) {
+			try {
+				const res = await fetch(API + path, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+				const j = await res.json().catch(() => ({}));
+				if (!res.ok || !j || j.ok === false) return { ok: false, code: j && j.error, error: errorText(res.ok ? 409 : res.status, j) };
+				return { ok: true, body: j };
+			} catch (e) { return { ok: false, error: "Request failed: " + String((e && e.message) || e) }; }
+		}
 		async function act(path, body, id, opts) {
 			// After a successful action on the selected card, the next card becomes the selected one.
 			const cur = opts && opts.advance ? currentItem() : undefined;
@@ -668,7 +677,7 @@ window.__ModuleLoader__.load({
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
 			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
 			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-desktop": "This is not the DSH desktop app (or it cannot be found), so there is nothing to quit. Nothing was paused.", "no-power": "Pausing and quitting is not available in this app.",
-			"no-workspace": "Pick a workspace first.", "unknown-workspace": "That workspace no longer exists.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
+			"no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
 			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "busy": "A message to that session is already on its way. Try again in a moment.",
 		};
 
@@ -762,6 +771,54 @@ window.__ModuleLoader__.load({
 		function undoTune() {
 			const { original, ...rest } = state.todoForm;
 			if (original) set({ todoForm: { ...rest, text: original, error: undefined } });
+		}
+		// ---- the tip of the day: Go deeper and Use in my code ----
+		const MAX_TIP_PARAGRAPHS = 4; // the server's limit (MAX_PARAGRAPHS in tip-expand.js)
+		const tipParagraphs = (list) => (Array.isArray(list) ? list.filter((p) => typeof p === "string" && p).slice(0, MAX_TIP_PARAGRAPHS) : []);
+		/** The workspace of the tip pick: the one chosen now, else the last one used for a tip todo, else the first listed; "" while none is listed. */
+		function tipWorkspaceId(list) {
+			const ws = Array.isArray(list) ? list : [];
+			const has = (id) => !!id && ws.some((w) => w && w.id === id);
+			if (has(state.tipUse.workspaceId)) return state.tipUse.workspaceId;
+			const last = storage.get(LS.tipWorkspace);
+			if (has(last)) return last;
+			return ws.length && ws[0] ? ws[0].id : "";
+		}
+		/** Go deeper: the longer text of this tip (one model call on the server, kept with the tip). */
+		async function goDeeper(tip) {
+			const key = "tip-deeper:" + tip.id;
+			if (state.busy[key]) return false;
+			set({ busy: { ...state.busy, [key]: true }, errors: { ...state.errors, [key]: undefined } });
+			const r = await postJson("/v1/tip-deeper", { id: tip.id });
+			const paragraphs = r.ok ? tipParagraphs(r.body.deeper && r.body.deeper.paragraphs) : [];
+			const error = r.ok ? (paragraphs.length ? undefined : "The model gave no usable text. Try again.") : r.error;
+			set({ busy: { ...state.busy, [key]: false }, errors: { ...state.errors, [key]: error }, ...(error ? {} : { tipDeeper: { [tip.id]: paragraphs } }) });
+			return !error;
+		}
+		/** Use in my code: shows or hides the workspace pick (the list is loaded when it opens). */
+		function toggleTipUse() {
+			const open = !state.tipUse.open;
+			set({ tipUse: { ...state.tipUse, open } });
+			return open ? ensureWorkspaces() : undefined;
+		}
+		/** Draft todo: asks for a todo text for this tip in the picked workspace and puts it in the New todo form. Nothing is sent; text already typed there stays and the draft goes after it. */
+		async function draftTipTodo(tip) {
+			const key = "tip-todo:" + tip.id;
+			const workspaceId = tipWorkspaceId(state.workspaces);
+			if (state.busy[key] || !workspaceId || state.todoForm.busy || state.todoForm.tuning) return false;
+			set({ busy: { ...state.busy, [key]: true }, errors: { ...state.errors, [key]: undefined } });
+			const r = await postJson("/v1/tip-todo", { id: tip.id, workspaceId });
+			if (!r.ok && r.code === "busy") r.error = "A todo is already being drafted. Try again in a moment.";
+			const draft = r.ok && typeof r.body.text === "string" && r.body.text.trim() ? r.body.text.trim() : undefined;
+			const error = draft ? undefined : r.ok ? "The model gave no usable text. Try again." : r.error;
+			set({ busy: { ...state.busy, [key]: false }, errors: { ...state.errors, [key]: error } });
+			if (!draft) return false;
+			storage.set(LS.tipWorkspace, workspaceId);
+			const { original, ...f } = state.todoForm;
+			const had = !!(f.text && f.text.trim());
+			tuneSeq++; // a Tune that began while the draft was written must not put its text over the draft
+			set({ tipUse: { open: false, workspaceId }, todoForm: { ...f, tuning: false, open: true, error: undefined, text: had ? f.text.trimEnd() + "\n\n" + draft : draft, workspaceId, sparc: had ? !!f.sparc : false } });
+			return true;
 		}
 		/** Start (or Retry) a todo in the picked workspace, else the suggested or given one. */
 		async function confirmTodo(item, pick) {
@@ -911,6 +968,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-sess{font-variant-numeric:tabular-nums;white-space:nowrap}.rq-emptywrap{margin:auto;display:flex;flex-direction:column;gap:16px;align-items:stretch;max-width:100%}.rq-emptywrap .rq-empty{margin:0;padding:8px}"
 			+ ".rq-tip{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;border:1px solid var(--rq-border)!important;border-radius:10px;padding:10px 12px;background:var(--rq-layer)}.rq-tip:hover{background:var(--rq-hover)}.rq-tip.on{border-color:var(--rq-accent)!important}"
 			+ ".rq-tipwrap{max-width:680px;margin:8vh auto 0}.rq-tip-t{font-weight:600;font-size:17px}.rq-tip-b{font-size:16px;line-height:1.5;display:flex;flex-direction:column;gap:10px}.rq-tip-p{display:block}.rq-tip-f{color:var(--rq-mute);font-size:13px}"
+			+ ".rq-tip-dw{display:flex;flex-direction:column;gap:10px;margin-top:10px;padding:0 4px}.rq-tip-d{margin:0;font-size:16px;line-height:1.5}.rq-btn.on{border-color:var(--rq-accent)!important}.rq-tip-actions{margin-top:10px}.rq-tip-use{margin-top:8px}"
 			+ ".rq-sbtn{position:relative;display:inline-flex}.rq-sb-main{border-top-right-radius:0;border-bottom-right-radius:0}.rq-sb-caret{border-top-left-radius:0;border-bottom-left-radius:0;margin-left:-1px;padding:6px 8px}"
 			+ ".rq-menu{position:absolute;right:0;top:100%;margin-top:4px;z-index:5;min-width:140px;display:flex;flex-direction:column;border:1px solid var(--rq-border);border-radius:8px;background:var(--rq-layer);box-shadow:0 8px 24px #0008;padding:4px}.rq-mi{text-align:left;padding:6px 12px;border-radius:6px}.rq-mi:hover{background:var(--rq-hover)}"
 			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
@@ -1317,13 +1375,30 @@ window.__ModuleLoader__.load({
 			const st = useStore();
 			const key = "tip:" + tip.id; // the same form as TIP_READING in service.js (this file is one self-contained script)
 			const reading = !!(st.snap && st.snap.reading === key);
+			const deeperKey = "tip-deeper:" + tip.id;
+			const todoKey = "tip-todo:" + tip.id;
+			const longer = tipParagraphs(tip.deeper ? tip.deeper.paragraphs : st.tipDeeper[tip.id]);
+			const use = st.tipUse.open;
+			const list = st.workspaces || [];
+			const picked = use ? tipWorkspaceId(list) : ""; // only while the pick is open (the card renders on every store change)
+			const note = Array.isArray(st.workspaces) && !st.workspaces.length ? "No workspace is listed yet (the app may still be loading them)." : undefined;
 			return h("div", null,
 				h("button", { type: "button", className: "rq-tip" + (reading ? " on" : ""), "aria-pressed": reading, disabled: !!st.busy[key], title: reading ? "Stop reading" : "Read this tip aloud", onClick: () => (reading ? act("/v1/stop", {}, key) : act("/v1/read-tip", { id: tip.id }, key)) },
 					h("span", null, h("span", { className: "rq-chip" }, tip.category), " ", h("span", { className: "rq-sub" }, "Tip of the day"), tip.source === "model" ? h("span", { className: "rq-sub" }, " · AI-generated") : null),
 					h("span", { className: "rq-tip-t" }, tip.title),
 					h("span", { className: "rq-tip-b" }, tipSentences(tip.body).map((s, n) => h("span", { key: n, className: "rq-tip-p" }, s))),
 					h("span", { className: "rq-tip-f" }, reading ? "■ Stop reading" : "▶ Read aloud")),
-				st.errors[key] ? h("div", { className: "rq-err" }, st.errors[key]) : null);
+				longer.length ? h("div", { className: "rq-tip-dw" }, longer.map((p, n) => h("p", { key: n, className: "rq-tip-d" }, p))) : null,
+				h("div", { className: "rq-row rq-tip-actions" },
+					longer.length ? null : h("button", { type: "button", className: "rq-btn", title: "A longer explanation of this tip, with an example", disabled: !!st.busy[deeperKey], onClick: () => goDeeper(tip) }, st.busy[deeperKey] ? "Writing…" : "Go deeper"),
+					h("button", { type: "button", className: "rq-btn" + (use ? " on" : ""), "aria-expanded": use, title: "Draft a todo that applies this tip to one of your workspaces", onClick: toggleTipUse }, "Use in my code")),
+				use ? h("div", { className: "rq-row rq-tip-use" },
+					h("select", { className: "rq-input rq-sel", value: picked, disabled: !!st.busy[todoKey], "aria-label": "Workspace for the todo", onChange: (e) => set({ tipUse: { ...state.tipUse, workspaceId: e.target.value } }) }, list.map((w) => h("option", { key: w.id, value: w.id }, w.title))),
+					h("button", { type: "button", className: "rq-btn pri", disabled: !!st.busy[todoKey] || !picked || !!st.todoForm.busy || !!st.todoForm.tuning, title: "Write the todo text; you can edit it before it is sent", onClick: () => draftTipTodo(tip) }, st.busy[todoKey] ? "Drafting…" : "Draft todo"),
+					note ? h("span", { className: "rq-sub" }, note) : null) : null,
+				st.errors[key] ? h("div", { className: "rq-err" }, st.errors[key]) : null,
+				st.errors[deeperKey] ? h("div", { className: "rq-err" }, st.errors[deeperKey]) : null,
+				st.errors[todoKey] ? h("div", { className: "rq-err" }, st.errors[todoKey]) : null);
 		}
 
 		function Panel() {
