@@ -63,3 +63,15 @@ test('with no desktop to close nothing is paused and nothing is recorded', async
   assert.deepEqual(h.cancelled, [])
   assert.ok(!existsSync(join(dir, 'paused-by-user.json')))
 })
+
+test('runningSessions lists the running top-level sessions of the host, and says which app answered', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'rq-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const h = host({ sessions: [{ sessionId: 's1', running: true }, { sessionId: 's2', running: false }, { sessionId: 's3', running: true, parentSessionId: 's1' }] })
+  const plugin = createReviewQueuePlugin(h.ctx, { hub: false, stateDir: dir, taskbarBadge: false, desktop: fakeDesktop(), pausedScan: async () => ({ ok: true, candidates: [] }), pausedStartMs: 3_600_000 })
+  t.after(h.stop)
+  const r = await plugin.queue.runningSessions()
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.ids, ['s1'])
+  assert.match(String(r.instanceId), /^[0-9a-f]{16}$/, 'the instance id the hub knows this app by')
+})

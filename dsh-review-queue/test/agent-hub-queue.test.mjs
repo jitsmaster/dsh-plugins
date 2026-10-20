@@ -143,3 +143,12 @@ test('a result the hub could not deliver is a refusal the caller can show, never
   client.call = async () => { throw new Error('socket hang up') }
   assert.deepEqual(await queue.deny('a'), { ok: false, error: 'hub-unreachable' })
 })
+
+test('runningSessions is this app\'s own question: asked of the local service in every mode, never of the hub', async () => {
+  const { queue, local, client } = make()
+  local.runningSessions = async () => ({ ok: true, ids: ['s1'], from: 'local' })
+  assert.deepEqual(await queue.runningSessions(), { ok: true, ids: ['s1'], from: 'local' })
+  client.setState('degraded')
+  assert.deepEqual(await queue.runningSessions(), { ok: true, ids: ['s1'], from: 'local' })
+  assert.deepEqual(client.calls, [])
+})

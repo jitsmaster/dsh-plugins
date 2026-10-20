@@ -207,7 +207,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const tipper = createTipper({ llm: () => (llmService() ? llm : undefined), topicsOf: () => recentTopics({ store, titlesOf }), log, ...(config.tipDeps ?? {}) })
   // "N working / M open": this app's sessions from the session controller, cached for 2 s (sessions.js); config.sessionCounter: { ttlMs, minEmitMs } for tests.
   const sessionCounter = createSessionCounter({ controllerOf, registryOf, log, ...(config.sessionCounter ?? {}) })
-  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, tuner, tips: tipper, sessions: sessionCounter, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, tips: tipper, sessions: sessionCounter, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }

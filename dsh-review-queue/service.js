@@ -7,6 +7,7 @@ import { spokenFor, titleFor, fullTextFor, chunkForSpeech } from './speech.js'
 import { riskOf } from './risk.js'
 import { createTodos, MAX_TODO } from './todo.js'
 import { RESUME_PROMPT } from './paused.js'
+import { listRunningSessions } from './userpause.js'
 import { isSessionId } from './thread.js'
 import { postKeyOf } from './post-key.js'
 
@@ -15,6 +16,9 @@ const MAX_REPLY = 4000
 export const TIP_READING = 'tip:'
 const MAX_POST_KEYS = 200 // idempotency keys of accepted phone posts that are remembered
 const POST_KEY_TTL_MS = 10 * 60_000
+const RUNNING_POLL_LIST_MS = 5_000 // the session list call of runningSessions (Resume all asks every 3 s)
+const RUNNING_SHARE_MS = 1_500 // an answer of runningSessions is reused this long after it completed (several lanes or windows ask on the same rhythm)
+const RUNNING_LIST_LIMIT_MS = RUNNING_POLL_LIST_MS + 1_000 // a list call that has not answered by then fails for every caller sharing it
 const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo', 'paused']
 /** A todo being started, or a session paused by a restart (it has its own count), is not waiting on the user. */
 const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && item.state === 'starting')
@@ -24,11 +28,12 @@ const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, tuner, tips, sessions, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, tips, sessions, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
   const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)
   const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
+  let runningCall // the last runningSessions list: { done, doneAt, promise }
   let tuning = false // a Tune prompt call is on its way: one at a time per service (each is a paid model call)
   let focusId
   let reading // id of the item being read aloud
@@ -243,6 +248,33 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       paused?.markHandled(item)
       store.resolve(id, { kind: 'resumed', by: 'card' })
       return { ok: true }
+    },
+    /**
+     * The running top-level sessions of THIS app (Resume all polls it to give a place back when a resumed session stopped without a visible item).
+     * instanceId (hub mode) says which app answered: a session of another app is never in the list. -> { ok: true, ids, instanceId? } | { ok: false, error }
+     * Single flight: callers share the call in flight and an answer that completed less than RUNNING_SHARE_MS ago (a clock that stepped back expires it), so many polls
+     * cost one controller list; a failure is not kept, and a list that never answers fails after RUNNING_LIST_LIMIT_MS instead of holding every caller.
+     * The controller's own error text stays in the log: the client only gets 'list-failed'.
+     */
+    async runningSessions() {
+      const controller = controllerOf()
+      if (typeof controller?.list !== 'function') return { ok: false, error: 'no-controller' }
+      const age = runningCall?.done ? now() - runningCall.doneAt : 0
+      if (runningCall && (!runningCall.done || (age >= 0 && age < RUNNING_SHARE_MS))) return runningCall.promise
+      const call = { done: false, doneAt: 0, promise: undefined }
+      call.promise = (async () => {
+        let timer
+        const limit = new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('list timed out')), RUNNING_LIST_LIMIT_MS) })
+        try {
+          const ids = (await Promise.race([listRunningSessions(controller, RUNNING_POLL_LIST_MS), limit])).map((i) => String(i.sessionId))
+          return { ok: true, ids, ...(instanceId ? { instanceId } : {}) }
+        } catch (error) {
+          log?.('service: listing the running sessions failed: ' + String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 200))
+          return { ok: false, error: 'list-failed' }
+        } finally { clearTimeout(timer) }
+      })().then((r) => { call.done = true; call.doneAt = now(); if (!r.ok && runningCall === call) runningCall = undefined; return r })
+      runningCall = call
+      return call.promise
     },
     /** Dismisses a paused session: it stays out of the list until its log is written again. */
     dismissPaused(id) {
