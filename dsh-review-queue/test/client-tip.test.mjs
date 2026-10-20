@@ -35,17 +35,26 @@ const tipCards = (tree) => findAll(tree, (n) => typeof n.type === 'function' && 
 const item = (over = {}) => ({ id: 'a', type: 'completed', status: 'open', position: 1, createdAt: 1, sessionId: 's', title: 'Done', summary: 'x', payload: {}, ...over })
 const snap = (over = {}) => ({ snapshotId: 'e:1', open: [], resolved: [], ...over })
 
-test('an empty list shows "Nothing waiting on you." and the tip card in the side list and in the narrow list', () => {
+test('an empty list shows "Nothing waiting on you." in the left list and the tip card in the right panel', () => {
   const { T } = load()
   T.state.snap = snap({ tip: TIP })
   const tree = T.Panel()
   const side = withClass(tree, 'rq-side')[0]
-  const narrow = withClass(tree, 'rq-narrow')[0]
-  for (const area of [side, narrow]) {
-    assert.match(text(area), /Nothing waiting on you\./)
-    assert.equal(tipCards(area).length, 1)
-    assert.equal(tipCards(area)[0].props.tip.id, 't1')
-  }
+  const detail = withClass(tree, 'rq-detail')[0]
+  assert.match(text(side), /Nothing waiting on you\./)
+  assert.equal(tipCards(side).length, 0, 'the left list has no tip')
+  assert.equal(tipCards(detail).length, 1, 'the right panel (detail pane) holds the tip')
+  assert.equal(tipCards(detail)[0].props.tip.id, 't1')
+  assert.doesNotMatch(text(detail), /Nothing waiting on you\./)
+})
+
+test('the narrow layout (one column, side and detail hidden) shows the message and the tip once', () => {
+  const { T } = load()
+  T.state.snap = snap({ tip: TIP })
+  const narrow = withClass(T.Panel(), 'rq-narrow')[0]
+  assert.match(text(narrow), /Nothing waiting on you\./)
+  assert.equal(tipCards(narrow).length, 1)
+  assert.equal(tipCards(narrow)[0].props.tip.id, 't1')
 })
 
 test('the tip card is a button with the category, title and body, and aria-pressed false while it is not read', () => {
@@ -69,6 +78,9 @@ test('no tip card when the snapshot has no tip, when an item is open, or in the 
   assert.equal(tipCards(T.Panel()).length, 0, 'no tip in the snapshot')
   T.state.snap = snap({ open: [item()], tip: TIP })
   assert.equal(tipCards(T.Panel()).length, 0, 'an open item hides it even if a stale tip is in the snapshot')
+  T.state.selected = 'a'
+  assert.equal(tipCards(withClass(T.Panel(), 'rq-detail')[0]).length, 0, 'not next to a selected card either')
+  T.state.selected = null
   T.state.snap = snap({ tip: TIP })
   T.state.showResolved = true
   assert.equal(tipCards(T.Panel()).length, 0, 'Resolved view')

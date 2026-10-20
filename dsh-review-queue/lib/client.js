@@ -1308,15 +1308,18 @@ window.__ModuleLoader__.load({
 			const sel = currentItem();
 			const none = snap && snap.open.length ? "Nothing matches this filter." : "Nothing waiting on you.";
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
-			// With no open item at all the tip sits under the message (side list and narrow list); never next to cards, never in Resolved.
-			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), snap && !snap.open.length && snap.tip ? h(TipCard, { tip: snap.tip }) : null);
+			// With no open item at all the tip shows in the right panel (the detail pane, empty then); the left list keeps only the message.
+			// The narrow layout hides both panes and shows one column, so there the tip sits under the message. Never next to cards, never in Resolved.
+			const tip = snap && !snap.open.length && snap.tip ? h(TipCard, { tip: snap.tip }) : null;
+			const emptySide = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none));
+			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), tip);
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
 			const extra = h(CloseMenu);
 			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(PowerBar), h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
-						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : empty),
-						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : null),
+						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
+						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip),
 						h("div", { className: "rq-narrow" }, list)),
 				st.showResolved ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"));
 		}
