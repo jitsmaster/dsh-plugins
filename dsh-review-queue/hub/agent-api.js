@@ -47,13 +47,13 @@ export function createAgentApi({ hub, instances, commands, store, secret, log = 
     return { ack: inst.lastOp, results, conflict }
   }
 
-  const registerBody = (b, protocol) => ({ key: b.instanceKey, id: b.instanceId, label: b.label, pid: b.pid, pluginVersion: b.pluginVersion, protocol, sync: b.sync })
+  const registerBody = (b, protocol) => ({ key: b.instanceKey, id: b.instanceId, label: b.label, pid: b.pid, pluginVersion: b.pluginVersion, protocol, sync: b.sync, sessions: b.sessions })
   const routes = {
     register(req, res, body) {
       const r = instances.register(registerBody(body, Number(req.headers['x-rq-protocol'])))
       if (!r.ok) return send(res, r.error === 'superseded' ? 409 : 400, r)
       log('agent registered (' + body.instanceId + '): ' + r.adopted + ' adopted, ' + r.revived + ' revived, ' + r.ended + ' ended')
-      return send(res, 200, { ...r, hubId: hub.hubId, protocol: hub.protocol })
+      return send(res, 200, { ...r, hubId: hub.hubId, protocol: hub.protocol, watch: hub.watching() })
     },
     ops(req, res, body) {
       const inst = instances.touch(body.instanceId)
@@ -75,7 +75,7 @@ export function createAgentApi({ hub, instances, commands, store, secret, log = 
       return send(res, 200, { ok: true, accepted: commands.complete(body.instanceId, String(body.cid), body.result) })
     },
     presence(req, res, body) {
-      return instances.presence(body.instanceId, { desktopActive: body.desktopActive === true }) ? send(res, 200, { ok: true }) : unknown(res)
+      return instances.presence(body.instanceId, { desktopActive: body.desktopActive === true, sessions: body.sessions }) ? send(res, 200, { ok: true, watch: hub.watching() }) : unknown(res)
     },
     bye(req, res, body) {
       const r = instances.bye(body.instanceId)

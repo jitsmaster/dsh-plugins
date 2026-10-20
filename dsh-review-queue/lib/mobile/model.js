@@ -16,6 +16,7 @@ export function listModel(core, snap, filter) {
   return {
     waiting: core.waitingCount(open), // a todo that is being started, or a paused session, does not wait on the user
     paused: core.pausedCount(open), // sessions a restart cut off: read only here, resumed at the PC
+    sessions: core.sessionsText(snap && snap.sessions), // "N working / M open" like the desktop header; '' while unknown
     open: core.filterItems(open, f),
     resolved: core.filterItems(resolved, f),
     resolvedCount: resolved.length,

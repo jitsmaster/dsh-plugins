@@ -60,6 +60,9 @@ Sessions a DSH restart cut off in the middle of work are listed as items of type
 - **Card**: chip *Paused*; the facts the desktop card shows (why it is listed, how long ago it last wrote, a tool call that may be half done, the last request) and "To resume this session, use the Task list on the PC."
 - **Code**: `pausedNote`, `pausedView` and the `paused` count of `listModel` in [lib/mobile/model.js](../lib/mobile/model.js) (the facts and the count come from `pausedFacts` / `pausedCount` of the overlay's `exports.shared`); `PausedBody` in views.js.
 
+## Session count in the top bar
+The top bar shows `N working / M open` (sessions of DSH with a turn running / open sessions, summed over every connected app) under the waiting count, in its own line with tabular digits and a reserved height, so nothing moves when it changes (it fits at 390 px). The words come from the desktop's shared helper (`sessionsText`), the numbers from the snapshot's `sessions` (hub sum; hidden while unknown). The phone never shows the tip of the day; its long-poll token carries the numbers so a change reaches it by itself.
+
 ## Chat thread
 A phone-only chatbot view of a session's past conversation, with follow-up posts. The conversation is on the card of every item that has a session, open or resolved, except a todo (question, permission, done, paused, PR merged, resolved); the composer is on all of those except a **paused** item (see Posting). It shows the **last 40 text messages** of that session: the user's messages as right-hand bubbles (plain text), the assistant's text as left-hand bubbles (rendered as markdown), oldest at the top, the newest at the bottom, each with its age. Tool calls, tool results, thinking and automatic notices (hooks, system, working directory) are not shown; a message over 4000 characters is cut and says so ("… the rest of this message is not shown."). The desktop task list is unchanged.
 

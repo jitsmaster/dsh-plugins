@@ -260,8 +260,12 @@ window.__ModuleLoader__.load({
 			return { seen: seq, action: ui.cmd === "show" || ui.cmd === "hide" ? ui.cmd : undefined };
 		}
 
-		/** The long-poll token: what this tab has already seen. The server answers "unchanged" only while all four parts still match. */
-		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0);
+		/** "N working / M open" (sessions of DSH with a turn running / open sessions), "" while the numbers are unknown. The phone shows the same words. */
+		const sessionsText = (s) => (s && Number.isInteger(s.working) && Number.isInteger(s.open) && s.working >= 0 && s.open >= 0 ? s.working + " working / " + s.open + " open" : "");
+		const sessionsTitle = "Sessions in DSH: how many have a turn running (working) / how many are open (not archived, no subagents). With the hub on, summed over every running DSH app.";
+		/** The long-poll token: what this tab has already seen. The server answers "unchanged" only while the parts it knows still match; the last two (session numbers, tip id) are for a server that has them. */
+		// (the numbers part is sessionsKey of sessions.js, this file being one self-contained script)
+		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0) + "|" + (b.sessions && Number.isFinite(b.sessions.working) && Number.isFinite(b.sessions.open) ? b.sessions.working + "/" + b.sessions.open : "") + "|" + ((b.tip && b.tip.id) || "");
 
 		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", todo: "Todo", paused: "Paused" };
 		const typeLabel = (t) => TYPE[t] || t;
@@ -490,6 +494,7 @@ window.__ModuleLoader__.load({
 
 		let polling = false;
 		let stopped = false;
+		let pollCtl; // aborts the request in flight: opening or closing the overlay changes what the next one asks for (tip=1)
 		async function pollLoop() {
 			if (polling) return;
 			polling = true;
@@ -497,8 +502,10 @@ window.__ModuleLoader__.load({
 			let fails = 0;
 			while (!stopped) {
 				try {
-					const url = API + "/v1/snapshot?wait=" + WAIT_MS + (since ? "&since=" + encodeURIComponent(since) : "") + (pageVisible() ? "&visible=1" : "");
-					const res = await fetch(url, { credentials: "same-origin" });
+					// tip=1 only while the overlay is open: the tip (a model call) and the session numbers are for an overlay somebody looks at.
+					const url = API + "/v1/snapshot?wait=" + WAIT_MS + (since ? "&since=" + encodeURIComponent(since) : "") + (pageVisible() ? "&visible=1" : "") + (state.overlay ? "&tip=1" : "");
+					pollCtl = typeof AbortController === "function" ? new AbortController() : undefined;
+					const res = await fetch(url, pollCtl ? { credentials: "same-origin", signal: pollCtl.signal } : { credentials: "same-origin" });
 					if (!res.ok) throw new Error("HTTP " + res.status);
 					const body = await res.json();
 					fails = 0;
@@ -510,6 +517,7 @@ window.__ModuleLoader__.load({
 					const gone = Object.keys(state.drafts).some((k) => !(k in kept.drafts)) || Object.keys(state.replies).some((k) => !(k in kept.replies));
 					if (gone) set(kept);
 				} catch (e) {
+					if (e && e.name === "AbortError" && !stopped) continue; // our own abort: ask again at once
 					fails++;
 					if (!stopped) set({ error: "Task list unreachable (" + String((e && e.message) || e) + "). Is dsh-review-queue loaded? Restart DSH after installing it." });
 					await new Promise((r) => setTimeout(r, Math.min(10000, 1000 * fails)));
@@ -708,7 +716,7 @@ window.__ModuleLoader__.load({
 			} catch (e) { set({ power: { phase: "error", kind: p.kind, text: "Request failed: " + String((e && e.message) || e) } }); }
 			return true;
 		}
-		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); }
+		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); if (pollCtl) pollCtl.abort(); }
 
 		// =====================================================================================
 		// Styles
@@ -746,6 +754,9 @@ window.__ModuleLoader__.load({
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
 			+ ".rq-filter{flex:none;display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--rq-border);flex-wrap:wrap}.rq-fchip{padding:3px 12px;border-radius:9px;border:1px solid var(--rq-border)!important;font-size:12px;color:var(--rq-mute)}"
 			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
+			+ ".rq-sess{font-variant-numeric:tabular-nums;white-space:nowrap}.rq-emptywrap{margin:auto;display:flex;flex-direction:column;gap:16px;align-items:stretch;max-width:100%}.rq-emptywrap .rq-empty{margin:0;padding:8px}"
+			+ ".rq-tip{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;border:1px solid var(--rq-border)!important;border-radius:10px;padding:10px 12px;background:var(--rq-layer)}.rq-tip:hover{background:var(--rq-hover)}.rq-tip.on{border-color:var(--rq-accent)!important}"
+			+ ".rq-tip-t{font-weight:600}.rq-tip-b{font-size:12.5px;line-height:1.45}.rq-tip-f{color:var(--rq-mute);font-size:11.5px}"
 			+ ".rq-sbtn{position:relative;display:inline-flex}.rq-sb-main{border-top-right-radius:0;border-bottom-right-radius:0}.rq-sb-caret{border-top-left-radius:0;border-bottom-left-radius:0;margin-left:-1px;padding:6px 8px}"
 			+ ".rq-menu{position:absolute;right:0;top:100%;margin-top:4px;z-index:5;min-width:140px;display:flex;flex-direction:column;border:1px solid var(--rq-border);border-radius:8px;background:var(--rq-layer);box-shadow:0 8px 24px #0008;padding:4px}.rq-mi{text-align:left;padding:6px 12px;border-radius:6px}.rq-mi:hover{background:var(--rq-hover)}"
 			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
@@ -1035,7 +1046,9 @@ window.__ModuleLoader__.load({
 			const st = useStore();
 			const n = snap ? waitingCount(snap.open) : 0;
 			const paused = snap ? pausedCount(snap.open) : 0;
+			const sessions = sessionsText(snap && snap.sessions);
 			return h("div", { className: "rq-head" }, h("h2", null, "Task list"), h("span", { className: "rq-count" }, n),
+				sessions ? h("span", { className: "rq-count rq-sess", title: sessionsTitle }, sessions) : null,
 				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
 				h("span", { className: "rq-grow" }),
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
@@ -1122,6 +1135,20 @@ window.__ModuleLoader__.load({
 			return h("div", { className: "rq-todoform", role: "status" }, h("div", { className: "rq-row" }, body));
 		}
 
+		/** The tip of the day (a model-written bit of general knowledge, tip.js): a button that reads it aloud, and stops when pressed again. */
+		function TipCard({ tip }) {
+			const st = useStore();
+			const key = "tip:" + tip.id; // the same form as TIP_READING in service.js (this file is one self-contained script)
+			const reading = !!(st.snap && st.snap.reading === key);
+			return h("div", null,
+				h("button", { type: "button", className: "rq-tip" + (reading ? " on" : ""), "aria-pressed": reading, disabled: !!st.busy[key], title: reading ? "Stop reading" : "Read this tip aloud", onClick: () => (reading ? act("/v1/stop", {}, key) : act("/v1/read-tip", { id: tip.id }, key)) },
+					h("span", null, h("span", { className: "rq-chip" }, tip.category), " ", h("span", { className: "rq-sub" }, "Tip of the day")),
+					h("span", { className: "rq-tip-t" }, tip.title),
+					h("span", { className: "rq-tip-b" }, tip.body),
+					h("span", { className: "rq-tip-f" }, reading ? "■ Stop reading" : "▶ Read aloud")),
+				st.errors[key] ? h("div", { className: "rq-err" }, st.errors[key]) : null);
+		}
+
 		function Panel() {
 			const st = useStore();
 			const snap = st.snap;
@@ -1129,12 +1156,14 @@ window.__ModuleLoader__.load({
 			const sel = currentItem();
 			const none = snap && snap.open.length ? "Nothing matches this filter." : "Nothing waiting on you.";
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
-			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : h("div", { className: "rq-empty" }, snap ? none : "Loading…");
+			// With no open item at all the tip sits under the message (side list and narrow list); never next to cards, never in Resolved.
+			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), snap && !snap.open.length && snap.tip ? h(TipCard, { tip: snap.tip }) : null);
+			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
 			const extra = h(CloseMenu);
 			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(PowerBar), h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
-						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : h("div", { className: "rq-empty" }, none)),
+						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : empty),
 						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : null),
 						h("div", { className: "rq-narrow" }, list)),
 				st.showResolved ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"));
@@ -1198,7 +1227,7 @@ window.__ModuleLoader__.load({
 			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
 			stopped = false;
 			if (state.todoForm.open) ensureWorkspaces(); // a draft restored open needs its dropdown
-			ctx.effect(() => { pollLoop(); return () => { stopped = true; }; }, "review-queue: polling");
+			ctx.effect(() => { pollLoop(); return () => { stopped = true; if (pollCtl) pollCtl.abort(); }; }, "review-queue: polling");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
 			ctx.effect(() => (typeof window === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installHotkey(window)), "review-queue: hotkey");
 			ctx.effect(() => (typeof window === "undefined" || typeof document === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installDraftFlush(window, document)), "review-queue: todo draft flush");
@@ -1207,12 +1236,12 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
+		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
-		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
+		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll, askPower, closePower, runPower, POWER_TEXT, CloseMenu, PowerBar });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });

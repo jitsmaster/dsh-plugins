@@ -11,6 +11,8 @@ import { isSessionId } from './thread.js'
 import { postKeyOf } from './post-key.js'
 
 const MAX_REPLY = 4000
+/** reading === 'tip:<id>' while the tip of the day is read aloud (lib/client.js keeps its own copy of the string: it is one self-contained script). */
+export const TIP_READING = 'tip:'
 const MAX_POST_KEYS = 200 // idempotency keys of accepted phone posts that are remembered
 const POST_KEY_TTL_MS = 10 * 60_000
 const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo', 'paused']
@@ -22,7 +24,7 @@ const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, tuner, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, registryOf = () => undefined, speaker, llm, tuner, tips, sessions, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
   const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)
@@ -35,6 +37,23 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
   let lastReadId // the item the last successful read started on (for "read again")
   const listeners = new Set()
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* ignore */ } } }
+  // A tip that a model call finished and new session numbers wake the long polls (neither touches the store, so the snapshotId stays).
+  try { tips?.onChange?.(emit) } catch { /* the tip is a bonus */ }
+  try { sessions?.onChange?.(emit) } catch { /* so are the numbers */ }
+  const isTipReading = () => typeof reading === 'string' && reading.startsWith(TIP_READING)
+  /** Starts speaking for the reading key (an item id or 'tip:<id>'); the end of that speech clears the state only if nothing replaced it. { ok } | { ok: false, error } */
+  const speakAs = (key, chunks, open) => {
+    const token = readSeq + 1
+    const result = speaker.speak(chunks, {
+      onEnd: () => { if (readSeq === token && reading === key) { reading = undefined; emit() } },
+    })
+    if (!result?.ok) return { ok: false, error: result?.error ?? 'no-speaker' }
+    readSeq = token
+    reading = key
+    readOpen = open
+    emit()
+    return { ok: true }
+  }
 
   // The store tells us about every change; a focused item that left the queue drops its focus.
   const risksOf = (item) => (item.type === 'permission' ? riskOf({ toolName: item.payload?.toolName, detail: item.payload?.detail ?? item.payload?.summary, path: item.payload?.path, workspace: item.workspace }) : undefined)
@@ -47,6 +66,8 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
     if (focusId !== undefined && store.get(focusId)?.status !== 'open') focusId = undefined
     // A message nobody is waiting for any more is not read on.
     if (reading !== undefined && readOpen && store.get(reading)?.status !== 'open') stopReading()
+    // The tip is only on screen while the list is empty: an item arriving ends its reading.
+    if (isTipReading() && store.snapshot().open.length) stopReading()
     emit()
   })
 
@@ -102,12 +123,24 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
     for (const item of store.snapshot().open) if (item.type === 'pr-merged' && archived.has(String(item.sessionId)) && store.resolve(item.id, { kind: 'archived', by: 'elsewhere' })) log?.('service: merged-PR item ' + item.id + ' closed: its session was archived elsewhere')
   }
 
+  /** The tip to show (asking for a new one when it is older than its slot); undefined without a generator or a tip. Never throws. */
+  const tipNow = () => { try { return tips?.current() } catch { return undefined } }
+
   return {
-    snapshot() {
+    /**
+     * opts.tip === true: the overlay is open, so the tip is wanted (and asked for when the list is empty); without it none is attached and none generated.
+     * opts.watch (or tip): somebody looks at the session numbers (the phone, an open overlay), so they are kept fresh.
+     */
+    snapshot(opts) {
       settleArchived()
       const snap = store.snapshot()
+      if (opts?.watch || opts?.tip === true) sessions?.touch()
+      const tip = snap.open.length || opts?.tip !== true ? undefined : tipNow() // the tip exists only while nothing is open: nothing is generated for a busy list
+      const counts = sessions?.current()
       return {
         ...snap,
+        ...(counts ? { sessions: counts } : {}),
+        ...(tip ? { tip } : {}),
         serverNow: now(),
         focusId,
         reading,
@@ -122,18 +155,37 @@ export function createReviewQueue({ store, capture, controllerOf, registryOf = (
       if (!item) return { ok: false, error: 'not-found' }
       if (!speaker) return { ok: false, error: 'no-speaker' }
       const position = store.snapshot().open.find((i) => i.id === id)?.position
-      const token = readSeq + 1
-      const result = speaker.speak(chunkForSpeech(fullTextFor(item, position)), {
-        onEnd: () => { if (readSeq === token && reading === id) { reading = undefined; emit() } },
-      })
-      if (!result?.ok) return { ok: false, error: result?.error ?? 'no-speaker' }
-      readSeq = token
-      reading = id
-      lastReadId = id
-      readOpen = item.status === 'open'
-      emit()
-      return { ok: true }
+      const result = speakAs(id, chunkForSpeech(fullTextFor(item, position)), item.status === 'open')
+      if (result.ok) lastReadId = id
+      return result
     },
+    /**
+     * The tip of the day as it is now (see tip.js). The caller decides that the list is empty: the proxy asks it for the merged list in hub mode,
+     * where this app's own store may hold less than the list the desktop shows.
+     */
+    tip: () => tipNow(),
+    /** Reads the current tip aloud (title and body) through the same speaker as read(); reading is then 'tip:<id>'. */
+    readTip(id) {
+      const tip = (() => { try { return tips?.peek() } catch { return undefined } })()
+      if (!tip || typeof id !== 'string' || tip.id !== id) return { ok: false, error: 'not-found' }
+      if (!speaker) return { ok: false, error: 'no-speaker' }
+      return speakAs(TIP_READING + tip.id, chunkForSpeech(tip.title + '. ' + tip.body), false)
+    },
+    /** Ends the reading of the tip (not of an item): the hub list stopped being empty, so the tip is gone from the screen. */
+    stopTip() {
+      if (!isTipReading()) return { ok: true, stopped: false }
+      stopReading()
+      emit()
+      return { ok: true, stopped: true }
+    },
+    /** What is being read aloud now (an item id, or 'tip:<id>'), for the hub view that cannot see this app's own reading. */
+    readingId: () => reading,
+    /** This app's session numbers { working, open } for the hub agent; undefined while unknown. */
+    sessionCounts: () => sessions?.current(),
+    /** Somebody looks at the session numbers (the hub says so): keep them fresh for the next minute. */
+    watchSessions: () => sessions?.touch(),
+    /** Asks the counter for fresh numbers (a timer calls it; the counter caches for 2 s and tells the listeners of a change). */
+    refreshSessions: () => sessions?.refresh() ?? Promise.resolve(),
     /**
      * A pull request was merged: one item per session that worked on it ("PR n" sessions), offering to archive that
      * session. `followUps` are the "after PR n" sessions that were told to start (shown on the card). Once per session and PR.

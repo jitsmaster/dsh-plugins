@@ -72,7 +72,7 @@ export function wireHub({ stateDir, port, hubNode, instanceKey, instanceId, labe
     const who = await whoAmI()
     if (!handle.attached || attachedTo !== result.baseUrl) {
       attachedTo = result.baseUrl
-      handle.attach(createAgentClient({ baseUrl: result.baseUrl, secret: key, instanceKey: who.key, instanceId, label: who.label, pluginVersion: pluginVersion(), adapter, executor, workspaces, sessionIds, log, ...deps.agent }))
+      handle.attach(createAgentClient({ baseUrl: result.baseUrl, secret: key, instanceKey: who.key, instanceId, label: who.label, pluginVersion: pluginVersion(), adapter, executor, workspaces, sessionIds, sessionCounts: () => local.sessionCounts?.(), sessionsWatch: () => local.watchSessions?.(), log, ...deps.agent }))
       handle.start()
     } else if (handle.state === 'stopped') handle.start()
   }

@@ -23,6 +23,9 @@ pre { margin: 0; }
   background: var(--bg); border-bottom: 1px solid var(--line); }
 .app > header h1 { font-size: 20px; }
 .count { color: var(--dim); font-size: 14px; }
+/* The counts stack on the right of the header: "N waiting" over "N working / M open". The second line keeps its height while the numbers are unknown, so nothing moves when they appear or change. */
+.counts { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; }
+.count.sessions { font-variant-numeric: tabular-nums; white-space: nowrap; min-height: 1.45em; }
 .banner { margin: 0; padding: 10px 16px; background: #3a2a10; color: var(--warn); font-size: 14px; border-bottom: 1px solid #5a4318; }
 .install-hint .btn { display: block; margin-top: 8px; }
 .todo-link { margin-bottom: 16px; }

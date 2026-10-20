@@ -4,8 +4,10 @@
  * the local service answers at once); what only this app can do stays local (focus, reading aloud, show/hide, merged PRs, the
  * todo background work). While the hub is not connected (degraded, standalone, upgrade needed) the local service answers all of it.
  * Reading and focus use a second service over the mirror, so the play button reads the item of any app.
+ * The tip of the day belongs to the local service (this app's model and speaker): tip() and readTip() always go there, and a tip being read here shows up as
+ * `reading` of the hub view (the mirror service cannot know it).
  */
-import { createReviewQueue } from '../service.js'
+import { createReviewQueue, TIP_READING } from '../service.js'
 import { createMirrorStore } from './mirror-store.js'
 
 const only = (condition, fields) => (condition ? fields : {})
@@ -34,13 +36,29 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
 
   const listeners = new Set()
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* one bad listener must not stop the others */ } } }
-  view.onChange(emit)
+  view.onChange(() => {
+    // The tip is only on screen while the merged list is empty: an item of any app ends its reading, even though this app's own store holds none.
+    if (mirror.snapshot().open.length) local.stopTip?.()
+    emit()
+  })
   local.onChange(emit)
   client.mirror.onChange?.(() => { hubMode() })
   client.onState?.(emit)
 
+  /** The snapshot of the active service; in hub mode a tip read by the local service ('tip:<id>') is its reading. */
+  const snapshot = (opts) => {
+    const hub = hubMode()
+    const snap = (hub ? view : local).snapshot(opts)
+    const own = hub && snap.reading === undefined ? local.readingId?.() : undefined
+    return typeof own === 'string' && own.startsWith(TIP_READING) ? { ...snap, reading: own } : snap
+  }
+
   return {
-    snapshot: () => active().snapshot(),
+    snapshot,
+    tip: () => local.tip?.(),
+    readTip: (id) => local.readTip(id),
+    stopTip: () => local.stopTip?.(),
+    watchSessions: () => local.watchSessions?.(),
     count: () => active().count(),
     first: () => active().first(),
     openTarget: () => active().openTarget(),

@@ -30,6 +30,10 @@ The same queue is shown in two places:
 - Mounting follows the precedent in dsh-hooks-tts/lib/client.js: a host element on document.body rendered with React createRoot, fixed position, high z-index but below DSH modals, themed with the page's light/dark class.
 - Voice: "open the queue" / "close the queue" are read-only navigation commands (queue_show / queue_hide), run immediately; "read item two" works with either surface open.
 
+## Tip of the day and the session count (added 2026-10-19)
+- **Tip**: only in the desktop overlay's side panel and narrow list, only while there is no open item (not in Resolved, never on the phone). A model-written (fallback: curated) tip of broad knowledge about algorithms, AI and AI agents: short title, 2 to 4 sentences with one example, category algorithms | ai | agents. Steered by the user's recent work topics (sanitised: no URLs, paths, keys), rotated by category, never repeating the last 12 titles, replaced after 5 minutes, generated only while the overlay is open (tip=1) and the list is empty (one call in flight, 30 s). The card is a button that reads the tip aloud (`POST /v1/read-tip`, `reading === 'tip:<id>'`); clicking again stops it. See README "Tip of the day and the session count".
+- **Session count**: `N working / M open` in the desktop header and the phone top bar; local counts standalone, summed over the online apps in hub mode; hidden while unknown; never moves the snapshot id.
+
 ## Card
 - Revision 2026-10-13 (b): auto-advance after an action, keyboard shortcuts, filter bar, draft persistence, risk warnings and Approve-all-identical on permission cards, supersede of older done items from the same session (Reopen from Resolved), markdown rendering of full replies, read-aloud stops with the overlay or when the item leaves the queue. See README.
 - Revision 2026-10-13 (c): when the waiting list goes from non-empty to empty while the overlay is open, it closes after 15 s unless an item is waiting again at that point (cancelled by a new item, a manual close or open-session; an overlay opened on an already empty queue stays).
