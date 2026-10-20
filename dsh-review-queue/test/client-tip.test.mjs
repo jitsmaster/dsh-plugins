@@ -12,12 +12,12 @@ const source = readFileSync(file, 'utf8')
 const el = (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() })
 const TIP = { id: 't1', title: 'Bloom filters', body: 'A Bloom filter is a bit array. It never has false negatives.', category: 'algorithms', at: 1, source: 'model' }
 
-function load({ fetchImpl, stored = {} } = {}) {
+function load({ fetchImpl, stored = {}, doc } = {}) {
   let registered
   const calls = []
   const sandbox = {
     window: { __ModuleLoader__: { load: (r) => { registered = r } }, localStorage: { getItem: (k) => stored[k] ?? null, setItem() {} } },
-    console, setTimeout, clearTimeout, setInterval, clearInterval, AbortController,
+    console, setTimeout, clearTimeout, setInterval, clearInterval, AbortController, ...(doc ? { document: doc } : {}),
     fetch: fetchImpl ?? (async (url, init) => { calls.push([url, init && init.body ? JSON.parse(init.body) : undefined]); return { ok: true, status: 200, json: async () => ({ ok: true }) } }),
   }
   vm.runInNewContext(source, sandbox, { filename: file })
@@ -184,6 +184,10 @@ function hangingFetch(urls) {
     return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))))
   }
 }
+function visibleDoc() {
+  const doc = { visibilityState: 'visible', listeners: {}, addEventListener(type, fn) { (doc.listeners[type] ??= []).push(fn) }, removeEventListener(type, fn) { doc.listeners[type] = (doc.listeners[type] ?? []).filter((f) => f !== fn) } }
+  return doc
+}
 function startPolling(loaded) {
   const stops = []
   loaded.mod.apply({ uiWorkspace: {}, slots: { inject: () => () => {}, register: () => {} }, effect: (fn) => { const off = fn(); if (typeof off === 'function') stops.push(off) } })
@@ -192,7 +196,8 @@ function startPolling(loaded) {
 
 test('with the overlay closed the poll does not ask for a tip; opening it restarts the poll with tip=1, closing it again without', async () => {
   const urls = []
-  const loaded = load({ fetchImpl: hangingFetch(urls) })
+  const doc = visibleDoc()
+  const loaded = load({ fetchImpl: hangingFetch(urls), doc })
   const stop = startPolling(loaded)
   await tick()
   assert.equal(urls.length, 1)
@@ -211,9 +216,38 @@ test('with the overlay closed the poll does not ask for a tip; opening it restar
 
 test('an overlay that was left open starts the very first poll with tip=1', async () => {
   const urls = []
-  const loaded = load({ fetchImpl: hangingFetch(urls), stored: { 'dsh-review-queue.overlay': '1' } })
+  const doc = visibleDoc()
+  const loaded = load({ fetchImpl: hangingFetch(urls), stored: { 'dsh-review-queue.overlay': '1' }, doc })
   const stop = startPolling(loaded)
   await tick()
   assert.match(urls[0], /tip=1/)
   stop()
+})
+
+test('the tip is asked for only while the page is visible too; a change of visibility restarts the poll at once', async () => {
+  const urls = []
+  const doc = visibleDoc()
+  const loaded = load({ fetchImpl: hangingFetch(urls), stored: { 'dsh-review-queue.overlay': '1' }, doc })
+  const stop = startPolling(loaded)
+  await tick()
+  assert.match(urls[0], /tip=1/)
+  doc.visibilityState = 'hidden'
+  doc.listeners.visibilitychange.forEach((f) => f())
+  await tick()
+  assert.equal(urls.length, 2)
+  assert.doesNotMatch(urls[1], /tip=1/, 'hidden: no tip')
+  doc.visibilityState = 'visible'
+  doc.listeners.visibilitychange.forEach((f) => f())
+  await tick()
+  assert.match(urls[2], /tip=1/)
+  stop()
+  assert.equal((doc.listeners.visibilitychange ?? []).length, 0, 'the listener is removed with the plugin')
+})
+
+test('a model-written tip says AI-generated; a built-in one does not', () => {
+  const { T } = load()
+  T.state.snap = snap({ tip: { ...TIP, source: 'model' } })
+  assert.match(text(expand(tipCards(T.Panel())[0])), /AI-generated/)
+  T.state.snap = snap({ tip: { ...TIP, source: 'builtin' } })
+  assert.doesNotMatch(text(expand(tipCards(T.Panel())[0])), /AI-generated/)
 })

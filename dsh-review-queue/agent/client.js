@@ -10,7 +10,7 @@
  * changed, and at least every resyncEveryMs, because a sync is also when the hub looks for items to hand over.
  * Session numbers: sessionCounts() -> { working, open } (this app's "N working / M open", undefined while unknown) goes to the hub with the register and, when it
  * changed, through the presence call (an old hub ignores the extra field; a failed report is simply tried again). The hub's answers say whether anybody looks at the
- * numbers (a phone, an open overlay): only then sessionsWatch() keeps the counter fresh (and the call is only every WATCH_RECHECK_MS); an old hub says nothing, which counts as looking.
+ * numbers (a phone, an open overlay): only then sessionsWatch() keeps the counter fresh (and the call is only every WATCH_RECHECK_MS). Only watch === true counts: an old hub says nothing, so an app never lists sessions for nobody (the count needs the hub on the new version).
  */
 import { randomBytes } from 'node:crypto'
 import { PROTOCOL } from '../hub/protocol.js'
@@ -62,7 +62,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
   let sessionTimer
   let reportTimer
   let reportedSessions = '' // the numbers the hub has from this app (sessionsKey)
-  let hubWatch = true // the hub says somebody looks at the numbers (until it says otherwise)
+  let hubWatch = false // the hub says somebody looks at the numbers (watch === true in its answers; a missing field is no)
   let checkedAt = -Infinity // the last presence call
   let wantSync = false
   let reported = { key: '', at: 0, workspaces: '' }
@@ -113,7 +113,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     if (changed) reportedSessions = sessionsKey(v)
     try {
       const r = await agent('presence', changed ? { sessions: v } : {}, ctl.signal)
-      if (r.status === 200) hubWatch = r.json?.watch !== false
+      if (r.status === 200) hubWatch = r.json?.watch === true
       else if (changed) reportedSessions = before
     } catch { if (changed) reportedSessions = before }
   }
@@ -157,7 +157,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     adapter.synced(sync.n)
     applyHubView(r.json)
     reportedSessions = sessionsKey(sessions)
-    hubWatch = r.json.watch !== false
+    hubWatch = r.json.watch === true
     return 'ok'
   }
   async function connect() {

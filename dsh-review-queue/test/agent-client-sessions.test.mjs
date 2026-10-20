@@ -92,7 +92,7 @@ test('while the hub says nobody looks the agent does not touch the counter; when
   assert.ok(watched > n, 'keeps touching while watched')
 })
 
-test('an old hub (no watch field in its answers) is treated as watched, as before', async (t) => {
+test('an old hub (no watch field in its answers) never makes the app list sessions for nobody: a missing field means nobody looks', async (t) => {
   const { port } = await startHub(t)
   let watched = 0
   const strip = async (url, init) => {
@@ -106,7 +106,28 @@ test('an old hub (no watch field in its answers) is treated as watched, as befor
   const c = setup(t, port, { sessionCounts: () => ({ working: 1, open: 2 }), sessionsWatch: () => { watched++ }, fetch: strip })
   c.start()
   await connected(c)
-  await waitFor(() => watched > 0, 3000, 'touched')
+  await new Promise((r) => setTimeout(r, 250))
+  assert.equal(watched, 0)
+})
+
+test('only watch === true counts: a hub that says false, a string or null is not looking', async (t) => {
+  const { port } = await startHub(t)
+  for (const value of [false, 'true', null, 1]) {
+    let watched = 0
+    const lie = async (url, init) => {
+      const res = await fetch(url, init)
+      const name = new URL(url).pathname.split('/').pop()
+      if (name !== 'register' && name !== 'presence') return res
+      const json = await res.json()
+      json.watch = value
+      return { status: res.status, text: async () => JSON.stringify(json) }
+    }
+    const c = setup(t, port, { id: 'cccc' + String(Math.random()).slice(2, 6), key: 'kx' + value, sessionCounts: () => ({ working: 1, open: 2 }), sessionsWatch: () => { watched++ }, fetch: lie })
+    c.start()
+    await connected(c)
+    await new Promise((r) => setTimeout(r, 120))
+    assert.equal(watched, 0, String(value))
+  }
 })
 
 test('while nobody looks the agent checks with the hub (a presence without numbers), often; while somebody does, rarely', async (t) => {

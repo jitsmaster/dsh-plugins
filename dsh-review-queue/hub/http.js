@@ -69,13 +69,20 @@ export function createHttp({ hub, log = () => {} }) {
     if (looking) hub.notePresence()
     if (!seen()) return send(res, 200, hub.snapshot())
     if (wait === 0) return unchanged()
-    await new Promise((resolve) => {
-      const done = () => { clearTimeout(timer); off(); waiters.delete(done); req.off('close', done); resolve() }
-      const timer = setTimeout(done, wait)
-      const off = hub.onChange(done)
-      waiters.set(done, who.deviceId)
-      req.once('close', done)
-    })
+    // A wake that changes nothing this client can see (a token without the numbers part meets a change of the numbers only) is not an answer: keep waiting for the rest of the time.
+    const deadline = Date.now() + wait
+    let gone = false
+    req.once('close', () => { gone = true })
+    while (!gone && !stopping && seen() && Date.now() < deadline) {
+      await new Promise((resolve) => {
+        const done = () => { clearTimeout(timer); off(); waiters.delete(done); req.off('close', done); resolve() }
+        const timer = setTimeout(done, deadline - Date.now())
+        const off = hub.onChange(done)
+        waiters.set(done, who.deviceId)
+        req.once('close', done)
+      })
+      if (who.deviceId && !hub.devices.isActive(who.deviceId)) break // revoked while it waited
+    }
     if (looking) hub.notePresence()
     if (stopping) return send(res, 503, { error: 'shutting-down' })
     if (who.deviceId && !hub.devices.isActive(who.deviceId)) return send(res, 401, { error: 'auth-required' }) // revoked while it waited

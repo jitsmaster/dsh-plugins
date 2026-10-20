@@ -4,7 +4,7 @@
  *
  * Cost control: nothing is generated until a client asks for the tip (current()) while the list is empty; at most one model call is in flight;
  * it is cut off after 30 s. Any failure, an answer that does not validate, or no model at all gives a built-in tip at once; nothing here throws,
- * and the provider's error text only goes to the log (the tip is shown to browsers). The user's recent work topics only STEER which broad concept
+ * and the provider's error text is never kept (only its code or name reaches the log) (the tip is shown to browsers). The user's recent work topics only STEER which broad concept
  * is chosen: they are stripped of URLs, paths, e-mail addresses, keys and ids, capped, and the answer is rejected when it carries such text itself.
  * The categories rotate round robin; the last 60 titles are remembered (a built-in tip comes back only after the whole list was shown) and the last 12 are
  * sent so that the model does not repeat itself. The topics are session titles, i.e. text somebody else may have written: they go to the model as a delimited
@@ -24,10 +24,15 @@ export const RECENT_MEMORY = 60
 export const PROMPT_TITLES = 12
 const MAX_TOPICS = 8
 const MAX_TOPIC_CHARS = 60
+const MAX_RAW_TOPIC = 200
 const MAX_TOPICS_CHARS = 400
 const TOPICS_WAIT_MS = 5000
-const ERROR_CHARS = 200
 const NO_MODEL = 'no model available'
+const NOT_VALID = 'the answer is not a valid tip'
+const REPEATS = 'the answer repeats a recent tip'
+/** Reasons that are ours and safe to log; anything else is a provider's error, of which only the code or name is logged. */
+const OWN_REASONS = new Set(['timed out', NO_MODEL, NOT_VALID, REPEATS])
+const reasonOf = (error) => (OWN_REASONS.has(error?.message) ? error.message : String(error?.code ?? error?.name ?? 'error').slice(0, 40))
 
 // What must never reach the model as a topic, nor come back in a tip.
 const URL_RE = /\b(?:https?|ftp|file):\/\/\S+|\bwww\.\S+/gi
@@ -36,26 +41,43 @@ const UNIX_PATH = /(?:^|[\s(])(?:~|\.{1,2})?\/[\w.@-]+(?:\/[\w.@-]+)+/g
 const REL_PATH = /\b[\w.@-]+(?:\/[\w.@-]+){2,}/g
 const EMAIL = /\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/g
 const KEY_PREFIX = /\b(?:sk|pk|rk|ghp|gho|ghs|github_pat|xox[abpr]|AKIA|AIza|eyJ)[-_A-Za-z0-9]{12,}/g
+// A bare domain (example.com/x, bit.ly/abc): a link without a scheme. File-like names such as node.js or e.g. are not in the list.
+const BARE_DOMAIN = /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|ai|app|xyz|info|biz|ru|cn|tk|ly|sh|gg|edu|gov|cloud|site|online|top|link|click|live|shop|store|tech|uk|de|fr|me|co|us)\b/i
 const LONG_TOKEN = /\b[A-Za-z0-9_+-]{24,}\b/g
 const HEX_ID = /\b[0-9a-f]{12,}\b/gi
 const SECRET_ASSIGN = /\b(?:password|passwd|pwd|secret|token|api[_-]?key|apikey)\b\s*[:=]\s*\S+/gi
 const FILE_NAME = /\b[\w-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|md|json|ya?ml|cs|java|go|rs|ps1|sh|css|html|txt|log|env|pem|key)\b/gi
 const TOPIC_STRIP = [URL_RE, WIN_PATH, UNIX_PATH, REL_PATH, EMAIL, KEY_PREFIX, SECRET_ASSIGN, FILE_NAME, HEX_ID, LONG_TOKEN]
-const ANSWER_LEAKS = [URL_RE, WIN_PATH, UNIX_PATH, EMAIL, KEY_PREFIX, LONG_TOKEN]
+const ANSWER_LEAKS = [URL_RE, BARE_DOMAIN, WIN_PATH, UNIX_PATH, EMAIL, KEY_PREFIX, LONG_TOKEN]
+// What a tip is not: an instruction to the reader (phishing-style). Verbs are only caught as instructions (at the start of a sentence, after "please"/"then"/a comma,
+// or with an object such as "your"), so teaching prose passes: open addressing, enable caching, a client sends a request, a search that visits each node.
+const LEAD = '(?:^|[.!?:;]\\s+|\\bplease\\s+|\\bthen\\s+|,\\s*)'
+const VISIT = new RegExp(LEAD + 'visit\\b(?!\\s+(?:each|every|all|the nodes?|nodes?|a node|neighbou?rs?|the neighbou?rs?|vertices|the vertices)\\b)', 'i')
+const INSTALL = new RegExp(LEAD + 'install\\b', 'i')
+const OPEN_THING = new RegExp(LEAD + 'open\\s+(?:the|a|an|your|this|that)\\s+(?:link|file|attachment|e-?mail|terminal|browser|settings|website|page|url|app|console|command|shell|prompt|window)\\b', 'i')
+const DOWNLOAD = /\bdownload\s+(?:the|this|that|a|an|our|it|your|and|from|these)\b/i
+const GIVE_YOUR = /\b(?:enter|type|share|send|give|provide|reveal|paste|post)\s+your\b|\b(?:turn off|switch off|disable|deactivate)\s+your\b/i
+const SECURITY_WORDS = /\b(?:antivirus|firewall|two-factor|2fa|mfa)\b/i
+const LOG_IN = /\b(?:log|sign)\s+in\b/i
+const CLICK = /\bclick\s+(?:on|here|the|this|that|a|an)\b/i
 // Text that is not a tip but an instruction or markup: code spans, markdown links and headings, shell commands, "run this".
 const BACKTICK = /`/
 const MD_LINK = /\[[^\]]*\]\([^)]*\)/
 const MD_HEADING = /^#{1,6}\s|\s#{2,6}\s/
 const SHELL_COMMAND = /\b(?:npm|npx|pnpm|yarn|pip3?|curl|wget|sudo|powershell|pwsh|chmod|apt-get)\s+\S|\brm\s+-\w|\bRemove-Item\b|\bInvoke-\w+/i
 const TELLS_TO_DO = /\b(?:run|execute|paste|copy)\s+(?:this|the following|these|the command)\b/i
-const ANSWER_NOISE = [BACKTICK, MD_LINK, MD_HEADING, SHELL_COMMAND, TELLS_TO_DO]
+const ANSWER_NOISE = [BACKTICK, MD_LINK, MD_HEADING, SHELL_COMMAND, TELLS_TO_DO, VISIT, INSTALL, OPEN_THING, DOWNLOAD, GIVE_YOUR, SECURITY_WORDS, LOG_IN, CLICK]
 
 const hits = (text, regexes) => regexes.some((re) => { re.lastIndex = 0; return re.test(text) })
 
 /** One work topic made harmless: leaks removed, odd characters turned into spaces, cut to a short phrase; '' when nothing is left. */
+// A topic that talks to the model (a session title can be anything somebody typed or pasted): dropped whole.
+const INSTRUCTION_LIKE = /\b(?:ignore|disregard|forget|instructions?|system prompt|assistant|override|you must|output)\b/i
+
 function cleanTopic(raw) {
   if (typeof raw !== 'string') return ''
-  let text = raw
+  let text = raw.slice(0, MAX_RAW_TOPIC) // cut first: the patterns below must never run over a title of 100 000 characters
+  if (INSTRUCTION_LIKE.test(text)) return ''
   for (const re of TOPIC_STRIP) text = text.replace(re, ' ')
   text = text.replace(/[^\p{L}\p{N} .,'#:+()&-]/gu, ' ').replace(/\s+/g, ' ').trim()
   return text.length < 3 ? '' : text.slice(0, MAX_TOPIC_CHARS).trim()
@@ -190,8 +212,8 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
       messages: [{ role: 'user', content: [{ type: 'text', text: promptFor(category, hint, recent.slice(-PROMPT_TITLES)) }] }],
     })) if (chunk.type === 'text-delta') out += chunk.text
     const parsed = parseTip(out)
-    if (!parsed) throw new Error('the answer is not a valid tip')
-    if (wasShown(parsed.title)) throw new Error('the answer repeats a recent tip')
+    if (!parsed) throw new Error(NOT_VALID)
+    if (wasShown(parsed.title)) throw new Error(REPEATS)
     return parsed
   }
 
@@ -202,10 +224,10 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
       made = await within(ask(llm, category, ac.signal), timeoutMs)
     } catch (error) {
       ac.abort()
-      // The provider's own text can carry endpoints or key fragments: the log only, shortened.
-      log('tip: model call failed, using a built-in tip: ' + String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, ERROR_CHARS))
+      // The provider's own text can carry endpoints or key fragments: not even the log gets it, only a code or name.
+      log('tip: model call failed, using a built-in tip: ' + reasonOf(error))
     }
-    try { if (made) install(made, 'model'); else install(fromBuiltin(category), 'builtin') } catch (error) { log('tip: ' + String(error?.message ?? error).slice(0, ERROR_CHARS)) }
+    try { if (made) install(made, 'model'); else install(fromBuiltin(category), 'builtin') } catch (error) { log('tip: ' + reasonOf(error)) }
     emit()
   }
 

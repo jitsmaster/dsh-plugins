@@ -1,6 +1,6 @@
 /**
  * "N working / M open": how many sessions of this DSH app have a turn running (working) and how many are open (every top-level session that is
- * not archived). The numbers come from the session controller's list, the same one Pause all uses (userpause.js), so a session is "top level" by
+ * not archived, not blank). The numbers come from the session controller's list, the same one Pause all uses (userpause.js), so a session is "top level" by
  * the same rule. A list call is not free, so the answer is cached for 2 s and one call is in flight at most.
  *
  * Nobody is asked while nobody looks: the list is only fetched when touch() was called in the last 60 s (a snapshot request of an open overlay or of the
@@ -43,7 +43,9 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
     if (typeof controller?.list !== 'function') { value = undefined; return }
     const listed = await controller.list({}, AbortSignal.timeout(timeoutMs))
     const archived = new Set((safe(() => registryOf()?.archivedSessionIds) ?? []).map(String))
-    const open = (listed?.items ?? []).filter((i) => isTopLevel(i) && !archived.has(String(i.sessionId)))
+    if (!Array.isArray(listed?.items)) return undefined
+    // A session entry: an object with an id, top level, not blank (a session running its first turn is not blank in the Host list), not archived. Anything else is skipped, never thrown on.
+    const open = listed.items.filter((i) => i && typeof i === 'object' && typeof i.sessionId === 'string' && isTopLevel(i) && i.blank !== true && !archived.has(i.sessionId))
     return { working: open.filter((i) => i.running === true).length, open: open.length }
   }
 

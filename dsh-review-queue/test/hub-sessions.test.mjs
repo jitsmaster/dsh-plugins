@@ -170,3 +170,36 @@ test('the hub says nobody looks until a phone or an open overlay polls the snaps
   await get('?wait=0', { 'x-test-role': 'device' })
   assert.equal(hub.watching(), true, 'a phone poll')
 })
+
+// ---- a long poll that cannot see the numbers keeps waiting ---------------------------------------------------------------------------------
+
+test('a token without the numbers part (an old page, the agent mirror) is not answered early when only the numbers move: it waits out its time', async (t) => {
+  const { port } = await startHub(t, { roleOf: () => 'desktop' })
+  const a = agentOf(port, { id: A, key: 'k1' })
+  await a.register({ sync: sync(), sessions: { working: 1, open: 2 } })
+  const get = (q) => raw({ port, path: P + '/v1/snapshot' + q })
+  const first = (await get('')).json
+  const started = Date.now()
+  const waiting = get('?wait=700&since=' + encodeURIComponent(first.snapshotId + '|||0'))
+  await new Promise((r) => setTimeout(r, 100))
+  await a.post('presence', { sessions: { working: 2, open: 2 } })
+  const answer = await waiting
+  assert.equal(answer.json.unchanged, true)
+  assert.ok(Date.now() - started >= 600, 'answered after ' + (Date.now() - started) + ' ms')
+})
+
+test('a token that has the numbers part still wakes at once, and a real item change wakes every kind of token', async (t) => {
+  const { port } = await startHub(t, { roleOf: () => 'desktop' })
+  const a = agentOf(port, { id: A, key: 'k1' })
+  await a.register({ sync: sync(), sessions: { working: 1, open: 2 } })
+  const get = (q) => raw({ port, path: P + '/v1/snapshot' + q })
+  const first = (await get('')).json
+  const started = Date.now()
+  const waiting = get('?wait=5000&since=' + encodeURIComponent(first.snapshotId + '|||0|1/2|'))
+  const oldToken = get('?wait=5000&since=' + encodeURIComponent(first.snapshotId + '|||0'))
+  await new Promise((r) => setTimeout(r, 80))
+  await a.send(a.add(1))
+  const [x, y] = await Promise.all([waiting, oldToken])
+  assert.ok(x.json.open.length === 1 && y.json.open.length === 1)
+  assert.ok(Date.now() - started < 3000)
+})

@@ -537,8 +537,8 @@ window.__ModuleLoader__.load({
 			let fails = 0;
 			while (!stopped) {
 				try {
-					// tip=1 only while the overlay is open: the tip (a model call) and the session numbers are for an overlay somebody looks at.
-					const url = API + "/v1/snapshot?wait=" + WAIT_MS + (since ? "&since=" + encodeURIComponent(since) : "") + (pageVisible() ? "&visible=1" : "") + (state.overlay ? "&tip=1" : "");
+					// tip=1 only while the overlay is open AND the page is visible: the tip (a model call) and the session numbers are for an overlay somebody looks at.
+					const url = API + "/v1/snapshot?wait=" + WAIT_MS + (since ? "&since=" + encodeURIComponent(since) : "") + (pageVisible() ? "&visible=1" : "") + (state.overlay && pageVisible() ? "&tip=1" : "");
 					pollCtl = typeof AbortController === "function" ? new AbortController() : undefined;
 					const res = await fetch(url, pollCtl ? { credentials: "same-origin", signal: pollCtl.signal } : { credentials: "same-origin" });
 					if (!res.ok) throw new Error("HTTP " + res.status);
@@ -559,6 +559,13 @@ window.__ModuleLoader__.load({
 				}
 			}
 			polling = false;
+		}
+
+		/** A tab that is shown or hidden changes what the next poll asks for (tip=1 only while visible): ask again at once. Returns the remover. */
+		function installRepoll(doc) {
+			const onChange = () => { if (pollCtl) pollCtl.abort(); };
+			doc.addEventListener("visibilitychange", onChange);
+			return () => doc.removeEventListener("visibilitychange", onChange);
 		}
 
 		/** POST JSON to the plugin; returns the words for a failure, undefined on success. */
@@ -1216,7 +1223,7 @@ window.__ModuleLoader__.load({
 			const reading = !!(st.snap && st.snap.reading === key);
 			return h("div", null,
 				h("button", { type: "button", className: "rq-tip" + (reading ? " on" : ""), "aria-pressed": reading, disabled: !!st.busy[key], title: reading ? "Stop reading" : "Read this tip aloud", onClick: () => (reading ? act("/v1/stop", {}, key) : act("/v1/read-tip", { id: tip.id }, key)) },
-					h("span", null, h("span", { className: "rq-chip" }, tip.category), " ", h("span", { className: "rq-sub" }, "Tip of the day")),
+					h("span", null, h("span", { className: "rq-chip" }, tip.category), " ", h("span", { className: "rq-sub" }, "Tip of the day"), tip.source === "model" ? h("span", { className: "rq-sub" }, " · AI-generated") : null),
 					h("span", { className: "rq-tip-t" }, tip.title),
 					h("span", { className: "rq-tip-b" }, tip.body),
 					h("span", { className: "rq-tip-f" }, reading ? "■ Stop reading" : "▶ Read aloud")),
@@ -1302,6 +1309,7 @@ window.__ModuleLoader__.load({
 			stopped = false;
 			if (state.todoForm.open) ensureWorkspaces(); // a draft restored open needs its dropdown
 			ctx.effect(() => { pollLoop(); return () => { stopped = true; if (pollCtl) pollCtl.abort(); }; }, "review-queue: polling");
+			ctx.effect(() => (typeof document === "undefined" || typeof document.addEventListener !== "function" ? () => {} : installRepoll(document)), "review-queue: visibility");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
 			ctx.effect(() => (typeof window === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installHotkey(window)), "review-queue: hotkey");
 			ctx.effect(() => (typeof window === "undefined" || typeof document === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installDraftFlush(window, document)), "review-queue: todo draft flush");

@@ -60,6 +60,26 @@ test('working counts the sessions with a turn running, open counts every top-lev
   assert.deepEqual(counter.current(), { working: 2, open: 4 })
 })
 
+test('a blank session is not open, and a null or malformed entry is ignored instead of stalling the count', async () => {
+  const items = [item('a', { running: true }), item('b', { blank: true }), null, undefined, 5, 'x', {}, item('c')]
+  const { counter } = setup({ items })
+  await settle(counter)
+  assert.deepEqual(counter.current(), { working: 1, open: 2 }, 'a and c: the blank one and everything that is not a session entry are left out')
+})
+
+test('a session running its first turn is not blank in the Host list, so it counts', async () => {
+  const { counter } = setup({ items: [item('a', { running: true, blank: false })] })
+  await settle(counter)
+  assert.deepEqual(counter.current(), { working: 1, open: 1 })
+})
+
+test('a list that is not an array gives unknown, not a crash', async () => {
+  const { counter, state } = setup({ items: { not: 'a list' } })
+  await settle(counter)
+  assert.equal(counter.current(), undefined)
+  void state
+})
+
 test('subagents and child sessions are not counted, archived sessions are not open', async () => {
   const items = [item('a', { running: true }), item('s1', { running: true, parentSessionId: 'a' }), item('s2', { running: true, origin: 'subagent' }), item('arch', { running: true }), item('b')]
   const { counter } = setup({ items, archived: ['arch'] })
