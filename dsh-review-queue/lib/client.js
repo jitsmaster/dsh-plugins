@@ -1139,11 +1139,14 @@ window.__ModuleLoader__.load({
 			const late = it.type === "question" && it.resolution && it.resolution.kind === "expired";
 			const open = !!st.lateOpen[it.id];
 			const reopenable = isReopenable(it);
+			// A todo that started ends up here with no other trace of its text: it can be read aloud like an open card (the service reads any item by id).
+			const reading = !!(st.snap && st.snap.reading === it.id);
 			return h("div", { className: "rq-card rq-res" },
 				h("div", { className: "rq-card-h", title: canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : "default" }, onClick: canOpen ? (e) => { if (!isButtonClick(e && e.target)) openSession(it); } : undefined }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: canOpen ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
 				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? plainAction(it.summary) : undefined }, resolutionText(it)),
 				canOpen ? h("div", { className: "rq-row" }, h("button", { className: asButton ? "rq-btn pri" : "rq-link", onClick: () => openSession(it) }, asButton ? "Open session" : "Open session ↗")) : null,
 				reopenable ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/reopen", { id: it.id }, it.id) }, "Reopen")) : null,
+				it.type === "todo" ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn rq-play", disabled: st.busy[it.id], title: reading ? "Stop reading" : "Read the whole todo aloud", "aria-pressed": reading, onClick: () => (reading ? act("/v1/stop", {}, it.id) : act("/v1/read", { id: it.id }, it.id)) }, reading ? "■ Stop reading" : "▶ Read aloud")) : null,
 				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
 				late && open ? h(QuestionBody, { item: it, full: true, path: "/v1/late-answer", sendLabel: "Send late answer" }) : null,
 				late && open ? h("div", { className: "rq-sub" }, "The assistant already carried on with the recommended option. An answer that differs is sent to it as a late reply; the same one is just confirmed.") : null,
