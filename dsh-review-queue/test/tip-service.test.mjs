@@ -281,3 +281,17 @@ test('stopTip stops only a tip being read', () => {
   assert.deepEqual(queue.stopTip(), { ok: true, stopped: true })
   assert.equal(queue.snapshot().reading, undefined)
 })
+
+test('readTip hands the speaker the title and then ONE chunk per sentence (never several sentences in one chunk)', () => {
+  const tips = fakeTips({ ...TIP, title: 'Bloom filters', body: 'A Bloom filter is a bit array. It never gives a false negative. Lookups cost k hashes.' })
+  const { queue, speaker } = setup({ tips })
+  assert.deepEqual(queue.readTip('tip1'), { ok: true })
+  assert.deepEqual(speaker.spoken[0], ['Bloom filters.', 'A Bloom filter is a bit array.', 'It never gives a false negative.', 'Lookups cost k hashes.'])
+})
+
+test('a title that already ends in punctuation gets no second one', () => {
+  const tips = fakeTips({ ...TIP, title: 'Why hash?', body: 'Speed.' })
+  const { queue, speaker } = setup({ tips })
+  queue.readTip('tip1')
+  assert.deepEqual(speaker.spoken[0], ['Why hash?', 'Speed.'])
+})

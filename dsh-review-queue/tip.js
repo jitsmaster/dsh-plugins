@@ -28,6 +28,8 @@ const MAX_RAW_TOPIC = 200
 const MAX_TOPICS_CHARS = 400
 const TOPICS_WAIT_MS = 5000
 const NO_MODEL = 'no model available'
+/** The tip is always written by a Haiku model (cheap, fast, good enough); with none available a built-in tip is shown instead. */
+const HAIKU = /haiku/i
 const NOT_VALID = 'the answer is not a valid tip'
 const REPEATS = 'the answer repeats a recent tip'
 /** Reasons that are ours and safe to log; anything else is a provider's error, of which only the code or name is logged. */
@@ -201,7 +203,7 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
   async function ask(llm, category, signal) {
     if (!llm) throw new Error(NO_MODEL)
     const hint = await topics()
-    const mine = (chosen ??= pickModel(llm, undefined, timeoutMs))
+    const mine = (chosen ??= pickModel(llm, undefined, timeoutMs, HAIKU))
     let m
     try { m = await mine } catch (error) { if (chosen === mine) chosen = undefined; throw error }
     if (!m) { if (chosen === mine) chosen = undefined; throw new Error(NO_MODEL) }

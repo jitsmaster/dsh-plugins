@@ -448,3 +448,22 @@ test('a title of 100 000 characters is cut before any pattern runs (it cannot bl
   assert.ok(Date.now() - started < 500, 'took ' + (Date.now() - started) + ' ms')
   assert.ok(out.every((x) => x.length <= 60))
 })
+
+// ---- the tip is always written by Haiku -------------------------------------------------------------------------------------------------
+
+test('the tip is generated with a Haiku model even when other (smaller or earlier listed) models exist', async () => {
+  const seen = {}
+  const models = [{ id: 'gpt-5-mini' }, { id: 'claude-opus-5' }, { id: 'gemini-flash' }, { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5' }]
+  const { tipper } = await make({ llm: fakeLlm({ answer: goodJson(), seen, models }) })
+  assert.equal((await ready(tipper)).source, 'model')
+  assert.equal(seen.cfg.model, 'claude-haiku-4-5')
+})
+
+test('with no Haiku model available the tip is a built-in one and no other model is called', async () => {
+  const seen = {}
+  const models = [{ id: 'gpt-5-mini' }, { id: 'claude-opus-5' }, { id: 'gemini-flash' }]
+  const { tipper, logs } = await make({ llm: fakeLlm({ answer: goodJson(), seen, models }) })
+  assert.equal((await ready(tipper)).source, 'builtin')
+  assert.equal(seen.calls, 0)
+  assert.ok(logs.some((l) => /tip/.test(l)))
+})

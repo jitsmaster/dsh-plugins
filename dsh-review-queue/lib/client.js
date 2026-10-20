@@ -197,17 +197,20 @@ window.__ModuleLoader__.load({
 		// a step bigger, not underlined (the "bu" token), never the tags. Models spell them in capitals, escape them, drop the bold markers, put them inside the bold
 		// markers, nest them or leave them open, so they are cut out of the text first (inline code is left alone: it may talk about the markup) and
 		// come back as a placeholder, which mdInline turns into a "bu" token wherever it ended up (also inside **...** or *...*).
-		const ACTION_TAG = /`[^`]+`|<\s*(\/?)\s*u(?=[\s>])[^<>]*>|&lt;\s*(\/?)\s*u(?=[\s&])[^<>&]*&gt;/gi;
+		// "<u ...>" has its attributes cut away; the spaced spelling "< u >" must close at once (a comparison such as "n < u and m > 3" is prose); the spaces are bounded so a long run of them cannot backtrack.
+		const ACTION_TAG = /`[^`]+`|<(\/?)u(?=[\s>])[^<>]*>|<[ \t]{0,2}(\/?)[ \t]{0,2}u[ \t]{0,2}>|&lt;(\/?)u(?=[\s&])[^<>&]*&gt;/gi;
 		const AP_OPEN = "\uE000";
 		const AP_CLOSE = "\uE001";
 		const AP_SPLIT = /\uE000(\d+)\uE001/g;
 		/** { src, spans }: the text with each action span replaced by a placeholder, and the plain words of every span. An open tag runs to the end of the text; a close tag alone is dropped. */
 		function extractAction(text) {
 			const source = String(text == null ? "" : text).replace(/[\uE000\uE001]/g, "");
+			if (!/[<&]/.test(source)) return { src: source, spans: [] }; // no tag can be in it: nothing to cut out
 			const spans = [];
 			let src = "";
 			let cursor = 0;
 			let depth = 0;
+			let openAt = 0; // where the outermost open tag starts
 			let inner = "";
 			const emit = () => {
 				// Plain words of the span: the **...** around it (or one half of it, when the text was cut) goes, the markdown inside is read once more
@@ -223,15 +226,19 @@ window.__ModuleLoader__.load({
 			let m;
 			while ((m = tags.exec(source))) {
 				if (m[0][0] === "`") continue;
-				const closing = !!(m[1] || m[2]);
+				const closing = !!(m[1] || m[2] || m[3]);
 				const chunk = source.slice(cursor, m.index);
 				cursor = m.index + m[0].length;
-				if (depth === 0) { src += chunk; if (!closing) depth = 1; continue; }
+				if (depth === 0) { src += chunk; if (!closing) { depth = 1; openAt = m.index; } continue; }
 				inner += chunk;
 				depth += closing ? -1 : 1;
 				if (depth === 0) emit();
 			}
-			if (depth > 0) { inner += source.slice(cursor); emit(); } else src += source.slice(cursor);
+			if (depth > 0) {
+				// A tag that is never closed is the transport of a cut-off text only when the bold markers follow it; "use the <u> tag" is prose and stays as written.
+				const rest = source.slice(cursor);
+				if (/^\s*\*\*/.test(rest)) { inner += rest; emit(); } else src += source.slice(openAt);
+			} else src += source.slice(cursor);
 			return { src, spans };
 		}
 
@@ -241,7 +248,7 @@ window.__ModuleLoader__.load({
 			const out = [];
 			const push = (tok) => { const prev = out[out.length - 1]; if (tok.t === "text" && prev && prev.t === "text") prev.text += tok.text; else out.push(tok); };
 			for (const tok of tokens) {
-				if (tok.t === "a" || tok.t === "code") { push({ ...tok, text: tok.text.replace(AP_SPLIT, (_, n) => spans[n]) }); continue; }
+				if (tok.t === "a" || tok.t === "code") { const back = (v) => v.replace(AP_SPLIT, (_, n) => spans[n]); push(tok.href === undefined ? { ...tok, text: back(tok.text) } : { ...tok, text: back(tok.text), href: back(tok.href) }); continue; }
 				const parts = tok.text.split(AP_SPLIT);
 				parts.forEach((part, i) => {
 					if (i % 2) push({ t: "bu", text: spans[part] });
@@ -903,7 +910,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
 			+ ".rq-sess{font-variant-numeric:tabular-nums;white-space:nowrap}.rq-emptywrap{margin:auto;display:flex;flex-direction:column;gap:16px;align-items:stretch;max-width:100%}.rq-emptywrap .rq-empty{margin:0;padding:8px}"
 			+ ".rq-tip{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;border:1px solid var(--rq-border)!important;border-radius:10px;padding:10px 12px;background:var(--rq-layer)}.rq-tip:hover{background:var(--rq-hover)}.rq-tip.on{border-color:var(--rq-accent)!important}"
-			+ ".rq-tip-t{font-weight:600}.rq-tip-b{font-size:12.5px;line-height:1.45}.rq-tip-f{color:var(--rq-mute);font-size:11.5px}"
+			+ ".rq-tipwrap{max-width:560px;margin:8vh auto 0}.rq-tip-t{font-weight:600}.rq-tip-b{font-size:12.5px;line-height:1.45;display:flex;flex-direction:column;gap:8px}.rq-tip-p{display:block}.rq-tip-f{color:var(--rq-mute);font-size:11.5px}"
 			+ ".rq-sbtn{position:relative;display:inline-flex}.rq-sb-main{border-top-right-radius:0;border-bottom-right-radius:0}.rq-sb-caret{border-top-left-radius:0;border-bottom-left-radius:0;margin-left:-1px;padding:6px 8px}"
 			+ ".rq-menu{position:absolute;right:0;top:100%;margin-top:4px;z-index:5;min-width:140px;display:flex;flex-direction:column;border:1px solid var(--rq-border);border-radius:8px;background:var(--rq-layer);box-shadow:0 8px 24px #0008;padding:4px}.rq-mi{text-align:left;padding:6px 12px;border-radius:6px}.rq-mi:hover{background:var(--rq-hover)}"
 			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
@@ -1287,6 +1294,9 @@ window.__ModuleLoader__.load({
 			return h("div", { className: "rq-todoform", role: "status" }, h("div", { className: "rq-row" }, body));
 		}
 
+		/** A tip body as sentences, one per paragraph: the copy of tipSentences in speech.js (this file is one self-contained script; a test checks both agree). */
+		const tipSentences = (text) => { const flat = String(text == null ? "" : text).replace(/\s+/g, " ").trim(); return flat ? flat.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(\[`])/) : []; };
+
 		/** The tip of the day (a model-written bit of general knowledge, tip.js): a button that reads it aloud, and stops when pressed again. */
 		function TipCard({ tip }) {
 			const st = useStore();
@@ -1296,7 +1306,7 @@ window.__ModuleLoader__.load({
 				h("button", { type: "button", className: "rq-tip" + (reading ? " on" : ""), "aria-pressed": reading, disabled: !!st.busy[key], title: reading ? "Stop reading" : "Read this tip aloud", onClick: () => (reading ? act("/v1/stop", {}, key) : act("/v1/read-tip", { id: tip.id }, key)) },
 					h("span", null, h("span", { className: "rq-chip" }, tip.category), " ", h("span", { className: "rq-sub" }, "Tip of the day"), tip.source === "model" ? h("span", { className: "rq-sub" }, " · AI-generated") : null),
 					h("span", { className: "rq-tip-t" }, tip.title),
-					h("span", { className: "rq-tip-b" }, tip.body),
+					h("span", { className: "rq-tip-b" }, tipSentences(tip.body).map((s, n) => h("span", { key: n, className: "rq-tip-p" }, s))),
 					h("span", { className: "rq-tip-f" }, reading ? "■ Stop reading" : "▶ Read aloud")),
 				st.errors[key] ? h("div", { className: "rq-err" }, st.errors[key]) : null);
 		}
@@ -1319,7 +1329,7 @@ window.__ModuleLoader__.load({
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
-						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip),
+						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip ? h("div", { className: "rq-tipwrap" }, tip) : null),
 						h("div", { className: "rq-narrow" }, list)),
 				st.showResolved ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"));
 		}
@@ -1392,7 +1402,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
+		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;

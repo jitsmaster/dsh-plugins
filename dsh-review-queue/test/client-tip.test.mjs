@@ -263,3 +263,28 @@ test('a model-written tip says AI-generated; a built-in one does not', () => {
   T.state.snap = snap({ tip: { ...TIP, source: 'builtin' } })
   assert.doesNotMatch(text(expand(tipCards(T.Panel())[0])), /AI-generated/)
 })
+
+// ---- one sentence per paragraph --------------------------------------------------------------------------------------------------------
+
+test('the tip body is shown as one paragraph per sentence', () => {
+  const { T } = load()
+  T.state.snap = snap({ tip: { ...TIP, body: 'A Bloom filter is a bit array. It never gives a false negative! Lookups cost k hashes.' } })
+  const button = find(expand(tipCards(T.Panel())[0]), (n) => n.type === 'button')
+  const paras = withClass(button, 'rq-tip-p')
+  assert.deepEqual(paras.map(text), ['A Bloom filter is a bit array.', 'It never gives a false negative!', 'Lookups cost k hashes.'])
+})
+
+test('a single sentence is one paragraph; paragraphs are blocks with a gap', () => {
+  const { T } = load()
+  T.state.snap = snap({ tip: { ...TIP, body: 'Just one.' } })
+  assert.equal(withClass(expand(tipCards(T.Panel())[0]), 'rq-tip-p').length, 1)
+  assert.match(T.CSS, /\.rq-tip-p\{[^}]*display:block/)
+})
+
+test('the client splits sentences exactly as the speaker does', async () => {
+  const { mod } = load()
+  const { tipSentences } = await import('../speech.js')
+  for (const s of ['A. B. C.', 'Use e.g. a map, i.e. hashing. Next one! Last?', 'One\n\ntwo wraps.\nThree.', 'Load 0.75 is typical. Then resize.', 'no end', '']) {
+    assert.deepEqual([...mod.shared.tipSentences(s)], tipSentences(s), JSON.stringify(s))
+  }
+})

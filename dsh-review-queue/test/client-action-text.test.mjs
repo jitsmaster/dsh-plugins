@@ -203,3 +203,38 @@ test('the action text is bold, one step bigger and not underlined (desktop CSS)'
   assert.match(rule, /line-height:1\.\d+/)
   assert.doesNotMatch(T.CSS, /underline/)
 })
+
+test('mdInline: an action tag inside a link URL never leaves placeholder characters in the href', () => {
+  const toks = plain(T.mdInline('[x](https://a<u>b</u>c) and [y](https://example.com)'))
+  const links = toks.filter((t) => t.t === 'a')
+  assert.equal(links.length, 2)
+  for (const l of links) assert.doesNotMatch(l.href, /[\uE000\uE001]/)
+  assert.equal(links[0].href, 'https://abc')
+  assert.equal(links[1].href, 'https://example.com')
+})
+
+test('prose that merely mentions a tag or compares values stays literal text', () => {
+  const lit = (s) => assert.deepEqual(plain(T.mdInline(s)), [{ t: 'text', text: s }], s)
+  lit('use the <u> tag for underline, then more text')
+  lit('if n < u and m > 3 then stop. Next sentence.')
+  lit('a < u > b stays too? no: see below')
+})
+
+const bu = (text) => ({ t: 'bu', text })
+test('an unclosed tag still runs to the end when it is the transport form (followed by bold markers), as a cut-off summary does', () => {
+  assert.deepEqual(plain(T.mdInline('Ready. <u>**Cut off in the mid')), [{ t: 'text', text: 'Ready. ' }, bu('Cut off in the mid')])
+})
+
+test('a long run of spaces after "<" or "&lt;" is parsed in linear time', () => {
+  for (const s of ['<' + ' '.repeat(20000), '&lt;' + ' '.repeat(20000), '<' + ' / '.repeat(7000), '<u' + ' '.repeat(20000)]) {
+    const t0 = Date.now()
+    T.mdInline(s)
+    assert.ok(Date.now() - t0 < 150, 'took ' + (Date.now() - t0) + ' ms')
+  }
+})
+
+test('the spaced and entity spellings of a balanced pair are still tags', () => {
+  assert.deepEqual(plain(T.mdInline('< u >**Go?**< / u >')), [bu('Go?')])
+  assert.deepEqual(plain(T.mdInline('<u class="x">**Go?**</u>')), [bu('Go?')])
+  assert.deepEqual(plain(T.mdInline('&lt;u&gt;**Go?**&lt;/u&gt;')), [bu('Go?')])
+})

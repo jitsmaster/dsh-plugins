@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { actionParagraph, cleanText, lastParagraph, recommendedOf, spokenFor } from '../speech.js'
+import { actionParagraph, cleanText, lastParagraph, recommendedOf, spokenFor, tipSentences } from '../speech.js'
 
 test('cleanText strips control and invisible characters and collapses whitespace', () => {
   assert.equal(cleanText('a\u200Bb\u0007  c\n\n d'), 'ab c d')
@@ -205,4 +205,13 @@ test('actionParagraph moves the action items into their own last paragraph', () 
 
 test('speech reads a summary with a paragraph break as one run of words', () => {
   assert.equal(cleanText('Done.\n\n<u>**Restart it.**</u>'), 'Done. Restart it.')
+})
+
+test('tipSentences: one sentence per entry, whatever the line breaks; no split after e.g. / i.e. or inside a number', () => {
+  assert.deepEqual(tipSentences('A Bloom filter is a bit array. It never gives a false negative! Is that useful?'), ['A Bloom filter is a bit array.', 'It never gives a false negative!', 'Is that useful?'])
+  assert.deepEqual(tipSentences('First line.\n\nSecond\nline wraps. Third.'), ['First line.', 'Second line wraps.', 'Third.'])
+  assert.deepEqual(tipSentences('Use hashing, e.g. a hash map, for O(1) lookups. Load factor 0.75 is typical, i.e. resize then.'), ['Use hashing, e.g. a hash map, for O(1) lookups.', 'Load factor 0.75 is typical, i.e. resize then.'])
+  assert.deepEqual(tipSentences('No final punctuation'), ['No final punctuation'])
+  assert.deepEqual(tipSentences('  '), [])
+  assert.deepEqual(tipSentences(undefined), [])
 })

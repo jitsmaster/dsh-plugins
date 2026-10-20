@@ -3,7 +3,7 @@
  * own except the focused item; items live in the store and pending requests in capture.
  */
 import { randomUUID } from 'node:crypto'
-import { spokenFor, titleFor, fullTextFor, chunkForSpeech } from './speech.js'
+import { spokenFor, titleFor, fullTextFor, chunkForSpeech, tipSentences } from './speech.js'
 import { riskOf } from './risk.js'
 import { createTodos, MAX_TODO } from './todo.js'
 import { RESUME_PROMPT } from './paused.js'
@@ -177,7 +177,10 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const tip = (() => { try { return tips?.peek() } catch { return undefined } })()
       if (!tip || typeof id !== 'string' || tip.id !== id) return { ok: false, error: 'not-found' }
       if (!speaker) return { ok: false, error: 'no-speaker' }
-      return speakAs(TIP_READING + tip.id, chunkForSpeech(tip.title + '. ' + tip.body), false)
+      // The title, then one chunk per sentence (an over-long sentence is still cut at spaces): the speaker plays them one after the other, so the tip is read a sentence at a time.
+      const title = String(tip.title ?? '').trim()
+      const chunks = [...(title ? chunkForSpeech(/[.!?:;]$/.test(title) ? title : title + '.') : []), ...tipSentences(tip.body).flatMap((s) => chunkForSpeech(s))]
+      return speakAs(TIP_READING + tip.id, chunks, false)
     },
     /** Ends the reading of the tip (not of an item): the hub list stopped being empty, so the tip is gone from the screen. */
     stopTip() {

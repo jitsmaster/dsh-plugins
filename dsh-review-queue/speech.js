@@ -238,6 +238,16 @@ export function chunkForSpeech(text, opts = {}) {
 }
 
 /**
+ * A tip body as sentences, one per entry (the screen shows one paragraph each and the speaker gets one chunk each). A sentence ends at . ! or ? and
+ * whitespace when a capital letter, digit, quote or bracket follows, so "e.g. a map" and "0.75" stay whole. lib/client.js keeps a copy of this
+ * (it is one self-contained script); a test checks that they agree.
+ */
+export function tipSentences(text) {
+  const flat = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return flat ? flat.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(\[`])/) : []
+}
+
+/**
  * Everything a card says when its play button is pressed: the whole message, not the summary. With a position it starts
  * with the "Item N." lead as a paragraph of its own; the rest does not depend on the position.
  */
