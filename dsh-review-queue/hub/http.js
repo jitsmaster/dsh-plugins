@@ -5,7 +5,7 @@
  * (hub/roles.js): a paired phone (device), this PC (desktop), nobody. A device is held to 120 requests a minute (the snapshot long poll
  * excluded) and can only do the item actions below; revoking it aborts its open long poll.
  */
-import { MAX_WAIT_MS, PREFIX, outcome, parseSince, readJson, send, stampOf } from '../server.js'
+import { MAX_WAIT_MS, PREFIX, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
 import { serveMobile } from '../mobile.js'
 import { createDeviceRoutes, sendLimited } from './device-routes.js'
 
@@ -15,7 +15,7 @@ const ASSETLINKS = '/.well-known/assetlinks.json'
 const AGENT_PREFIX = '/hub/v1/agent/'
 const SHUTDOWN = '/hub/v1/shutdown'
 /** The desktop app owns the speakers, the screen and its own selection (D7): never the hub's business. */
-const LOCAL_ONLY = new Set(['read', 'stop', 'ui', 'focus'])
+const LOCAL_ONLY = new Set(['read', 'read-tip', 'stop', 'ui', 'focus'])
 /**
  * What a paired phone may do with an item. It may start todos (todo, todo-confirm, todo-cancel: hub/routing.js sends them to the
  * owner app, or for "Choose for me" to the most recently desktop-active one) but never open sessions: open-session, and every action
@@ -59,24 +59,34 @@ export function createHttp({ hub, log = () => {} }) {
   async function snapshot(req, res, url, who) {
     const since = parseSince(url.searchParams.get('since') ?? undefined)
     const wait = Math.min(Math.max(Number(url.searchParams.get('wait')) || 0, 0), MAX_WAIT_MS)
-    const current = () => stampOf({ snapshotId: hub.snapshotId() })
+    // The token is judged on the parts the client sent: the snapshot id and, for a client that knows them, the summed session numbers.
+    const seen = () => since !== undefined && stampMatches({ snapshotId: hub.snapshotId(), sessions: hub.sessions() }, since)
     const unchanged = () => send(res, 200, { unchanged: true, snapshotId: hub.snapshotId() })
     // The desktop overlay says whether anybody is looking (visible=1): the notifier holds a push while that is so.
     const looking = who.role === 'desktop' && url.searchParams.get('visible') === '1'
+    // Somebody looks at the session numbers: a phone, or a desktop overlay that is open (watch=1 from the app's proxy). An agent's own mirror poll is neither.
+    if (who.role === 'device' || url.searchParams.get('watch') === '1') hub.noteWatch()
     if (looking) hub.notePresence()
-    if (since === undefined || current() !== since) return send(res, 200, hub.snapshot())
+    if (!seen()) return send(res, 200, hub.snapshot())
     if (wait === 0) return unchanged()
-    await new Promise((resolve) => {
-      const done = () => { clearTimeout(timer); off(); waiters.delete(done); req.off('close', done); resolve() }
-      const timer = setTimeout(done, wait)
-      const off = hub.onChange(done)
-      waiters.set(done, who.deviceId)
-      req.once('close', done)
-    })
+    // A wake that changes nothing this client can see (a token without the numbers part meets a change of the numbers only) is not an answer: keep waiting for the rest of the time.
+    const deadline = Date.now() + wait
+    let gone = false
+    req.once('close', () => { gone = true })
+    while (!gone && !stopping && seen() && Date.now() < deadline) {
+      await new Promise((resolve) => {
+        const done = () => { clearTimeout(timer); off(); waiters.delete(done); req.off('close', done); resolve() }
+        const timer = setTimeout(done, deadline - Date.now())
+        const off = hub.onChange(done)
+        waiters.set(done, who.deviceId)
+        req.once('close', done)
+      })
+      if (who.deviceId && !hub.devices.isActive(who.deviceId)) break // revoked while it waited
+    }
     if (looking) hub.notePresence()
     if (stopping) return send(res, 503, { error: 'shutting-down' })
     if (who.deviceId && !hub.devices.isActive(who.deviceId)) return send(res, 401, { error: 'auth-required' }) // revoked while it waited
-    return current() === since ? unchanged() : send(res, 200, hub.snapshot())
+    return seen() ? unchanged() : send(res, 200, hub.snapshot())
   }
 
   async function api(req, res, url, path) {

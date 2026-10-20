@@ -1,8 +1,9 @@
 /**
  * The instance's /review-queue/v1/* in hub mode (docs/hub.md 5.1, 6.1, 10; D7, D8). Mode 'hub': actions, workspaces and the snapshot go
  * to the hub with the agent secret, X-RQ-Role: desktop and X-RQ-Instance, same paths and JSON as the standalone server.js, so the overlay
- * is unchanged. read / stop / ui / focus stay with this instance (the local router), and the hub's snapshot gets this instance's
- * focusId / reading / ui merged in. Any other mode ('starting', 'standalone', 'degraded') answers from the local service exactly as
+ * is unchanged. read / read-tip / stop / ui / focus stay with this instance (the local router), and the hub's snapshot gets this instance's
+ * focusId / reading / ui merged in, and, while the merged list is empty, the tip of the day of this instance's service (the hub knows no tip). The
+ * numbers part of the long-poll token goes to the hub (it sums the session numbers of every app); the tip part is judged here. Any other mode ('starting', 'standalone', 'degraded') answers from the local service exactly as
  * server.js does, the snapshot carrying a notice; degraded also lists the last known items of the other apps, read-only. The wiring drives
  * setMode (or driveModeFromClient); a request that finds the hub gone is answered locally and reported through onHubUnreachable.
  * The overlay going away aborts the request to the hub. The devices page of the overlay (pairing code, device list, rename, revoke) is forwarded
@@ -10,11 +11,11 @@
  */
 import { Readable } from 'node:stream'
 import { PROTOCOL } from '../hub/protocol.js'
-import { MAX_WAIT_MS, PREFIX, outcome, parseSince, readJson, send, stampOf } from '../server.js'
+import { MAX_WAIT_MS, PREFIX, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
 import { spokenFor } from '../speech.js'
 
 const MODES = ['starting', 'hub', 'standalone', 'degraded']
-const LOCAL_ROUTES = new Set(['/v1/read', '/v1/stop', '/v1/ui', '/v1/focus'])
+const LOCAL_ROUTES = new Set(['/v1/read', '/v1/read-tip', '/v1/stop', '/v1/ui', '/v1/focus'])
 const HUB_ACTIONS = new Set(['/v1/answer', '/v1/late-answer', '/v1/approve', '/v1/deny', '/v1/reviewed', '/v1/archive', '/v1/paused-resume', '/v1/paused-dismiss', '/v1/reply', '/v1/reopen', '/v1/approve-similar', '/v1/todo', '/v1/todo-confirm', '/v1/todo-cancel', '/v1/thread', '/v1/post'])
 /** A hub that answers one of these is as good as gone for this request (wrong secret, newer hub, shutting down). */
 const GONE_STATUS = new Set([401, 426, 503])
@@ -58,18 +59,27 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
   const modeListeners = new Set()
   const wakers = new Set() // woken by a mode change or a local change
   const wake = () => { for (const w of [...wakers]) { try { w() } catch { /* ignore */ } } }
-  const subscribe = (fn) => {
+  const subscribe = (fn, withNumbers = false) => {
     wakers.add(fn)
     const off = queue.onChange?.(fn)
-    return () => { wakers.delete(fn); off?.() }
+    const offNumbers = withNumbers ? queue.onSessionsChange?.(fn) : undefined // the local numbers only matter where no hub sum is served
+    return () => { wakers.delete(fn); off?.(); offNumbers?.() }
   }
   const sleepUntilWoken = (ms, signal) => new Promise((resolve) => {
     const done = () => { clearTimeout(timer); off(); signal.removeEventListener('abort', done); resolve() }
     const timer = setTimeout(done, ms)
-    const off = subscribe(done)
+    const off = subscribe(done, true)
     signal.addEventListener('abort', done, { once: true })
   })
 
+  /** The local service's tip (it starts a generation when the slot is over). Never throws. */
+  const tipOf = () => { try { return queue.tip?.() } catch { return undefined } }
+  let lastFull // { id, empty }: what the last full answer of the hub said about its list, the one live source of "is the merged list empty"
+  /**
+   * The id of the tip the desktop shows for the hub snapshot with this id, '' for none: only while the hub's list is empty, as its last full answer said. The
+   * agent's mirror of the hub list is only a hint before there was such an answer: a lagging mirror can cost one full fetch, never a loop.
+   */
+  const tipIdFor = (snapshotId) => ((lastFull && lastFull.id === snapshotId ? lastFull.empty : mirror()?.open?.length === 0) ? tipOf()?.id ?? '' : '')
   const localState = () => { const s = queue.snapshot(); return { focusId: s.focusId, reading: s.reading, ui: s.ui } }
 
   // ---- the hub ----
@@ -119,8 +129,8 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     const pick = (list) => (Array.isArray(list) ? list : []).filter((i) => i.owner !== undefined && i.owner !== me && !mine.has(i.id))
     return { snap, open: pick(snap?.open), resolved: pick(snap?.resolved) }
   }
-  function fallbackSnapshot() {
-    const own = queue.snapshot()
+  function fallbackSnapshot(want) {
+    const own = queue.snapshot(want)
     const eff = effective()
     if (eff === 'starting') return own
     const foreign = eff === 'degraded' ? foreignOf(own) : { open: [], resolved: [] }
@@ -139,21 +149,24 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     return serve(replayed(req, value), res)
   }
 
-  async function localRound({ res, since, remaining, closed }) {
-    const snap = fallbackSnapshot()
-    if (since === undefined || stampOf(snap) !== since) return send(res, 200, snap)
+  async function localRound({ res, since, remaining, closed, want }) {
+    const snap = fallbackSnapshot(want)
+    if (since === undefined || !stampMatches(snap, since)) return send(res, 200, snap)
     if (remaining <= 0) return send(res, 200, { unchanged: true, snapshotId: snap.snapshotId })
     await sleepUntilWoken(remaining, closed.signal)
     return closed.signal.aborted ? undefined : AGAIN
   }
 
-  async function hubRound({ res, since, remaining, closed, visible }) {
+  async function hubRound({ res, since, remaining, closed, visible, want }) {
     const local = localState()
     const parts = since?.split('|')
-    const sameLocal = parts !== undefined && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0)
+    const tipId = want.tip ? tipIdFor(parts?.[0]) : ''
+    // A client that knows the tip part (six parts) must have the tip that is current now; an older page is not held to it.
+    const sameLocal = parts !== undefined && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId)
     const query = new URLSearchParams()
-    if (sameLocal) { query.set('since', parts[0] + '|||0'); query.set('wait', String(remaining)) }
+    if (sameLocal) { query.set('since', parts[0] + '|||0' + (parts.length > 4 ? '|' + parts[4] : '')); query.set('wait', String(remaining)) }
     if (visible) query.set('visible', '1')
+    if (want.watch) query.set('watch', '1') // the hub tells the apps that somebody looks at the session numbers
     const abort = new AbortController()
     const off = subscribe(() => abort.abort())
     const onClosed = () => abort.abort()
@@ -164,27 +177,35 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     if (r.aborted) return AGAIN
     if (r.status !== 200 || (!r.json.unchanged && !Array.isArray(r.json.open))) {
       noteUnreachable(r.unreachable ?? (r.unknown ? 'no answer' : 'status ' + r.status))
-      return localRound({ res, since, remaining, closed })
+      return localRound({ res, since, remaining, closed, want })
     }
+    // A list that is not empty hides the tip: its reading ends too (before the local state is read for the answer).
+    if (!r.json.unchanged && r.json.open.length) { try { queue.stopTip?.() } catch { /* nothing to stop */ } }
     const now = localState()
     if (r.json.unchanged) {
-      const same = now.focusId === local.focusId && now.reading === local.reading && now.ui?.seq === local.ui?.seq
+      const same = now.focusId === local.focusId && now.reading === local.reading && now.ui?.seq === local.ui?.seq && (want.tip ? tipIdFor(parts?.[0]) : '') === tipId
       return same ? send(res, 200, { unchanged: true, snapshotId: r.json.snapshotId }) : AGAIN
     }
-    return send(res, 200, { ...r.json, focusId: now.focusId, reading: now.reading, ui: now.ui })
+    const empty = r.json.open.length === 0
+    lastFull = { id: r.json.snapshotId, empty }
+    const tip = empty && want.tip ? tipOf() : undefined
+    return send(res, 200, { ...r.json, focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}) })
   }
 
   async function snapshot(req, res, url) {
     const since = parseSince(url.searchParams.get('since') ?? undefined)
     const wait = Math.min(Math.max(Number(url.searchParams.get('wait')) || 0, 0), MAX_WAIT_MS)
     const visible = url.searchParams.get('visible') === '1'
+    // tip=1: the overlay is open, so the tip is wanted; watch: somebody looks at the session numbers (an open overlay, the phone).
+    const tip = url.searchParams.get('tip') === '1'
+    const want = { tip, watch: tip || url.searchParams.get('client') === 'phone' }
     const closed = new AbortController()
     res.once('close', () => { if (!res.writableFinished) closed.abort() })
     const deadline = Date.now() + wait
     while (!closed.signal.aborted) {
       const remaining = Math.max(0, deadline - Date.now())
       const round = mode === 'hub' ? hubRound : localRound
-      if ((await round({ res, since, remaining, closed, visible })) !== AGAIN) return
+      if ((await round({ res, since, remaining, closed, visible, want })) !== AGAIN) return
     }
   }
 

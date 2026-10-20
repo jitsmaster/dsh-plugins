@@ -36,6 +36,10 @@ import { sendPush as realSendPush } from './webpush.js'
 
 export { PROTOCOL }
 const IDLE_EXIT_MS = 12 * 3600 * 1000
+/** How long after a phone or an open overlay polled the snapshot the apps are told that somebody looks at the session numbers. */
+export const WATCH_MS = 60_000
+/** The numbers of many apps (each reports on its own tick) wake the long polls at most this often, once, with the final sum. */
+export const SESSIONS_WAKE_MS = 3000
 const DEVICE_REQUESTS_PER_MINUTE = 120
 /** The files only this user may read; tightened after they exist (the temp file of every later write is tightened before it replaces them). */
 const PRIVATE_FILES = ['devices.json', 'push.json', 'vapid.json']
@@ -81,6 +85,9 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
   let notifier
   let http
   let desktopSeenAt = -Infinity
+  const sessionListeners = new Set() // woken when the summed session numbers change
+  let watchedAt = -Infinity // when a phone or an open overlay last polled the snapshot
+  let sessionsTimer // the one trailing timer that wakes the listeners for the numbers
   const deviceLimiter = createRateLimiter({ now, limit: DEVICE_REQUESTS_PER_MINUTE, windowMs: 60_000 })
 
   /** Devices, pairing, push and roles (H4): created once the state folder and the config are known. */
@@ -125,10 +132,21 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
     snapshot() {
       const snap = queue.snapshot()
       const decorate = (item) => { const v = instances.view(item.owner); return { ...item, ownerLabel: v.label, ownerState: v.state } }
-      return { ...snap, open: snap.open.map(decorate), resolved: snap.resolved.map(decorate) }
+      const sessions = instances.sessionsTotal()
+      return { ...snap, ...(sessions ? { sessions } : {}), open: snap.open.map(decorate), resolved: snap.resolved.map(decorate) }
     },
+    /** A phone or an open overlay asked for the snapshot: the apps keep their session numbers fresh for the next WATCH_MS. */
+    noteWatch() { watchedAt = now() },
+    watching: () => now() - watchedAt < WATCH_MS,
+    /** "N working / M open" over every online app, or undefined (no app reports). */
+    sessions: () => instances?.sessionsTotal(),
     snapshotId: () => store.epoch + ':' + store.rev,
-    onChange: (listener) => store.onChange(listener),
+    /** Item changes and changes of the summed session numbers (the long polls wake on both; only the first moves the snapshot id). */
+    onChange(listener) {
+      const off = store.onChange(listener)
+      sessionListeners.add(listener)
+      return () => { off(); sessionListeners.delete(listener) }
+    },
     workspaces: (opts) => instances.workspaces(opts),
     assetLinks: () => buildAssetLinks(config.android),
     /** Any request but a health probe counts as activity for the idle exit. */
@@ -170,7 +188,11 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
       startPhoneSide({ tightenSecret: injectedSecret === undefined })
       notifier = createNotifier({ store, push, now, ...(timers ? { timers } : {}), presence: () => desktopSeenAt, log: (l) => log(l) })
       commands = createCommands({ now, timeoutsMs: commandTimeoutsMs })
-      instances = createInstances({ store, commands, now, log: (l) => log(l), awayMs, graceMs: graceMs ?? config.staleGraceMs, orphanKeepMs })
+      instances = createInstances({ store, commands, now, log: (l) => log(l), awayMs, graceMs: graceMs ?? config.staleGraceMs, orphanKeepMs, onSessions: () => {
+        if (sessionsTimer) return
+        sessionsTimer = (timers ?? globalThis).setTimeout(() => { sessionsTimer = undefined; for (const l of [...sessionListeners]) { try { l() } catch { /* ignore */ } } }, SESSIONS_WAKE_MS)
+        sessionsTimer.unref?.()
+      } })
       routing = createRouting({ store, queue, instances, commands })
       agentApi = createAgentApi({ hub, instances, commands, store, secret, log: (l) => log(l) })
 
@@ -191,6 +213,8 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
       stopped ??= (async () => {
         clearInterval(interval)
         clearInterval(instanceInterval)
+        if (sessionsTimer) (timers ?? globalThis).clearTimeout(sessionsTimer)
+        sessionsTimer = undefined
         notifier?.dispose()
         devices?.flush()
         hub.shutdownHttp?.()

@@ -4,6 +4,7 @@
  * server. Reads are a long-poll on the snapshot id; actions are small JSON POSTs.
  */
 import { serveMobile } from './mobile.js'
+import { sessionsKey } from './sessions.js'
 
 export const PREFIX = '/review-queue'
 const MAX_BODY = 64 * 1024
@@ -39,10 +40,25 @@ export const outcome = (res, result) => {
   send(res, GATEWAY.has(result?.error) ? 504 : BAD_INPUT.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed' })
 }
 
-/** The client sends "<snapshotId>|<focusId>|<readingId>|<uiSeq>"; missing parts mean "none" (ui seq 0). A token from
- * before the ui part existed therefore matches only while no ui command has been given, else it gets a full snapshot. */
-export const parseSince = (raw) => (raw === undefined ? undefined : raw.split('|').concat(['', '', '0']).slice(0, 4).map((p, i) => (i === 3 && p === '' ? '0' : p)).join('|'))
+/**
+ * The long-poll token. The four old parts are "<snapshotId>|<focusId>|<readingId>|<uiSeq>" (missing parts mean "none", ui seq 0; a token from before the
+ * ui part existed matches only while no ui command has been given, else it gets a full snapshot). A client that knows the session numbers and the tip
+ * adds two more: "...|<working>/<open>|<tipId>". Only the parts the client sent are compared (stampMatches), so an older page never gets a full
+ * snapshot for a part it cannot know about, while a newer one wakes when the numbers or the tip change. None of them touches the snapshotId.
+ */
+export const parseSince = (raw) => {
+  if (raw === undefined) return undefined
+  const parts = raw.split('|')
+  const head = [0, 1, 2, 3].map((i) => (i === 3 && !parts[i] ? '0' : parts[i] ?? ''))
+  return head.concat(parts.slice(4, 6)).join('|')
+}
 export const stampOf = (s) => s.snapshotId + '|' + (s.focusId ?? '') + '|' + (s.reading ?? '') + '|' + (s.ui?.seq ?? 0)
+export const fullStampOf = (s) => stampOf(s) + '|' + sessionsKey(s.sessions) + '|' + (s.tip?.id ?? '')
+/** True when the snapshot is what the client (a parseSince token) has already seen, judged on the parts the client sent. */
+export const stampMatches = (s, since) => {
+  const want = fullStampOf(s).split('|')
+  return since.split('|').every((p, i) => p === want[i])
+}
 
 const workspaceOf = (b) => (b.workspaceId === undefined || b.workspaceId === null || b.workspaceId === '' ? undefined : String(b.workspaceId))
 
@@ -59,6 +75,7 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/thread': (b) => queue.thread(String(b.id), { before: b.before, limit: b.limit, after: b.after }),
     '/v1/post': (b) => queue.post(String(b.id), b.text, { key: b.key }),
     '/v1/read': (b) => queue.read(String(b.id)),
+    '/v1/read-tip': (b) => queue.readTip(String(b.id)),
     '/v1/stop': () => queue.stop(),
     '/v1/ui': (b) => queue.uiCommand(b.cmd),
     '/v1/reopen': (b) => queue.reopen(String(b.id)),
@@ -80,19 +97,24 @@ export function createRouter({ queue, dev, pushRoutes }) {
   async function snapshot(req, res, url) {
     const since = parseSince(url.searchParams.get('since') ?? undefined)
     const wait = Math.min(Math.max(Number(url.searchParams.get('wait')) || 0, 0), MAX_WAIT_MS)
-    const current = () => queue.snapshot()
+    // The tip is only for an open overlay (tip=1): any other poll (overlay closed, the phone) neither gets one nor starts a model call. The phone and an
+    // open overlay look at the session numbers.
+    const tip = url.searchParams.get('tip') === '1'
+    const watch = tip || url.searchParams.get('client') === 'phone'
+    const current = () => queue.snapshot({ tip, watch })
     const unchanged = () => {
       if (since === undefined) return undefined
       const s = current()
-      return stampOf(s) === since ? s : undefined
+      return stampMatches(s, since) ? s : undefined
     }
     const first = unchanged()
     if (!first) return send(res, 200, current())
     if (wait === 0) return send(res, 200, { unchanged: true, snapshotId: first.snapshotId })
     await new Promise((resolve) => {
-      const done = () => { clearTimeout(timer); off(); req.off('close', done); resolve() }
+      const done = () => { clearTimeout(timer); off(); offNumbers?.(); req.off('close', done); resolve() }
       const timer = setTimeout(done, wait)
       const off = queue.onChange(done)
+      const offNumbers = queue.onSessionsChange?.(done) // this app's numbers are what this poll serves
       req.once('close', done)
     })
     const now = unchanged()

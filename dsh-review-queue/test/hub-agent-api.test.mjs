@@ -214,7 +214,7 @@ test('presence and bye: presence marks the desktop active, bye ends the question
   const a = agentOf(port)
   await a.register()
   await a.send(a.add(1, { type: 'question' }), a.add(2))
-  assert.deepEqual((await a.post('presence', { desktopActive: true })).json, { ok: true })
+  assert.deepEqual((await a.post('presence', { desktopActive: true })).json, { ok: true, watch: false }) // watch: does anybody look at the session numbers (hub.md 6.7a)
   assert.equal(typeof hub.instances.get('aaaa1111').lastDesktopActiveAt, 'number')
   assert.deepEqual((await a.post('bye')).json, { ok: true })
   assert.deepEqual([hub.store.get(a.itemId(1)).status, hub.store.get(a.itemId(2)).status], ['resolved', 'open'])

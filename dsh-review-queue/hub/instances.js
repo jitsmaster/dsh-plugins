@@ -7,7 +7,10 @@
  * Adoption by session id: an open completed / pr-merged / todo item with no owner (legacy import) or a gone owner belongs to the ONLINE
  * instance that reports its session at register or sync. The answer to that register / sync carries the adopted items (adoptedItems),
  * because the new owner has no local copy; an item stays on the instance's handed list, and is handed again, until the instance lists it.
+ * Session numbers: an app reports "N working / M open" with its register and with presence when they change (an old agent reports none and adds 0);
+ * sessionsTotal() sums the apps that are online, and onSessions is called when that sum changes (it never touches the item store or its snapshot id).
  */
+import { sessionsKey } from '../sessions.js'
 import { HUB_FIELDS } from './hub-store.js'
 
 export const AWAY_MS = 45_000
@@ -23,18 +26,21 @@ const short = (id) => id.slice(0, 4)
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const items = (v) => (Array.isArray(v) ? v.filter((i) => i && typeof i.id === 'string' && typeof i.type === 'string') : [])
 const strings = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === 'string') : [])
+/** The numbers an app reports, or undefined: whole numbers, working not above open, nothing absurd. A copy, never the caller's object. */
+const MAX_SESSIONS = 100_000
+const cleanSessions = (v) => (Number.isInteger(v?.working) && Number.isInteger(v?.open) && v.working >= 0 && v.working <= v.open && v.open <= MAX_SESSIONS ? { working: v.working, open: v.open } : undefined)
 const cleanWorkspaces = (v) => (Array.isArray(v) ? v : []).filter((w) => w && typeof w.id === 'string' && w.id).map((w) => ({
   id: w.id, title: typeof w.title === 'string' && w.title ? w.title : w.id, path: typeof w.path === 'string' ? w.path : '', sessionIds: strings(w.sessionIds),
 }))
 
 /** @param {{ store: any, commands: any, now?: () => number, log?: (line: string) => void, awayMs?: number, graceMs?: number, orphanKeepMs?: number }} deps */
-export function createInstances({ store, commands, now = Date.now, log = () => {}, awayMs = AWAY_MS, graceMs = GRACE_MS, orphanKeepMs = ORPHAN_KEEP_MS }) {
+export function createInstances({ store, commands, now = Date.now, log = () => {}, awayMs = AWAY_MS, graceMs = GRACE_MS, orphanKeepMs = ORPHAN_KEEP_MS, onSessions = () => {} }) {
   const byId = new Map()
   const keyToId = new Map()
 
   const blank = (key, id) => ({
     key, id, label: '', pid: undefined, protocol: undefined, pluginVersion: undefined, state: 'online', registered: false, lastPollAt: 0, pollsOpen: 0, lastSeenAt: 0,
-    goneAt: undefined, supersededBy: undefined, lastOp: 0, workspaces: [], sessionIds: [], lastDesktopActiveAt: undefined, handed: new Set(),
+    goneAt: undefined, supersededBy: undefined, lastOp: 0, workspaces: [], sessionIds: [], sessions: undefined, lastDesktopActiveAt: undefined, handed: new Set(),
   })
   const newOut = () => ({ ok: true, adopted: 0, revived: 0, ended: 0, orphans: 0, foreign: [], resolved: [], adoptedItems: [], lastOp: 0 })
   /** No owner, an owner the hub forgot or one that is gone: nobody can run actions on the item. An away owner may still come back. */
@@ -44,8 +50,21 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     inst.handed.add(item.id)
     if (!out.adoptedItems.some((i) => i.id === item.id)) out.adoptedItems.push(item)
   }
-  const live = (id) => { const i = byId.get(id); return i?.registered && i.state !== 'gone' ? i : undefined }
   const online = () => [...byId.values()].filter((i) => i.registered && i.state === 'online')
+  /** The sum over the online apps that report numbers; undefined when none does (unknown, not zero). */
+  const total = () => {
+    const reporting = online().filter((i) => i.sessions)
+    return reporting.length ? { working: reporting.reduce((n, i) => n + i.sessions.working, 0), open: reporting.reduce((n, i) => n + i.sessions.open, 0) } : undefined
+  }
+  let told = '' // the sum the listeners last heard of
+  const notifySessions = () => {
+    const t = total()
+    const key = sessionsKey(t)
+    if (key === told) return
+    told = key
+    try { onSessions(t) } catch { /* one bad listener must not stop the hub */ }
+  }
+  const live = (id) => { const i = byId.get(id); return i?.registered && i.state !== 'gone' ? i : undefined }
   const persist = () => store.setInstances([...byId.values()].map(({ key, id, label, state, lastSeenAt, goneAt }) => ({ key, id, label, state, lastSeenAt, goneAt })))
 
   // A persisted instance is away until it registers again; the hub start is its last sign of life.
@@ -162,7 +181,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
 
   const instances = {
     /** @returns {{ ok: true, adopted: number, revived: number, ended: number, orphans: number, foreign: string[], resolved: any[], adoptedItems: any[], lastOp: number } | { ok: false, error: string }} */
-    register({ key, id, label, pid, protocol, pluginVersion, sync } = {}) {
+    register({ key, id, label, pid, protocol, pluginVersion, sync, sessions } = {}) {
       if (typeof key !== 'string' || !key || key.length > 200 || typeof id !== 'string' || !ID.test(id)) return { ok: false, error: 'bad-instance' }
       const existing = byId.get(id)
       if (existing && (existing.key !== key || existing.supersededBy)) return { ok: false, error: existing.key !== key ? 'bad-instance' : 'superseded' }
@@ -174,7 +193,9 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       byId.set(id, inst)
       keyToId.set(key, id)
       if (sync && typeof sync === 'object') processSync(inst, sync, out)
+      inst.sessions = cleanSessions(sessions) // a re-register without numbers (an old agent) forgets the old ones
       persist()
+      notifySessions()
       out.lastOp = inst.lastOp
       return out
     },
@@ -185,7 +206,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       if (!inst) return undefined
       inst.pollsOpen++
       inst.lastPollAt = inst.lastSeenAt = now()
-      if (inst.state === 'away') { inst.state = 'online'; persist() }
+      if (inst.state === 'away') { inst.state = 'online'; persist(); notifySessions() }
       return inst
     },
     pollClose(id) {
@@ -200,11 +221,16 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       if (inst) inst.lastSeenAt = now()
       return inst
     },
-    presence(id, { desktopActive } = {}) {
+    presence(id, { desktopActive, sessions } = {}) {
       const inst = instances.touch(id)
       if (inst && desktopActive === true) inst.lastDesktopActiveAt = now()
+      const clean = cleanSessions(sessions)
+      if (inst && clean) { inst.sessions = clean; notifySessions() }
       return inst
     },
+
+    /** "N working / M open" summed over the online apps, or undefined when none reports. */
+    sessionsTotal: total,
 
     /** Every 10 s: away, gone (settle), expired orphans, forgotten superseded instances. */
     tick() {
@@ -217,7 +243,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
         expireOrphans(inst)
         if (inst.supersededBy && !store.list().some((i) => i.owner === inst.id)) { byId.delete(inst.id); changed = true }
       }
-      if (changed) persist()
+      if (changed) { persist(); notifySessions() }
     },
 
     /** Graceful end (the app's cleanup): its questions and permissions end now, the rest stays as orphans. */
@@ -226,6 +252,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       if (!inst) return { ok: false, error: 'unknown-instance' }
       goneNow(inst, 'owner-gone')
       persist()
+      notifySessions()
       return { ok: true }
     },
 

@@ -32,6 +32,8 @@ import { wireHub } from './agent/wire.js'
 import { createStore } from './store.js'
 import { createSummarizer } from './summary.js'
 import { createTuner } from './todo-tune.js'
+import { createTipper, recentTopics } from './tip.js'
+import { createSessionCounter } from './sessions.js'
 import { installCapture, cancelStalePending } from './capture.js'
 import { installTicketSessions } from './ticket-session.js'
 import { createReviewQueue } from './service.js'
@@ -201,7 +203,11 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     canQuit: () => desktop.canQuit(), quitSoon: () => desktop.quitSoon(),
     pauseSessions: () => pauseRunningSessions({ controller: controllerOf(), record: pauseRecord, titlesOf, log }),
   }
-  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
+  // The tip of the day of the empty list (tip.js): this app's own model (none while the llm service is missing: built-in tips), steered by the recent work topics. config.tipDeps overrides parts for tests.
+  const tipper = createTipper({ llm: () => (llmService() ? llm : undefined), topicsOf: () => recentTopics({ store, titlesOf }), log, ...(config.tipDeps ?? {}) })
+  // "N working / M open": this app's sessions from the session controller, cached for 2 s (sessions.js); config.sessionCounter: { ttlMs, minEmitMs } for tests.
+  const sessionCounter = createSessionCounter({ controllerOf, registryOf, log, ...(config.sessionCounter ?? {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, tips: tipper, sessions: sessionCounter, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }
@@ -212,8 +218,11 @@ export function createReviewQueuePlugin(ctx, config = {}) {
 
   const pruneTimer = setInterval(() => store.prune(), 3600_000)
   pruneTimer.unref?.()
+  // The session numbers are looked at every few seconds, so a change reaches the open screens by itself (the counter caches and rate limits the events).
+  const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
+  sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(pruneTimer); pausedTimers.forEach(clearTimeout); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.

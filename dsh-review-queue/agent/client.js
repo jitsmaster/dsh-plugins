@@ -8,9 +8,13 @@
  * Sessions: every full sync lists the sessions this app can reach (sessionIds(): live agents, workspaces, captured), so the hub can hand it
  * the items of those sessions that nobody owns (adoptedItems in the answer); a check every sessionCheckMs sends a full sync when that list
  * changed, and at least every resyncEveryMs, because a sync is also when the hub looks for items to hand over.
+ * Session numbers: sessionCounts() -> { working, open } (this app's "N working / M open", undefined while unknown) goes to the hub with the register and, when it
+ * changed, through the presence call (an old hub ignores the extra field; a failed report is simply tried again). The hub's answers say whether anybody looks at the
+ * numbers (a phone, an open overlay): only then sessionsWatch() keeps the counter fresh (and the call is only every WATCH_RECHECK_MS). Only watch === true counts: an old hub says nothing, so an app never lists sessions for nobody (the count needs the hub on the new version).
  */
 import { randomBytes } from 'node:crypto'
 import { PROTOCOL } from '../hub/protocol.js'
+import { sessionsKey } from '../sessions.js'
 import { createMirror } from './mirror.js'
 import { createTransport } from './transport.js'
 
@@ -26,6 +30,10 @@ const MAX_THREADS_WAITING = 8
 const THREAD_READ_TIMEOUT_MS = 20_000
 const SESSION_CHECK_MS = 15_000
 const RESYNC_EVERY_MS = 60_000
+const SESSION_REPORT_MS = 4000
+const WATCH_RECHECK_MS = 30_000
+const SESSION_IDLE_MS = 15_000 // the probe interval after IDLE_AFTER probes in a row that said nobody looks
+const IDLE_AFTER = 3
 const sleep = (ms, signal) => new Promise((resolve) => {
   const timer = setTimeout(resolve, ms)
   signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
@@ -36,7 +44,7 @@ const sleep = (ms, signal) => new Promise((resolve) => {
  *   protocol?: number, workspaces?: () => any[], sessionIds?: () => string[], sessionCheckMs?: number, resyncEveryMs?: number, fetch?: typeof fetch, backoff?: { minMs: number, maxMs: number }, waitMs?: number, log?: (line: string) => void,
  *   now?: () => number, timers?: { setTimeout: Function, clearTimeout: Function } }} opts now and timers are for the thread queue (deadlines, the read timeout); tests inject them
  */
-export function createAgentClient({ baseUrl, secret, instanceKey, adapter, executor, instanceId = randomBytes(8).toString('hex'), label, pluginVersion, pid = process.pid, protocol = PROTOCOL, workspaces = () => [], sessionIds = () => [], sessionCheckMs = SESSION_CHECK_MS, resyncEveryMs = RESYNC_EVERY_MS, fetch, backoff = { minMs: 1000, maxMs: 10_000 }, waitMs = 25_000, log = () => {}, now = Date.now, timers = globalThis }) {
+export function createAgentClient({ baseUrl, secret, instanceKey, adapter, executor, instanceId = randomBytes(8).toString('hex'), label, pluginVersion, pid = process.pid, protocol = PROTOCOL, workspaces = () => [], sessionIds = () => [], sessionCounts = () => undefined, sessionsWatch = () => {}, sessionReportMs = SESSION_REPORT_MS, sessionIdleMs = SESSION_IDLE_MS, sessionCheckMs = SESSION_CHECK_MS, resyncEveryMs = RESYNC_EVERY_MS, fetch, backoff = { minMs: 1000, maxMs: 10_000 }, waitMs = 25_000, log = () => {}, now = Date.now, timers = globalThis }) {
   const transport = createTransport({ baseUrl, secret, protocol, instanceId, fetch })
   const mirror = createMirror({ transport, waitMs, backoff, log })
   const stateListeners = new Set()
@@ -54,6 +62,12 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
   let draining = false
   let offOp = () => {}
   let sessionTimer
+  let reportTimer
+  let reportedSessions = '' // the numbers the hub has from this app (sessionsKey)
+  let hubWatch = false // the hub says somebody looks at the numbers (watch === true in its answers; a missing field is no)
+  let checkedAt = -Infinity // the last presence call
+  let reporting = false // a presence call is on its way: the next tick leaves it alone
+  let quietProbes = 0 // probes in a row that said nobody looks
   let wantSync = false
   let reported = { key: '', at: 0, workspaces: '' }
 
@@ -83,6 +97,31 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     if (sessionKey() === reported.key && workspaceKey() === reported.workspaces && Date.now() - reported.at < resyncEveryMs) return
     wantSync = true
     void flush()
+  }
+  /** This app's session numbers, or undefined when they are unknown or not whole numbers. Never throws. */
+  const ownSessions = () => {
+    try { const v = sessionCounts(); return Number.isInteger(v?.working) && Number.isInteger(v?.open) ? { working: v.working, open: v.open } : undefined } catch { return undefined }
+  }
+  /**
+   * Tells the hub the numbers when they differ from what it has, and asks it (the answer) whether anybody looks: often while nobody does, so a first look is
+   * noticed soon, rarely while somebody does. Presence is best effort: a failure is retried at the next tick.
+   */
+  async function reportSessions() {
+    if (state !== 'connected' || reporting) return
+    if (hubWatch) { try { sessionsWatch() } catch { /* the numbers are a bonus */ } }
+    const v = ownSessions()
+    const changed = !!v && sessionsKey(v) !== reportedSessions
+    const every = hubWatch ? WATCH_RECHECK_MS : quietProbes >= IDLE_AFTER ? sessionIdleMs : sessionReportMs // the probe slows down while nobody looks
+    if (!changed && now() - checkedAt < every) return
+    const before = reportedSessions
+    reporting = true
+    checkedAt = now()
+    if (changed) { reportedSessions = sessionsKey(v); quietProbes = 0 } // a change to report is not held back
+    try {
+      const r = await agent('presence', changed ? { sessions: v } : {}, ctl.signal)
+      if (r.status === 200) { hubWatch = r.json?.watch === true; quietProbes = hubWatch ? 0 : quietProbes + 1 }
+      else if (changed) reportedSessions = before
+    } catch { if (changed) reportedSessions = before } finally { reporting = false }
   }
   const agent = (name, body, signal) => transport.request('POST', AGENT + name, { body: { instanceId, ...body }, signal })
 
@@ -116,12 +155,16 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
   async function register(signal) {
     const sync = syncBody()
     let r
-    try { r = await agent('register', { instanceKey, label, pid, pluginVersion, sync }, signal) } catch { return 'retry' }
+    const sessions = ownSessions()
+    try { r = await agent('register', { instanceKey, label, pid, pluginVersion, sync, ...(sessions ? { sessions } : {}) }, signal) } catch { return 'retry' }
     if (r.status === 426) return 'upgrade-required'
     if (r.status === 409 && r.json?.error === 'superseded') return 'superseded'
     if (r.status !== 200 || !r.json?.ok) return 'retry'
     adapter.synced(sync.n)
     applyHubView(r.json)
+    reportedSessions = sessionsKey(sessions)
+    hubWatch = r.json.watch === true
+    quietProbes = 0
     return 'ok'
   }
   async function connect() {
@@ -276,12 +319,15 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
       void connect()
       sessionTimer = setInterval(checkSessions, sessionCheckMs)
       sessionTimer.unref?.()
+      reportTimer = setInterval(() => { void reportSessions() }, sessionReportMs)
+      reportTimer.unref?.()
     },
     /** Graceful end: flush what is queued, say bye (questions end at once), cancel everything. bye:false just disappears. */
     async stop({ bye = true } = {}) {
       if (!running) return
       running = false
       clearInterval(sessionTimer)
+      clearInterval(reportTimer)
       offOp()
       if (bye && state === 'connected') {
         await Promise.race([flush(), sleep(1500)])

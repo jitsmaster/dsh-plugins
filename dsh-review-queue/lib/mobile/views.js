@@ -549,7 +549,7 @@ export function App() {
   // iPhone in a Safari tab: say once how to install the Home Screen app (the only place push works on iOS).
   const install = hintGone ? null : installHint(platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, standalone: isStandalone(window) }))
   return html`<div class="app">
-    <header><h1>Task list</h1><span class="count">${count} waiting${model.paused ? html` · <span class="paused-count">⏸ ${model.paused} paused</span>` : null}</span></header>
+    <header><h1>Task list</h1><div class="counts"><span class="count">${count} waiting${model.paused ? html` · <span class="paused-count">⏸ ${model.paused} paused</span>` : null}</span><span class="count sessions" title=${getCore().sessionsTitle}>${model.sessions}</span></div></header>
     ${guard ? html`<div class="banner view-guard">${guard.message}</div>` : null}
     ${install ? html`<div class="banner install-hint">${install} <button class="btn" type="button" onClick=${() => { dismissInstallHint(); setHintGone(true) }}>Dismiss</button></div>` : null}
     ${st.error ? html`<div class="banner">${st.error}</div>` : null}

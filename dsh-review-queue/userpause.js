@@ -20,6 +20,9 @@ const SESSION_LOG = 'session.v4.jsonl.zstd'
 export const PAUSED_BY_USER = 'paused-by-user'
 export const REASON = 'Paused on purpose with Pause all and quit'
 
+/** A session of the user's own (not a subagent or a child session): the ones Pause all and the session count are about. */
+export const isTopLevel = (i) => !i?.parentSessionId && i?.origin !== 'subagent'
+
 const sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** The remembered pauses, persisted through io ({ read, write }). Shape on disk: { v: 1, items: { [sessionId]: { pausedAt, title, cwd } } }. */
@@ -95,7 +98,7 @@ export function mergeCandidates(result, extra) {
 /** The running top-level sessions of this app (no subagent or child sessions), from the session controller; throws when the list call fails. */
 export async function listRunningSessions(controller, timeoutMs = 15_000) {
   const listed = await controller.list({}, AbortSignal.timeout(timeoutMs))
-  return (listed?.items ?? []).filter((i) => i?.running === true && !i.parentSessionId && i.origin !== 'subagent')
+  return (listed?.items ?? []).filter((i) => i?.running === true && isTopLevel(i))
 }
 
 /**
