@@ -5,7 +5,7 @@
  */
 import { html, useState, useEffect } from './vendor/preact-htm.js'
 import { getCore, getToken, signOut, getPushPrefs, setPushPrefs, getDeviceId, setDeviceId, pushKey, pushSubscribe, pushUnsubscribe, pushTest, pushSettings, pushDevices } from './api.js'
-import { PUSH_TYPES, urlBase64ToUint8Array, validateQuietHours, buildSubscribePayload, notificationStatus } from './push-client.js'
+import { PUSH_TYPES, urlBase64ToUint8Array, validateQuietHours, buildSubscribePayload, notificationStatus, subscribeFresh } from './push-client.js'
 import { platformInfo, pushHint, isStandalone } from './platform.js'
 
 const zone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' } }
@@ -43,8 +43,8 @@ export function SettingsView() {
     const answer = await Notification.requestPermission()
     setPermission(answer)
     if (answer !== 'granted') throw new Error('Notifications are blocked for this site. Allow them in the browser site settings, then try again.')
-    const { reg, sub: existing } = await currentSubscription()
-    const subscription = existing || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(await pushKey()) })
+    const { reg } = await currentSubscription()
+    const subscription = await subscribeFresh(reg, urlBase64ToUint8Array(await pushKey())) // always new: an old browser subscription may be one the push service forgot (410)
     const saved = await pushSubscribe(buildSubscribePayload({ subscription, settings: prefs, userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, tz: zone() }))
     if (saved.device && saved.device.id) setDeviceId(saved.device.id)
     setSub(subscription)

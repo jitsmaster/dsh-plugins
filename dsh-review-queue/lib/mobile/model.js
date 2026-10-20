@@ -79,3 +79,9 @@ export function pollWaitMs(state, waitMs) {
 export function screenFor(state, route) {
   return state.needsPairing === true || route === '/pair' || route.startsWith('/pair/') ? 'pair' : 'app'
 }
+
+/**
+ * Where Back on an item card goes. Always the Waiting list, also for a resolved item: the phone must never take the user to the
+ * Resolved tab on its own (it is opened only by tapping that tab).
+ */
+export const backHref = (_item) => '#/'

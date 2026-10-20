@@ -88,3 +88,15 @@ export function notificationStatus({ supported, permission, subscribed }) {
   if (subscribed) return { state: 'on', text: 'On for this phone.' }
   return { state: 'off', text: 'Off. Notifications say only the type and how many items wait; the details stay in the app.' }
 }
+
+/**
+ * A brand-new browser push subscription. An existing one is dropped first and never reused: after the site data was cleared or Chrome's
+ * push registration was reset it can still be in the page while the push service has forgotten it (every push then answers 410).
+ * @param {{ pushManager: { getSubscription: () => Promise<{ unsubscribe: () => Promise<boolean> } | null>, subscribe: (o: object) => Promise<object> } }} registration
+ * @param {Uint8Array} applicationServerKey the server's VAPID public key as bytes
+ */
+export async function subscribeFresh(registration, applicationServerKey) {
+  const existing = await registration.pushManager.getSubscription()
+  if (existing) await existing.unsubscribe().catch(() => {}) // best effort: subscribing below replaces it either way
+  return registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })
+}

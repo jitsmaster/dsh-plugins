@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
-import { listModel, todoView, pollWaitMs, screenFor } from '../lib/mobile/model.js'
+import { listModel, todoView, pollWaitMs, screenFor, backHref } from '../lib/mobile/model.js'
 import { FILES } from '../mobile.js'
 import { startDevServer } from '../scripts/dev-server.mjs'
 
@@ -134,4 +134,10 @@ test('the phone card prints the resolution of a resolved item with that shared h
   const views = readFileSync(join(dirname(file), 'mobile', 'views.js'), 'utf8')
   assert.match(views, /c\.resolutionText\(item\)/)
   assert.match(views, /c\.resolutionText\(i\)/)
+})
+
+test('Back on an item card always returns to the Waiting list, whether or not the item is resolved (the phone never lands on the Resolved tab by itself)', () => {
+  assert.equal(backHref({ id: 'a', status: 'open' }), '#/')
+  assert.equal(backHref({ id: 'b', status: 'resolved' }), '#/')
+  assert.equal(backHref(undefined), '#/')
 })
