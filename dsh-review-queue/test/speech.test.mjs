@@ -215,3 +215,9 @@ test('tipSentences: one sentence per entry, whatever the line breaks; no split a
   assert.deepEqual(tipSentences('  '), [])
   assert.deepEqual(tipSentences(undefined), [])
 })
+
+test('tipSentences: no split after a common abbreviation even when a capital word follows', () => {
+  assert.deepEqual(tipSentences('Cache hot keys, e.g. Redis or Memcached. It is fast.'), ['Cache hot keys, e.g. Redis or Memcached.', 'It is fast.'])
+  assert.deepEqual(tipSentences('Use a header, i.e. HTTP does it. Next.'), ['Use a header, i.e. HTTP does it.', 'Next.'])
+  assert.deepEqual(tipSentences('Dr. Smith met Mrs. Jones. They compared Go vs. Python. Done.'), ['Dr. Smith met Mrs. Jones.', 'They compared Go vs. Python.', 'Done.'])
+})

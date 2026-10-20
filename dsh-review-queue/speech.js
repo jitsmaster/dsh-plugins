@@ -238,13 +238,23 @@ export function chunkForSpeech(text, opts = {}) {
 }
 
 /**
- * A tip body as sentences, one per entry (the screen shows one paragraph each and the speaker gets one chunk each). A sentence ends at . ! or ? and
- * whitespace when a capital letter, digit, quote or bracket follows, so "e.g. a map" and "0.75" stay whole. lib/client.js keeps a copy of this
- * (it is one self-contained script); a test checks that they agree.
+ * A tip body as sentences, one per entry (the screen shows one paragraph each and the speaker gets one chunk each). A sentence ends at a word that ends
+ * in . ! or ? when the next word starts with a capital letter, a digit, a quote or a bracket, unless that word is a common abbreviation (e.g., i.e., vs.,
+ * Dr. ...): "e.g. a map", "0.75" and "e.g. Redis" stay whole. No regex lookbehind: lib/client.js keeps a copy of this (it is one self-contained script
+ * that old iOS Safari must still parse); a test checks that the two agree.
  */
+const TIP_ABBREVIATION = /^[("'\[]*(?:e\.g|i\.e|vs|cf|approx|fig|dr|mr|mrs|ms|prof)\.$/i
 export function tipSentences(text) {
-  const flat = String(text ?? '').replace(/\s+/g, ' ').trim()
-  return flat ? flat.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(\[`])/) : []
+  const words = String(text ?? '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+  const out = []
+  let cur = []
+  words.forEach((w, i) => {
+    cur.push(w)
+    const next = words[i + 1]
+    if (next !== undefined && /[.!?]$/.test(w) && /^[A-Z0-9"'(\[`]/.test(next) && !TIP_ABBREVIATION.test(w)) { out.push(cur.join(' ')); cur = [] }
+  })
+  if (cur.length) out.push(cur.join(' '))
+  return out
 }
 
 /**

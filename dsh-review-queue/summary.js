@@ -48,6 +48,8 @@ export const within = (promise, ms, signal) => new Promise((resolve, reject) => 
 })
 
 /** The model for a one-line job: the override, else a small one. `only` (a RegExp on the id and name) limits the choice to those models and gives undefined when none matches (no fallback to another model). */
+/** The version in a model id as a number: claude-haiku-4-5-20251001 is 4.5, claude-3-5-haiku-20241022 is 3.5, claude-3-haiku-20240307 is 3 (a date is not read as a minor). */
+const versionOf = (id) => { const m = /(\d+)(?:[.-](\d{1,2})(?!\d))?/.exec(String(id)); return m ? Number(m[1]) + (m[2] ? Number(m[2]) / 10 : 0) : 0 }
 export async function pickModel(llm, override, timeoutMs, only) {
   if (override?.provider && override?.model) return override
   const providers = await within(Promise.resolve().then(() => llm.listProviders()), timeoutMs)
@@ -55,7 +57,7 @@ export async function pickModel(llm, override, timeoutMs, only) {
     try { return (await within(Promise.resolve().then(() => llm.listModels(p.id)), timeoutMs)).map((m) => ({ provider: p.id, model: m.id, name: m.id + ' ' + (m.name ?? '') })) } catch { return [] }
   }))
   const all = listed.flat()
-  if (only) return all.find((m) => only.test(m.name))
+  if (only) return all.filter((m) => only.test(m.name)).sort((a, b) => versionOf(b.model) - versionOf(a.model))[0] // the newest first (a stable sort: list order breaks a tie)
   for (const re of PREFER) { const hit = all.find((m) => re.test(m.name)); if (hit) return hit }
   return all[0]
 }

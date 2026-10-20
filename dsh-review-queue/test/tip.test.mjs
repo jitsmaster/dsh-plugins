@@ -467,3 +467,17 @@ test('with no Haiku model available the tip is a built-in one and no other model
   assert.equal(seen.calls, 0)
   assert.ok(logs.some((l) => /tip/.test(l)))
 })
+
+test('of several Haiku models the newest version is used, whatever the list order', async () => {
+  const seen = {}
+  const models = [{ id: 'claude-3-haiku-20240307' }, { id: 'claude-haiku-4-5-20251001' }, { id: 'claude-3-5-haiku-20241022' }]
+  const { tipper } = await make({ llm: fakeLlm({ answer: goodJson(), seen, models }) })
+  await ready(tipper)
+  assert.equal(seen.cfg.model, 'claude-haiku-4-5-20251001')
+})
+
+test('with no Haiku model the log says so (not a generic "no model")', async () => {
+  const { tipper, logs } = await make({ llm: fakeLlm({ answer: goodJson(), models: [{ id: 'gpt-5-mini' }] }) })
+  await ready(tipper)
+  assert.ok(logs.some((l) => /haiku/i.test(l)), logs.join('|'))
+})

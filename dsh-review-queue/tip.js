@@ -30,10 +30,11 @@ const TOPICS_WAIT_MS = 5000
 const NO_MODEL = 'no model available'
 /** The tip is always written by a Haiku model (cheap, fast, good enough); with none available a built-in tip is shown instead. */
 const HAIKU = /haiku/i
+const NO_HAIKU = 'no Haiku model available'
 const NOT_VALID = 'the answer is not a valid tip'
 const REPEATS = 'the answer repeats a recent tip'
 /** Reasons that are ours and safe to log; anything else is a provider's error, of which only the code or name is logged. */
-const OWN_REASONS = new Set(['timed out', NO_MODEL, NOT_VALID, REPEATS])
+const OWN_REASONS = new Set(['timed out', NO_MODEL, NOT_VALID, REPEATS, NO_HAIKU])
 const reasonOf = (error) => (OWN_REASONS.has(error?.message) ? error.message : String(error?.code ?? error?.name ?? 'error').slice(0, 40))
 
 // What must never reach the model as a topic, nor come back in a tip.
@@ -206,7 +207,7 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
     const mine = (chosen ??= pickModel(llm, undefined, timeoutMs, HAIKU))
     let m
     try { m = await mine } catch (error) { if (chosen === mine) chosen = undefined; throw error }
-    if (!m) { if (chosen === mine) chosen = undefined; throw new Error(NO_MODEL) }
+    if (!m) { if (chosen === mine) chosen = undefined; throw new Error(NO_HAIKU) }
     const prepared = await llm.prepareCall({ provider: m.provider, model: m.model, maxTokens }, signal)
     let out = ''
     for await (const chunk of prepared.stream({

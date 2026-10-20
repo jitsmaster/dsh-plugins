@@ -284,7 +284,11 @@ test('a single sentence is one paragraph; paragraphs are blocks with a gap', () 
 test('the client splits sentences exactly as the speaker does', async () => {
   const { mod } = load()
   const { tipSentences } = await import('../speech.js')
-  for (const s of ['A. B. C.', 'Use e.g. a map, i.e. hashing. Next one! Last?', 'One\n\ntwo wraps.\nThree.', 'Load 0.75 is typical. Then resize.', 'no end', '']) {
+  for (const s of ['Cache hot keys, e.g. Redis or Memcached. It is fast.', 'Dr. Smith met Mrs. Jones. Done.', 'A. B. C.', 'Use e.g. a map, i.e. hashing. Next one! Last?', 'One\n\ntwo wraps.\nThree.', 'Load 0.75 is typical. Then resize.', 'no end', '']) {
     assert.deepEqual([...mod.shared.tipSentences(s)], tipSentences(s), JSON.stringify(s))
   }
+})
+
+test('lib/client.js has no regex lookbehind (older iOS Safari cannot parse the whole script then, and the phone loads it)', () => {
+  assert.doesNotMatch(source, /\(\?<[=!]/)
 })

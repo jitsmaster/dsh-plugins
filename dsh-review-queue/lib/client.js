@@ -1294,8 +1294,20 @@ window.__ModuleLoader__.load({
 			return h("div", { className: "rq-todoform", role: "status" }, h("div", { className: "rq-row" }, body));
 		}
 
-		/** A tip body as sentences, one per paragraph: the copy of tipSentences in speech.js (this file is one self-contained script; a test checks both agree). */
-		const tipSentences = (text) => { const flat = String(text == null ? "" : text).replace(/\s+/g, " ").trim(); return flat ? flat.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(\[`])/) : []; };
+		/** A tip body as sentences, one per paragraph: the copy of tipSentences in speech.js (this file is one self-contained script; a test checks both agree). No lookbehind: old iOS Safari parses this whole file too. */
+		const TIP_ABBREVIATION = /^[("'\[]*(?:e\.g|i\.e|vs|cf|approx|fig|dr|mr|mrs|ms|prof)\.$/i;
+		function tipSentences(text) {
+			const words = String(text == null ? "" : text).replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+			const out = [];
+			let cur = [];
+			words.forEach((w, i) => {
+				cur.push(w);
+				const next = words[i + 1];
+				if (next !== undefined && /[.!?]$/.test(w) && /^[A-Z0-9"'(\[`]/.test(next) && !TIP_ABBREVIATION.test(w)) { out.push(cur.join(" ")); cur = []; }
+			});
+			if (cur.length) out.push(cur.join(" "));
+			return out;
+		}
 
 		/** The tip of the day (a model-written bit of general knowledge, tip.js): a button that reads it aloud, and stops when pressed again. */
 		function TipCard({ tip }) {
