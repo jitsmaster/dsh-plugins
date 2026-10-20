@@ -201,7 +201,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     canQuit: () => desktop.canQuit(), quitSoon: () => desktop.quitSoon(),
     pauseSessions: () => pauseRunningSessions({ controller: controllerOf(), record: pauseRecord, titlesOf, log }),
   }
-  const queue = createReviewQueue({ store, capture, controllerOf, registryOf, speaker, llm, tuner, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }

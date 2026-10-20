@@ -78,5 +78,6 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     tuneTodo: (text) => local.tuneTodo(text), // this app's own model: never asked of the hub
     pauseAll: () => local.pauseAll(), // the sessions and the desktop window are this app's: never asked of the hub
     quitApp: () => local.quitApp(),
+    runningSessions: () => local.runningSessions(), // the sessions are this app's: never asked of the hub
   }
 }

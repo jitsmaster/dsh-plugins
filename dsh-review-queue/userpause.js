@@ -92,6 +92,12 @@ export function mergeCandidates(result, extra) {
   return { ...result, candidates: [...byId.values()].sort((a, b) => a.lastWrite - b.lastWrite || a.sessionId.localeCompare(b.sessionId)) }
 }
 
+/** The running top-level sessions of this app (no subagent or child sessions), from the session controller; throws when the list call fails. */
+export async function listRunningSessions(controller, timeoutMs = 15_000) {
+  const listed = await controller.list({}, AbortSignal.timeout(timeoutMs))
+  return (listed?.items ?? []).filter((i) => i?.running === true && !i.parentSessionId && i.origin !== 'subagent')
+}
+
 /**
  * Cancels the active turn of every running top-level session, waits (up to settleMs) until they stopped, and remembers them.
  * Never throws. A session that cannot be cancelled is still remembered (it will be cut off by the quit).
@@ -101,10 +107,7 @@ export function mergeCandidates(result, extra) {
  */
 export async function pauseRunningSessions({ controller, record, titlesOf, now = Date.now, sleep = sleepFor, settleMs = SETTLE_MS, pollMs = POLL_MS, log = () => {} }) {
   if (typeof controller?.list !== 'function' || typeof controller?.cancel !== 'function') return { ok: false, error: 'no-controller' }
-  const running = async () => {
-    const listed = await controller.list({}, AbortSignal.timeout(15_000))
-    return (listed?.items ?? []).filter((i) => i?.running === true && !i.parentSessionId && i.origin !== 'subagent')
-  }
+  const running = () => listRunningSessions(controller)
   let before
   try { before = await running() } catch (error) { return { ok: false, error: 'cannot list sessions: ' + String(error?.message ?? error).slice(0, 160) } }
   const ids = before.map((i) => String(i.sessionId))

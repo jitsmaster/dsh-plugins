@@ -66,6 +66,7 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/paused-resume': (b) => queue.resumePaused(String(b.id)),
     '/v1/paused-dismiss': (b) => queue.dismissPaused(String(b.id)),
     '/v1/paused-scan': () => queue.scanPaused(),
+    '/v1/running-sessions': () => queue.runningSessions(),
     '/v1/pause-all': () => queue.pauseAll(),
     '/v1/quit': () => queue.quitApp(),
     '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true }),

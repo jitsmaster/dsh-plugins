@@ -321,8 +321,15 @@ window.__ModuleLoader__.load({
 		// ---- Resume all: confirm, then a few sessions at a time ------------------------------------------
 		/** Sessions resumed at a time (the same number as RESUME_CONCURRENCY in paused.js; a test keeps them equal). */
 		const RESUME_AT_A_TIME = 3;
-		/** A resumed session that does not report back (a done, question or permission item) frees its place after this long. */
-		const RESUME_SLOT_MS = 5 * 60 * 1000;
+		/** The last resort: a resumed session that neither reports back (a done, question or permission item) nor shows as stopped frees its place after this long. */
+		const RESUME_SLOT_MS = 2 * 60 * 1000;
+		/** A held place asks every RESUME_POLL_MS whether its session still runs, from RESUME_GRACE_MS on (a session restored from cold needs a while to begin its turn: it is not listed as running before that). */
+		const RESUME_POLL_MS = 3000;
+		const RESUME_GRACE_MS = 30000;
+		/** Two polls in a row that do not list the session mean it stopped; a failed poll is "unknown" and counts for nothing. */
+		const RESUME_STOPPED_POLLS = 2;
+		/** A running-sessions request that has not answered by then is a failed poll (and no longer shared with the next lane). */
+		const RESUME_POLL_TIMEOUT_MS = 10000;
 		const resumeAllText = (n) => (n === 1 ? "Resume 1 paused session? It gets the standard resume prompt." : "Resume all " + n + " paused sessions, " + RESUME_AT_A_TIME + " at a time? Each one gets the standard resume prompt.");
 		/** A resumed session has stopped working again when it has a new done, question or permission item since the resume. */
 		function settledAfter(snap, item, since) {
@@ -331,34 +338,62 @@ window.__ModuleLoader__.load({
 		}
 		/**
 		 * Resumes items with at most `limit` working at a time: a place is taken when a resume is sent and given back when the session has settled
-		 * (settled(item) resolves), when the resume was refused, or after slotMs. Aborting starts no new one. Never throws.
-		 * Returns { total, started, ok, failed: [{ id, error }], cancelled }; onProgress gets { total, started, ok, failed, running }.
+		 * (settled(item, signal) resolves), when poll(item) answered "stopped" twice in a row (poll: 'running' | 'stopped' | 'unknown', asked every
+		 * pollMs from graceMs on, one request at a time, only while the place is held), when the resume was refused, or after slotMs.
+		 * Aborting starts no new one. Never throws. sleep(ms, signal) can be replaced (a signal that aborts ends the wait early).
+		 * Returns { total, started, ok, failed: [{ id, error }], cancelled }; onProgress gets { total, started, ok, failed, running, waiting }
+		 * (waiting: not given a place yet).
 		 */
-		async function runResumeAll({ items, limit = RESUME_AT_A_TIME, resume, settled, signal, onProgress, slotMs = RESUME_SLOT_MS }) {
-			const p = { total: items.length, started: 0, ok: 0, failed: 0, running: 0 };
+		async function runResumeAll({ items, limit = RESUME_AT_A_TIME, resume, settled, poll, signal, onProgress, slotMs = RESUME_SLOT_MS, pollMs = RESUME_POLL_MS, graceMs = RESUME_GRACE_MS, sleep = sleepFor }) {
+			const p = { total: items.length, started: 0, ok: 0, failed: 0, running: 0, waiting: items.length };
 			const failed = [];
 			let next = 0;
 			const report = () => { if (onProgress) onProgress({ ...p }); };
 			const aborted = () => !!(signal && signal.aborted);
 			const abortWait = new Promise((resolve) => { if (signal) signal.addEventListener("abort", resolve, { once: true }); });
+			const NEVER = new Promise(() => {});
+			/** Resolves when the session stopped (see above); resolves too when ended by the signal, which only happens after the place is freed anyway. */
+			async function stopped(item, stop) {
+				await sleep(graceMs, stop);
+				for (let misses = 0; !stop.aborted;) {
+					let answer;
+					try { answer = await poll(item); } catch (_e) { answer = "unknown"; }
+					if (stop.aborted) return;
+					misses = answer === "stopped" ? misses + 1 : 0;
+					if (misses >= RESUME_STOPPED_POLLS) return;
+					await sleep(pollMs, stop);
+				}
+			}
 			async function lane() {
 				while (next < items.length && !aborted()) {
 					const item = items[next++];
-					p.started++; p.running++; report();
+					p.started++; p.running++; p.waiting--; report();
 					let r;
 					try { r = await resume(item); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
 					if (r && r.ok) {
 						p.ok++;
-						let timer;
-						const slot = new Promise((resolve) => { timer = setTimeout(resolve, slotMs); });
-						await Promise.race([Promise.resolve().then(() => settled(item)).catch(() => {}), slot, abortWait]);
-						clearTimeout(timer);
+						const release = new AbortController(); // ends the slot timer, the polling and the settled watch the moment the place is freed
+						await Promise.race([Promise.resolve().then(() => settled(item, release.signal)).catch(() => {}), sleep(slotMs, release.signal), abortWait, poll ? stopped(item, release.signal) : NEVER]);
+						release.abort();
 					} else { p.failed++; failed.push({ id: item.id, error: (r && r.error) || "failed" }); }
 					p.running--; report();
 				}
 			}
 			await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
 			return { total: p.total, started: p.started, ok: p.ok, failed, cancelled: aborted() && p.started < items.length };
+		}
+		/** Waits ms; ends early when the signal aborts. */
+		function sleepFor(ms, signal) {
+			return new Promise((resolve) => {
+				if (signal && signal.aborted) { resolve(); return; }
+				const done = () => { clearTimeout(timer); if (signal) signal.removeEventListener("abort", done); resolve(); }; // no listener builds up on a long-lived signal
+				const timer = setTimeout(done, ms);
+				if (signal) signal.addEventListener("abort", done, { once: true });
+			});
+		}
+		/** The text of the running phase: how many started, are working and (when some are) wait for a free place. */
+		function resumeProgressText(p) {
+			return "Resuming: " + p.started + " of " + p.total + " started, " + p.running + " working" + (p.waiting > 0 ? ", " + p.waiting + " waiting for a place" : "") + "…";
 		}
 		/** The filter chips, in order ("all" first); the phone page draws the same set. */
 		const FILTER_TYPES = ["all", "completed", "question", "permission", "pr-merged", "todo", "paused"];
@@ -656,6 +691,42 @@ window.__ModuleLoader__.load({
 				return res.ok ? { ok: true } : { ok: false, error: (j && j.error) || "HTTP " + res.status };
 			} catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 		}
+		/**
+		 * Is the session of a resumed item still working? 'running' | 'stopped' | 'unknown'. Asks this app (POST /v1/running-sessions: its running top-level
+		 * sessions). A session of ANOTHER app (hub: the item's owner is not the app that answered) is never in that list, so it is 'unknown' (settled item or
+		 * slot time decide); so is any failure. An item without an owner (standalone, or this app's own item while the hub is away) is this app's:
+		 * every item of a hub snapshot has an owner, so an ownerless item cannot belong to another app.
+		 */
+		async function pollRunning(item) {
+			if (item.owner !== undefined && runInstanceId !== undefined && item.owner !== runInstanceId) return "unknown"; // another app's item: not worth a request
+			const j = await fetchRunning();
+			if (!j) return "unknown";
+			runInstanceId = j.instanceId;
+			if (item.owner !== undefined && item.owner !== j.instanceId) return "unknown";
+			return j.ids.includes(item.sessionId) ? "running" : "stopped";
+		}
+		let runningCall; // the last POST /v1/running-sessions: { done, doneAt, promise }
+		let runInstanceId; // the app that answered the first poll of this Resume all run (reset when a run starts)
+		/**
+		 * The answer of POST /v1/running-sessions ({ ok: true, ids, instanceId? }) or undefined when it failed. The lanes of Resume all poll on the same
+		 * rhythm, so a call that is still in flight, or completed less than half a poll interval ago, is shared (one controller list instead of one per lane);
+		 * a lane polls a whole interval apart, so two polls of one lane never come from one answer. A failed answer is not kept.
+		 */
+		function fetchRunning() {
+			const age = runningCall && runningCall.done ? Date.now() - runningCall.doneAt : 0; // a clock that stepped back gives a negative age: expired
+			if (runningCall && (!runningCall.done || (age >= 0 && age < RESUME_POLL_MS / 2))) return runningCall.promise;
+			const call = { done: false, doneAt: 0, promise: undefined };
+			call.promise = (async () => {
+				try {
+					const res = await fetch(API + "/v1/running-sessions", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}", signal: AbortSignal.timeout(RESUME_POLL_TIMEOUT_MS) });
+					if (!res.ok) return undefined;
+					const j = await res.json().catch(() => ({}));
+					return j && j.ok === true && Array.isArray(j.ids) ? j : undefined;
+				} catch (_e) { return undefined; }
+			})().then((j) => { call.done = true; call.doneAt = Date.now(); if (!j && runningCall === call) runningCall = undefined; return j; });
+			runningCall = call;
+			return call.promise;
+		}
 		const pausedOpen = () => (state.snap ? state.snap.open.filter((i) => i.type === "paused") : []);
 		const askResumeAll = () => { const n = pausedOpen().length; if (n) set({ resumeAll: { phase: "confirm", total: n } }); };
 		const closeResumeAll = () => set({ resumeAll: null });
@@ -665,14 +736,17 @@ window.__ModuleLoader__.load({
 			const items = pausedOpen();
 			if (!items.length) { set({ resumeAll: null }); return; }
 			resumeAbort = new AbortController();
+			runInstanceId = undefined;
 			const since = {};
-			set({ resumeAll: { phase: "running", total: items.length, progress: { total: items.length, started: 0, ok: 0, failed: 0, running: 0 } } });
+			set({ resumeAll: { phase: "running", total: items.length, progress: { total: items.length, started: 0, ok: 0, failed: 0, running: 0, waiting: items.length } } });
 			const result = await runResumeAll({
 				items, signal: resumeAbort.signal,
 				resume: (item) => { since[item.id] = Date.now() + state.skew; return resumeOne(item); },
-				settled: (item) => new Promise((resolve) => {
+				poll: pollRunning,
+				settled: (item, stop) => new Promise((resolve) => {
 					const check = () => { if (settledAfter(state.snap, item, since[item.id])) { off(); resolve(); } };
 					const off = subscribe(check);
+					if (stop) stop.addEventListener("abort", off, { once: true }); // the place was freed another way: stop watching the snapshot
 					check();
 				}),
 				onProgress: (progress) => { if (state.resumeAll && state.resumeAll.phase === "running") set({ resumeAll: { ...state.resumeAll, progress } }); },
@@ -1117,7 +1191,7 @@ window.__ModuleLoader__.load({
 			if (!r) return h("div", { className: "rq-sub", style: { padding: "6px 14px" }, role: "status" }, st.scanNote, " ", h("button", { className: "rq-link", onClick: () => set({ scanNote: undefined }) }, "✕"));
 			let body;
 			if (r.phase === "confirm") body = [h("span", { key: "t" }, resumeAllText(r.total)), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "y", className: "rq-btn pri", onClick: startResumeAll }, r.total === 1 ? "Resume" : "Resume all"), h("button", { key: "n", className: "rq-link", onClick: closeResumeAll }, "Cancel")];
-			else if (r.phase === "running") body = [h("span", { key: "t" }, "Resuming: " + r.progress.started + " of " + r.total + " started, " + r.progress.running + " working…"), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "s", className: "rq-btn", onClick: stopResumeAll }, "Stop")];
+			else if (r.phase === "running") body = [h("span", { key: "t" }, resumeProgressText(r.progress)), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "s", className: "rq-btn", onClick: stopResumeAll }, "Stop")];
 			else body = [h("span", { key: "t" }, "Resumed " + r.result.ok + " of " + r.total + (r.result.failed.length ? "; " + r.result.failed.length + " could not be resumed (" + r.result.failed.map((f) => f.error).filter((e, n, all) => all.indexOf(e) === n).join(", ") + ")" : "") + (r.result.cancelled ? "; stopped" : "") + "."), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "c", className: "rq-link", onClick: closeResumeAll }, "Close")];
 			return h("div", { className: "rq-todoform", role: "status" }, h("div", { className: "rq-row" }, body));
 		}
@@ -1214,7 +1288,7 @@ window.__ModuleLoader__.load({
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo });
-		Object.assign(exports.__test, { RESUME_AT_A_TIME, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll, askPower, closePower, runPower, POWER_TEXT, CloseMenu, PowerBar });
+		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll, askPower, closePower, runPower, POWER_TEXT, CloseMenu, PowerBar });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
