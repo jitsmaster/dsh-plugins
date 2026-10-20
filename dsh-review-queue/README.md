@@ -135,7 +135,7 @@ Answers: 200 `{ok:true}`; 400 for bad input (`bad-answer`, `bad-decision`, `empt
 - Request body 64 KB; reply text 4000 characters; stored text per field 20,000 characters.
 - Resolved items are pruned after 7 days (hourly).
 - Summaries use the host's LLM service when available and fall back to the last paragraph of the reply. The same call gives the `ACTIONABLE` verdict; without it nothing is ever hidden.
-- **Action items stand out.** The summary model puts every sentence that tells you what to do or answer in `<u>**...**</u>`, and a fallback summary keeps such a sentence from the reply's last paragraph. Either way the plugin moves those sentences into a paragraph of their own at the end of the summary (what was done first, then a blank line, then what you must do). Desktop and phone cards show it bold and underlined (the full reply does the same for `<u>**...**</u>`); spoken read-outs and search treat it as plain words.
+- **Action items stand out.** The summary model puts every sentence that tells you what to do or answer in `<u>**...**</u>`, and a fallback summary keeps such a sentence from the reply's last paragraph. Either way the plugin moves those sentences into a paragraph of their own at the end of the summary (what was done first, then a blank line, then what you must do). Desktop and phone cards show it bold and one step larger than the text around it, not underlined (the full reply, conversation messages, resolved cards, questions and reasons do the same for `<u>**...**</u>`, also when a model spells it `<U>`, leaves out the `**`, escapes it, nests it or leaves it open; the tags themselves are never shown, and everything else in a message stays plain escaped text); spoken read-outs and search treat it as plain words.
 
 ## Develop
 

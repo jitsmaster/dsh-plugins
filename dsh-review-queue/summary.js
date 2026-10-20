@@ -2,7 +2,7 @@
  * Completion summaries: a 2-3 line "what was done" for a finished turn, written once by the cheapest model DSH can
  * reach and cached on the item. Never throws and never blocks an item: any failure falls back to the reply's last
  * paragraph. The reply is untrusted data, sent as such. Sentences the user must act on come back as `<u>**...**</u>` (the screens
- * show them bold and underlined; speech strips the tags).
+ * show them bold and one step larger; speech strips the tags).
  */
 import { actionParagraph, cleanText, lastParagraph } from './speech.js'
 import { needsUser } from './actionable.js'

@@ -302,7 +302,7 @@ test('an automatic answer does not change how the other answered kinds read', ()
   assert.equal(T.resolutionText({ resolution: { kind: 'answered', by: 'screen' } }), 'Answered on screen')
 })
 
-test('mdInline reads <u>**...**</u> (an action item) as one bold-underlined token', () => {
+test('mdInline reads <u>**...**</u> (an action item) as one action token', () => {
   assert.deepEqual(T.mdInline('Ready. <u>**Restart it?**</u> ok'), [
     { t: 'text', text: 'Ready. ' }, { t: 'bu', text: 'Restart it?' }, { t: 'text', text: ' ok' },
   ])

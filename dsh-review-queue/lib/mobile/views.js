@@ -38,10 +38,10 @@ const ageOf = (item, key = 'createdAt') => getCore().fmtAge(now() - (item[key] |
 
 function Chip({ type }) { return html`<span class=${'chip ' + type}>${getCore().typeLabel(type)}</span>` }
 
-function inlineNodes(s) {
+export function inlineNodes(s) {
   return getCore().mdInline(s).map((tok) => {
     if (tok.t === 'b') return html`<strong>${tok.text}</strong>`
-    if (tok.t === 'bu') return html`<strong class="action" style="text-decoration:underline">${tok.text}</strong>`
+    if (tok.t === 'bu') return html`<strong class="action">${tok.text}</strong>`
     if (tok.t === 'i') return html`<em>${tok.text}</em>`
     if (tok.t === 'code') return html`<code>${tok.text}</code>`
     if (tok.t === 'a') return html`<a href=${tok.href} target="_blank" rel="noopener noreferrer">${tok.text}</a>`
@@ -49,7 +49,12 @@ function inlineNodes(s) {
   })
 }
 
-function Md({ text }) {
+/** A plain text with its action items (<u>**...**</u>) as emphasis; nothing else in it is read as markdown (question, option, reason and message text). */
+export function ActionText({ text }) {
+  return getCore().actionTokens(text).map((tok) => (tok.t === 'bu' ? html`<strong class="action">${tok.text}</strong>` : tok.text))
+}
+
+export function Md({ text }) {
   const c = getCore()
   const inline = inlineNodes
   return html`<div class="md">${c.mdBlocks(text).map((b) => {
@@ -159,12 +164,12 @@ function QuestionBody({ item, path = '/v1/answer', sendLabel = 'Send answer' }) 
     ${questions.map((q) => {
       const d = drafts[q.id] || { selected: [], custom: '' }
       return html`<div class="q" key=${q.id}>
-        ${q.header ? html`<div class="sub">${q.header}</div>` : null}
-        <div class="qtext">${q.question}</div>
+        ${q.header ? html`<div class="sub"><${ActionText} text=${q.header} /></div>` : null}
+        <div class="qtext"><${ActionText} text=${q.question} /></div>
         ${(q.options || []).map((o) => html`<button class=${'opt' + (d.selected.includes(o.label) ? ' on' : '')} disabled=${busy} aria-pressed=${d.selected.includes(o.label)}
           onClick=${() => setDraft(q.id, c.toggleChoice(d, o.label, !!q.multiSelect))}>
           <span class="mark">${d.selected.includes(o.label) ? (q.multiSelect ? '☑' : '◉') : (q.multiSelect ? '☐' : '○')}</span>
-          <span><span>${c.recommended(q, o.label) ? '★ ' : ''}${o.label}</span>${o.description ? html`<div class="d">${o.description}</div>` : null}</span></button>`)}
+          <span><span>${c.recommended(q, o.label) ? '★ ' : ''}${o.label}</span>${o.description ? html`<div class="d"><${ActionText} text=${o.description} /></div>` : null}</span></button>`)}
         <div class="inwrap">
           <input class="input" placeholder="Other answer…" value=${d.custom || ''} disabled=${busy} onInput=${(e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value })} />
           <${Mic} text=${d.custom || ''} disabled=${busy} onText=${(t) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: t })} />
@@ -190,7 +195,7 @@ function PermissionBody({ item }) {
   return html`<div>
     ${risks.length ? html`<div class="risks">${risks.map((r) => html`<span class="risk">⚠ ${r.label}</span>`)}</div>` : null}
     <pre class="mono">${command}</pre>
-    ${p.reason ? html`<div class="sub">${p.reason}</div>` : null}
+    ${p.reason ? html`<div class="sub"><${ActionText} text=${p.reason} /></div>` : null}
     <div class="row">
       <button class="btn pri" disabled=${busy} onClick=${() => setAsk('approve')}>Approve…</button>
       <button class="btn bad" disabled=${busy} onClick=${async () => { if (await act('/v1/deny', { id: item.id }, item.id)) go('/') }}>Deny</button>
@@ -272,7 +277,7 @@ function PausedBody({ item }) {
 // ---- chat thread (docs/mobile.md "Chat thread") ----------------------------------------------------------------------------------
 
 /** One message: the user's text as plain pre-wrapped text on the right, the assistant's rendered as markdown on the left. */
-function Bubble({ m }) {
+export function Bubble({ m }) {
   const user = m.role === 'user'
   const when = m.pending ? (m.sent ? 'Sent' : 'Sending…') : m.time > 1e12 ? getCore().fmtAge(now() - m.time) : ''
   return html`<div class=${'bubble ' + (user ? 'user' : 'assistant') + (m.pending ? ' pending' : '')}>

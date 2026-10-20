@@ -105,7 +105,7 @@ window.__ModuleLoader__.load({
 			return buildAnswers(questions, drafts);
 		}
 		/** Heading of a card: the task title, else the session title. */
-		const cardTitle = (item) => (item && (item.title || item.sessionTitle)) || "Untitled";
+		const cardTitle = (item) => plainAction(item && (item.title || item.sessionTitle)) || "Untitled";
 
 		/** Id of the item to select once `id` leaves the list: the next one, else the previous one. */
 		function nextAfter(items, id) {
@@ -155,7 +155,7 @@ window.__ModuleLoader__.load({
 				if (type !== "all" && it.type !== type) return false;
 				if (!words.length) return true;
 				const p = it.payload || {};
-				const hay = [it.title, it.sessionTitle, it.workspace, it.summary, it.text, p.summary, ...(p.questions || []).map((q) => q && q.question)].filter(Boolean).join("\n").toLowerCase();
+				const hay = [it.title, it.sessionTitle, it.workspace, plainAction(it.summary), it.text, p.summary, ...(p.questions || []).map((q) => q && q.question)].filter(Boolean).join("\n").toLowerCase();
 				return words.every((w) => hay.includes(w));
 			});
 		}
@@ -193,25 +193,91 @@ window.__ModuleLoader__.load({
 			return { expanded: keep(saved && saved.expanded), reply: keep(saved && saved.reply) };
 		}
 
+		// An action item (what the user must do or answer) is written <u>**text**</u>. The tags are only a transport: the screens show the words bold and
+		// a step bigger, not underlined (the "bu" token), never the tags. Models spell them in capitals, escape them, drop the bold markers, put them inside the bold
+		// markers, nest them or leave them open, so they are cut out of the text first (inline code is left alone: it may talk about the markup) and
+		// come back as a placeholder, which mdInline turns into a "bu" token wherever it ended up (also inside **...** or *...*).
+		const ACTION_TAG = /`[^`]+`|<\s*(\/?)\s*u(?=[\s>])[^<>]*>|&lt;\s*(\/?)\s*u(?=[\s&])[^<>&]*&gt;/gi;
+		const AP_OPEN = "\uE000";
+		const AP_CLOSE = "\uE001";
+		const AP_SPLIT = /\uE000(\d+)\uE001/g;
+		/** { src, spans }: the text with each action span replaced by a placeholder, and the plain words of every span. An open tag runs to the end of the text; a close tag alone is dropped. */
+		function extractAction(text) {
+			const source = String(text == null ? "" : text).replace(/[\uE000\uE001]/g, "");
+			const spans = [];
+			let src = "";
+			let cursor = 0;
+			let depth = 0;
+			let inner = "";
+			const emit = () => {
+				// Plain words of the span: the **...** around it (or one half of it, when the text was cut) goes, the markdown inside is read once more
+				// (no tags are left in it) and reduced to its text.
+				const words = mdInline(inner.replace(/^(\s*)\*\*/, "$1").replace(/\*\*(\s*)$/, "$1")).map((t) => t.text).join("");
+				inner = "";
+				const body = words.trim();
+				if (!body) { src += words; return; }
+				src += words.slice(0, words.indexOf(body)) + AP_OPEN + spans.length + AP_CLOSE + words.slice(words.indexOf(body) + body.length);
+				spans.push(body);
+			};
+			const tags = new RegExp(ACTION_TAG); // its own lastIndex: emit() below reads the markdown again, which comes back here
+			let m;
+			while ((m = tags.exec(source))) {
+				if (m[0][0] === "`") continue;
+				const closing = !!(m[1] || m[2]);
+				const chunk = source.slice(cursor, m.index);
+				cursor = m.index + m[0].length;
+				if (depth === 0) { src += chunk; if (!closing) depth = 1; continue; }
+				inner += chunk;
+				depth += closing ? -1 : 1;
+				if (depth === 0) emit();
+			}
+			if (depth > 0) { inner += source.slice(cursor); emit(); } else src += source.slice(cursor);
+			return { src, spans };
+		}
+
+		/** Tokens whose text may hold placeholders -> tokens with each one a "bu" token (in a link or code token the words are put back as plain text). */
+		function expandAction(tokens, spans) {
+			if (!spans.length) return tokens;
+			const out = [];
+			const push = (tok) => { const prev = out[out.length - 1]; if (tok.t === "text" && prev && prev.t === "text") prev.text += tok.text; else out.push(tok); };
+			for (const tok of tokens) {
+				if (tok.t === "a" || tok.t === "code") { push({ ...tok, text: tok.text.replace(AP_SPLIT, (_, n) => spans[n]) }); continue; }
+				const parts = tok.text.split(AP_SPLIT);
+				parts.forEach((part, i) => {
+					if (i % 2) push({ t: "bu", text: spans[part] });
+					else if (part) push({ ...tok, text: part });
+				});
+			}
+			return out;
+		}
+
+		/** Only the action items of a text as tokens ("text" and "bu"); all other markdown stays as it was written. */
+		function actionTokens(text) {
+			const { src, spans } = extractAction(text);
+			return src ? expandAction([{ t: "text", text: src }], spans) : [];
+		}
+
+		/** A text without the action tags (their words stay), for places that show a string: titles, tooltips, the search. */
+		function plainAction(text) { return actionTokens(text).map((t) => t.text).join(""); }
+
 		/** Inline markdown -> tokens. Only http(s) links stay links; anything else keeps just its text. */
 		function mdInline(text) {
 			const out = [];
-			const re = /<u>\s*(?:\*\*([^*]+)\*\*|([^<*]+?))\s*<\/u>|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|\*([^*\s][^*]*)\*/g;
+			const re = /`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|\*([^*\s][^*]*)\*/g;
 			const pushText = (s) => { if (!s) return; const prev = out[out.length - 1]; if (prev && prev.t === "text") prev.text += s; else out.push({ t: "text", text: s }); };
 			let last = 0;
 			let m;
-			const src = String(text == null ? "" : text);
+			const { src, spans } = extractAction(text);
 			while ((m = re.exec(src))) {
 				pushText(src.slice(last, m.index));
-				if (m[1] !== undefined || m[2] !== undefined) out.push({ t: "bu", text: (m[1] !== undefined ? m[1] : m[2]).trim() }); // an action item for the user: bold and underlined
-				else if (m[3] !== undefined) out.push({ t: "code", text: m[3] });
-				else if (m[4] !== undefined) out.push({ t: "b", text: m[4] });
-				else if (m[5] !== undefined) { if (/^https?:\/\//i.test(m[6])) out.push({ t: "a", text: m[5], href: m[6] }); else pushText(m[5]); }
-				else out.push({ t: "i", text: m[7] });
+				if (m[1] !== undefined) out.push({ t: "code", text: m[1] });
+				else if (m[2] !== undefined) out.push({ t: "b", text: m[2] });
+				else if (m[3] !== undefined) { if (/^https?:\/\//i.test(m[4])) out.push({ t: "a", text: m[3], href: m[4] }); else pushText(m[3]); }
+				else out.push({ t: "i", text: m[5] });
 				last = re.lastIndex;
 			}
 			pushText(src.slice(last));
-			return out;
+			return expandAction(out, spans);
 		}
 
 		/** Block markdown -> blocks: headings, paragraphs, bullet and numbered lists, quotes, fenced code. */
@@ -813,7 +879,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-hwrap{display:inline-flex;align-items:center}.rq-hbtn{position:relative;width:28px;height:28px;border-radius:6px;display:flex!important;align-items:center;justify-content:center;font-size:14px;color:var(--rq-mute)}"
 			+ ".rq-hbtn:hover{background:var(--rq-hover);color:var(--rq-fg)}.rq-hbtn.on{color:var(--rq-accent)}"
 			+ ".rq-hbtn .b{position:absolute;top:0;right:0;min-width:15px;height:15px;border-radius:8px;background:var(--rq-err);color:#fff;font-size:10px;font-weight:700;line-height:15px;display:flex;align-items:center;justify-content:center;padding:0 3px}"
-			+ ".rq-md{font-size:13.5px;line-height:1.5}.rq-md p{margin:0 0 8px;white-space:pre-wrap;word-break:break-word}.rq-md ul,.rq-md ol{margin:0 0 8px;padding-left:22px}.rq-md blockquote{margin:0 0 8px;padding:2px 10px;border-left:3px solid var(--rq-border);color:var(--rq-mute)}"
+			+ ".rq-action{font-weight:700;font-size:1.15em;line-height:1.3;text-decoration:none}.rq-md{font-size:13.5px;line-height:1.5}.rq-md p{margin:0 0 8px;white-space:pre-wrap;word-break:break-word}.rq-md ul,.rq-md ol{margin:0 0 8px;padding-left:22px}.rq-md blockquote{margin:0 0 8px;padding:2px 10px;border-left:3px solid var(--rq-border);color:var(--rq-mute)}"
 			+ ".rq-md pre.rq-pre{margin:0 0 8px}.rq-code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--rq-layer2);border-radius:4px;padding:0 4px}.rq-md a{color:var(--rq-accent)}.rq-h{font-weight:600;margin:6px 0 4px}.rq-h1{font-size:16px}.rq-h2{font-size:14.5px}"
 			+ ".rq-replybox{max-height:360px;overflow:auto;background:var(--rq-base);border:1px solid var(--rq-border);border-radius:7px;padding:10px 12px;margin-top:6px}"
 			+ ".rq-todoform{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-sel{width:auto;max-width:260px;padding:6px 8px}"
@@ -869,7 +935,7 @@ window.__ModuleLoader__.load({
 			if (!full) {
 				const q = questions[0];
 				return h(React.Fragment, null,
-					h("div", { className: "rq-text rq-clamp" }, q ? q.question : ""),
+					h("div", { className: "rq-text rq-clamp" }, q ? actionNodes(q.question) : ""),
 					q && q.options && q.options.length ? h("div", { className: "rq-chips" }, q.options.slice(0, 4).map((o) => h("span", { key: o.label, className: "rq-pill" }, recommended(q, o.label) ? "★ " + o.label : o.label)), q.options.length > 4 ? h("span", { className: "rq-sub" }, "+" + (q.options.length - 4)) : null) : null,
 					questions.length > 1 ? h("div", { className: "rq-sub" }, questions.length + " questions") : null);
 			}
@@ -880,13 +946,13 @@ window.__ModuleLoader__.load({
 				questions.map((q) => {
 					const d = drafts[q.id] || { selected: [], custom: "" };
 					return h("div", { key: q.id, className: "rq-opts" },
-						q.header ? h("div", { className: "rq-sub" }, q.header) : null,
-						h("div", { className: "rq-text", style: { fontWeight: 600 } }, q.question),
+						q.header ? h("div", { className: "rq-sub" }, actionNodes(q.header)) : null,
+						h("div", { className: "rq-text", style: { fontWeight: 600 } }, actionNodes(q.question)),
 						(q.options || []).map((o) => h("button", {
 							key: o.label, className: "rq-opt" + (d.selected.includes(o.label) ? " on" : ""), disabled: busy,
 							onClick: () => setDraft(q.id, toggleChoice(d, o.label, !!q.multiSelect)), "aria-pressed": d.selected.includes(o.label),
 						}, h("span", null, d.selected.includes(o.label) ? (q.multiSelect ? "☑" : "◉") : (q.multiSelect ? "☐" : "○")),
-							h("span", null, h("span", null, recommended(q, o.label) ? h("span", { className: "rq-star" }, "★ ") : null, o.label), o.description ? h("div", { className: "d" }, o.description) : null))),
+							h("span", null, h("span", null, recommended(q, o.label) ? h("span", { className: "rq-star" }, "★ ") : null, o.label), o.description ? h("div", { className: "d" }, actionNodes(o.description)) : null))),
 						h("input", { className: "rq-input", placeholder: "Other answer…", value: d.custom || "", disabled: busy, onChange: (e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value }), onKeyDown: (e) => { const sendNow = enterAnswers(e.nativeEvent || e, questions, drafts, q.id); if (sendNow && !busy) { e.preventDefault(); sendAnswers(item, path, sendNow); } } }));
 				}),
 				h("div", { className: "rq-row" },
@@ -905,7 +971,7 @@ window.__ModuleLoader__.load({
 				risks.length ? h("div", { className: "rq-risks" }, risks.map((r) => h("span", { key: r.code, className: "rq-risk", title: r.label }, "⚠ " + r.label))) : null,
 				full && p.detail && p.detail !== p.summary ? h("pre", { className: "rq-pre", style: mono }, p.detail)
 					: h("div", { className: "rq-text" + (full ? "" : " rq-clamp"), style: mono }, p.summary || p.toolName),
-				full && p.reason ? h("div", { className: "rq-sub" }, p.reason) : null,
+				full && p.reason ? h("div", { className: "rq-sub" }, actionNodes(p.reason)) : null,
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: busy, onClick: () => act("/v1/approve", { id: item.id }, item.id, { advance: true }) }, "Approve"),
 					h("button", { className: "rq-btn bad", disabled: busy, onClick: () => act("/v1/deny", { id: item.id }, item.id, { advance: true }) }, "Deny"),
@@ -917,13 +983,18 @@ window.__ModuleLoader__.load({
 			return mdInline(s).map((tok, i) => {
 				switch (tok.t) {
 					case "b": return h("strong", { key: i }, tok.text);
-					case "bu": return h("strong", { key: i, className: "rq-action", style: { textDecoration: "underline" } }, tok.text);
+					case "bu": return h("strong", { key: i, className: "rq-action" }, tok.text);
 					case "i": return h("em", { key: i }, tok.text);
 					case "code": return h("code", { key: i, className: "rq-code" }, tok.text);
 					case "a": return h("a", { key: i, href: tok.href, target: "_blank", rel: "noopener noreferrer" }, tok.text);
 					default: return tok.text;
 				}
 			});
+		}
+
+		/** A plain text with its action items as emphasis (nothing else is read as markdown): question, option and reason text. */
+		function actionNodes(s) {
+			return actionTokens(s).map((tok, i) => (tok.t === "bu" ? h("strong", { key: i, className: "rq-action" }, tok.text) : tok.text));
 		}
 
 		function Md({ text }) {
@@ -1045,7 +1116,7 @@ window.__ModuleLoader__.load({
 			const reopenable = isReopenable(it);
 			return h("div", { className: "rq-card rq-res" },
 				h("div", { className: "rq-card-h", title: canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : "default" }, onClick: canOpen ? (e) => { if (!isButtonClick(e && e.target)) openSession(it); } : undefined }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: canOpen ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
-				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? it.summary : undefined }, resolutionText(it)),
+				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? plainAction(it.summary) : undefined }, resolutionText(it)),
 				canOpen ? h("div", { className: "rq-row" }, h("button", { className: asButton ? "rq-btn pri" : "rq-link", onClick: () => openSession(it) }, asButton ? "Open session" : "Open session ↗")) : null,
 				reopenable ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/reopen", { id: it.id }, it.id) }, "Reopen")) : null,
 				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
@@ -1281,7 +1352,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
+		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
@@ -1290,6 +1361,7 @@ window.__ModuleLoader__.load({
 		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll, askPower, closePower, runPower, POWER_TEXT, CloseMenu, PowerBar });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
+		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;

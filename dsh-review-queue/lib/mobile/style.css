@@ -119,6 +119,7 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 
 /* ---- markdown ---- */
 .md { overflow-wrap: anywhere; }
+.action { font-weight: 700; font-size: 1.15em; line-height: 1.3; text-decoration: none; }
 .md p, .md ul, .md ol, .md pre, .md blockquote { margin: 0 0 10px; }
 .md ul, .md ol { padding-left: 22px; }
 .md .h { font-weight: 700; margin: 12px 0 6px; }

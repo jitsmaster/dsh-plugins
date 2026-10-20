@@ -6,7 +6,7 @@
 
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\u{E0000}-\u{E007F}\u115F\u1160\u3164\uFFA0\uFE00-\uFE0F]/gu
 
-// An action item is written <u>**text**</u> (bold and underlined). Plain text drops the tags; keepAction carries them through as
+// An action item is written <u>**text**</u> (shown bold and larger by the screens). Plain text drops the tags; keepAction carries them through as
 // \u0001 text \u0002 (control characters, removed from the input first, so a reply cannot forge them) and writes them back at the end.
 const ACTION_SPAN = /<u>\s*(?:\*\*([^*]*?)\*\*|([^<*]*?))\s*<\/u>/gi
 const ACTION_OPEN = '\u0001'
