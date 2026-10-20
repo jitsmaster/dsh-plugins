@@ -4,7 +4,7 @@ import { state, subscribe, set, act, getCore, loadWorkspaces, startTodo, NEW_TOD
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { listModel, pausedNote, pausedView, screenFor, todoCardModel } from './model.js'
+import { backHref, listModel, pausedNote, pausedView, screenFor, todoCardModel } from './model.js'
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
@@ -515,7 +515,7 @@ function ItemView({ id }) {
     </div>`}
     ${chat ? html`<${Conversation} key=${item.id} item=${item} defaultOpen=${!!resolved || item.type === 'completed'} />` : null}
     ${st.errors[item.id] && !writable ? html`<div class="err">${st.errors[item.id]}</div>` : null}
-    <div class="row"><${ReadAloud} item=${item} /><a class="btn" href=${resolved ? '#/resolved' : '#/'}>Back</a></div>
+    <div class="row"><${ReadAloud} item=${item} /><a class="btn" href=${backHref(item)}>Back</a></div>
     ${writable ? html`<${Composer} key=${item.id} item=${item} />` : null}
   </article>`
 }
