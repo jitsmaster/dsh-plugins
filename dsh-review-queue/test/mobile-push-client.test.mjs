@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  PUSH_TYPES, DEFAULT_QUIET, urlBase64ToUint8Array, validateQuietHours, normalizeSettings, defaultDeviceName, buildSubscribePayload,
+  PUSH_TYPES, DEFAULT_QUIET, urlBase64ToUint8Array, validateQuietHours, normalizeSettings, defaultDeviceName, buildSubscribePayload, subscribeFresh,
 } from '../lib/mobile/push-client.js'
 
 const SUB = { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', expirationTime: null, keys: { p256dh: 'BPk', auth: 'aut' } }
@@ -183,4 +183,42 @@ test('buildSubscribePayload names iPadOS desktop mode "iPad" when it is told the
 test('buildSubscribePayload keeps a name the user typed on an iPhone', () => {
   const body = buildSubscribePayload({ subscription: SUB, settings: { name: 'My iPhone' }, userAgent: IPHONE_UA, tz: 'UTC' })
   assert.equal(body.name, 'My iPhone')
+})
+
+// ---- subscribeFresh: never reuse a browser subscription the push service may have forgotten ----------------------------------------------
+
+const fakeRegistration = ({ existing, unsubscribeFails = false, subscribeFails = false } = {}) => {
+  const calls = []
+  const made = { endpoint: 'https://fcm.googleapis.com/fcm/send/new' }
+  const old = existing ? { unsubscribe: async () => { calls.push('unsubscribe'); if (unsubscribeFails) throw new Error('boom'); return true } } : null
+  return {
+    calls, made,
+    pushManager: {
+      getSubscription: async () => old,
+      subscribe: async (options) => { calls.push(['subscribe', options]); if (subscribeFails) throw new Error('no fcm'); return made },
+    },
+  }
+}
+const KEY = new Uint8Array([4, 1, 2])
+
+test('subscribeFresh subscribes when there is no subscription yet', async () => {
+  const reg = fakeRegistration()
+  assert.equal(await subscribeFresh(reg, KEY), reg.made)
+  assert.deepEqual(reg.calls, [['subscribe', { userVisibleOnly: true, applicationServerKey: KEY }]])
+})
+
+test('subscribeFresh drops the existing subscription first and subscribes anew (a stale one gets 410 from the push service)', async () => {
+  const reg = fakeRegistration({ existing: true })
+  assert.equal(await subscribeFresh(reg, KEY), reg.made)
+  assert.deepEqual(reg.calls.map((c) => (Array.isArray(c) ? c[0] : c)), ['unsubscribe', 'subscribe'])
+})
+
+test('subscribeFresh still subscribes when dropping the old subscription fails', async () => {
+  const reg = fakeRegistration({ existing: true, unsubscribeFails: true })
+  assert.equal(await subscribeFresh(reg, KEY), reg.made)
+  assert.deepEqual(reg.calls.map((c) => (Array.isArray(c) ? c[0] : c)), ['unsubscribe', 'subscribe'])
+})
+
+test('subscribeFresh passes a failed subscribe on to the caller', async () => {
+  await assert.rejects(subscribeFresh(fakeRegistration({ subscribeFails: true }), KEY), /no fcm/)
 })
