@@ -73,6 +73,31 @@ test('a session running its first turn is not blank in the Host list, so it coun
   assert.deepEqual(counter.current(), { working: 1, open: 1 })
 })
 
+test('a list call that ignores its signal and never answers is given up after the timeout plus a grace: the counter frees itself and the late answer is ignored', async () => {
+  let t = 10_000
+  const calls = []
+  let releaseFirst
+  const controller = { list: async () => {
+    calls.push(1)
+    if (calls.length === 1) { await new Promise((r) => { releaseFirst = r }); return { items: [item('stale1'), item('stale2')] } }
+    return { items: [item('fresh', { running: true })] }
+  } }
+  const logs = []
+  const counter = createSessionCounter({ controllerOf: () => controller, now: () => t, timeoutMs: 10, graceMs: 20, log: (l) => logs.push(l) })
+  counter.touch()
+  const started = Date.now()
+  await counter.refresh()
+  assert.ok(Date.now() - started < 1000, 'gave up by itself')
+  assert.ok(logs.some((l) => /timeout/.test(l)) && !logs.some((l) => /stale/.test(l)))
+  t += 5000
+  await counter.refresh()
+  assert.equal(calls.length, 2, 'a new call could start')
+  assert.deepEqual(counter.current(), { working: 1, open: 1 })
+  releaseFirst()
+  await new Promise((r) => setTimeout(r, 30))
+  assert.deepEqual(counter.current(), { working: 1, open: 1 }, 'the late answer of the first call is ignored')
+})
+
 test('a list that is not an array gives unknown, not a crash', async () => {
   const { counter, state } = setup({ items: { not: 'a list' } })
   await settle(counter)
@@ -224,13 +249,16 @@ test('asking for a snapshot starts a refresh when the numbers are older than 2 s
   assert.equal(calls.length, n + 1)
 })
 
-test('a change of the numbers wakes the service listeners (the long poll), and sessionCounts gives the numbers to the agent', async () => {
+test('a change of the numbers wakes the sessions listeners (the standalone long poll) and NOT the ordinary ones (the hub proxy hangs on those), and sessionCounts gives the numbers to the agent', async () => {
   const { counter } = setup()
   const { queue } = service(counter)
-  let n = 0
-  queue.onChange(() => { n++ })
+  let ordinary = 0
+  let numbers = 0
+  queue.onChange(() => { ordinary++ })
+  queue.onSessionsChange(() => { numbers++ })
   await counter.refresh()
-  assert.equal(n, 1)
+  assert.equal(numbers, 1)
+  assert.equal(ordinary, 0)
   assert.deepEqual(queue.sessionCounts(), { working: 1, open: 3 })
   assert.equal(typeof queue.refreshSessions, 'function')
 })
@@ -289,6 +317,26 @@ test('stampMatches compares only the parts the client sent, so an older page nev
   assert.equal(stampMatches(s, parseSince('e:3|||0|1/4|')), false, 'a tip appeared')
   assert.equal(stampMatches(s, parseSince('e:4|||0')), false)
   assert.equal(stampMatches({ snapshotId: 'e:3', ui: { seq: 0 } }, parseSince('e:3|||0|1/4|tipX')), false, 'the numbers and the tip went away')
+})
+
+test('standalone: a long poll with the numbers token wakes when the numbers change', async (t) => {
+  const { createServer } = await import('node:http')
+  const { createRouter } = await import('../server.js')
+  const { counter, state, advance } = setup()
+  const { queue } = service(counter)
+  await counter.refresh()
+  const server = createServer(createRouter({ queue }))
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  t.after(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r) }))
+  const base = 'http://127.0.0.1:' + server.address().port
+  const first = await (await fetch(base + '/v1/snapshot?client=phone')).json()
+  const waiting = fetch(base + '/v1/snapshot?client=phone&wait=5000&since=' + encodeURIComponent(fullStampOf(first))).then((r) => r.json())
+  await new Promise((r) => setTimeout(r, 80))
+  state.items = [item('a')]
+  advance(5000)
+  await counter.refresh()
+  const woke = await waiting
+  assert.deepEqual(woke.sessions, { working: 0, open: 1 })
 })
 
 test('over HTTP the phone and an open overlay look at the numbers; a plain request (overlay closed) does not', async (t) => {

@@ -120,10 +120,12 @@ test('the hub snapshot has no sessions field while nobody reported, and its snap
   assert.deepEqual(after.sessions, { working: 1, open: 1 })
 })
 
-test('GET /v1/snapshot serves the sum, and a long poll wakes when a count changes', async (t) => {
-  const { port } = await startHub(t, { roleOf: () => 'desktop' })
+test('GET /v1/snapshot serves the sum, and a long poll wakes when a count changes (after the 3 s coalescing of the hub)', async (t) => {
+  const clock = fakeClock()
+  const { port } = await startHub(t, { clock, timers: clock, roleOf: () => 'desktop' })
   const a = agentOf(port, { id: A, key: 'k1' })
   await a.register({ sync: sync(), sessions: { working: 1, open: 2 } })
+  clock.advance(3000)
   const get = (q = '') => raw({ port, path: P + '/v1/snapshot' + q, headers: { host: '127.0.0.1:' + port } })
   const first = (await get()).json
   assert.deepEqual(first.sessions, { working: 1, open: 2 })
@@ -132,6 +134,7 @@ test('GET /v1/snapshot serves the sum, and a long poll wakes when a count change
   const waiting = get('?wait=5000&since=' + stamp)
   await new Promise((r) => setTimeout(r, 60))
   await a.post('presence', { sessions: { working: 2, open: 2 } })
+  clock.advance(3000)
   const woke = await waiting
   assert.deepEqual(woke.json.sessions, { working: 2, open: 2 })
 })
@@ -202,4 +205,42 @@ test('a token that has the numbers part still wakes at once, and a real item cha
   const [x, y] = await Promise.all([waiting, oldToken])
   assert.ok(x.json.open.length === 1 && y.json.open.length === 1)
   assert.ok(Date.now() - started < 3000)
+})
+
+// ---- coalescing ------------------------------------------------------------------------------------------------------------------------------
+
+test('the numbers of many apps wake the hub listeners at most once per 3 s, with the final sum (one trailing timer, gone at stop)', async (t) => {
+  const clock = fakeClock()
+  const { hub, port } = await startHub(t, { clock, timers: clock, roleOf: () => 'desktop' })
+  const a = agentOf(port, { id: A, key: 'k1' })
+  await a.register({ sync: sync(), sessions: { working: 0, open: 1 } })
+  clock.advance(3000) // the register's own wake is over
+  let wakes = 0
+  hub.onChange(() => { wakes++ })
+  const base = clock.pending()
+  for (let n = 1; n <= 6; n++) await a.post('presence', { sessions: { working: n, open: 10 } })
+  assert.equal(wakes, 0, 'nothing yet')
+  assert.equal(clock.pending(), base + 1, 'one timer for all of them')
+  clock.advance(2999)
+  assert.equal(wakes, 0)
+  clock.advance(1)
+  assert.equal(wakes, 1)
+  assert.deepEqual(hub.snapshot().sessions, { working: 6, open: 10 }, 'the wake carries the final sum')
+  assert.equal(clock.pending(), base)
+  await a.post('presence', { sessions: { working: 7, open: 10 } })
+  assert.equal(clock.pending(), base + 1)
+  await hub.stop()
+  clock.advance(10_000)
+  assert.equal(wakes, 1, 'a stopped hub wakes nobody')
+})
+
+test('item changes still wake at once (only the numbers are coalesced)', async (t) => {
+  const clock = fakeClock()
+  const { hub, port } = await startHub(t, { clock, timers: clock, roleOf: () => 'desktop' })
+  const a = agentOf(port, { id: A, key: 'k1' })
+  await a.register({ sync: sync() })
+  let wakes = 0
+  hub.onChange(() => { wakes++ })
+  await a.send(a.add(1))
+  assert.ok(wakes >= 1)
 })

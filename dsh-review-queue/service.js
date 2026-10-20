@@ -44,7 +44,10 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* ignore */ } } }
   // A tip that a model call finished and new session numbers wake the long polls (neither touches the store, so the snapshotId stays).
   try { tips?.onChange?.(emit) } catch { /* the tip is a bonus */ }
-  try { sessions?.onChange?.(emit) } catch { /* so are the numbers */ }
+  // The numbers have a listener set of their own: only a screen that shows THIS app's numbers (the standalone long poll) waits for them. In hub mode the screen shows the hub's sum,
+  // so a local change must not wake (and re-issue) the hub long poll through the ordinary listeners.
+  const sessionListeners = new Set()
+  try { sessions?.onChange?.(() => { for (const l of [...sessionListeners]) { try { l() } catch { /* ignore */ } } }) } catch { /* so are the numbers */ }
   const isTipReading = () => typeof reading === 'string' && reading.startsWith(TIP_READING)
   /** Starts speaking for the reading key (an item id or 'tip:<id>'); the end of that speech clears the state only if nothing replaced it. { ok } | { ok: false, error } */
   const speakAs = (key, chunks, open) => {
@@ -410,6 +413,8 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       return count ? { ok: true, count } : { ok: false, error: 'not-pending' }
     },
     onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
+    /** Woken when this app's session numbers change (and nothing else): for a long poll that serves them (standalone), not for one that serves the hub's sum. */
+    onSessionsChange(listener) { sessionListeners.add(listener); return () => { sessionListeners.delete(listener) } },
     answer: (id, answers) => capture.answerQuestion(id, answers),
     lateAnswer: (id, answers) => capture.lateAnswerQuestion(id, answers),
     /**

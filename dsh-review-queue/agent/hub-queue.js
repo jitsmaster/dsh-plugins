@@ -71,6 +71,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     workspaces: () => (hubMode() ? client.mirror.workspaces() : local.workspaces()),
     stop() { view.stop(); return local.stop() },
     onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
+    onSessionsChange: (listener) => local.onSessionsChange?.(listener), // only for a poll that serves this app's own numbers (not the hub's sum)
 
     answer: (id, answers) => action('answer', { id, answers }, () => local.answer(id, answers)),
     lateAnswer: (id, answers) => action('late-answer', { id, answers }, () => local.lateAnswer(id, answers)),

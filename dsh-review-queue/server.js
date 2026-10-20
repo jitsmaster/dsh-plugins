@@ -111,9 +111,10 @@ export function createRouter({ queue, dev, pushRoutes }) {
     if (!first) return send(res, 200, current())
     if (wait === 0) return send(res, 200, { unchanged: true, snapshotId: first.snapshotId })
     await new Promise((resolve) => {
-      const done = () => { clearTimeout(timer); off(); req.off('close', done); resolve() }
+      const done = () => { clearTimeout(timer); off(); offNumbers?.(); req.off('close', done); resolve() }
       const timer = setTimeout(done, wait)
       const off = queue.onChange(done)
+      const offNumbers = queue.onSessionsChange?.(done) // this app's numbers are what this poll serves
       req.once('close', done)
     })
     const now = unchanged()

@@ -72,7 +72,7 @@ test('hub mode: nobody looks (overlay closed), nobody asks the controller; the f
   const world = await makeWorld(t)
   await world.startHub()
   let asked = 0
-  const a = await startPlugin(t, world, { label: 'DSH :1', webPort: 12031, config: FAST, hub: { agent: { backoff: { minMs: 10, maxMs: 40 }, waitMs: 400, sessionReportMs: 30 } }, services: { sessionController: { list: async () => { asked++; return { items: [sess('a1', true)] } } } } })
+  const a = await startPlugin(t, world, { label: 'DSH :1', webPort: 12031, config: FAST, hub: { agent: { backoff: { minMs: 10, maxMs: 40 }, waitMs: 400, sessionReportMs: 30, sessionIdleMs: 200 } }, services: { sessionController: { list: async () => { asked++; return { items: [sess('a1', true)] } } } } })
   await a.inState('hub')
   await new Promise((r) => setTimeout(r, 300))
   assert.equal(asked, 0, 'no snapshot asked for the numbers yet')

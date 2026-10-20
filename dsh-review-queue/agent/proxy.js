@@ -59,15 +59,16 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
   const modeListeners = new Set()
   const wakers = new Set() // woken by a mode change or a local change
   const wake = () => { for (const w of [...wakers]) { try { w() } catch { /* ignore */ } } }
-  const subscribe = (fn) => {
+  const subscribe = (fn, withNumbers = false) => {
     wakers.add(fn)
     const off = queue.onChange?.(fn)
-    return () => { wakers.delete(fn); off?.() }
+    const offNumbers = withNumbers ? queue.onSessionsChange?.(fn) : undefined // the local numbers only matter where no hub sum is served
+    return () => { wakers.delete(fn); off?.(); offNumbers?.() }
   }
   const sleepUntilWoken = (ms, signal) => new Promise((resolve) => {
     const done = () => { clearTimeout(timer); off(); signal.removeEventListener('abort', done); resolve() }
     const timer = setTimeout(done, ms)
-    const off = subscribe(done)
+    const off = subscribe(done, true)
     signal.addEventListener('abort', done, { once: true })
   })
 

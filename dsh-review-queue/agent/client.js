@@ -32,6 +32,8 @@ const SESSION_CHECK_MS = 15_000
 const RESYNC_EVERY_MS = 60_000
 const SESSION_REPORT_MS = 4000
 const WATCH_RECHECK_MS = 30_000
+const SESSION_IDLE_MS = 15_000 // the probe interval after IDLE_AFTER probes in a row that said nobody looks
+const IDLE_AFTER = 3
 const sleep = (ms, signal) => new Promise((resolve) => {
   const timer = setTimeout(resolve, ms)
   signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
@@ -42,7 +44,7 @@ const sleep = (ms, signal) => new Promise((resolve) => {
  *   protocol?: number, workspaces?: () => any[], sessionIds?: () => string[], sessionCheckMs?: number, resyncEveryMs?: number, fetch?: typeof fetch, backoff?: { minMs: number, maxMs: number }, waitMs?: number, log?: (line: string) => void,
  *   now?: () => number, timers?: { setTimeout: Function, clearTimeout: Function } }} opts now and timers are for the thread queue (deadlines, the read timeout); tests inject them
  */
-export function createAgentClient({ baseUrl, secret, instanceKey, adapter, executor, instanceId = randomBytes(8).toString('hex'), label, pluginVersion, pid = process.pid, protocol = PROTOCOL, workspaces = () => [], sessionIds = () => [], sessionCounts = () => undefined, sessionsWatch = () => {}, sessionReportMs = SESSION_REPORT_MS, sessionCheckMs = SESSION_CHECK_MS, resyncEveryMs = RESYNC_EVERY_MS, fetch, backoff = { minMs: 1000, maxMs: 10_000 }, waitMs = 25_000, log = () => {}, now = Date.now, timers = globalThis }) {
+export function createAgentClient({ baseUrl, secret, instanceKey, adapter, executor, instanceId = randomBytes(8).toString('hex'), label, pluginVersion, pid = process.pid, protocol = PROTOCOL, workspaces = () => [], sessionIds = () => [], sessionCounts = () => undefined, sessionsWatch = () => {}, sessionReportMs = SESSION_REPORT_MS, sessionIdleMs = SESSION_IDLE_MS, sessionCheckMs = SESSION_CHECK_MS, resyncEveryMs = RESYNC_EVERY_MS, fetch, backoff = { minMs: 1000, maxMs: 10_000 }, waitMs = 25_000, log = () => {}, now = Date.now, timers = globalThis }) {
   const transport = createTransport({ baseUrl, secret, protocol, instanceId, fetch })
   const mirror = createMirror({ transport, waitMs, backoff, log })
   const stateListeners = new Set()
@@ -64,6 +66,8 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
   let reportedSessions = '' // the numbers the hub has from this app (sessionsKey)
   let hubWatch = false // the hub says somebody looks at the numbers (watch === true in its answers; a missing field is no)
   let checkedAt = -Infinity // the last presence call
+  let reporting = false // a presence call is on its way: the next tick leaves it alone
+  let quietProbes = 0 // probes in a row that said nobody looks
   let wantSync = false
   let reported = { key: '', at: 0, workspaces: '' }
 
@@ -103,19 +107,21 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
    * noticed soon, rarely while somebody does. Presence is best effort: a failure is retried at the next tick.
    */
   async function reportSessions() {
-    if (state !== 'connected') return
+    if (state !== 'connected' || reporting) return
     if (hubWatch) { try { sessionsWatch() } catch { /* the numbers are a bonus */ } }
     const v = ownSessions()
     const changed = !!v && sessionsKey(v) !== reportedSessions
-    if (!changed && now() - checkedAt < (hubWatch ? WATCH_RECHECK_MS : sessionReportMs)) return
+    const every = hubWatch ? WATCH_RECHECK_MS : quietProbes >= IDLE_AFTER ? sessionIdleMs : sessionReportMs // the probe slows down while nobody looks
+    if (!changed && now() - checkedAt < every) return
     const before = reportedSessions
+    reporting = true
     checkedAt = now()
-    if (changed) reportedSessions = sessionsKey(v)
+    if (changed) { reportedSessions = sessionsKey(v); quietProbes = 0 } // a change to report is not held back
     try {
       const r = await agent('presence', changed ? { sessions: v } : {}, ctl.signal)
-      if (r.status === 200) hubWatch = r.json?.watch === true
+      if (r.status === 200) { hubWatch = r.json?.watch === true; quietProbes = hubWatch ? 0 : quietProbes + 1 }
       else if (changed) reportedSessions = before
-    } catch { if (changed) reportedSessions = before }
+    } catch { if (changed) reportedSessions = before } finally { reporting = false }
   }
   const agent = (name, body, signal) => transport.request('POST', AGENT + name, { body: { instanceId, ...body }, signal })
 
@@ -158,6 +164,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     applyHubView(r.json)
     reportedSessions = sessionsKey(sessions)
     hubWatch = r.json.watch === true
+    quietProbes = 0
     return 'ok'
   }
   async function connect() {

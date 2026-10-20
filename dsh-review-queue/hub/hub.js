@@ -38,6 +38,8 @@ export { PROTOCOL }
 const IDLE_EXIT_MS = 12 * 3600 * 1000
 /** How long after a phone or an open overlay polled the snapshot the apps are told that somebody looks at the session numbers. */
 export const WATCH_MS = 60_000
+/** The numbers of many apps (each reports on its own tick) wake the long polls at most this often, once, with the final sum. */
+export const SESSIONS_WAKE_MS = 3000
 const DEVICE_REQUESTS_PER_MINUTE = 120
 /** The files only this user may read; tightened after they exist (the temp file of every later write is tightened before it replaces them). */
 const PRIVATE_FILES = ['devices.json', 'push.json', 'vapid.json']
@@ -85,6 +87,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
   let desktopSeenAt = -Infinity
   const sessionListeners = new Set() // woken when the summed session numbers change
   let watchedAt = -Infinity // when a phone or an open overlay last polled the snapshot
+  let sessionsTimer // the one trailing timer that wakes the listeners for the numbers
   const deviceLimiter = createRateLimiter({ now, limit: DEVICE_REQUESTS_PER_MINUTE, windowMs: 60_000 })
 
   /** Devices, pairing, push and roles (H4): created once the state folder and the config are known. */
@@ -185,7 +188,11 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
       startPhoneSide({ tightenSecret: injectedSecret === undefined })
       notifier = createNotifier({ store, push, now, ...(timers ? { timers } : {}), presence: () => desktopSeenAt, log: (l) => log(l) })
       commands = createCommands({ now, timeoutsMs: commandTimeoutsMs })
-      instances = createInstances({ store, commands, now, log: (l) => log(l), awayMs, graceMs: graceMs ?? config.staleGraceMs, orphanKeepMs, onSessions: () => { for (const l of [...sessionListeners]) { try { l() } catch { /* ignore */ } } } })
+      instances = createInstances({ store, commands, now, log: (l) => log(l), awayMs, graceMs: graceMs ?? config.staleGraceMs, orphanKeepMs, onSessions: () => {
+        if (sessionsTimer) return
+        sessionsTimer = (timers ?? globalThis).setTimeout(() => { sessionsTimer = undefined; for (const l of [...sessionListeners]) { try { l() } catch { /* ignore */ } } }, SESSIONS_WAKE_MS)
+        sessionsTimer.unref?.()
+      } })
       routing = createRouting({ store, queue, instances, commands })
       agentApi = createAgentApi({ hub, instances, commands, store, secret, log: (l) => log(l) })
 
@@ -206,6 +213,8 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
       stopped ??= (async () => {
         clearInterval(interval)
         clearInterval(instanceInterval)
+        if (sessionsTimer) (timers ?? globalThis).clearTimeout(sessionsTimer)
+        sessionsTimer = undefined
         notifier?.dispose()
         devices?.flush()
         hub.shutdownHttp?.()

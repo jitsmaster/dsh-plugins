@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createReviewQueue } from '../service.js'
 import { createStore } from '../store.js'
+import { fullStampOf } from '../server.js'
 import { hubItem, hubSnap, sleep, startFakeHub, startProxy } from './agent-proxy-helpers.mjs'
 
 // In hub mode the hub does not know the tip (it belongs to the local app): the proxy adds the local service's tip to the snapshot it serves to the
@@ -161,4 +162,48 @@ test('standalone and degraded: the local snapshot carries the local tip only for
     assert.ok(!('tip' in (await snapOf(p, ''))), mode)
     assert.equal((await snapOf(p)).tip.id, 't1', mode)
   }
+})
+
+// ---- the numbers of this app are not what a hub-mode screen shows ------------------------------------------------------------------------------
+
+function withNumbers(initial) {
+  const sessions = { value: initial, listeners: new Set(), current() { return sessions.value }, touch() {}, refresh: async () => {}, onChange: (l) => { sessions.listeners.add(l); return () => sessions.listeners.delete(l) }, fire: () => sessions.listeners.forEach((l) => l()) }
+  const store = createStore()
+  store.add({ type: 'completed', sessionId: 'own', summary: 'x', payload: {} })
+  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => undefined, sessions, speaker: { speak: () => ({ ok: true }), stop() {} } })
+  return { sessions, queue }
+}
+
+test('hub mode: a local change of the session numbers neither aborts nor repeats the hub long poll', async (t) => {
+  const hub = await startFakeHub(t)
+  hub.respond = async (rec) => {
+    if (!new URL('http://x' + rec.url).searchParams.has('since')) return [200, hubSnap('E:5', [])]
+    await sleep(400)
+    return [200, { unchanged: true, snapshotId: 'E:5' }]
+  }
+  const { sessions, queue } = withNumbers({ working: 1, open: 2 })
+  const p = await startProxy(t, { hub, queue, mirror: () => hubSnap('E:5', []) })
+  const pending = p.get('/v1/snapshot?wait=2000&since=' + encodeURIComponent('E:5|||0||'))
+  await sleep(100)
+  sessions.value = { working: 2, open: 2 }
+  sessions.fire()
+  await sleep(100)
+  assert.equal(hub.requests.length, 1, 'no second request to the hub')
+  assert.equal(hub.aborted.length, 0, 'the one in flight was not abandoned')
+  assert.equal((await pending).json.unchanged, true)
+})
+
+test('standalone: a local change of the session numbers wakes the proxy long poll (there is no hub sum)', async (t) => {
+  const hub = await startFakeHub(t)
+  const { sessions, queue } = withNumbers({ working: 1, open: 2 })
+  const p = await startProxy(t, { hub, queue, mode: 'standalone', reason: 'x' })
+  const first = (await p.get('/v1/snapshot?client=phone')).json
+  const started = Date.now()
+  const pending = p.get('/v1/snapshot?client=phone&wait=5000&since=' + encodeURIComponent(fullStampOf(first)))
+  await sleep(80)
+  sessions.value = { working: 2, open: 2 }
+  sessions.fire()
+  const res = await pending
+  assert.deepEqual(res.json.sessions, { working: 2, open: 2 })
+  assert.ok(Date.now() - started < 3000)
 })

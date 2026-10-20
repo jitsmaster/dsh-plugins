@@ -80,7 +80,7 @@ test('a hub that does not know the numbers (an old hub answers presence as befor
 test('while the hub says nobody looks the agent does not touch the counter; when it says somebody does, it does, until that stops', async (t) => {
   const { hub, port } = await startHub(t)
   let watched = 0
-  const c = setup(t, port, { sessionCounts: () => ({ working: 1, open: 2 }), sessionsWatch: () => { watched++ } })
+  const c = setup(t, port, { sessionCounts: () => ({ working: 1, open: 2 }), sessionsWatch: () => { watched++ }, sessionIdleMs: 100 })
   c.start()
   await connected(c)
   await new Promise((r) => setTimeout(r, 150))
@@ -145,4 +145,54 @@ test('while nobody looks the agent checks with the hub (a presence without numbe
   const mark = spy.log.filter(([n]) => n === 'presence').length
   await new Promise((r) => setTimeout(r, 300))
   assert.ok(spy.log.filter(([n]) => n === 'presence').length - mark <= 1, 'a long recheck interval while watched')
+})
+
+// ---- the probe of the hub is single flight and backs off while nobody looks -----------------------------------------------------------------
+
+test('reportSessions never overlaps itself: a slow presence answer is waited for', async (t) => {
+  const { port } = await startHub(t)
+  let running = 0
+  let most = 0
+  let total = 0
+  const slow = async (url, init) => {
+    if (!new URL(url).pathname.endsWith('/presence')) return fetch(url, init)
+    running++; total++
+    most = Math.max(most, running)
+    await new Promise((r) => setTimeout(r, 120))
+    running--
+    return fetch(url, init)
+  }
+  const c = setup(t, port, { sessionCounts: () => undefined, fetch: slow })
+  c.start()
+  await connected(c)
+  await new Promise((r) => setTimeout(r, 450))
+  assert.ok(total >= 2, 'it did probe: ' + total)
+  assert.equal(most, 1)
+})
+
+test('after 3 probes that say nobody looks the probe goes from every report tick to the idle interval; a watcher or a change brings it back', async (t) => {
+  const { hub, port } = await startHub(t)
+  const spy = spyFetch()
+  let counts
+  const c = setup(t, port, { sessionCounts: () => counts, sessionsWatch: () => {}, sessionIdleMs: 500, fetch: spy.fetch })
+  c.start()
+  await connected(c)
+  await new Promise((r) => setTimeout(r, 200))
+  const warm = spy.log.filter(([n]) => n === 'presence').length
+  assert.ok(warm >= 3, 'the first probes come at the report tick: ' + warm)
+  await new Promise((r) => setTimeout(r, 350))
+  assert.ok(spy.log.filter(([n]) => n === 'presence').length - warm <= 1, 'then at the idle interval')
+  counts = { working: 1, open: 1 }
+  await waitFor(() => hub.instances.sessionsTotal()?.working === 1, 400, 'a change to report is not held back by the back-off')
+})
+
+test('a watcher is noticed at the next idle probe and the probes become rare again after that', async (t) => {
+  const { hub, port } = await startHub(t)
+  let watched = 0
+  const c = setup(t, port, { sessionCounts: () => ({ working: 1, open: 1 }), sessionsWatch: () => { watched++ }, sessionIdleMs: 300 })
+  c.start()
+  await connected(c)
+  await new Promise((r) => setTimeout(r, 250))
+  hub.noteWatch()
+  await waitFor(() => watched > 0, 2000, 'noticed')
 })

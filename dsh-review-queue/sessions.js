@@ -13,6 +13,7 @@ import { isTopLevel } from './userpause.js'
 export const SESSIONS_TTL_MS = 2000
 export const SESSIONS_MIN_EMIT_MS = 3000
 export const SESSIONS_INTEREST_MS = 60_000
+export const SESSIONS_LIST_GRACE_MS = 1000 // a list call that ignores its signal is given up this long after the signal's time
 const LIST_TIMEOUT_MS = 10_000
 
 const safe = (fn) => { try { return fn() } catch { return undefined } }
@@ -23,11 +24,12 @@ export const sessionsKey = (v) => (Number.isFinite(v?.working) && Number.isFinit
  * @param {{ controllerOf: () => any, registryOf?: () => any, now?: () => number, ttlMs?: number, minEmitMs?: number, timeoutMs?: number, log?: (line: string) => void }} deps
  * @returns {{ current: () => { working: number, open: number } | undefined, refresh: () => Promise<void>, onChange: (l: () => void) => () => void }}
  */
-export function createSessionCounter({ controllerOf, registryOf = () => undefined, now = Date.now, ttlMs = SESSIONS_TTL_MS, minEmitMs = SESSIONS_MIN_EMIT_MS, interestMs = SESSIONS_INTEREST_MS, timeoutMs = LIST_TIMEOUT_MS, log = () => {} }) {
+export function createSessionCounter({ controllerOf, registryOf = () => undefined, now = Date.now, ttlMs = SESSIONS_TTL_MS, minEmitMs = SESSIONS_MIN_EMIT_MS, interestMs = SESSIONS_INTEREST_MS, timeoutMs = LIST_TIMEOUT_MS, graceMs = SESSIONS_LIST_GRACE_MS, log = () => {} }) {
   let value
   let startedAt = -Infinity
   let touchedAt = -Infinity // when somebody last looked
   let inflight
+  let generation = 0 // a call that was given up has an older number: its late answer is ignored
   let lastEmitAt = -Infinity
   let dirty = false // a change that was not told yet (it came inside the rate limit)
   const listeners = new Set()
@@ -49,12 +51,14 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
     return { working: open.filter((i) => i.running === true).length, open: open.length }
   }
 
-  async function run() {
+  async function run(mine) {
     const before = sessionsKey(value)
     try {
       const next = await load()
+      if (mine !== generation) return
       if (next) value = next
     } catch (error) {
+      if (mine !== generation) return
       // The code only: an error message can carry a path or content. The last known numbers stay.
       log('sessions: count failed (' + String(error?.code ?? error?.name ?? 'error').slice(0, 40) + ')')
     }
@@ -66,7 +70,14 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
     if (inflight) return inflight
     if (now() - touchedAt > interestMs || now() - startedAt < ttlMs) return Promise.resolve()
     startedAt = now()
-    inflight = run().finally(() => { inflight = undefined })
+    const mine = ++generation
+    // The call is bounded by its signal, but a controller may ignore it: without this limit one call that never answers would freeze the numbers for good.
+    let timer
+    const limit = new Promise((resolve) => {
+      timer = setTimeout(() => { log('sessions: count failed (timeout)'); resolve() }, timeoutMs + graceMs)
+      timer.unref?.()
+    })
+    inflight = Promise.race([run(mine), limit]).finally(() => { clearTimeout(timer); if (generation === mine) inflight = undefined })
     return inflight
   }
 
