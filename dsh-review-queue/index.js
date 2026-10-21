@@ -59,6 +59,7 @@ import { readThread } from './thread.js'
 import { snippetsFromThread } from './follow-up.js'
 import { createTaskbarBadge } from './taskbar.js'
 import { CHECK_MS, IDLE_MS, createIdleJudge, createIdleResumer, createLogReader } from './idle-resume.js'
+import { ASK_CHECK_MS, ASK_IDLE_MS, BEAT_MS, createIdleAsker, createSleepTracker } from './idle-ask.js'
 
 export const name = 'review-queue'
 
@@ -247,6 +248,25 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
     if (every > 0) { const t = setInterval(() => { void idle.check() }, every); t.unref?.(); idleTimers.push(t) }
   }
 
+  // Idle ask (idle-ask.js): off unless idleAsk: true or env DSH_RQ_IDLE_ASK=1. Every idleAskCheckMs (10 min) a session that is not working and was idle for idleAskMinutes (60) of awake time
+  // (laptop sleep is deducted by a heartbeat) is asked, in that session, whether to continue or archive it; an Archive answer archives it.
+  const askWanted = config.idleAsk === true || (config.idleAsk !== false && process.env.DSH_RQ_IDLE_ASK === '1')
+  const askTimers = []
+  if (askWanted) {
+    const sleep = createSleepTracker({ io: stateDir ? fileIo(join(stateDir, 'sleep.json')) : undefined })
+    const asker = createIdleAsker({
+      controllerOf, registryOf, store, sleep, heldIds, log,
+      idleMs: Number.isFinite(config.idleAskMinutes) && config.idleAskMinutes > 0 ? config.idleAskMinutes * 60_000 : ASK_IDLE_MS,
+      io: stateDir ? fileIo(join(stateDir, 'idle-ask.json')) : undefined,
+    })
+    sleep.beat()
+    const beat = setInterval(() => sleep.beat(), BEAT_MS); beat.unref?.()
+    const first = setTimeout(() => { void asker.check() }, config.idleAskStartMs ?? 90_000); first.unref?.()
+    const every = setInterval(() => { void asker.check() }, config.idleAskCheckMs ?? ASK_CHECK_MS); every.unref?.()
+    askTimers.push(beat, first, every)
+    store.onChange(() => { void asker.archiveAnswered() })
+  }
+
   // The ticket check of the held sessions every onHoldCheckMs (default 10 minutes; 0 turns it off; off in node --test runs unless onHoldCheckMs is set).
   const holdTimers = []
   const holdEvery = Number.isFinite(config.onHoldCheckMs) ? config.onHoldCheckMs : (process.env.NODE_TEST_CONTEXT === undefined ? 10 * 60_000 : 0)
@@ -264,7 +284,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
   sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.

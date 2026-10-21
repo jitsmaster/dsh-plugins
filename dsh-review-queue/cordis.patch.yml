@@ -6,4 +6,4 @@
       # stateDir, ttsClient, voice, sparcCommandPath, dev, pushSubject, questionAutoAnswer (true), questionAutoAnswerLeadSeconds (10), questionWindowSeconds (120), doneKeepPerSession (20).
       # promptTunePath (~/.claude/skills/prompt-tune/commands/prompt-tune.md; rules of the "+ New todo" Tune prompt button, embedded copy when missing).
       # onHoldCheckMs (600000: how often the tickets of held sessions are read, 0 = never), onHoldStartMs (60000), onHoldCommands (true: typed /onhold and the ONHOLD marker line).
-      config: {}
+      config: { idleAsk: true, idleResume: false }
