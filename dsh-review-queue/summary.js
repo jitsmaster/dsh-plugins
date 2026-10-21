@@ -62,6 +62,51 @@ export async function pickModel(llm, override, timeoutMs, only) {
   return all[0]
 }
 
+/** What a card says when a model pass gave no suggestion (todo.js and todo-follow-up.js; the note also goes to the log). */
+export const NOTE_NO_MODEL = 'no model available'
+export const NOTE_NO_FIT = 'the model found no clear fit'
+export const NOTE_UNUSABLE = 'the model answered something unusable'
+const NOTE_ERROR_CHARS = 80
+const secondsText = (ms) => (ms >= 1000 ? Math.round(ms / 100) / 10 + ' s' : ms + ' ms')
+
+/** Why a model call gave nothing, in a few words a card can show. */
+export function noteOf(error, timeoutMs) {
+  const message = String(error?.message ?? error ?? '').replace(/\s+/g, ' ').trim()
+  if (message === 'timed out') return 'timed out after ' + secondsText(timeoutMs)
+  if (message === NOTE_NO_MODEL || message === 'no LLM service') return NOTE_NO_MODEL
+  return 'LLM error: ' + message.slice(0, NOTE_ERROR_CHARS)
+}
+
+/**
+ * One cheap-model question at a time for a suggester (the workspace suggester of todo.js, the session suggester of todo-follow-up.js): the model is picked once and remembered (a failed
+ * or empty pick is forgotten, so the next question picks again), the question is given an AbortSignal that is aborted when it fails or is late, and is cut off at timeoutMs.
+ * run(ask): ask({ model, signal, trace }) does the call and returns the parsed answer ({ suggested } or { note }); it appends what the model said to trace.raw.
+ * Never throws: the result is the parsed answer, or { note } saying why not (noteOf), with raw (what the model said so far) either way.
+ * @param {{ llm?: any, timeoutMs: number }} deps
+ * @returns {(ask: (call: { model: { provider: string, model: string }, signal: AbortSignal, trace: { raw: string } }) => Promise<object>) => Promise<{ raw: string, [key: string]: any }>}
+ */
+export function createModelRun({ llm, timeoutMs }) {
+  let chosen
+  async function model() {
+    if (!llm) throw new Error(NOTE_NO_MODEL)
+    const mine = (chosen ??= pickModel(llm, undefined, timeoutMs))
+    let m
+    try { m = await mine } catch (error) { if (chosen === mine) chosen = undefined; throw error }
+    if (!m) { if (chosen === mine) chosen = undefined; throw new Error(NOTE_NO_MODEL) }
+    return m
+  }
+  return async (ask) => {
+    const ac = new AbortController()
+    const trace = { raw: '' }
+    let result
+    try { result = await within(Promise.resolve().then(async () => ask({ model: await model(), signal: ac.signal, trace })), timeoutMs) } catch (error) {
+      ac.abort()
+      result = { note: noteOf(error, timeoutMs) }
+    }
+    return { ...result, raw: trace.raw }
+  }
+}
+
 export function createSummarizer({ llm, model: override, timeoutMs = 10000, maxTokens = 200, maxInputChars = 12000, maxRequestChars = 1500, log = () => {} } = {}) {
   let chosen
   const forget = (mine) => { if (chosen === mine) chosen = undefined }
@@ -71,7 +116,7 @@ export function createSummarizer({ llm, model: override, timeoutMs = 10000, maxT
     const mine = (chosen ??= pickModel(llm, override, timeoutMs))
     let m
     try { m = await mine } catch (error) { forget(mine); throw error }
-    if (!m) { forget(mine); throw new Error('no model available') }
+    if (!m) { forget(mine); throw new Error(NOTE_NO_MODEL) }
     const prepared = await llm.prepareCall({ provider: m.provider, model: m.model, maxTokens }, signal)
     let out = ''
     for await (const chunk of prepared.stream({

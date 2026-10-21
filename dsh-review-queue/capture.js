@@ -8,6 +8,7 @@ import { recommendedOf, cleanText } from './speech.js'
 import { fallbackSummary } from './summary.js'
 import { toolDetail } from './risk.js'
 import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
+import { MAY_HAVE_BEEN_SENT } from './follow-up-shared.js'
 import { DEFAULT_AUTO_ANSWER_LEAD_MS, autoAnswerText, recommendedAnswers, shownLabel } from './autoanswer.js'
 
 const TOOL_ARG_KEYS = ['command', 'file_path', 'path', 'url', 'pattern', 'query']
@@ -549,7 +550,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
 /**
  * After a restart no request is waiting any more: open questions and permission requests can no longer be answered
  * from here, so they leave the queue. Finished-work and merged-PR items stay. A todo stays too; one that was being started
- * is a failed one now (Retry starts it, reusing a session that was already created). With { only: Set<id> } just those items
+ * is a failed one now (Retry starts it, reusing a session that was already created); a follow-up that was being sent is failed with the may-have-been-sent warning instead (its prompt may be in the session already). With { only: Set<id> } just those items
  * are looked at; with { log } every item it cancels is named there.
  */
 export function cancelStalePending(store, { only, log } = {}) {
@@ -557,7 +558,7 @@ export function cancelStalePending(store, { only, log } = {}) {
   for (const item of store.list({ status: 'open' })) {
     if (only && !only.has(item.id)) continue // only: the ids that existed before this process (an item of this process has a live request)
     if (item.type === 'todo') {
-      if (item.state === 'starting') store.update(item.id, { state: 'failed', error: 'Interrupted by a server restart. Retry to start it.' })
+      if (item.state === 'starting') store.update(item.id, { state: 'failed', error: item.kind === 'followup' ? MAY_HAVE_BEEN_SENT : 'Interrupted by a server restart. Retry to start it.' })
       else if (item.suggesting) store.update(item.id, { suggesting: false })
       continue
     }

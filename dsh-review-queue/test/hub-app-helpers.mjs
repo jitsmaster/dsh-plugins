@@ -27,7 +27,7 @@ export async function startHubApp(t, world, { label, webPort, services = {}, con
   const summarizer = { summarize: async (reply) => ({ text: 'summary of ' + reply.slice(0, 12), source: 'test', title: 'Title', actionable: true }) }
   const capture = installCapture({ on() {}, get: () => undefined }, { store: adapter, summarizer, log: () => {} })
   const controllerOf = () => services.sessionController
-  const queue = createReviewQueue({ store: adapter, capture, controllerOf, speaker: config.speaker })
+  const queue = createReviewQueue({ store: adapter, capture, controllerOf, speaker: config.speaker, ...(config.queue ?? {}) })
   const client = createAgentClient({
     baseUrl: 'http://127.0.0.1:' + world.hubPort, secret: readFileSync(join(world.dir, 'hub.secret'), 'utf8').trim(), instanceKey, instanceId, label,
     adapter, executor: createExecutor({ queue, adapter }), backoff: { minMs: 10, maxMs: 40 }, waitMs: 400, workspaces,

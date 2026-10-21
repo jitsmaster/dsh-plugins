@@ -81,8 +81,25 @@ const sentence = (text) => (/[.!?]$/.test(text) ? text : text + '.')
 export const leadFor = (position) => (position ? 'Item ' + position + '.' : '')
 const withLead = (position, text, glue) => (position ? leadFor(position) + glue + text : text)
 
+/** A follow-up todo (kind 'followup': the text goes to an existing session): "Follow up: <text>, send to <session title>?" while it waits for the confirmation, and a line per other state. */
+function followUpParts(item) {
+  const say = (max) => cleanText(item.text, { maxWords: 25, maxChars: max }).replace(/[.!?:;,]+$/, '')
+  const where = cleanText(item.state === 'awaiting-confirm' ? item.suggested?.title : item.sessionTitle ?? item.suggested?.title, { maxWords: 8 })
+  const line = (text) => {
+    switch (item.state) {
+      case 'awaiting-confirm': return where ? 'Follow up: ' + text + ', send to ' + where + '?' : 'Follow up: ' + text + '. Which session?'
+      case 'failed': return 'Follow up: ' + text + '. Failed to send: ' + (cleanText(item.error, { maxChars: 200 }) || 'unknown error') + '.'
+      case 'starting': return 'Follow up: ' + text + ', sending' + (where ? ' to ' + where : '') + '.'
+      case 'started': return 'Follow up: ' + text + ', sent' + (where ? ' to ' + where : '') + '.'
+      default: return 'Follow up: ' + text + '.'
+    }
+  }
+  return { headline: line(say(300)), full: line(say(600)) }
+}
+
 /** A todo: "Todo: <text>, start in <workspace>?" while it waits for the confirmation, and a line per other state. */
 function todoParts(item) {
+  if (item.kind === 'followup') return followUpParts(item)
   const say = (max) => cleanText(item.text, { maxWords: 25, maxChars: max }).replace(/[.!?:;,]+$/, '')
   const where = cleanText(item.state === 'awaiting-confirm' ? item.suggested?.title : item.workspaceTitle ?? item.suggested?.title, { maxWords: 6 })
   const line = (text) => {
@@ -165,7 +182,10 @@ export function titleFor(item) {
   }
   if (item.type === 'pr-merged') return 'PR ' + cleanText(String(item.payload?.prId ?? ''), { maxChars: 12 }) + ' merged'
   if (item.type === 'paused') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Paused session'
-  if (item.type === 'todo') return cleanText(String(item.text ?? '').split(/\r?\n/).find((l) => l.trim()), { maxWords: 10 }) || 'Todo'
+  if (item.type === 'todo') {
+    const first = cleanText(String(item.text ?? '').split(/\r?\n/).find((l) => l.trim()), { maxWords: 10 })
+    return item.kind === 'followup' ? (first ? 'Follow up: ' + first : 'Follow up') : first || 'Todo'
+  }
   return cleanText(item.title, { maxWords: 12 })
     || cleanText(item.payload?.request, { maxWords: 10 })
     || cleanText(firstSentenceOf(cleanText(String(item.payload?.reply ?? '').split(/\r?\n\s*\r?\n/).find((p) => p.trim()))), { maxWords: 10 })

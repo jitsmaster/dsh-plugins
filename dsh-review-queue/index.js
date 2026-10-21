@@ -12,6 +12,11 @@
  * for the scan, called with { root, startedAt, liveIds, skipIds }) is given. `pausedStartMs` (default 5000) and `pausedRescanMs`
  * (default the quiet time plus 15 s, 0 = never) time the two scans.
  *
+ * Idle sessions (idle-resume.js): every `idleCheckMs` (default 10 minutes, 0 = once; first check after `idleStartMs`, default 60 s) the plugin looks at the sessions that were idle for
+ * `idleMinutes` (default 30): no turn, no subagent and no background process. One that stopped before its work was done is resumed without asking; when the model is not sure the user
+ * gets a paused card. `idleResume: false` or env DSH_RQ_IDLE_RESUME=0 turns it off, and it is off in node --test runs unless `idleResume: true`; `idleDeps` ({ readLog, judge }) replaces the
+ * log reader and the model judge (tests).
+ *
  * `taskbarBadge` (default on, Windows only; env DSH_RQ_TASKBAR=0 turns it off): the number of waiting items as a badge on the app's taskbar button (taskbar.js).
  *
  * Config (all optional): `sparcCommandPath` (the modes:sparc command file a "Use SPARC" todo inlines, default ~/.claude/commands/modes/sparc.md), `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
@@ -32,6 +37,7 @@ import { wireHub } from './agent/wire.js'
 import { createStore } from './store.js'
 import { createSummarizer } from './summary.js'
 import { createTuner } from './todo-tune.js'
+import { createTodoImages } from './todo-images.js'
 import { createTipper, recentTopics } from './tip.js'
 import { createExpander } from './tip-expand.js'
 import { createSessionCounter } from './sessions.js'
@@ -46,9 +52,9 @@ import { createPushRoutes } from './hub/push-routes.js'
 import { createFileLog } from './filelog.js'
 import { STALE_MS, createDismissals, createPausedTracker, scanSessionLogs } from './paused.js'
 import { readThread } from './thread.js'
+import { snippetsFromThread } from './follow-up.js'
 import { createTaskbarBadge } from './taskbar.js'
-import { createDesktop } from './desktop.js'
-import { createPauseRecord, logMtimeOf, mergeCandidates, pausedByUserCandidates, pauseRunningSessions } from './userpause.js'
+import { CHECK_MS, IDLE_MS, createIdleJudge, createIdleResumer, createLogReader } from './idle-resume.js'
 
 export const name = 'review-queue'
 
@@ -121,6 +127,9 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const llmService = () => { try { return ctx.get?.('llm') ?? ctx.llm } catch { return undefined } }
   const llm = { listProviders: () => llmService().listProviders(), listModels: (p) => llmService().listModels(p), prepareCall: (...a) => llmService().prepareCall(...a) }
   const summarizer = createSummarizer({ llm, log })
+  // The images pasted into the new-todo form live next to queue.json, shared by every app and the hub of this PC (a todo can start in another app); files older than a week are pruned.
+  const todoImages = stateDir ? createTodoImages({ root: join(stateDir, 'todo-images') }) : undefined
+  try { todoImages?.prune() } catch { /* a net, not a need */ }
   // The new-todo form's Tune prompt button: the same llm service, rules from config.promptTunePath (default: the prompt-tune skill file, else an embedded copy).
   const tuner = createTuner({ llm, rulesPath: config.promptTunePath, log })
   // Question auto-answer: questionAutoAnswer (default on), questionAutoAnswerLeadSeconds (0 = off) and questionWindowSeconds (the window of a question
@@ -180,14 +189,8 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     || (config.paused !== false && process.env.DSH_RQ_PAUSED !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
   const archivedIds = () => new Set((safe(() => registryOf()?.archivedSessionIds) ?? []).map(String))
   const liveSessionIds = () => new Set([...capture.seenSessionIds(), ...(safe(() => agentsOf()?.list?.()) ?? []).map((a) => a?.id).filter((id) => typeof id === 'string')])
-  // Pause all remembers the sessions it paused (userpause.js) and the scan lists them as paused until they run again.
-  const pauseRecord = createPauseRecord({ io: stateDir ? fileIo(join(stateDir, 'paused-by-user.json')) : undefined })
   const sessionsRoot = join(dshHome, 'sessions')
-  const pausedScan = async () => {
-    const result = await (config.pausedScan ?? scanSessionLogs)({ root: sessionsRoot, startedAt, liveIds: liveSessionIds(), skipIds: archivedIds() })
-    if (!pauseRecord.size) return result
-    return mergeCandidates(result, await pausedByUserCandidates({ record: pauseRecord, logMtime: (id) => logMtimeOf(sessionsRoot, id), skipIds: archivedIds() }))
-  }
+  const pausedScan = () => (config.pausedScan ?? scanSessionLogs)({ root: sessionsRoot, startedAt, liveIds: liveSessionIds(), skipIds: archivedIds() })
   const paused = pausedWanted
     ? createPausedTracker({
       store, scan: pausedScan, log,
@@ -196,21 +199,13 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     : undefined
   // The chat view of the phone reads the thread of a session from the same folder.
   const threadOf = (opts) => readThread({ root: join(dshHome, 'sessions'), log, ...opts })
-  const desktop = config.desktop ?? createDesktop({
-    spawn, script: join(HERE, 'scripts', 'desktop-quit.ps1'), log,
-    powershell: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-  })
-  const power = {
-    canQuit: () => desktop.canQuit(), quitSoon: () => desktop.quitSoon(),
-    pauseSessions: () => pauseRunningSessions({ controller: controllerOf(), record: pauseRecord, titlesOf, log }),
-  }
   // The tip of the day of the empty list (tip.js): this app's own model (none while the llm service is missing: built-in tips), steered by the recent work topics. config.tipDeps overrides parts for tests.
   const tipper = createTipper({ llm: () => (llmService() ? llm : undefined), topicsOf: () => recentTopics({ store, titlesOf }), log, ...(config.tipDeps ?? {}) })
   // "Go deeper" and "Use in my code" on that tip (tip-expand.js): the same model and topics; config.tipExpandDeps overrides parts for tests.
   const tipExpand = createExpander({ llm: () => (llmService() ? llm : undefined), tips: tipper, topicsOf: () => recentTopics({ store, titlesOf }), workspacesOf: () => listWorkspaces(registryOf) ?? [], log, ...(config.tipExpandDeps ?? {}) })
   // "N working / M open": this app's sessions from the session controller, cached for 2 s (sessions.js); config.sessionCounter: { ttlMs, minEmitMs } for tests.
   const sessionCounter = createSessionCounter({ controllerOf, registryOf, log, ...(config.sessionCounter ?? {}) })
-  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, sparcText, log, paused, threadOf, power, ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }
@@ -219,13 +214,43 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     if (again > 0) later((config.pausedStartMs ?? 5000) + again)
   }
 
-  const pruneTimer = setInterval(() => store.prune(), 3600_000)
+  // Idle sessions: the periodic check (idle-resume.js). A resumed session closes its paused card; one the model is unsure about becomes a paused card (kinds ['idle']) that the user resumes or dismisses.
+  const idleWanted = config.idleResume === true || (config.idleResume !== false && process.env.DSH_RQ_IDLE_RESUME !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
+  const idleMs = Number.isFinite(config.idleMinutes) && config.idleMinutes > 0 ? config.idleMinutes * 60_000 : IDLE_MS
+  const openPausedOf = (sessionId) => store.list({ status: 'open' }).filter((i) => i.type === 'paused' && i.sessionId === sessionId)
+  const idle = idleWanted
+    ? createIdleResumer({
+      controllerOf, registryOf, startedAt, idleMs, log,
+      readLog: config.idleDeps?.readLog ?? createLogReader({ root: sessionsRoot }),
+      judge: config.idleDeps?.judge ?? createIdleJudge({ llm, log }),
+      io: stateDir ? fileIo(join(stateDir, 'idle-resume.json')) : undefined,
+      resumed: (c) => { for (const item of openPausedOf(c.sessionId)) { paused?.markHandled(item); store.resolve(item.id, { kind: 'resumed', by: 'idle-check' }) } },
+      unsure: (c) => {
+        if (openPausedOf(c.sessionId).length) return
+        const minutes = Math.max(1, Math.round((Date.now() - c.lastWrite) / 60_000))
+        store.add({
+          type: 'paused', sessionId: c.sessionId, sessionTitle: c.title, workspace: c.cwd,
+          payload: { lastWrite: c.lastWrite, kinds: ['idle'], reason: 'Idle for ' + minutes + ' min; not sure it needs resuming' + (c.reason ? ': ' + c.reason : ''), turn: 0, danglingCalls: [], pending: 0, lastUser: c.lastUser.slice(0, 160), lastAssistant: c.lastAssistant.slice(-160) },
+        })
+      },
+    })
+    : undefined
+  const idleTimers = []
+  if (idle) {
+    const first = setTimeout(() => { void idle.check() }, config.idleStartMs ?? 60_000)
+    first.unref?.()
+    idleTimers.push(first)
+    const every = config.idleCheckMs ?? CHECK_MS
+    if (every > 0) { const t = setInterval(() => { void idle.check() }, every); t.unref?.(); idleTimers.push(t) }
+  }
+
+  const pruneTimer = setInterval(() => { store.prune(); try { todoImages?.prune() } catch { /* next hour */ } }, 3600_000)
   pruneTimer.unref?.()
   // The session numbers are looked at every few seconds, so a change reaches the open screens by itself (the counter caches and rate limits the events).
   const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
   sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.
@@ -290,7 +315,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
 
   // Other plugins (voice) reach the queue through the context.
   try { ctx.provide?.('reviewQueue', provided) } catch { /* optional */ }
-  return { queue: provided, local: queue, agent: wiring?.client, proxy: wiring?.proxy, store }
+  return { queue: provided, local: queue, agent: wiring?.client, proxy: wiring?.proxy, store, idle }
 }
 
 export function apply(ctx, config = {}) {

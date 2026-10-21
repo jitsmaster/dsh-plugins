@@ -21,8 +21,13 @@ const ERROR_CHARS = 200
 const LLM_ERROR = 'LLM error'
 const EMPTY_TEXT = 'empty'
 /** Last in the system prompt, so it wins over any rule above that asks for a rationale or a reason: the answer goes into the box as it is. */
+/** At most this many questions go back to the client, each cut at MAX_QUESTION_CHARS. */
+export const MAX_QUESTIONS = 5
+export const MAX_QUESTION_CHARS = 300
 const OVERRIDE = 'OVERRIDE, wins over every rule above: output only the rewritten prompt, nothing else: no rationale, no explanation of what changed or why, no notes, '
-  + "no preface, no trailing section, and no 'because ...' reason after a suggested default. A Decide item is just '<question>? Suggested default: <X>.'"
+  + "no preface, no trailing section, and no 'because ...' reason after a suggested default. A Decide item is just '<question>? Suggested default: <X>.' "
+  + 'QUESTIONS: never put questions in the rewritten prompt, not even a Decide list. Put every open choice the rules call for after the prompt, on a line of its own that says QUESTIONS:, '
+  + "one per line as '<question>? Suggested default: <X>.' (at most " + MAX_QUESTIONS + '); they are asked of the user separately. Without an open choice write no QUESTIONS line.'
 /** The most of the rules file that goes to the model (a hand-edited or wrong file must not blow up every request). */
 export const MAX_RULES_CHARS = 12000
 
@@ -148,6 +153,47 @@ function cleanAnswer(raw) {
   return (fenced && !fenced[1].includes('```') ? fenced[1] : unlabeled).trim()
 }
 
+const QUESTIONS_LINE = /^[ \t]*[*_]*(?:open[ \t]+)?questions[*_]*[ \t]*:?[ \t]*[*_]*[ \t]*$/im
+const ITEM_BULLET = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/
+const DEFAULT_MARK = 'Suggested default:'
+const DECIDE_HEADING = /^[ \t]*[*_#]*[ \t]*decide\b[^\n]*$/i
+
+/** One line of a question list as { question, default? }, or undefined for a blank one. The bullet or number in front and the closing full stop of the default are not part of it. */
+function questionOf(line) {
+  const body = line.replace(ITEM_BULLET, '').trim()
+  if (!body) return undefined
+  const at = body.indexOf(DEFAULT_MARK)
+  const question = (at < 0 ? body : body.slice(0, at)).trim().slice(0, MAX_QUESTION_CHARS)
+  if (!question) return undefined
+  const given = at < 0 ? '' : body.slice(at + DEFAULT_MARK.length).trim().replace(/\.$/, '').trim()
+  return given ? { question, default: given.slice(0, MAX_QUESTION_CHARS) } : { question }
+}
+
+/**
+ * The open questions of the model answer, apart from the prompt: { prompt, questions } (questions [] when there are none).
+ * They come from a QUESTIONS: block after the prompt, or, failing that, from the "<question>? Suggested default: <X>." items of a Decide list inside
+ * a prompt that has text of its own (an answer that is only such items stays as it is: nothing is moved out of an empty prompt).
+ */
+function splitQuestions(raw) {
+  const mark = QUESTIONS_LINE.exec(raw)
+  if (mark) {
+    const items = withoutDefaultReasons(withoutTrailingNotes(raw.slice(mark.index + mark[0].length).trim())).split('\n').map(questionOf).filter(Boolean)
+    return { prompt: raw.slice(0, mark.index), questions: items.slice(0, MAX_QUESTIONS) }
+  }
+  const cleaned = cleanAnswer(raw)
+  const lines = cleaned.split('\n')
+  const isItem = (line) => ITEM_BULLET.test(line) && line.includes('?') && line.includes(DEFAULT_MARK)
+  const keep = lines.filter((line) => !isItem(line))
+  if (keep.length === lines.length) return { prompt: raw, questions: [] }
+  const first = lines.findIndex(isItem)
+  let heading = first - 1
+  while (heading >= 0 && !lines[heading].trim()) heading--
+  const dropHeading = heading >= 0 && DECIDE_HEADING.test(lines[heading]) ? heading : -1
+  const rest = lines.filter((line, i) => !isItem(line) && i !== dropHeading).join('\n').trim()
+  if (!rest) return { prompt: raw, questions: [] }
+  return { prompt: rest, questions: lines.filter(isItem).map(questionOf).filter(Boolean).slice(0, MAX_QUESTIONS) }
+}
+
 /** The failure of a model call as { error, logged }: the client's words (a generic LLM error for a provider failure) and the line for the log (with the detail). */
 function reasonOf(error, timeoutMs) {
   const message = String(error?.message ?? error).replace(/\s+/g, ' ').trim()
@@ -164,7 +210,8 @@ function parseFlag(text) {
 }
 
 /**
- * tune(text, { signal }) -> { ok: true, text } | { ok: false, error }; never throws. rulesText wins over the rulesPath file
+ * tune(text, { signal }) -> { ok: true, text, questions? } | { ok: false, error }; never throws. questions: [{ question, default? }], the open choices that are asked of the user instead of
+ * standing in the prompt (none: no key). rulesText wins over the rulesPath file
  * (checked on every call and reloaded when its mtime changes, so an edit of the skill applies at once), and without either the default skill file is used.
  */
 export function createTuner({ llm, rulesText, rulesPath, timeoutMs = 60000, maxTokens = 1500, log = () => {} } = {}) {
@@ -177,7 +224,7 @@ export function createTuner({ llm, rulesText, rulesPath, timeoutMs = 60000, maxT
     try { m = await mine } catch (error) { if (chosen === mine) chosen = undefined; throw error }
     if (!m) { if (chosen === mine) chosen = undefined; throw new Error(NO_MODEL) }
     const system = 'You rewrite the prompt the user gives you, following the rules below. Profile: ' + profile + '.\n'
-      + 'Answer with only the rewritten prompt: no preface, no rationale, no code fence around it. Never ask a question: when the prompt is ambiguous, make a best effort. '
+      + 'Answer with only the rewritten prompt: no preface, no rationale, no code fence around it. When the prompt is ambiguous, make a best effort; an open choice goes after the prompt as a question (see the end), never in it. '
       + "Keep the user's wording where it is already clear, preserve every detail and invent nothing.\n\n" + (rulesText ?? rules()) + '\n\n' + OVERRIDE
     const prepared = await llm.prepareCall({ provider: m.provider, model: m.model, maxTokens }, signal)
     let out = ''
@@ -196,10 +243,11 @@ export function createTuner({ llm, rulesText, rulesPath, timeoutMs = 60000, maxT
     let error
     let logged
     try {
-      const answer = cleanAnswer(await within(ask(parsed, ac.signal), timeoutMs, signal))
+      const { prompt, questions } = splitQuestions(await within(ask(parsed, ac.signal), timeoutMs, signal))
+      const answer = cleanAnswer(prompt)
       if (!answer) error = EMPTY
       else if (answer.length > MAX_TODO) error = TOO_LONG
-      else return { ok: true, text: answer }
+      else return questions.length ? { ok: true, text: answer, questions } : { ok: true, text: answer }
     } catch (e) {
       ac.abort()
       ;({ error, logged } = e?.message === 'aborted' ? { error: 'cancelled' } : reasonOf(e, timeoutMs))

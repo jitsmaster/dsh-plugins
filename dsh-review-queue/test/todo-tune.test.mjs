@@ -79,7 +79,7 @@ test('the rules go into the system prompt: rulesText, a rulesPath file (its sect
 
 // ---- the instruction around the rules --------------------------------------------------------------------------------------------------
 
-test('the system prompt wraps the rules in the instruction: only the rewrite, never a question, nothing added or lost', async () => {
+test('the system prompt wraps the rules in the instruction: only the rewrite, no question inside it (they go after it), nothing added or lost', async () => {
   const seen = {}
   const text = 'Fix the login form, it breaks on Safari'
   await (await tuner({ llm: fakeLlm({ answer: 'x', seen }) })).tune(text)
@@ -88,7 +88,7 @@ test('the system prompt wraps the rules in the instruction: only the rewrite, ne
   assert.match(system, /preface/i)
   assert.match(system, /rationale/i)
   assert.match(system, /code fence/i)
-  assert.match(system, /never ask (a )?question/i)
+  assert.match(system, /never put questions in the rewritten prompt/i)
   assert.match(system, /best effort/i)
   assert.match(system, /keep the user'?s wording/i)
   assert.match(system, /preserve every detail/i)
@@ -452,11 +452,11 @@ test('an italic or parenthesised closing remark right after a separator line is 
   }
 })
 
-test('several closing blocks and their separator are all removed, the Decide list in front of them stays', async () => {
+test('several closing blocks and their separator are all removed; the Decide list in front of them is asked apart (questions), not left in the prompt', async () => {
   const decide = 'Add X.\n\nDecide (state your choice in the response):\n1. Which db? Suggested default: SQLite.\n2. Retry? Suggested default: yes.'
   for (const tail of ['\n\n---\n\n*(Changed the verb.)*\n\nRationale: foo', '\n\nChanges:\n- a\n\n---\nWhy: b', '\n\nRationale: foo\n\nNote: bar\n\n---\n*I added the list.*']) {
     const r = await (await tuner({ llm: fakeLlm({ answer: decide + tail }) })).tune('rough text')
-    assert.deepEqual(r, { ok: true, text: decide }, JSON.stringify(tail))
+    assert.deepEqual(r, { ok: true, text: 'Add X.', questions: [{ question: 'Which db?', default: 'SQLite' }, { question: 'Retry?', default: 'yes' }] }, JSON.stringify(tail))
   }
 })
 

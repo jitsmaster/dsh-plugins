@@ -105,6 +105,8 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 .inwrap .input { flex: 1; min-width: 0; }
 .inwrap .micwrap .sub { max-width: 40vw; }
 .newtodo .field { display: block; margin-top: 12px; color: var(--dim); font-size: 14px; }
+.newtodo .chips { margin-bottom: 4px; }
+.newtodo .followup-query { margin-top: 12px; }
 .newtodo .field .input { margin-top: 4px; color: var(--text); font-size: 16px; }
 .newtodo .switch { display: flex; align-items: center; gap: 12px; min-height: var(--tap); margin-top: 8px; }
 .newtodo .switch input { width: 24px; height: 24px; accent-color: var(--accent); flex: none; }

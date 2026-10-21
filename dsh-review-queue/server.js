@@ -5,6 +5,7 @@
  */
 import { serveMobile } from './mobile.js'
 import { sessionsKey } from './sessions.js'
+import { MAX_IMAGE_BYTES } from './todo-images.js'
 
 export const PREFIX = '/review-queue'
 const MAX_BODY = 64 * 1024
@@ -31,13 +32,29 @@ export async function readJson(req, max = MAX_BODY) {
   } catch { return { status: 400 } }
 }
 
+/** One raw image body (POST /v1/todo-image): { value: Buffer } | { status } (415 not an image type, 413 over the cap). */
+async function readImage(req, max = MAX_IMAGE_BYTES) {
+  if (!/^image\/[a-z0-9.+-]+\s*$/i.test(req.headers['content-type'] ?? '')) return { status: 415 }
+  if (Number(req.headers['content-length']) > max) return { status: 413 }
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > max) return { status: 413 }
+    chunks.push(chunk)
+  }
+  return { value: Buffer.concat(chunks) }
+}
+
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
-const BAD_INPUT = new Set(['bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace'])
+const BAD_INPUT = new Set(['bad-images', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session'])
+// 'no-session' is a 409 for a reply or an archive (this app's controller does not know the session) but a 400 for a follow-up confirm with no session to send to.
+export const CONFIRM_BAD_INPUT = new Set(['no-session'])
 // The hub's answer when the owning app did not report back in time: a gateway timeout, not a refusal.
 const GATEWAY = new Set(['owner-timeout', 'unknown-outcome'])
-export const outcome = (res, result) => {
+export const outcome = (res, result, alsoBad) => {
   if (result?.ok) return send(res, 200, { ...result })
-  send(res, GATEWAY.has(result?.error) ? 504 : BAD_INPUT.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed' })
+  send(res, GATEWAY.has(result?.error) ? 504 : BAD_INPUT.has(result?.error) || alsoBad?.has(result?.error) ? 400 : 409, { ok: false, error: result?.error ?? 'failed', ...(typeof result?.warning === 'string' ? { warning: result.warning.slice(0, 200) } : {}) })
 }
 
 /**
@@ -61,6 +78,7 @@ export const stampMatches = (s, since) => {
 }
 
 const workspaceOf = (b) => (b.workspaceId === undefined || b.workspaceId === null || b.workspaceId === '' ? undefined : String(b.workspaceId))
+const sessionOf = (b) => (b.sessionId === undefined || b.sessionId === null || b.sessionId === '' ? undefined : String(b.sessionId))
 
 /** @param {{ queue: ReturnType<import('./service.js').createReviewQueue>, dev?: { ask: (body: object) => Promise<object> }, pushRoutes?: ReturnType<import('./push-routes.js').createPushRoutes> }} deps */
 export function createRouter({ queue, dev, pushRoutes }) {
@@ -86,11 +104,9 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/paused-dismiss': (b) => queue.dismissPaused(String(b.id)),
     '/v1/paused-scan': () => queue.scanPaused(),
     '/v1/running-sessions': () => queue.runningSessions(),
-    '/v1/pause-all': () => queue.pauseAll(),
-    '/v1/quit': () => queue.quitApp(),
-    '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true }),
+    '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true, followUp: b.followUp, images: b.images }), // never body.sessions: the candidates are this app's own (the hub gives the union)
     '/v1/todo-tune': (b) => queue.tuneTodo(b.text),
-    '/v1/todo-confirm': (b) => queue.confirmTodo(String(b.id), { workspaceId: workspaceOf(b) }),
+    '/v1/todo-confirm': (b) => queue.confirmTodo(String(b.id), { workspaceId: workspaceOf(b), sessionId: sessionOf(b) }),
     '/v1/todo-cancel': (b) => queue.cancelTodo(String(b.id)),
     '/v1/focus': (b) => (queue.setFocus(b.id === null || b.id === undefined ? undefined : String(b.id)) ? { ok: true } : { ok: false, error: 'not-open' }),
   }
@@ -135,6 +151,12 @@ export function createRouter({ queue, dev, pushRoutes }) {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })
         return send(res, 200, { workspaces: queue.workspaces() })
       }
+      if (url.pathname === '/v1/todo-image') {
+        if (req.method !== 'POST') return send(res, 405, { error: 'method' })
+        const image = await readImage(req)
+        if (!image.value) return send(res, image.status, image.status === 413 ? { ok: false, error: 'too-large' } : { error: 'bad-request' })
+        return outcome(res, queue.saveTodoImage(image.value))
+      }
       if (pushRoutes && url.pathname.startsWith('/v1/push/')) return await pushRoutes(req, res, url.pathname, { readJson, send })
       const action = actions[url.pathname]
       // An unknown route is not a missing item (that is a 409 'not-found' from the service): a client newer than this server
@@ -143,7 +165,7 @@ export function createRouter({ queue, dev, pushRoutes }) {
       if (req.method !== 'POST') return send(res, 405, { error: 'method' })
       const body = await readJson(req)
       if (!body.value) return send(res, body.status, { error: 'bad-request' })
-      return outcome(res, await action(body.value))
+      return outcome(res, await action(body.value), url.pathname === '/v1/todo-confirm' ? CONFIRM_BAD_INPUT : undefined)
     } catch (error) {
       send(res, 500, { error: 'internal' })
     }

@@ -11,7 +11,7 @@ export const source = readFileSync(file, 'utf8')
 /** The localStorage key of the todo form draft (LS.todoDraft). */
 export const KEY = 'dsh-review-queue.todoDraft'
 
-export function loadClient({ stored = {}, fetchImpl, setItem } = {}) {
+export function loadClient({ stored = {}, fetchImpl, setItem, react, globals } = {}) {
   let registered
   const store = { ...stored }
   const writes = []
@@ -26,8 +26,9 @@ export function loadClient({ stored = {}, fetchImpl, setItem } = {}) {
     clearTimeout: () => {},
     fetch: fetchImpl ?? (() => new Promise(() => {})),
   }
+  if (globals) Object.assign(sandbox, globals)
   vm.runInNewContext(source, sandbox, { filename: file })
-  const stubReact = { createElement: () => null, Fragment: Symbol('Fragment'), useState() {}, useEffect() {}, useRef() {}, useSyncExternalStore() {} }
+  const stubReact = { createElement: () => null, Fragment: Symbol('Fragment'), useState() {}, useEffect() {}, useRef() {}, useSyncExternalStore() {}, ...react }
   const mod = registered.factory(() => stubReact)
   return { mod, T: mod.__test, store, writes, timers }
 }
@@ -47,3 +48,8 @@ export const need = (T, name) => assert.equal(typeof T[name], 'function', name +
 export const okJson = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
 export const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } }
 export const tick = () => new Promise((r) => setImmediate(r))
+
+/** A createElement that builds plain { type, props, children } nodes, so a test can render a component and look at what it made. */
+export const el = (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false) })
+export const findAll = (node, pred) => (node && typeof node === 'object' ? [...(pred(node) ? [node] : []), ...(node.children ?? []).flatMap((c) => findAll(c, pred))] : [])
+export const textOf = (node) => (typeof node === 'string' ? node : (node?.children ?? []).map(textOf).join(''))

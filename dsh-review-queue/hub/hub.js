@@ -193,7 +193,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
         sessionsTimer = (timers ?? globalThis).setTimeout(() => { sessionsTimer = undefined; for (const l of [...sessionListeners]) { try { l() } catch { /* ignore */ } } }, SESSIONS_WAKE_MS)
         sessionsTimer.unref?.()
       } })
-      routing = createRouting({ store, queue, instances, commands })
+      routing = createRouting({ store, queue, instances, commands, log: (l) => log(l), now })
       agentApi = createAgentApi({ hub, instances, commands, store, secret, log: (l) => log(l) })
 
       lastActivity = now()

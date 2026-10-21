@@ -110,7 +110,7 @@ const POST_ERRORS = {
 /** The sentence for a failed post whose code the shared errorText words poorly; undefined leaves it to the shared text. */
 export const postErrorText = (code) => (typeof code === 'string' && Object.hasOwn(POST_ERRORS, code) ? POST_ERRORS[code] : undefined)
 
-/** The conversation of an item can be read when it has a session (every type except a todo; a paused item too). */
+/** The conversation of an item can be read when it has a session (every type except a todo, which has none of its own; a paused item too). A follow-up todo that was sent has the session it went to, but the phone never reads or posts into it (hub/routing.js refuses both to a phone): its card only says where it was sent. */
 export const hasThread = (item) => !!item && item.type !== 'todo' && typeof item.sessionId === 'string' && item.sessionId !== ''
 /** A follow-up can be written to such an item, except a paused one: resuming a paused session is done at the PC. */
 export const canPost = (item) => hasThread(item) && item.type !== 'paused'

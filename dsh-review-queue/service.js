@@ -6,7 +6,9 @@ import { randomUUID } from 'node:crypto'
 import { safeReason } from './tip.js'
 import { spokenFor, titleFor, fullTextFor, chunkForSpeech, tipSentences } from './speech.js'
 import { riskOf } from './risk.js'
-import { createTodos, MAX_TODO } from './todo.js'
+import { createTodos } from './todo.js'
+import { MAX_TODO, PROMPT_TIMEOUT_MS, codeOf, isSentFollowUp } from './follow-up-shared.js'
+import { listFollowUpSessions } from './follow-up.js'
 import { RESUME_PROMPT } from './paused.js'
 import { listRunningSessions } from './userpause.js'
 import { isSessionId } from './thread.js'
@@ -29,8 +31,12 @@ const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, tips, tipExpand, sessions, titlesOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, power, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
-  const todos = createTodos({ store, controllerOf, registryOf, llm, titlesOf, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+  // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
+  const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
+  // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
+  const followUpSessions = (opts = {}) => listFollowUpSessions({ controller: attempt(controllerOf, 'controller'), registry: attempt(registryOf, 'registry'), titlesOf, snippetsOf: opts?.snippets === false ? undefined : snippetsOf, query: opts?.query, log })
+  const todos = createTodos({ store, controllerOf, registryOf, images: todoImages, llm, titlesOf, sessionsOf: followUpSessions, now, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
   const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)
   const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
@@ -85,8 +91,8 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     return item?.status === 'open' ? item : undefined
   }
 
-  /** A todo has no session of its own yet, whatever its sessionId says. */
-  const hasSession = (item) => item.type !== 'todo' && typeof item.sessionId === 'string' && item.sessionId !== ''
+  /** A todo has no session of its own yet, whatever its sessionId says; only a follow-up that was sent has (the session it went to). */
+  const hasSession = (item) => isSentFollowUp(item) || (item.type !== 'todo' && typeof item.sessionId === 'string' && item.sessionId !== '')
 
   /**
    * Queues the text as a prompt of the item's session; undefined when sent, else the refusal { ok: false, error }. A session this app's controller
@@ -100,7 +106,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     const controller = controllerOf()
     if (!controller?.prompt) return { ok: false, error: 'no-controller' }
     try {
-      await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: body }] }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
+      await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: body }] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
     } catch (error) {
       // The controller of this app does not know the session: the card says so in words, and the item stays for an app that does.
       if (error?.code === 'session/not-found') return { ok: false, error: 'no-session' }
@@ -259,7 +265,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       resuming.add(id)
       try {
         const request = { requestId: 'resume-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: RESUME_PROMPT }] }
-        await controller.prompt(request, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
+        await controller.prompt(request, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
       } catch (error) {
         // DSH no longer has the session (deleted): nothing to resume.
         if (error?.code === 'session/not-found') { store.resolve(id, { kind: 'session-ended' }); log?.('service: item ' + id + ' closed as session-ended: DSH no longer has its session (resume)'); return { ok: false, error: 'session-gone' } }
@@ -307,33 +313,15 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     },
     /** Looks for sessions cut off by a restart now (the agent also does at startup): { ok, added, updated, resolved, total }. */
     scanPaused: async () => (paused ? paused.scan() : { ok: false, error: 'no-scanner' }),
-    /**
-     * Pause all and quit: cancels every running top-level session, remembers them (they come back as paused items after the restart) and closes the DSH
-     * desktop app. Refused, with nothing paused, when there is no desktop to close. power = { canQuit, pauseSessions, quitSoon } (userpause.js, desktop.js).
-     * -> { ok: true, paused, quitting: true } | { ok: false, error }
-     */
-    async pauseAll() {
-      if (typeof power?.pauseSessions !== 'function') return { ok: false, error: 'no-power' }
-      if (!(await power.canQuit())) return { ok: false, error: 'no-desktop' }
-      let result
-      try { result = await power.pauseSessions() } catch (error) { return { ok: false, error: String(error?.message ?? error).slice(0, 200) } }
-      if (!result?.ok) return { ok: false, error: result?.error ?? 'failed' }
-      try { await paused?.scan() } catch { /* the next scan after the restart lists them */ }
-      power.quitSoon()
-      return { ok: true, paused: result.paused, quitting: true }
-    },
-    /** Quit: closes the DSH desktop app (the Close menu). Running sessions are not paused first; the paused scan lists the cut-off ones after the restart. */
-    async quitApp() {
-      if (typeof power?.quitSoon !== 'function') return { ok: false, error: 'no-power' }
-      if (!(await power.canQuit())) return { ok: false, error: 'no-desktop' }
-      power.quitSoon()
-      return { ok: true, quitting: true }
-    },
-    /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc? }) -> { ok, id, state }; confirmTodo(id, { workspaceId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). */
+    /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc?, followUp?, sessions? }) -> { ok, id, state }; confirmTodo(id, { workspaceId?, sessionId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). followUp (words) makes it a message for an existing session; sessions (the hub's union) are its candidates. */
     addTodo: (text, opts) => todos.add(text, opts),
+    /** One pasted image of the new-todo form (raw bytes): { ok, id, mediaType, bytes } | { ok: false, error }. Local files: never forwarded to the hub. */
+    saveTodoImage: (bytes) => (todoImages ? todoImages.save(bytes) : { ok: false, error: 'bad-image' }),
     confirmTodo: (id, opts) => todos.confirm(String(id), opts),
     cancelTodo: (id) => todos.cancel(String(id)),
     todoIdle: () => todos.idle(),
+    /** The candidates of a follow-up todo from this app: [{ sessionId, title, workspaceId?, workspaceTitle?, updatedAt?, running?, snippet? }], newest first; [] on any failure. */
+    followUpSessions,
     /** The "Tune prompt" button: the text rewritten with the prompt-tune rules, { ok, text } | { ok: false, error }. Adds nothing to the list; this app's own model, so never forwarded to the hub. */
     async tuneTodo(text) {
       const body = typeof text === 'string' ? text.trim() : ''

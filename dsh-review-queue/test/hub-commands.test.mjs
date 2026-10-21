@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createCommands, TIMEOUT_MS } from '../hub/commands.js'
 import { fakeClock } from './hub-helpers.mjs'
+import { PROMPT_TIMEOUT_MS, SESSIONS_APP_BUDGET_MS } from '../follow-up-shared.js'
 
 let counter = 0
 const make = (over = {}) => {
@@ -14,8 +15,18 @@ const approve = { kind: 'approve', itemId: 'i1', args: { via: 'phone', confirmed
 test('the timeouts are the 6.2 table', () => {
   assert.deepEqual(
     { ...TIMEOUT_MS },
-    { answer: 10_000, deny: 10_000, approve: 10_000, 'approve-similar': 10_000, 'late-answer': 15_000, reply: 35_000, archive: 35_000, 'paused-resume': 35_000, 'paused-dismiss': 10_000, 'todo-suggest': 10_000, 'todo-start': 10_000, 'todo-cancel': 10_000, 'open-session': 10_000, apply: 10_000, thread: 15_000, post: 35_000 },
+    { answer: 10_000, deny: 10_000, approve: 10_000, 'approve-similar': 10_000, 'late-answer': 15_000, reply: 35_000, archive: 35_000, 'paused-resume': 35_000, 'paused-dismiss': 10_000, 'todo-suggest': 10_000, 'todo-start': 10_000, 'sessions-list': 6_000, 'followup-suggest': 10_000, 'followup-send': 35_000, 'todo-cancel': 10_000, 'open-session': 10_000, apply: 10_000, thread: 15_000, post: 35_000 },
   )
+})
+
+test('the hub waits for sessions-list longer than an app takes to answer it (its one overall deadline), so a slow but in-time app is not given up', () => {
+  assert.ok(TIMEOUT_MS['sessions-list'] > SESSIONS_APP_BUDGET_MS, TIMEOUT_MS['sessions-list'] + ' vs ' + SESSIONS_APP_BUDGET_MS)
+  assert.ok(TIMEOUT_MS['sessions-list'] - SESSIONS_APP_BUDGET_MS >= 1000, 'a second for the round trip through the poll')
+})
+
+test('the hub waits for followup-send longer than the app waits for the prompt (PROMPT_TIMEOUT_MS), or a send that is about to finish is answered unknown-outcome', () => {
+  assert.ok(TIMEOUT_MS['followup-send'] > PROMPT_TIMEOUT_MS, TIMEOUT_MS['followup-send'] + ' vs ' + PROMPT_TIMEOUT_MS)
+  assert.equal(TIMEOUT_MS['followup-send'], PROMPT_TIMEOUT_MS + 5000)
 })
 
 test('a command is queued for its instance, delivered by a poll and finished by its result', async () => {

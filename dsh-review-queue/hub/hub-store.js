@@ -166,8 +166,12 @@ export function createHubStore({ now = Date.now, uuid = () => randomUUID().slice
     },
     get: (id) => inner.get(id),
     list: (filter) => inner.list(filter),
+    /** store.js count: how many (live, not copied) items a test accepts. */
+    count: (test) => inner.count(test),
     /** Move an item to another instance (adoption, a todo started elsewhere). */
     setOwner: (id, owner) => inner.update(id, { owner }),
+    /** A change the hub itself makes to an item (a follow-up whose send has an unknown outcome is marked failed); false when the id is unknown. */
+    update: (id, patch) => inner.update(id, patch),
     /** The store.js snapshot with the hub's snapshot id (epoch + rev). */
     snapshot() {
       return { ...inner.snapshot(), snapshotId: epoch + ':' + rev, rev }

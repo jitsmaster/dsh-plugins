@@ -175,6 +175,8 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
      * capture; everything else uses list() / get(), which hand out copies.
      */
     peekOpen: (sessionId) => [...(openBy.get(sessionId) ?? [])].sort(order),
+    /** How many items the test accepts, looking at the LIVE items (no copies: the test must not mutate them). For a cap or a counter that would otherwise clone every item with list(). */
+    count(test) { let n = 0; for (const item of items.values()) if (test(item)) n++; return n },
     list: ({ status } = {}) => [...items.values()].filter((i) => status === undefined || i.status === status).sort(order).map(copy),
     /** Open items, oldest first, each with its position (1 = oldest); resolved items, newest first. */
     snapshot() {

@@ -7,12 +7,20 @@
  * becomes its owner, or answers no-session, which the card gets as session-unavailable (the item stays ownerless). A post is only taken that
  * way for a done item (it resolves it); to any other ownerless open item it answers session-unavailable at once. open-session and thread
  * (a view and a read) are only sent to the coordinator: it is not handed the item and does not become its owner. thread and post of a todo are
- * refused here (no-session, not-a-session) before anything is sent: the coordinator, which does not hold the item, could not tell.
+ * refused here (no-session, not-a-session) before anything is sent: the coordinator, which does not hold the item, could not tell. The same two are refused to a
+ * phone for a follow-up todo that was already sent (it has a session, but a phone gets no chat view of it); the desktop still reaches it.
+ * A todo with body.followUp is a follow-up for an existing session of any app (hub/follow-up.js).
+ * A paused item whose owner is GONE (the app that scanned it was stopped or restarted, so its instance key changed) is handled like an ownerless one for
+ * paused-resume / paused-dismiss: the coordinator takes it and runs the action; on a refusal the item goes back to its previous owner. An owner that is only
+ * away is not robbed (owner-away), and with no app online it stays owner-offline.
  */
 import { riskOf } from '../risk.js'
 import { postKeyOf } from '../post-key.js'
+import { createHubFollowUps } from './follow-up.js'
+import { isSentFollowUp } from '../follow-up-shared.js'
 
 const HUB_LOCAL = ['reviewed', 'reopen']
+const PAUSED_ACTIONS = ['paused-resume', 'paused-dismiss']
 /** Value: the item must still be open (an expired question can still be answered late, any session can be opened, the chat of a finished item can be read and continued). */
 const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'paused-resume': true, 'paused-dismiss': true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'open-session': false, thread: false, post: false }
 export const ACTION_KINDS = [...HUB_LOCAL, 'todo', ...Object.keys(OWNER_ACTIONS)]
@@ -20,8 +28,8 @@ export const ACTION_KINDS = [...HUB_LOCAL, 'todo', ...Object.keys(OWNER_ACTIONS)
 const risksOf = (item) => (item.type === 'permission' ? riskOf({ toolName: item.payload?.toolName, detail: item.payload?.detail ?? item.payload?.summary, path: item.payload?.path, workspace: item.workspace }) : [])
 const text = (v) => (v === undefined || v === null || v === '' ? undefined : String(v))
 
-/** @param {{ store: any, queue: any, instances: any, commands: any }} deps */
-export function createRouting({ store, queue, instances, commands }) {
+/** @param {{ store: any, queue: any, instances: any, commands: any, log?: (line: string) => void }} deps */
+export function createRouting({ store, queue, instances, commands, log = () => {}, now = Date.now }) {
   /** The owner as a send target: its state decides between a command and 409 owner-offline / owner-away. */
   function reachable(owner) {
     const inst = instances.get(owner)
@@ -31,6 +39,7 @@ export function createRouting({ store, queue, instances, commands }) {
   }
   const send = (inst, command) => commands.enqueue(inst.id, command)
   const tell = (owner, change) => { if (instances.live(owner)) void commands.enqueue(owner, { kind: 'apply', args: { change }, wait: false }) }
+  const followUps = createHubFollowUps({ store, instances, reachable, send, tell, log, now }) // Follow-up todos: a message for an existing session of any app (hub/follow-up.js)
 
   function hubLocal(kind, id) {
     const result = kind === 'reviewed' ? queue.markReviewed(id) : queue.reopen(id)
@@ -70,17 +79,21 @@ export function createRouting({ store, queue, instances, commands }) {
   }
 
   /** The coordinator takes an ownerless open item (it is handed a copy first, commands of one app run in order), runs the action and keeps it on success. */
+  /** A paused card whose owner is gone: nobody can run resume / dismiss there, any online app can (it has the session log on the same machine). */
+  const goneOwnedPaused = (kind, item) => item.type === 'paused' && PAUSED_ACTIONS.includes(kind) && (instances.get(item.owner)?.state ?? 'gone') === 'gone'
+
   async function actOnOrphan(kind, item, body, via, caller) {
     // A post resolves only a done item (as replied), so only that one is worth taking: any other type would be adopted without anything to show for it.
     if (kind === 'post' && item.type !== 'completed') return { ok: false, error: 'session-unavailable' }
     const coordinator = instances.coordinator(caller)
     if (!coordinator) return { ok: false, error: 'owner-offline' }
     if (kind === 'open-session' || kind === 'thread') return send(coordinator, { kind, itemId: item.id, args: argsFor(kind, body, via, item) }) // a view or a read: the item is not adopted
+    const previous = item.owner // undefined for an ownerless item, the gone app for a paused one
     store.setOwner(item.id, coordinator.id)
     void commands.enqueue(coordinator.id, { kind: 'apply', args: { change: { op: 'adopt', item: store.get(item.id) } }, wait: false })
     const result = await runOwned(kind, store.get(item.id), body, via)
     if (result.ok) return result
-    store.setOwner(item.id, undefined)
+    store.setOwner(item.id, previous)
     return result.error === 'no-session' ? { ok: false, error: 'session-unavailable' } : result
   }
 
@@ -91,9 +104,10 @@ export function createRouting({ store, queue, instances, commands }) {
     return send(to.inst, { kind, itemId: item.id, args: argsFor(kind, body, via, item) })
   }
 
-  async function addTodo(body, caller) {
+  async function addTodo(body, caller, role) {
     const wanted = text(body.workspaceId)
-    const base = { text: body.text, sparc: body.sparc === true }
+    // Pasted images are the desktop form's (files on this PC): a phone never sends any, and what it sends as images is dropped.
+    const base = { text: body.text, sparc: body.sparc === true, ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}) }
     if (wanted !== undefined) {
       const target = findWorkspace(wanted)
       if (!target) return { ok: false, error: instances.list().some((i) => i.state === 'online') ? 'unknown-workspace' : 'no-registry' }
@@ -108,6 +122,7 @@ export function createRouting({ store, queue, instances, commands }) {
   /** Start (or retry) a todo: in a workspace of its own instance as a todo-start there, in another instance's by moving the item. */
   async function confirmTodo(item, body) {
     if (item.type !== 'todo') return { ok: false, error: reachable(item.owner).error ?? 'not-todo' } // an unreachable owner is told first, like every owner action
+    if (item.kind === 'followup') return followUps.confirm(item, body)
     const wanted = text(body.workspaceId) ?? text(item.workspaceId) ?? text(item.suggested?.workspaceId)
     if (!wanted) return { ok: false, error: 'no-workspace' }
     const found = findWorkspace(wanted)
@@ -129,17 +144,18 @@ export function createRouting({ store, queue, instances, commands }) {
   return {
     /** @param {{ role?: string, caller?: string }} [ctx] role 'device' is the phone, any other credential the desktop (D8). */
     async act(kind, body, { role, caller } = {}) {
-      if (kind === 'todo') return addTodo(body, caller)
+      if (kind === 'todo') return body.followUp !== undefined && body.followUp !== null ? followUps.add(body, caller) : addTodo(body, caller, role)
       const id = String(body.id)
       if (HUB_LOCAL.includes(kind)) return hubLocal(kind, id)
       const item = store.get(id)
       if (!item) return { ok: false, error: 'not-found' }
-      if (item.type === 'todo' && (kind === 'thread' || kind === 'post')) return { ok: false, error: kind === 'thread' ? 'no-session' : 'not-a-session' } // a todo has no session of its own yet, whatever its sessionId says
+      // A todo has no session of its own yet, whatever its sessionId says. A follow-up that was SENT has (the session it went to), but only the desktop may read or post into it: a phone may ask for a message to any session of any app, and gets no window into it.
+      if (item.type === 'todo' && (kind === 'thread' || kind === 'post') && (role === 'device' || !isSentFollowUp(item))) return { ok: false, error: kind === 'thread' ? 'no-session' : 'not-a-session' }
       if (OWNER_ACTIONS[kind] === true && item.status !== 'open') return { ok: false, error: 'not-open' }
       const via = role === 'device' ? 'phone' : 'desktop'
       const refused = guard(kind, item, body, via)
       if (refused) return refused
-      if (item.owner === undefined && item.status === 'open') return actOnOrphan(kind, item, body, via, caller)
+      if (item.status === 'open' && (item.owner === undefined || goneOwnedPaused(kind, item))) return actOnOrphan(kind, item, body, via, caller)
       return runOwned(kind, item, body, via)
     },
   }

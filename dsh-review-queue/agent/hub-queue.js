@@ -16,7 +16,7 @@ const only = (condition, fields) => (condition ? fields : {})
  * @param {{ local: any, client: { state: string, mirror: any, onState?: Function, call: (kind: string, body: object) => Promise<any> },
  *   speaker?: any, controllerOf?: () => any, now?: () => number, log?: (line: string) => void }} deps
  */
-export function createHubQueue({ local, client, speaker, controllerOf = () => undefined, now = Date.now, log }) {
+export function createHubQueue({ local, client, speaker, controllerOf = () => undefined, now = Date.now, log = () => {} }) {
   const mirror = createMirrorStore({ now })
   // The view shares the show/hide state of the local service: uiCommand goes to the local one, the snapshot of either mode carries it.
   const view = createReviewQueue({ store: mirror, capture: {}, controllerOf, speaker, now, log, ui: local.uiState?.() })
@@ -29,7 +29,10 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
   }
   const active = () => (hubMode() ? view : local)
   const through = async (kind, body) => {
-    try { return await client.call(kind, body) } catch { return { ok: false, error: 'hub-unreachable' } }
+    try { return await client.call(kind, body) } catch (error) {
+      log('hub-queue: ' + kind + ' failed (' + String(error?.code ?? error?.name ?? 'error').slice(0, 40) + ')') // the code or name only: an error text can carry a path or content
+      return { ok: false, error: 'hub-unreachable' }
+    }
   }
   /** An action: through the hub when connected, else the local service. */
   const action = (kind, body, locally) => (hubMode() ? through(kind, body) : locally())
@@ -92,17 +95,16 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     post: (id, text, opts = {}) => action('post', { id, text, ...only(opts.key !== undefined, { key: opts.key }) }, () => local.post(id, text, opts)),
     resumePaused: (id) => action('paused-resume', { id }, () => local.resumePaused(id)),
     dismissPaused: (id) => action('paused-dismiss', { id }, () => local.dismissPaused(id)),
-    addTodo: (text, opts = {}) => action('todo', { text, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sparc === true, { sparc: true }) }, () => local.addTodo(text, opts)),
-    confirmTodo: (id, opts = {}) => action('todo-confirm', { id, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }) }, () => local.confirmTodo(id, opts)),
+    addTodo: (text, opts = {}) => action('todo', { text, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sparc === true, { sparc: true }), ...only(opts.followUp !== undefined && opts.followUp !== null, { followUp: opts.followUp }), ...only(opts.images !== undefined && opts.images !== null, { images: opts.images }) }, () => local.addTodo(text, opts)), // never opts.sessions: the hub asks the apps itself
+    confirmTodo: (id, opts = {}) => action('todo-confirm', { id, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sessionId !== undefined, { sessionId: opts.sessionId }) }, () => local.confirmTodo(id, opts)),
     cancelTodo: (id) => action('todo-cancel', { id }, () => local.cancelTodo(id)),
 
     notifyPrMerged: (info) => local.notifyPrMerged(info),
     todoIdle: () => local.todoIdle(),
     uiCommand: (cmd) => local.uiCommand(cmd),
     scanPaused: () => local.scanPaused(), // the session logs are on this PC: always this app that scans
+    saveTodoImage: (bytes) => local.saveTodoImage(bytes), // the files are on this PC (a folder every app and the hub share): never asked of the hub
     tuneTodo: (text) => local.tuneTodo(text), // this app's own model: never asked of the hub
-    pauseAll: () => local.pauseAll(), // the sessions and the desktop window are this app's: never asked of the hub
-    quitApp: () => local.quitApp(),
     runningSessions: () => local.runningSessions(), // the sessions are this app's: never asked of the hub
   }
 }

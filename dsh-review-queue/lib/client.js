@@ -80,6 +80,7 @@ window.__ModuleLoader__.load({
 				case "denied": return "Denied" + (where ? " " + where : "");
 				case "reviewed": return "Reviewed";
 				case "started": return "Started" + (item.workspaceTitle ? " in " + item.workspaceTitle : "") + " (in the background)";
+				case "followed-up": return "Sent to " + (item.sessionTitle || "the session");
 				case "archived": return r.by === "elsewhere" ? "Session archived elsewhere" : "Session archived";
 				case "superseded": return "Replaced by a newer result";
 				case "no-action": return "Hidden: nothing for you to do (judged from the message; Reopen if it was wrong)";
@@ -105,7 +106,7 @@ window.__ModuleLoader__.load({
 			return buildAnswers(questions, drafts);
 		}
 		/** Heading of a card: the task title, else the session title. */
-		const cardTitle = (item) => plainAction(item && (item.title || item.sessionTitle)) || "Untitled";
+		const cardTitle = (item) => plainAction(item && (item.title || (isFollowUp(item) ? followUpTitle(item) : item.sessionTitle))) || "Untitled";
 
 		/** Id of the item to select once `id` leaves the list: the next one, else the previous one. */
 		function nextAfter(items, id) {
@@ -346,6 +347,35 @@ window.__ModuleLoader__.load({
 
 		// ---- Todo: start a new session from the list ----------------------------------------------------
 		const TODO_MAX = 4000;
+		// A follow-up todo (kind "followup") sends its text to an EXISTING session found from words; its card and form reuse the todo ones with sessions in place of workspaces.
+		const FOLLOWUP_MAX = 300;
+		// Source of truth for what a follow-up item is: kind 'followup' of todo-follow-up.js (a browser copy of that check; this file is one self-contained script).
+		const isFollowUp = (item) => !!item && item.kind === "followup";
+		const isFollowUpForm = (f) => !!f && f.mode === "followup";
+// Images pasted into the New session form: png, jpeg, webp or gif, at most IMAGE_MAX of up to IMAGE_BYTES each (the server checks the same again).
+const IMAGE_MAX = 5;
+const IMAGE_BYTES = 8 * 1024 * 1024;
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+/** The image files of a paste (clipboardData): items of kind file with an image type (a screenshot is one), else its files; [] when there is none. */
+function imageFilesOf(data) {
+	if (!data) return [];
+	const out = [];
+	for (const it of data.items ? Array.from(data.items) : []) {
+		if (it && it.kind === "file" && IMAGE_TYPES.indexOf(it.type) >= 0) { const f = typeof it.getAsFile === "function" ? it.getAsFile() : null; if (f) out.push(f); }
+	}
+	if (!out.length && data.files) for (const f of Array.from(data.files)) if (f && IMAGE_TYPES.indexOf(f.type) >= 0) out.push(f);
+	return out;
+}
+		/** The title the server gives a follow-up (speech.js titleFor), for an item that has none. */
+		function followUpTitle(item) { const l = String(item.text || "").split(/\r?\n/).find((x) => x.trim()); return l ? "Follow up: " + l.trim() : "Follow up"; }
+		/** A pick counts only while the item still lists that session: the list can change under an old pick. */
+		const sessionPick = (item, pick) => (pick && Array.isArray(item.candidates) && item.candidates.some((c) => c.sessionId === pick) ? pick : undefined);
+		// Source of truth: REF_REASON of todo-follow-up.js, the reason of the deterministic ticket / PR number match. Anything else comes from the model, which read untrusted titles and snippets.
+		const REF_REASON = "ticket or PR number in the words";
+		/** A model suggestion for a RUNNING session is never preselected: the user picks it (a crafted title must not steer a message into a working session). */
+		function needsOwnPick(item) { const s = item && item.suggested; if (!s || s.reason === REF_REASON) return false; const c = (item.candidates || []).find((x) => x.sessionId === s.sessionId); return s.running === true || !!(c && c.running === true); }
+		const sessionLabel = (c) => (c.title || "a session") + (c.workspaceTitle ? " · " + c.workspaceTitle : "");
+		const sessionPlace = (c) => (c.title || "a session") + (c.workspaceTitle ? " (" + c.workspaceTitle + ")" : "");
 		/** Which card a todo shows: confirm (a suggestion), pick (none), suggesting (looking), starting, started, failed, cancelled. */
 		function todoCardState(item) {
 			if (!item) return "unknown";
@@ -353,10 +383,16 @@ window.__ModuleLoader__.load({
 			return item.state === "starting" || item.state === "started" || item.state === "failed" || item.state === "cancelled" ? item.state : "unknown";
 		}
 		/** The workspace id Start would use: the user's pick, else the one given before, else the suggestion. */
-		function todoTarget(item, pick) { return pick || (item && (item.workspaceId || (item.suggested && item.suggested.workspaceId))) || undefined; }
+		function todoTarget(item, pick) { if (isFollowUp(item)) return sessionPick(item, pick) || item.targetSessionId || (item.suggested && !needsOwnPick(item) ? item.suggested.sessionId : undefined) || undefined; return pick || (item && (item.workspaceId || (item.suggested && item.suggested.workspaceId))) || undefined; }
 		const canConfirm = (item, pick) => !!item && item.type === "todo" && (item.state === "awaiting-confirm" || item.state === "failed") && !!todoTarget(item, pick);
 		/** The workspace dropdown of a todo card, as an instruction for the select: the value to show selected (the user's pick, else the one given before, else the suggestion; "" when none), the options (the loaded workspaces, plus the target when it is not in them yet) and the placeholder (only while nothing is selected). */
 		function todoSelect(item, pick, workspaces) {
+			if (isFollowUp(item)) {
+				const value = todoTarget(item, pick) || "";
+				const options = (item.candidates || []).map((c) => ({ id: c.sessionId, title: sessionLabel(c) }));
+				if (value && !options.some((o) => o.id === value)) options.unshift({ id: value, title: item.suggested && item.suggested.sessionId === value ? sessionLabel(item.suggested) : item.sessionTitle || "the chosen session" });
+				return { value, options, placeholder: value ? undefined : "Pick a session…" };
+			}
 			const value = todoTarget(item, pick) || "";
 			const options = (workspaces || []).map((w) => ({ id: w.id, title: w.title }));
 			if (value && !options.some((o) => o.id === value)) {
@@ -365,8 +401,26 @@ window.__ModuleLoader__.load({
 			}
 			return { value, options, placeholder: value ? undefined : "Pick a workspace…" };
 		}
+		/** The sentence under the text of a follow-up. */
+		function followUpLine(item, pick) {
+			switch (todoCardState(item)) {
+				case "confirm": case "pick": case "suggesting": {
+					const s = item.suggested;
+					const p = sessionPick(item, pick);
+					if (p && !(s && s.sessionId === p)) return "Send to " + sessionPlace(item.candidates.find((c) => c.sessionId === p));
+					if (s) return (!p && needsOwnPick(item) ? "Model suggests: " : "Session: ") + sessionPlace(s) + (s.reason ? " — " + (s.reason === REF_REASON ? "" : "Model says: ") + s.reason : "");
+					if (item.suggesting) return "Finding the session…";
+					return typeof item.suggestNote === "string" && item.suggestNote ? "Pick a session (no suggestion: " + item.suggestNote + ")" : "Pick a session";
+				}
+				case "starting": return "Sending…";
+				case "started": return "Sent" + (item.sessionTitle ? " to " + item.sessionTitle : "");
+				case "failed": return "Could not send: " + (item.error || "unknown error");
+				default: return "";
+			}
+		}
 		/** The sentence under the task text. */
 		function todoLine(item, pick, workspaces) {
+			if (isFollowUp(item)) return followUpLine(item, pick);
 			const title = (id) => { const w = (workspaces || []).find((x) => x.id === id); return w ? w.title : "the chosen workspace"; };
 			switch (todoCardState(item)) {
 				case "confirm": case "pick": case "suggesting": {
@@ -489,16 +543,28 @@ window.__ModuleLoader__.load({
 		}
 		/** Ctrl+Enter (or Cmd+Enter) submits the todo form; plain Enter is a new line. */
 		const isSubmitKey = (e) => !!e && e.key === "Enter" && !!(e.ctrlKey || e.metaKey) && !e.isComposing;
-		function todoFormProblem(text) {
+		/** What is wrong with the form, if anything. followUp is the description of the session of a follow-up; undefined for a todo that starts a new session. */
+		function todoFormProblem(text, followUp) {
 			const t = String(text || "").trim();
-			return !t ? "Type the task first." : t.length > TODO_MAX ? "That is too long." : undefined;
+			if (!t) return "Type the task first.";
+			if (t.length > TODO_MAX) return "That is too long.";
+			if (followUp === undefined) return undefined;
+			const q = String(followUp || "").trim();
+			return !q ? "Say which session this is for." : q.length > FOLLOWUP_MAX ? "Describe the session in " + FOLLOWUP_MAX + " characters or fewer." : undefined;
 		}
 		/** The Tune prompt button works on a text that is there and while nothing else is going on. */
 		const canTune = (f) => !!f && !f.busy && !f.tuning && !!String(f.text || "").trim();
 		/** The form after a tune answer { ok, text } | { ok: false, error }: the tuned text replaces the text and the FIRST text typed is kept as original (for Undo); a failure changes nothing but the message. */
 		function nextFormAfterTune(f, result) {
 			if (!result.ok) return { ...f, tuning: false, error: result.error };
-			return { ...f, text: result.text, original: f.original || f.text, tuning: false, error: undefined };
+			const questions = tuneQuestionsOf(result.questions);
+			return { ...f, text: result.text, original: f.original || f.text, tuning: false, error: undefined, questions: questions.length ? questions : undefined };
+		}
+		const TUNE_QUESTIONS_MAX = 5;
+		/** The open questions of a tune answer as the panel keeps them, [{ question, default?, answer }] (the answer starts as the default); anything that is not a question with a text is skipped. */
+		function tuneQuestionsOf(list) {
+			return (Array.isArray(list) ? list : []).filter((q) => q && typeof q === "object" && typeof q.question === "string" && q.question.trim()).slice(0, TUNE_QUESTIONS_MAX)
+				.map((q) => { const d = typeof q.default === "string" && q.default.trim() ? q.default.trim() : undefined; return { question: q.question.trim(), ...(d ? { default: d } : {}), answer: d || "" }; });
 		}
 		/** The Open session control of a resolved card: a BUTTON for a started todo, the small link for the rest, none without a session or host. */
 		function openControl(it, hostHasOpen) { return resolvedOpenAction(it, hostHasOpen) !== "open" ? "none" : it.type === "todo" ? "button" : "link"; }
@@ -529,12 +595,12 @@ window.__ModuleLoader__.load({
 		}
 		/** The unsent todo form (text, workspace, SPARC, open, the text before a tune) is restored after a reload or a crash; busy, error and tuning never are. */
 		function loadTodoForm() {
-			const form = { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined };
+			const form = { open: false, text: "", workspaceId: "", sparc: false, mode: "new", followUp: "", busy: false, error: undefined };
 			try {
 				const j = JSON.parse(storage.get(LS.todoDraft) || "null");
 				if (!j || typeof j !== "object" || Array.isArray(j)) return form;
 				const str = (v) => (typeof v === "string" ? v : "");
-				return { ...form, open: j.open === true, text: str(j.text), workspaceId: str(j.workspaceId), sparc: j.sparc === true, ...(str(j.original) ? { original: j.original } : {}) };
+				return { ...form, open: j.open === true, text: str(j.text), workspaceId: str(j.workspaceId), sparc: j.sparc === true, mode: j.mode === "followup" ? "followup" : "new", followUp: str(j.followUp), ...(str(j.original) ? { original: j.original } : {}) };
 			} catch (_e) { return form; }
 		}
 		const saved = loadSaved();
@@ -543,7 +609,7 @@ window.__ModuleLoader__.load({
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, todoPick: {}, tipDeeper: {}, tipUse: { open: false, workspaceId: "" },
-			resumeAll: null, scanNote: undefined, scanning: false, power: null,
+			resumeAll: null, scanNote: undefined, scanning: false,
 		};
 		const listeners = new Set();
 		let version = 0;
@@ -563,7 +629,7 @@ window.__ModuleLoader__.load({
 		/** Writes the todo form draft NOW (no timer: a crash right after a keystroke must not lose it). The text is never shortened. */
 		function saveTodoForm() {
 			const f = state.todoForm;
-			storage.set(LS.todoDraft, JSON.stringify({ text: f.text, workspaceId: f.workspaceId, sparc: !!f.sparc, open: !!f.open, ...(f.original ? { original: f.original } : {}) }));
+			storage.set(LS.todoDraft, JSON.stringify({ text: f.text, workspaceId: f.workspaceId, sparc: !!f.sparc, open: !!f.open, ...(isFollowUpForm(f) ? { mode: "followup" } : {}), ...(f.followUp ? { followUp: f.followUp } : {}), ...(f.original ? { original: f.original } : {}) }));
 		}
 		/** The page going away or to the background saves the draft once more; returns the remover. */
 		function installDraftFlush(win, doc) {
@@ -676,9 +742,10 @@ window.__ModuleLoader__.load({
 			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so the answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
 			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
-			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-desktop": "This is not the DSH desktop app (or it cannot be found), so there is nothing to quit. Nothing was paused.", "no-power": "Pausing and quitting is not available in this app.",
-			"no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
+			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-power": "Pausing and quitting is not available in this app.",
+			"no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "empty-query": "Say which session this is for.", "unknown-session": "That session is not in the list any more. Pick another one.", "too-many-follow-ups": "Too many follow-ups are waiting: confirm or cancel one first.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
 			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "busy": "A message to that session is already on its way. Try again in a moment.",
+				"bad-images": "An attached image is not valid. Remove it and paste it again.", "too-many-images": "At most " + IMAGE_MAX + " images can be attached.", "unknown-image": "An attached image is no longer on the PC. Remove it and paste it again.", "bad-image": "That is not an image the session can take (png, jpeg, webp or gif).", "too-large": "That image is over 8 MB.",
 		};
 
 		const OLD_SERVER = "The Task list server is older than this page and does not know this action. Restart DSH.";
@@ -687,6 +754,7 @@ window.__ModuleLoader__.load({
 		function errorText(status, body) {
 			const code = body && typeof body === "object" ? body.error : undefined;
 			if (code === "unknown-action" || status === 404) return OLD_SERVER;
+			if (code === "no-session" && status === 400) return "Pick a session first."; // a follow-up confirm with nothing picked (a reply or an archive that cannot be delivered is a 409)
 			if (typeof code === "string" && Object.prototype.hasOwnProperty.call(ERRORS, code)) return ERRORS[code];
 			return "Could not do that (" + (code || "HTTP " + status) + ").";
 		}
@@ -697,12 +765,36 @@ window.__ModuleLoader__.load({
 		function stopReading() {
 			if (state.snap && state.snap.reading) fetch(API + "/v1/stop", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
 		}
+		const REVEAL_DELAYS_MS = [0, 120, 300, 700, 1400]; // the row may not be rendered yet when the host call returns
+		const quoteAttr = (s) => String(s).replace(/["\\]/g, "\\$&");
+		/** Scrolls the left panel (DSH's session tree) to the row of a session, so it is visible once it is selected. A row hidden inside a collapsed group of the
+		 *  dsh-hooks-tts tree opens that group by clicking its header; a row that is not there (yet) is looked for again a few times. opts: { doc, later } for tests. */
+		function revealSessionRow(id, opts) {
+			const doc = opts && "doc" in opts ? opts.doc : typeof document === "undefined" ? undefined : document;
+			const later = (opts && opts.later) || ((fn, ms) => setTimeout(fn, ms));
+			if (!doc || typeof doc.querySelector !== "function" || !id) return;
+			const sel = '[data-row-key="session:' + quoteAttr(id) + '"]';
+			let i = 0;
+			const attempt = () => {
+				let row = null;
+				try { row = doc.querySelector(sel); } catch (_e) { return; }
+				if (row) {
+					if (row.offsetParent !== null) { try { row.scrollIntoView({ block: "center" }); } catch (_e) { /* a row that cannot scroll is still selected */ } return; }
+					const gid = typeof row.getAttribute === "function" ? row.getAttribute("data-hooks-gt-group") : null;
+					const head = gid ? doc.querySelector('[data-hooks-group-header="' + quoteAttr(gid) + '"]') : null;
+					const open = head && typeof head.getAttribute === "function" ? head.getAttribute("aria-expanded") === "true" : false;
+					if (head && !open && typeof head.click === "function") head.click();
+				}
+				if (i < REVEAL_DELAYS_MS.length - 1) { i++; later(attempt, REVEAL_DELAYS_MS[i]); }
+			};
+			attempt();
+		}
 		/** Go to the item's session and close the overlay. The host can refuse (the session is gone): then the overlay stays open
 		 *  and the card says so. The host call may be sync (throws) or async (rejects). */
 		function openSession(item) {
 			if (!hostApi.openSession) return;
 			const failed = () => set({ errors: { ...state.errors, [item.id]: "That session no longer exists." } });
-			const done = () => { stopReading(); set({ overlay: false }); storage.set(LS.overlay, "0"); };
+			const done = () => { stopReading(); set({ overlay: false }); storage.set(LS.overlay, "0"); revealSessionRow(item.sessionId); };
 			let result;
 			try { result = hostApi.openSession(item.sessionId); } catch (e) { failed(); return; }
 			if (result && typeof result.then === "function") result.then(done, failed); else done();
@@ -733,17 +825,74 @@ window.__ModuleLoader__.load({
 		const workspacesNote = (list) => (Array.isArray(list) && !list.length ? "No workspace is listed yet (the app may still be loading them). Choose for me works without one." : undefined);
 		// Each tune takes a number; closing or reopening the form takes the next one, so the answer of a tune from before is ignored and cannot overwrite the saved draft.
 		let tuneSeq = 0;
-		function openTodoForm() { if (!state.todoForm.open) tuneSeq++; patchForm({ open: true, error: undefined }); loadWorkspaces(); }
-		function closeTodoForm() { tuneSeq++; patchForm({ open: false, error: undefined, tuning: false }); }
+		function openTodoForm() { if (!state.todoForm.open) tuneSeq++; patchForm({ open: true, error: undefined }); if (!isFollowUpForm(state.todoForm)) loadWorkspaces(); }
+		/** The switch of the form: New session (the dropdown needs the workspaces) or Follow up (it never asks for them). */
+		function setTodoMode(mode) { patchForm({ mode: mode === "followup" ? "followup" : "new", error: undefined }); if (mode !== "followup") ensureWorkspaces(); }
+		function closeTodoForm() { tuneSeq++; patchForm({ open: false, error: undefined, tuning: false, questions: undefined }); }
+		// ---- Pasted images of the New session form (never part of the saved draft: the files live on the PC until the todo starts) ----
+		let imageEpoch = 0; // a new number whenever the images are cleared: an upload that was on its way then is dropped
+		const revokeUrl = (im) => { try { if (im && im.url) window.URL.revokeObjectURL(im.url); } catch (_e) { /* no object URLs here */ } };
+		const objectUrl = (file) => { try { return window.URL.createObjectURL(file); } catch (_e) { return undefined; } };
+		/** Drops every image of the form (thumbnails, and the uploads still on their way). */
+		function clearImages() {
+			imageEpoch++;
+			(state.todoForm.images || []).forEach(revokeUrl);
+			patchForm({ images: undefined, uploading: 0 });
+		}
+		function removeImage(id) {
+			const images = state.todoForm.images || [];
+			images.filter((im) => im.id === id).forEach(revokeUrl);
+			const rest = images.filter((im) => im.id !== id);
+			patchForm({ images: rest.length ? rest : undefined, error: undefined });
+		}
+		/** One image to the server (POST /v1/todo-image, the raw file); { ok, id } or { ok: false, error }. */
+		async function uploadImage(file) {
+			try {
+				const res = await fetch(API + "/v1/todo-image", { method: "POST", credentials: "same-origin", headers: { "content-type": file.type }, body: file });
+				const j = await res.json().catch(() => ({}));
+				if (res.ok && j && j.ok && typeof j.id === "string") return { ok: true, id: j.id };
+				return { ok: false, error: errorText(res.status, j) };
+			} catch (e) { return { ok: false, error: "Request failed: " + String((e && e.message) || e) }; }
+		}
+		/** Attaches the files to the New session form, one upload after the other; true when every one is attached. */
+		async function addImages(files) {
+			if (isFollowUpForm(state.todoForm) || state.todoForm.busy) return false;
+			let all = true;
+			for (const file of files) {
+				const f = state.todoForm;
+				if ((f.images || []).length + (f.uploading || 0) >= IMAGE_MAX) { patchForm({ error: "At most " + IMAGE_MAX + " images can be attached." }); return false; }
+				if (file.size > IMAGE_BYTES) { patchForm({ error: "That image is over 8 MB." }); all = false; continue; }
+				const epoch = imageEpoch;
+				patchForm({ uploading: (f.uploading || 0) + 1, error: undefined });
+				const result = await uploadImage(file);
+				if (epoch !== imageEpoch) return false; // the images were cleared meanwhile: the file waits for the weekly clean-up
+				const now = state.todoForm;
+				if (!result.ok) { patchForm({ uploading: Math.max(0, (now.uploading || 1) - 1), error: result.error }); all = false; continue; }
+				patchForm({ uploading: Math.max(0, (now.uploading || 1) - 1), images: (now.images || []).concat([{ id: result.id, name: file.name || "image", url: objectUrl(file) }]) });
+			}
+			return all;
+		}
+		/** The paste handler of the task box: image files are attached (and the browser is kept from pasting their name); a paste that also has text pastes the text as usual. */
+		function onPasteImages(e) {
+			const data = e && e.clipboardData;
+			const files = imageFilesOf(data);
+			if (!files.length || isFollowUpForm(state.todoForm)) return;
+			const hasText = data && data.items ? Array.from(data.items).some((it) => it && it.kind === "string" && it.type === "text/plain") : false;
+			if (!hasText && typeof e.preventDefault === "function") e.preventDefault();
+			addImages(files);
+		}
 		/** Adds the todo (POST /v1/todo). A workspace starts it at once; "Choose for me" waits for the confirm card. */
 		async function submitTodo() {
 			const f = state.todoForm;
 			if (f.busy || f.tuning) return false;
-			const problem = todoFormProblem(f.text);
+			const follow = isFollowUpForm(f);
+			if (!follow && f.uploading > 0) { patchForm({ error: "Wait for the image to finish uploading." }); return false; }
+			const problem = todoFormProblem(f.text, follow ? f.followUp || "" : undefined);
 			if (problem) { patchForm({ error: problem }); return false; }
 			patchForm({ busy: true, error: undefined });
-			const error = await post("/v1/todo", { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc });
+			const error = await post("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim() } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
 			if (error) { patchForm({ busy: false, error }); return false; }
+			clearImages();
 			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined } });
 			return true;
 		}
@@ -752,7 +901,7 @@ window.__ModuleLoader__.load({
 			try {
 				const res = await fetch(API + "/v1/todo-tune", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
 				const j = await res.json().catch(() => ({}));
-				if (res.ok && j && j.ok && typeof j.text === "string") return { ok: true, text: j.text };
+				if (res.ok && j && j.ok && typeof j.text === "string") return { ok: true, text: j.text, questions: j.questions };
 				if (j && j.error === "busy") return { ok: false, error: "A tune is already running." }; // the shared "busy" code reads differently for a post to a session (ERRORS)
 				if (!res.ok && (res.status !== 409 || (j && j.error === "busy"))) return { ok: false, error: errorText(res.status, j) };
 				return { ok: false, error: "Could not tune the prompt: " + ((j && j.error) || "unexpected answer") };
@@ -762,7 +911,7 @@ window.__ModuleLoader__.load({
 		async function tuneTodo() {
 			if (!canTune(state.todoForm)) return false;
 			const mine = ++tuneSeq;
-			patchForm({ tuning: true, error: undefined });
+			patchForm({ tuning: true, error: undefined, questions: undefined });
 			const result = await requestTune(state.todoForm.text);
 			if (mine !== tuneSeq) return false; // the form was closed or reopened meanwhile: the late text is not wanted
 			set({ todoForm: nextFormAfterTune(state.todoForm, result) });
@@ -770,7 +919,7 @@ window.__ModuleLoader__.load({
 		}
 		function undoTune() {
 			const { original, ...rest } = state.todoForm;
-			if (original) set({ todoForm: { ...rest, text: original, error: undefined } });
+			if (original) set({ todoForm: { ...rest, text: original, error: undefined, questions: undefined } });
 		}
 		// ---- the tip of the day: Go deeper and Use in my code ----
 		const MAX_TIP_PARAGRAPHS = 4; // the server's limit (MAX_PARAGRAPHS in tip-expand.js)
@@ -821,9 +970,25 @@ window.__ModuleLoader__.load({
 			return true;
 		}
 		/** Start (or Retry) a todo in the picked workspace, else the suggested or given one. */
+		/** The user's answer to one open question of a tune (panel input); blank means no answer. */
+		function setTuneAnswer(index, value) {
+			const qs = state.todoForm.questions;
+			if (!qs || !qs[index]) return;
+			patchForm({ questions: qs.map((q, i) => (i === index ? { ...q, answer: String(value == null ? "" : value) } : q)) });
+		}
+		/** The panel's Add answers: every non-blank answer goes to the end of the prompt as a Decisions list; blank ones stay out (the prompt stays neutral there). */
+		function applyTuneAnswers() {
+			const f = state.todoForm;
+			if (!f.questions) return;
+			const lines = f.questions.filter((q) => q.answer.trim()).map((q) => "- " + q.question + " " + q.answer.trim());
+			set({ todoForm: { ...f, text: lines.length ? f.text.replace(/\s+$/, "") + "\n\nDecisions:\n" + lines.join("\n") : f.text, questions: undefined, error: undefined } });
+		}
+		/** The panel's Skip: the questions are dropped and the prompt stays as tuned. */
+		function skipTuneQuestions() { if (state.todoForm.questions) patchForm({ questions: undefined }); }
+		/** Start (or Retry) a todo in the picked workspace, else the suggested or given one; a follow-up is sent to the picked session, else the suggested one. */
 		async function confirmTodo(item, pick) {
-			const workspaceId = todoTarget(item, pick);
-			const ok = await act("/v1/todo-confirm", { id: item.id, ...(workspaceId ? { workspaceId } : {}) }, item.id);
+			const target = todoTarget(item, pick);
+			const ok = await act("/v1/todo-confirm", { id: item.id, ...(target ? { [isFollowUp(item) ? "sessionId" : "workspaceId"]: target } : {}) }, item.id);
 			if (ok) set({ todoPick: { ...state.todoPick, [item.id]: undefined } });
 			return ok;
 		}
@@ -908,25 +1073,6 @@ window.__ModuleLoader__.load({
 				set({ scanning: false, scanNote: res.ok ? (j.added ? "Found " + j.added + " paused session" + (j.added === 1 ? "" : "s") + "." : "No new paused sessions.") : errorText(res.status, j) });
 			} catch (e) { set({ scanning: false, scanNote: "Request failed: " + String((e && e.message) || e) }); }
 		}
-		// ---- Pause all and quit, and Quit (the Close menu) -----------------------------------------------
-		const POWER_TEXT = {
-			pause: "Pause every running session, remember them (they come back here as paused sessions) and quit DSH?",
-			quit: "Quit DSH? Sessions that are working are cut off; after the restart they show up here as paused sessions.",
-		};
-		const askPower = (kind) => set({ power: { phase: "confirm", kind } });
-		const closePower = () => set({ power: null });
-		/** After the user confirmed: POST /v1/pause-all (pause, record, quit) or /v1/quit (quit only). The desktop closes a moment after the answer. */
-		async function runPower() {
-			const p = state.power;
-			if (!p || p.phase !== "confirm") return false;
-			set({ power: { phase: "working", kind: p.kind } });
-			try {
-				const res = await fetch(API + (p.kind === "pause" ? "/v1/pause-all" : "/v1/quit"), { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" });
-				const j = await res.json().catch(() => ({}));
-				set({ power: res.ok ? { phase: "done", kind: p.kind, paused: j.paused } : { phase: "error", kind: p.kind, text: errorText(res.status, j) } });
-			} catch (e) { set({ power: { phase: "error", kind: p.kind, text: "Request failed: " + String((e && e.message) || e) } }); }
-			return true;
-		}
 		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); if (pollCtl) pollCtl.abort(); }
 
 		// =====================================================================================
@@ -961,7 +1107,7 @@ window.__ModuleLoader__.load({
 			+ ".rq-action{font-weight:700;font-size:1.15em;line-height:1.3;text-decoration:none}.rq-md{font-size:13.5px;line-height:1.5}.rq-md p{margin:0 0 8px;white-space:pre-wrap;word-break:break-word}.rq-md ul,.rq-md ol{margin:0 0 8px;padding-left:22px}.rq-md blockquote{margin:0 0 8px;padding:2px 10px;border-left:3px solid var(--rq-border);color:var(--rq-mute)}"
 			+ ".rq-md pre.rq-pre{margin:0 0 8px}.rq-code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--rq-layer2);border-radius:4px;padding:0 4px}.rq-md a{color:var(--rq-accent)}.rq-h{font-weight:600;margin:6px 0 4px}.rq-h1{font-size:16px}.rq-h2{font-size:14.5px}"
 			+ ".rq-replybox{max-height:360px;overflow:auto;background:var(--rq-base);border:1px solid var(--rq-border);border-radius:7px;padding:10px 12px;margin-top:6px}"
-			+ ".rq-todoform{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-sel{width:auto;max-width:260px;padding:6px 8px}"
+			+ ".rq-todoform{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-sel{width:auto;max-width:260px;padding:6px 8px}.rq-thumbs{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.rq-tunequestions{display:flex;flex-direction:column;gap:8px;padding:8px 10px;border:1px solid var(--rq-border,rgba(127,127,127,.35));border-radius:8px}.rq-tq{display:flex;flex-direction:column;gap:3px;font-size:13px}.rq-thumb{position:relative;display:inline-flex}.rq-thumb img{height:56px;max-width:120px;object-fit:cover;border-radius:6px;border:1px solid var(--rq-border)}.rq-thumb-x{position:absolute;top:-7px;right:-7px;width:18px;height:18px;padding:0;border-radius:50%;border:1px solid var(--rq-border);background:var(--rq-layer);color:inherit;cursor:pointer;line-height:1;font-size:11px}"
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
 			+ ".rq-filter{flex:none;display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--rq-border);flex-wrap:wrap}.rq-fchip{padding:3px 12px;border-radius:9px;border:1px solid var(--rq-border)!important;font-size:12px;color:var(--rq-mute)}"
 			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
@@ -969,8 +1115,6 @@ window.__ModuleLoader__.load({
 			+ ".rq-tip{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;border:1px solid var(--rq-border)!important;border-radius:10px;padding:10px 12px;background:var(--rq-layer)}.rq-tip:hover{background:var(--rq-hover)}.rq-tip.on{border-color:var(--rq-accent)!important}"
 			+ ".rq-tipwrap{max-width:680px;margin:8vh auto 0}.rq-tip-t{font-weight:600;font-size:17px}.rq-tip-b{font-size:16px;line-height:1.5;display:flex;flex-direction:column;gap:10px}.rq-tip-p{display:block}.rq-tip-f{color:var(--rq-mute);font-size:13px}"
 			+ ".rq-tip-dw{display:flex;flex-direction:column;gap:10px;margin-top:10px;padding:0 4px}.rq-tip-d{margin:0;font-size:16px;line-height:1.5}.rq-btn.on{border-color:var(--rq-accent)!important}.rq-tip-actions{margin-top:10px}.rq-tip-use{margin-top:8px}"
-			+ ".rq-sbtn{position:relative;display:inline-flex}.rq-sb-main{border-top-right-radius:0;border-bottom-right-radius:0}.rq-sb-caret{border-top-left-radius:0;border-bottom-left-radius:0;margin-left:-1px;padding:6px 8px}"
-			+ ".rq-menu{position:absolute;right:0;top:100%;margin-top:4px;z-index:5;min-width:140px;display:flex;flex-direction:column;border:1px solid var(--rq-border);border-radius:8px;background:var(--rq-layer);box-shadow:0 8px 24px #0008;padding:4px}.rq-mi{text-align:left;padding:6px 12px;border-radius:6px}.rq-mi:hover{background:var(--rq-hover)}"
 			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
 			+ ".rq-split{flex:1;min-height:0;display:grid;grid-template-columns:minmax(260px,360px) 1fr}.rq-side{border-right:1px solid var(--rq-border);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:4px}"
 			+ ".rq-detail{overflow:auto;padding:16px 20px}.rq-row-i{display:flex;flex-direction:column;gap:2px;text-align:left;border:1px solid transparent!important;border-radius:8px;padding:8px 10px}"
@@ -1146,6 +1290,24 @@ window.__ModuleLoader__.load({
 				(s === "starting" || s === "started") && item.sessionId && hostApi.openSession ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", onClick: () => openSession(item) }, "Open session")) : null);
 		}
 
+		/** A follow-up: confirm the session the text goes to (nothing is sent before), watch it go, retry a failure. Never asks for workspaces; no key is bound. */
+		function FollowUpBody({ item, full }) {
+			const st = useStore();
+			const busy = st.busy[item.id];
+			const s = todoCardState(item);
+			const pick = st.todoPick[item.id] || "";
+			const sel = todoSelect(item, pick);
+			const waiting = s === "confirm" || s === "pick" || s === "suggesting" || s === "failed";
+			return h(React.Fragment, null,
+				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.text),
+				h("div", { className: s === "failed" ? "rq-err" : "rq-sub" }, todoLine(item, pick)),
+				waiting ? h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn pri", disabled: busy || !canConfirm(item, pick), onClick: () => confirmTodo(item, pick) }, s === "failed" ? "Retry" : "Send"),
+					h("select", { className: "rq-input rq-sel", value: sel.value, disabled: busy, "aria-label": "Change session", onChange: (e) => set({ todoPick: { ...state.todoPick, [item.id]: e.target.value } }) },
+						sel.placeholder ? h("option", { value: "" }, sel.placeholder) : null, sel.options.map((o) => h("option", { key: o.id, value: o.id }, o.title))),
+					h("button", { className: "rq-btn", disabled: busy, onClick: () => cancelTodo(item) }, "Cancel")) : null);
+		}
+
 		/** A session a restart cut off: why it is listed, then Resume (prompts the session itself) or Dismiss (it stays dismissed). */
 		function PausedBody({ item, full }) {
 			const st = useStore();
@@ -1164,7 +1326,7 @@ window.__ModuleLoader__.load({
 			const now = useNow(item.type === "question" && !!item.expiresAt);
 			const full = forceFull || !!st.expanded[item.id];
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
-			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "todo" ? TodoBody : item.type === "paused" ? PausedBody : CompletedBody;
+			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "todo" ? (isFollowUp(item) ? FollowUpBody : TodoBody) : item.type === "paused" ? PausedBody : CompletedBody;
 			const reading = !!(st.snap && st.snap.reading === item.id);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },
@@ -1241,25 +1403,43 @@ window.__ModuleLoader__.load({
 				h("span", { className: "rq-sub rq-clamp" }, it.sessionTitle || ""));
 		}
 
-		/** The "+ New todo" form: the task, the workspace ("Choose for me" asks before anything starts) and Use SPARC. */
+		/** The "+ New todo" form: New session (the task, the workspace - "Choose for me" asks before anything starts - and Use SPARC) or Follow up (the text and which existing session, in words). */
 		function TodoForm() {
 			const st = useStore();
 			const f = st.todoForm;
 			if (!f.open) return null;
-			const note = workspacesNote(st.workspaces);
+			const follow = isFollowUpForm(f);
+			const note = follow ? undefined : workspacesNote(st.workspaces);
+			const submitOnKey = (e) => { if (isSubmitKey(e.nativeEvent || e)) { e.preventDefault(); submitTodo(); } };
 			return h("div", { className: "rq-todoform" },
-				h("textarea", { className: "rq-ta", autoFocus: true, placeholder: "What should the new session do? (Ctrl+Enter adds it)", value: f.text, disabled: f.busy || f.tuning, onChange: (e) => patchForm({ text: e.target.value, error: undefined }), onKeyDown: (e) => { if (isSubmitKey(e.nativeEvent || e)) { e.preventDefault(); submitTodo(); } } }),
+				h("div", { className: "rq-row", role: "group", "aria-label": "Kind of todo" },
+					[["new", "New session"], ["followup", "Follow up"]].map(([mode, label]) => h("button", { key: mode, className: "rq-fchip" + (follow === (mode === "followup") ? " on" : ""), "aria-pressed": follow === (mode === "followup"), disabled: f.busy || f.tuning, onClick: () => setTodoMode(mode) }, label))),
+				h("textarea", { className: "rq-ta", autoFocus: true, placeholder: follow ? "What should the existing session do next? (Ctrl+Enter adds it)" : "What should the new session do? (Ctrl+Enter adds it)", value: f.text, disabled: f.busy || f.tuning, onChange: (e) => patchForm({ text: e.target.value, error: undefined }), onKeyDown: submitOnKey, onPaste: onPasteImages }),
+				!follow && ((f.images && f.images.length) || f.uploading > 0) ? h("div", { className: "rq-thumbs" },
+					(f.images || []).map((im) => h("span", { key: im.id, className: "rq-thumb" },
+						im.url ? h("img", { src: im.url, alt: im.name || "Pasted image", title: im.name || "" }) : h("span", { className: "rq-sub" }, im.name || "image"),
+						h("button", { className: "rq-thumb-x", type: "button", title: "Remove this image", "aria-label": "Remove image " + (im.name || ""), disabled: f.busy, onClick: () => removeImage(im.id) }, "✕"))),
+					f.uploading > 0 ? h("span", { className: "rq-sub" }, "Uploading…") : null) : null,
+				follow ? h("input", { className: "rq-input", type: "text", required: true, maxLength: FOLLOWUP_MAX, "aria-label": "Which session", placeholder: "Which session? Describe it in your own words", value: f.followUp || "", disabled: f.busy, onChange: (e) => patchForm({ followUp: e.target.value, error: undefined }), onKeyDown: submitOnKey }) : null,
 				h("div", { className: "rq-row" },
-					h("select", { className: "rq-input rq-sel", value: f.workspaceId, disabled: f.busy, "aria-label": "Workspace", onChange: (e) => patchForm({ workspaceId: e.target.value }) }, h("option", { value: "" }, "Choose for me"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
-					h("label", { className: "rq-sub" }, h("input", { type: "checkbox", checked: !!f.sparc, disabled: f.busy, onChange: (e) => patchForm({ sparc: e.target.checked }) }), " Use SPARC"),
+					follow ? null : h("select", { className: "rq-input rq-sel", value: f.workspaceId, disabled: f.busy, "aria-label": "Workspace", onChange: (e) => patchForm({ workspaceId: e.target.value }) }, h("option", { value: "" }, "Choose for me"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
+					follow ? null : h("label", { className: "rq-sub" }, h("input", { type: "checkbox", checked: !!f.sparc, disabled: f.busy, onChange: (e) => patchForm({ sparc: e.target.checked }) }), " Use SPARC"),
 					h("span", { className: "rq-grow" }),
 					h("button", { className: "rq-btn", title: "Rewrite the prompt with the prompt-tune rules and put the result in the box", disabled: !canTune(f), onClick: tuneTodo }, f.tuning ? "Tuning…" : "Tune prompt"),
 					f.original ? h("button", { className: "rq-link", title: "Put back the text you typed before tuning", disabled: f.busy || f.tuning, onClick: undoTune }, "Undo tune") : null,
-					h("button", { className: "rq-btn pri", disabled: f.busy || f.tuning || !f.text.trim(), onClick: submitTodo }, f.busy ? "Adding…" : "Add todo"),
+					h("button", { className: "rq-btn pri", disabled: f.busy || f.tuning || !f.text.trim() || (!follow && f.uploading > 0), onClick: submitTodo }, f.busy ? "Adding…" : follow ? "Add follow-up" : "Add todo"),
 					h("button", { className: "rq-link", disabled: f.busy, onClick: closeTodoForm }, "Cancel")),
+				f.questions && f.questions.length ? h("div", { className: "rq-tunequestions", role: "group", "aria-label": "Questions about the prompt" },
+					h("div", { className: "rq-sub" }, "The tuned prompt has open choices. Answer what you want to decide (a blank answer leaves it out):"),
+					f.questions.map((q, i) => h("label", { key: i, className: "rq-tq" },
+						h("span", null, q.question),
+						h("input", { className: "rq-input", type: "text", value: q.answer, maxLength: 300, placeholder: q.default ? "Suggested: " + q.default : "Your answer", "aria-label": q.question, disabled: f.busy, onChange: (e) => setTuneAnswer(i, e.target.value) }))),
+					h("div", { className: "rq-row" },
+						h("button", { className: "rq-btn", disabled: f.busy, onClick: applyTuneAnswers }, "Add answers to the prompt"),
+						h("button", { className: "rq-link", disabled: f.busy, onClick: skipTuneQuestions }, "Skip"))) : null,
 				note ? h("div", { className: "rq-sub" }, note) : null,
 				f.error ? h("div", { className: "rq-err" }, f.error) : null,
-				h("div", { className: "rq-sub" }, f.workspaceId ? "Starts in the background right away." : "Nothing starts until you confirm the workspace."));
+				h("div", { className: "rq-sub" }, follow ? "Nothing is sent until you confirm the session." : (f.workspaceId ? "Starts in the background right away." : "Nothing starts until you confirm the workspace.") + " Paste an image (Ctrl+V) to attach it to the session."));
 		}
 
 		function Head({ snap, extra }) {
@@ -1274,7 +1454,6 @@ window.__ModuleLoader__.load({
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
 				h("button", { className: "rq-btn", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"),
-				h("button", { className: "rq-btn", "data-rq": "pause-all", title: "Pause every running session, remember them and quit DSH", disabled: !!st.power, onClick: () => askPower("pause") }, "Pause all & quit"),
 				h("button", { className: "rq-btn", onClick: () => set({ showResolved: !st.showResolved, showPhone: false }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
 				h("button", { className: "rq-btn", title: "Pair a phone and manage the paired phones (opens a window)", "aria-haspopup": "dialog", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
 				extra);
@@ -1309,37 +1488,6 @@ window.__ModuleLoader__.load({
 			const n = snap && snap.notice;
 			const words = n && typeof n.text === "string" ? n.text.slice(0, 200) : "";
 			return words ? h("div", { className: "rq-notice rq-notice-" + (n.level === "warn" ? "warn" : "info"), role: "status" }, words) : null;
-		}
-
-		/** The Close button with a menu: Close (the default, the button itself) and Quit (closes the DSH desktop app, after a confirmation bar). */
-		function CloseMenu() {
-			const [open, setOpen] = useState(false);
-			useEffect(() => {
-				if (!open) return undefined;
-				const onDown = (e) => { if (!(e.target && e.target.closest && e.target.closest("[data-rq=close-menu]"))) setOpen(false); };
-				const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
-				document.addEventListener("mousedown", onDown);
-				document.addEventListener("keydown", onKey, true);
-				return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey, true); };
-			}, [open]);
-			return h("span", { className: "rq-sbtn", "data-rq": "close-menu" },
-				h("button", { className: "rq-btn rq-sb-main", "data-rq": "close", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close"),
-				h("button", { className: "rq-btn rq-sb-caret", "data-rq": "close-more", title: "More", "aria-label": "More close options", "aria-haspopup": "menu", "aria-expanded": open, onClick: () => setOpen(!open) }, "▾"),
-				open ? h("div", { className: "rq-menu", role: "menu" },
-					h("button", { className: "rq-mi", role: "menuitem", "data-rq": "menu-close", onClick: () => { setOpen(false); setOverlay(false); } }, "Close"),
-					h("button", { className: "rq-mi", role: "menuitem", "data-rq": "menu-quit", title: "Close the DSH desktop app", onClick: () => { setOpen(false); askPower("quit"); } }, "Quit")) : null);
-		}
-
-		/** The bar of Pause all and quit / Quit: the confirmation, the wait, the outcome. */
-		function PowerBar() {
-			const p = useStore().power;
-			if (!p) return null;
-			let body;
-			if (p.phase === "confirm") body = [h("span", { key: "t" }, POWER_TEXT[p.kind]), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "y", className: "rq-btn pri", "data-rq": "power-go", onClick: runPower }, p.kind === "pause" ? "Pause all and quit" : "Quit"), h("button", { key: "n", className: "rq-link", onClick: closePower }, "Cancel")];
-			else if (p.phase === "working") body = [h("span", { key: "t" }, p.kind === "pause" ? "Pausing the running sessions, then closing DSH…" : "Closing DSH…")];
-			else if (p.phase === "done") body = [h("span", { key: "t" }, (p.kind === "pause" ? "Paused " + (p.paused || 0) + " running session" + (p.paused === 1 ? "" : "s") + ". " : "") + "DSH is closing."), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "c", className: "rq-link", onClick: closePower }, "✕")];
-			else body = [h("span", { key: "t", className: "rq-err" }, p.text), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "c", className: "rq-link", onClick: closePower }, "✕")];
-			return h("div", { className: "rq-todoform", role: "status", "data-rq": "power-bar" }, h("div", { className: "rq-row" }, body));
 		}
 
 		/** The Resume all bar: the confirmation with the count, the progress while it runs, the outcome. Also the note of the last scan. */
@@ -1414,8 +1562,8 @@ window.__ModuleLoader__.load({
 			const emptySide = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none));
 			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), tip);
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
-			const extra = h(CloseMenu);
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(PowerBar), h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
+			const extra = h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
@@ -1481,7 +1629,7 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
 			stopped = false;
-			if (state.todoForm.open) ensureWorkspaces(); // a draft restored open needs its dropdown
+			if (state.todoForm.open && !isFollowUpForm(state.todoForm)) ensureWorkspaces(); // a draft restored open needs its dropdown (a follow-up has none)
 			ctx.effect(() => { pollLoop(); return () => { stopped = true; if (pollCtl) pollCtl.abort(); }; }, "review-queue: polling");
 			ctx.effect(() => (typeof document === "undefined" || typeof document.addEventListener !== "function" ? () => {} : installRepoll(document)), "review-queue: visibility");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
@@ -1498,11 +1646,11 @@ window.__ModuleLoader__.load({
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
-		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo });
-		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll, askPower, closePower, runPower, POWER_TEXT, CloseMenu, PowerBar });
+		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
+		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
-		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune });
+		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, imageFilesOf, addImages, removeImage, clearImages, TodoForm });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;
 	}

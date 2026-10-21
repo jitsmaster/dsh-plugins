@@ -2,7 +2,7 @@
  * The agent's connection to the hub (docs/hub.md 6.1, 10): register with a full sync of the local store, push ops from the outbox
  * (in batches, acknowledged by the hub, a full sync when the hub asks for one), long-poll commands (the poll is also the heartbeat),
  * run them one at a time and report the result after the ops they caused (a `thread` command, a slow read that causes no ops, runs beside that
- * line instead: at most 2 at once, the rest wait among the thread commands only). Any failure degrades the client, which reconnects with a
+ * line instead: at most 2 at once, the rest wait among the thread commands only; `sessions-list` is such a read with a lane of its own: 1 at once, 2 waiting). Any failure degrades the client, which reconnects with a
  * backoff (1 s to 10 s by default) and syncs again; the local store keeps everything meanwhile. States: stopped, connecting,
  * connected, degraded, upgrade-required (the hub is newer), superseded (a newer instance of this app replaced this one).
  * Sessions: every full sync lists the sessions this app can reach (sessionIds(): live agents, workspaces, captured), so the hub can hand it
@@ -22,11 +22,13 @@ const AGENT = '/hub/v1/agent/'
 const BATCH = 100
 const SEEN_CIDS = 500
 const CALL_TIMEOUT_MS = 45_000
-/** Thread reads in flight at once (they are slow reads that cause no ops; see runThreads). */
-const MAX_THREAD_READS = 2
-/** Thread commands that may wait for a slot; the next one is answered busy at once. */
-const MAX_THREADS_WAITING = 8
-/** A thread read that has not settled by then gives its slot back (its late result is discarded; the hub answered at its own timeout, 15 s). */
+/**
+ * The lanes of the slow reads that cause no ops (see runLane): reads in flight at once, and commands that may wait for a slot (the next one is answered busy at once).
+ * thread is the phone's chat read; sessions-list (the follow-up's session list) has a lane of its own, one at a time and two waiting, so a burst of follow-ups can neither
+ * starve the chat reads nor be starved by them.
+ */
+const LANES = { thread: { reads: 2, waiting: 8 }, 'sessions-list': { reads: 1, waiting: 2 } }
+/** A read that has not settled by then gives its slot back (its late result is discarded; the hub answered at its own timeout, 15 s for a thread, 6 s for a list). */
 const THREAD_READ_TIMEOUT_MS = 20_000
 const SESSION_CHECK_MS = 15_000
 const RESYNC_EVERY_MS = 60_000
@@ -50,8 +52,9 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
   const stateListeners = new Set()
   const seen = new Set() // cids already accepted
   const pending = []
-  const threads = [] // thread commands waiting for one of the MAX_THREAD_READS slots
-  let threadReads = 0
+  const lanes = Object.entries(LANES).map(([kind, cfg]) => ({ kind, ...cfg, queue: [], active: 0 })) // each lane: the commands waiting for one of its slots, and the reads running
+  const laneOf = (kind) => lanes.find((l) => l.kind === kind)
+  const clearLanes = () => { for (const l of lanes) l.queue.length = 0 }
   let state = 'stopped'
   let running = false
   let connecting = false
@@ -129,7 +132,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     newCycle()
     mirror.stop()
     pending.length = 0
-    threads.length = 0
+    clearLanes()
     connecting = false
     log('hub connection ended: ' + next)
     setState(next)
@@ -140,7 +143,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     setState('degraded')
     mirror.stop()
     pending.length = 0
-    threads.length = 0
+    clearLanes()
     void connect()
   }
 
@@ -244,11 +247,12 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     if (seen.has(cmd.cid)) return
     seen.add(cmd.cid)
     if (seen.size > SEEN_CIDS) seen.delete(seen.values().next().value)
-    if (cmd.kind === 'thread') {
-      threads.push(cmd)
-      runThreads()
-      // Past the bound the newest one is turned away at once (late ones do not count: runThreads dropped them).
-      if (threads.length > MAX_THREADS_WAITING) { threads.pop(); void report(cmd.cid, { ok: false, error: 'busy' }) }
+    const lane = laneOf(cmd.kind) // slow reads that cause no ops (the session list of a follow-up todo is one too, in its own lane)
+    if (lane) {
+      lane.queue.push(cmd)
+      runLane(lane)
+      // Past the bound the newest one is turned away at once (late ones do not count: runLane dropped them).
+      if (lane.queue.length > lane.waiting) { lane.queue.pop(); void report(cmd.cid, { ok: false, error: 'busy' }) }
       return
     }
     pending.push(cmd)
@@ -265,18 +269,19 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     degrade('result')
   }
   /**
-   * Starts waiting thread commands while a slot is free. A thread read neither holds up the commands in drain() nor waits behind them: it causes
+   * Starts the waiting commands of one lane while it has a free slot. A read neither holds up the commands in drain() nor waits behind them: it causes
    * no ops (nothing to flush first) and its result is reported on its own. A result that comes after the connection was replaced is dropped.
    */
-  function runThreads() {
+  function runLane(lane) {
+    const { queue } = lane
     // A command past its deadline was answered by the hub itself (owner-timeout / unknown-outcome): reading it now would be for nobody.
-    for (let i = threads.length - 1; i >= 0; i--) if (Number.isFinite(threads[i].deadline) && now() >= threads[i].deadline) threads.splice(i, 1)
-    while (threads.length && threadReads < MAX_THREAD_READS && state === 'connected') {
-      const cmd = threads.shift()
+    for (let i = queue.length - 1; i >= 0; i--) if (Number.isFinite(queue[i].deadline) && now() >= queue[i].deadline) queue.splice(i, 1)
+    while (queue.length && lane.active < lane.reads && state === 'connected') {
+      const cmd = queue.shift()
       const cycle = ctl
-      threadReads++
+      lane.active++
       let released = false
-      const release = () => { if (released) return; released = true; threadReads--; runThreads() }
+      const release = () => { if (released) return; released = true; lane.active--; runLane(lane) }
       const timer = timers.setTimeout(release, THREAD_READ_TIMEOUT_MS) // a read that never settles frees its slot; its late result is dropped below
       timer?.unref?.()
       void (async () => {
@@ -336,7 +341,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
       newCycle()
       mirror.stop()
       pending.length = 0
-      threads.length = 0
+      clearLanes()
       connecting = false
       setState('stopped')
     },

@@ -275,7 +275,8 @@ export function createPausedTracker({ store, scan, dismissals, log = () => {} })
         updated++
       }
     }
-    for (const gone of open.values()) if (store.resolve(gone.id, { kind: 'recovered', by: 'scan' })) resolved++
+    // A card of the idle check (kinds ['idle']) is about a session that is NOT cut off: the scan never closes it (the user, a resume or the session itself does).
+    for (const gone of open.values()) if (!gone.payload?.kinds?.includes('idle') && store.resolve(gone.id, { kind: 'recovered', by: 'scan' })) resolved++
     if (added || resolved) log('paused sessions: ' + added + ' new, ' + resolved + ' no longer cut off')
     return { ok: true, added, updated, resolved, total: wanted.length }
   }

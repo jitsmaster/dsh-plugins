@@ -5,7 +5,7 @@
  * (hub/roles.js): a paired phone (device), this PC (desktop), nobody. A device is held to 120 requests a minute (the snapshot long poll
  * excluded) and can only do the item actions below; revoking it aborts its open long poll.
  */
-import { MAX_WAIT_MS, PREFIX, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
+import { CONFIRM_BAD_INPUT, MAX_WAIT_MS, PREFIX, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
 import { serveMobile } from '../mobile.js'
 import { createDeviceRoutes, sendLimited } from './device-routes.js'
 
@@ -23,8 +23,24 @@ const LOCAL_ONLY = new Set(['read', 'read-tip', 'tip-deeper', 'tip-todo', 'stop'
  */
 const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'todo', 'todo-confirm', 'todo-cancel', 'thread', 'post'])
 
+/** Client input in a log line: only safe characters, cut short (a line cannot be forged or flooded). Not a string: '?'. */
+const safeId = (value, max) => (typeof value === 'string' ? value.replace(/[^A-Za-z0-9_-]/g, '?').slice(0, max) : '?')
+
 /** The audit line of a phone's post (docs/hub.md 6.8): the device, the item and the length of the text. The text itself is never logged; the item id is client input, so it is cut to safe characters. */
-const postAudit = (deviceId, body) => 'post: device ' + deviceId + ' item ' + String(body.id).replace(/[^A-Za-z0-9_-]/g, '?').slice(0, 40) + ' chars ' + (typeof body.text === 'string' ? body.text.length : 0)
+const postAudit = (deviceId, body) => 'post: device ' + deviceId + ' item ' + safeId(body.id, 40) + ' chars ' + (typeof body.text === 'string' ? body.text.length : 0)
+
+/**
+ * The audit lines of a phone that sends a message into an EXISTING session through a follow-up todo (docs/hub.md 6.8), like a post: the device, the item (a confirm),
+ * the target session and the length of the text; never the text or the words. undefined for anything that is not a follow-up (the caller is a device and the body is checked here).
+ */
+function followUpAudit(deviceId, kind, body, store) {
+  if (kind === 'todo' && body.followUp !== undefined && body.followUp !== null) return 'followup-add: device ' + deviceId + ' chars ' + (typeof body.text === 'string' ? body.text.trim().length : 0)
+  if (kind !== 'todo-confirm') return undefined
+  const item = typeof body.id === 'string' ? store?.get(body.id) : undefined
+  if (item?.type !== 'todo' || item.kind !== 'followup') return undefined
+  const session = body.sessionId === undefined || body.sessionId === null || body.sessionId === '' ? item.suggested?.sessionId : body.sessionId
+  return 'followup-confirm: device ' + deviceId + ' item ' + safeId(item.id, 40) + ' session ' + safeId(session, 60) + ' chars ' + (typeof item.text === 'string' ? item.text.length : 0)
+}
 
 /** @param {{ hub: any, log?: (line: string) => void }} deps */
 export function createHttp({ hub, log = () => {} }) {
@@ -109,8 +125,11 @@ export function createHttp({ hub, log = () => {} }) {
     if (!originOk(req)) return send(res, 403, { error: 'bad-origin' })
     const body = await readJson(req)
     if (!body.value) return send(res, body.status, { error: 'bad-request' })
-    if (kind === 'post' && who.deviceId) log(postAudit(who.deviceId, body.value)) // a phone can prompt any session: leave a trace of who, which item and how long, never the text
-    return outcome(res, await hub.act(kind, body.value, { role: who.role, caller }))
+    if (who.deviceId) { // a phone can prompt any session (a post, or a follow-up todo): leave a trace of who, which item and session and how long, never the text
+      const line = kind === 'post' ? postAudit(who.deviceId, body.value) : followUpAudit(who.deviceId, kind, body.value, hub.store)
+      if (line) log(line)
+    }
+    return outcome(res, await hub.act(kind, body.value, { role: who.role, caller }), kind === 'todo-confirm' ? CONFIRM_BAD_INPUT : undefined)
   }
 
   function assetlinks(req, res) {

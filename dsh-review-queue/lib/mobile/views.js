@@ -4,12 +4,12 @@ import { state, subscribe, set, act, getCore, loadWorkspaces, startTodo, NEW_TOD
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { backHref, listModel, pausedNote, pausedView, screenFor, todoCardModel } from './model.js'
+import { backHref, listModel, pausedNote, pausedView, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
 import { bubbleChanged, canPost, createDraftBuffer, hasThread, isNearBottom, scrollPlan } from './thread.js'
-import { TODO_MAX, newTodoPayload, todoErrorText, workspaceChoices, workspacesNote } from './todo-form.js'
+import { FOLLOWUP_HINT, FOLLOWUP_MAX, FOLLOWUP_QUERY_PLACEHOLDER, FOLLOWUP_TEXT_PLACEHOLDER, TODO_MAX, isFollowUpDraft, newTodoPayload, todoErrorText, withTodoMode, workspaceChoices, workspacesNote } from './todo-form.js'
 
 export function useStore() {
   const [, tick] = useState(0)
@@ -239,22 +239,23 @@ function PrMergedBody({ item }) {
 }
 
 /**
- * A todo waiting for the user (awaiting confirmation, or failed): the suggested workspace, a dropdown preselected like the desktop,
- * Start (Retry when failed) and Cancel. Starting, started and cancelled are read-only text.
+ * A todo waiting for the user (awaiting confirmation, or failed): the suggested workspace (a follow-up: the suggested session), a dropdown
+ * preselected like the desktop, Start (a follow-up: Send; Retry when failed) and Cancel. Starting ("Sending…" for a follow-up), started and
+ * cancelled are read-only text.
  */
 function TodoBody({ item }) {
   const st = useStore()
   const [pick, setPick] = useState('')
   const busy = st.busy[item.id]
   const m = todoCardModel(getCore(), item, st.workspaces, pick || undefined)
-  useEffect(() => { if (m.canAct && !state.workspaces) loadWorkspaces() }, [m.canAct])
-  const start = async () => { if (await act('/v1/todo-confirm', { id: item.id, workspaceId: m.selected }, item.id)) go('/') }
-  const cancel = async () => { if (await act('/v1/todo-cancel', { id: item.id }, item.id)) go('/') }
+  useEffect(() => { if (m.needsWorkspaces && !state.workspaces) loadWorkspaces() }, [m.needsWorkspaces])
+  const start = async () => { if (await act('/v1/todo-confirm', todoConfirmBody(item, m.selected), item.id)) go('/') }
+  const cancel = async () => { if (await act('/v1/todo-cancel', todoCancelBody(item), item.id)) go('/') }
   return html`<div>
     <div class="text">${m.text}</div>
     ${m.sparc ? html`<div class="sub">Use SPARC</div>` : null}
     ${m.line ? html`<div class=${m.failed ? 'err' : 'sub'}>${m.line}</div>` : null}
-    ${m.canAct ? html`<select class="input" aria-label="Workspace" value=${m.selected} disabled=${busy} onChange=${(e) => setPick(e.target.value)}>
+    ${m.canAct ? html`<select class="input" aria-label=${m.selectLabel} value=${m.selected} disabled=${busy} onChange=${(e) => setPick(e.target.value)}>
         ${m.placeholder ? html`<option value="" disabled selected=${!m.selected}>${m.placeholder}</option>` : null}
         ${m.options.map((o) => html`<option key=${o.id} value=${o.id} selected=${o.id === m.selected}>${o.title}</option>`)}
       </select>
@@ -465,10 +466,11 @@ function NewTodoView() {
   const st = useStore()
   const draft = st.todoDraft
   const busy = st.busy[NEW_TODO_ID]
+  const follow = isFollowUpDraft(draft) // Follow up: the text goes to an existing session described in words (no workspace, no SPARC)
   const [message, setMessage] = useState(null)
-  useEffect(() => { if (!state.workspaces) loadWorkspaces() }, [])
-  const edit = (patch) => set({ todoDraft: { ...state.todoDraft, ...patch } })
-  const note = workspacesNote(st.workspaces, st.workspacesError)
+  useEffect(() => { if (!follow && !state.workspaces) loadWorkspaces() }, [follow]) // a follow-up never needs the workspaces
+  const edit = (patch) => set({ todoDraft: typeof patch === 'function' ? patch(state.todoDraft) : { ...state.todoDraft, ...patch } })
+  const note = follow ? null : workspacesNote(st.workspaces, st.workspacesError)
   const start = async () => {
     const payload = newTodoPayload(draft)
     if (!payload.ok) { setMessage(payload.message); return }
@@ -479,20 +481,30 @@ function NewTodoView() {
   }
   return html`<form class="card newtodo" onSubmit=${(e) => e.preventDefault()}>
     <h2>New todo</h2>
-    <textarea class="input ta" placeholder="What should the new session do?" maxlength=${TODO_MAX} value=${draft.text} disabled=${busy}
+    <div class="chips" role="group" aria-label="Kind of todo">
+      ${[['new', 'New session'], ['followup', 'Follow up']].map(([mode, label]) => html`<button key=${mode} type="button" class=${'fchip' + (follow === (mode === 'followup') ? ' on' : '')} aria-pressed=${follow === (mode === 'followup')} disabled=${busy}
+        onClick=${() => { setMessage(null); edit((d) => withTodoMode(d, mode)) }}>${label}</button>`)}
+    </div>
+    <textarea class="input ta" placeholder=${follow ? FOLLOWUP_TEXT_PLACEHOLDER : 'What should the new session do?'} maxlength=${TODO_MAX} value=${draft.text} disabled=${busy}
       onInput=${(e) => edit({ text: e.target.value })}></textarea>
     <div class="row"><${Mic} text=${draft.text} disabled=${busy} onText=${(t) => edit({ text: t })} /></div>
-    <label class="field">Workspace
+    ${follow ? html`<div class="inwrap followup-query">
+      <input class="input" type="text" required aria-label="Which session" placeholder=${FOLLOWUP_QUERY_PLACEHOLDER} maxlength=${FOLLOWUP_MAX} value=${draft.followUp || ''} disabled=${busy}
+        onInput=${(e) => edit({ followUp: e.target.value })} />
+      <${Mic} text=${draft.followUp || ''} disabled=${busy} onText=${(t) => edit({ followUp: t })} />
+    </div>` : null}
+    ${follow ? null : html`<label class="field">Workspace
       <select class="input" value=${draft.workspaceId} disabled=${busy} onChange=${(e) => edit({ workspaceId: e.target.value })}>
         ${workspaceChoices(st.workspaces).map((o) => html`<option key=${o.value} value=${o.value} selected=${o.value === draft.workspaceId}>${o.label}</option>`)}
       </select>
-    </label>
+    </label>`}
     ${note ? html`<div class="sub">${note}</div>` : null}
-    ${st.workspacesError || (st.workspaces && !st.workspaces.length) ? html`<div class="row"><button class="btn" type="button" onClick=${() => loadWorkspaces()}>Reload workspaces</button></div>` : null}
-    <label class="switch"><input type="checkbox" checked=${draft.sparc} disabled=${busy} onChange=${(e) => edit({ sparc: e.target.checked })} /> Use SPARC</label>
+    ${!follow && (st.workspacesError || (st.workspaces && !st.workspaces.length)) ? html`<div class="row"><button class="btn" type="button" onClick=${() => loadWorkspaces()}>Reload workspaces</button></div>` : null}
+    ${follow ? null : html`<label class="switch"><input type="checkbox" checked=${draft.sparc} disabled=${busy} onChange=${(e) => edit({ sparc: e.target.checked })} /> Use SPARC</label>`}
+    ${follow ? html`<div class="sub">${FOLLOWUP_HINT}</div>` : null}
     ${message ? html`<div class="err">${message}</div>` : null}
     <div class="row">
-      <button class="btn pri" type="button" disabled=${busy || !draft.text.trim()} onClick=${start}>${busy ? 'Starting…' : 'Start todo'}</button>
+      <button class="btn pri" type="button" disabled=${busy || !draft.text.trim()} onClick=${start}>${busy ? 'Starting…' : follow ? 'Add follow-up' : 'Start todo'}</button>
       <a class="btn" href="#/">Back</a>
     </div>
   </form>`

@@ -47,6 +47,9 @@ export function todoView(core, item) {
  * The interactive todo card, built with the desktop's own helpers: the sentence under the task (core.todoLine), the dropdown
  * (core.todoSelect: the user's pick, else the workspace the todo was given, else the suggestion) and what the card offers.
  * Awaiting-confirm and failed can be acted on (Start, or Retry when failed, and Cancel); starting, started and cancelled are read-only text.
+ * A follow-up (item.kind 'followup': the text goes to an EXISTING session) is the same card with sessions in place of workspaces: the helpers of core
+ * do the sentence and the dropdown (the user's pick, else the session sent to before, else the suggestion), the button reads Send (Retry when failed),
+ * and the workspaces are never needed.
  * @param {object} core the shared helpers
  * @param {object} item the todo item
  * @param {{ id: string, title: string }[] | null | undefined} workspaces the loaded workspaces (GET /v1/workspaces)
@@ -56,7 +59,9 @@ export function todoCardModel(core, item, workspaces, pick) {
   const select = core.todoSelect(item, pick, workspaces)
   const failed = core.todoCardState(item) === 'failed'
   const canAct = item.state === 'awaiting-confirm' || item.state === 'failed'
+  const followUp = isFollowUp(item)
   return {
+    kind: followUp ? 'followup' : 'todo',
     text: item.text,
     sparc: !!item.sparc,
     line: core.todoLine(item, pick, workspaces),
@@ -65,10 +70,22 @@ export function todoCardModel(core, item, workspaces, pick) {
     selected: select.value,
     options: select.options,
     placeholder: select.placeholder,
-    startLabel: failed ? 'Retry' : 'Start',
+    selectLabel: followUp ? 'Session' : 'Workspace',
+    startLabel: failed ? 'Retry' : followUp ? 'Send' : 'Start',
     canStart: canAct && !!select.value,
+    needsWorkspaces: canAct && !followUp, // a follow-up lists its own candidates
   }
 }
+
+/** A todo that is a follow-up for an existing session. */
+// Source of truth for what a follow-up item is: kind 'followup' of todo-follow-up.js (a browser copy of that check).
+const isFollowUp = (item) => !!item && item.kind === 'followup'
+
+/** The body of POST /v1/todo-confirm (Start, Send or Retry): the chosen session of a follow-up, else the chosen workspace. */
+export const todoConfirmBody = (item, selected) => (isFollowUp(item) ? { id: item.id, sessionId: selected } : { id: item.id, workspaceId: selected })
+
+/** The body of POST /v1/todo-cancel. */
+export const todoCancelBody = (item) => ({ id: item.id })
 
 /** How long the snapshot long-poll may wait: not at all right after an error, so the first answer (even "unchanged") clears the banner at once. */
 export function pollWaitMs(state, waitMs) {
