@@ -27,6 +27,7 @@ const RESUME_WINDOW_MS = 24 * 3600_000
 const STATE_RETENTION_MS = 7 * 24 * 3600_000
 const MAX_LOG_BYTES = 16 * 1024 * 1024
 const LIST_TIMEOUT_MS = 10_000
+const LIST_ATTEMPTS = 2
 const PROMPT_TIMEOUT_MS = 15_000
 const MAX_REASON = 300
 const MAX_USER_CHARS = 600
@@ -200,9 +201,13 @@ export function createIdleResumer({ controllerOf, registryOf = () => undefined, 
     const controller = controllerOf()
     if (typeof controller?.list !== 'function' || typeof controller?.prompt !== 'function') return { ok: false, error: 'no-controller' }
     let items
-    try { items = (await controller.list({}, AbortSignal.timeout(LIST_TIMEOUT_MS)))?.items } catch (error) {
-      log('idle-resume: listing the sessions failed: ' + reasonOf(error))
-      return { ok: false, error: 'list-failed' }
+    // The hub's list can be slow while it reads every app's sessions: a failed list is asked once more at once, only a second failure is reported.
+    for (let attempt = 1; items === undefined; attempt++) {
+      try { items = (await controller.list({}, AbortSignal.timeout(LIST_TIMEOUT_MS)))?.items ?? null } catch (error) {
+        if (attempt < LIST_ATTEMPTS) continue
+        log('idle-resume: listing the sessions failed: ' + reasonOf(error))
+        return { ok: false, error: 'list-failed' }
+      }
     }
     if (!Array.isArray(items)) return { ok: false, error: 'list-failed' }
     const archived = new Set((() => { try { return registryOf()?.archivedSessionIds ?? [] } catch { return [] } })().map(String))

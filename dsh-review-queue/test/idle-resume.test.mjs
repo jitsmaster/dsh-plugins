@@ -246,6 +246,24 @@ test('a list that fails is reported and nothing else happens; checks never overl
   assert.equal(await first, await second)
 })
 
+test('a list that times out once is asked again straight away; two failures in a row are reported and nothing else happens', async () => {
+  const s = setup({ items: [item(1)], logs: { [ID(1)]: { records: cutOff(), torn: false } } })
+  let calls = 0
+  s.controller.list = async () => { calls++; if (calls === 1) throw new Error('The operation was aborted due to timeout'); return { items: [item(1)] } }
+  const resumer = await make(s)
+  const result = await resumer.check()
+  assert.equal(result.ok, true)
+  assert.equal(calls, 2)
+  assert.equal(s.prompts.length, 1)
+  const t = setup()
+  let failures = 0
+  t.controller.list = async () => { failures++; throw new Error('The operation was aborted due to timeout') }
+  const r2 = await make(t)
+  assert.deepEqual(await r2.check(), { ok: false, error: 'list-failed' })
+  assert.equal(failures, 2)
+  assert.equal(t.logLines.filter((l) => l.includes('listing the sessions failed')).length, 1)
+})
+
 test('without a controller or a log reader the check says so and does nothing', async () => {
   const none = setup({ over: { controllerOf: () => undefined } })
   assert.deepEqual(await (await make(none)).check(), { ok: false, error: 'no-controller' })
