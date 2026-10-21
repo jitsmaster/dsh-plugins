@@ -21,7 +21,7 @@ self.addEventListener('push', (event) => {
   let data = {}
   try { data = (event.data && event.data.json()) || {} } catch { /* not JSON: still show something, Android requires a notification per push */ }
   const text = (v, fallback) => (typeof v === 'string' && v ? v : fallback)
-  event.waitUntil(self.registration.showNotification(text(data.title, 'Task list'), {
+  event.waitUntil(self.registration.showNotification(text(data.title, 'Coding Boss Review Queue'), {
     body: text(data.body, ''),
     tag: text(data.tag, 'task-list'), // one notification per type: a newer one replaces the older
     renotify: true,

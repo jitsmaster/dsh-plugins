@@ -22,7 +22,7 @@ function load({ stored = {}, fetchImpl } = {}) {
   const mod = registered.factory(() => stubReact)
   return { mod, T: mod.__test }
 }
-const OLD = 'The Task list server is older than this page and does not know this action. Restart DSH.'
+const OLD = 'The Coding Boss Review Queue server is older than this page and does not know this action. Restart DSH.'
 
 test('errorText: unknown-action, or any HTTP 404, means the server is older than this page', () => {
   const { T } = load()

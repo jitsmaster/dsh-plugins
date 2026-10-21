@@ -35,7 +35,7 @@ export function pausedNote(n) {
 
 /** The read-only card of a paused session: the facts the desktop card shows (core.pausedFacts) and where to act. No actions. */
 export function pausedView(core, item, now) {
-  return { facts: core.pausedFacts(item, now), note: 'To resume this session, use the Task list on the PC.' }
+  return { facts: core.pausedFacts(item, now), note: 'To resume this session, use the Coding Boss Review Queue on the PC.' }
 }
 
 /** The read-only todo card: the task, SPARC, and the same sentence the desktop card shows for the state (no workspaces are loaded here). */

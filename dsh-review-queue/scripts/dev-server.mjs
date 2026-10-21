@@ -148,7 +148,7 @@ export async function startDevServer({ port = 8788, host = '127.0.0.1', stateDir
     const vapid = loadOrCreateVapid({ io: jsonFileIo(join(stateDir, 'vapid.json'), { mode: 0o600 }) })
     // A separate store over the same file: it reads the devices at call time, so a device added or removed through the routes is seen.
     const store = createPushStore({ io, vapid, ...(realPush ? (sendPushOverride ? { sendPush: sendPushOverride } : {}) : { sendPush: recorder }) })
-    const payload = { title: String(body.title ?? 'Task list'), body: String(body.body ?? ''), tag: String(body.tag ?? 'task-list'), url: String(body.url ?? '#/') }
+    const payload = { title: String(body.title ?? 'Coding Boss Review Queue'), body: String(body.body ?? ''), tag: String(body.tag ?? 'task-list'), url: String(body.url ?? '#/') }
     const opts = { ttl: Number(body.ttl) || 300, urgency: body.urgency ?? 'normal', topic: String(body.topic ?? payload.tag) }
     const targets = store.devices().filter((d) => body.device === undefined || d.id === body.device)
     const results = []

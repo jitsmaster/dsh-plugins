@@ -26,10 +26,10 @@ test('index.html makes the Home Screen app standalone: apple-mobile-web-app-capa
   assert.equal(found[0].content, 'yes')
 })
 
-test('index.html names the Home Screen app "Task list"', () => {
+test('index.html names the Home Screen app "Coding Boss Review Queue"', () => {
   const found = meta('apple-mobile-web-app-title')
   assert.equal(found.length, 1)
-  assert.equal(found[0].content, 'Task list')
+  assert.equal(found[0].content, 'Coding Boss Review Queue')
 })
 
 test('index.html sets the iOS status bar style to black', () => {

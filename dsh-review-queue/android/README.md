@@ -1,4 +1,4 @@
-# Review Queue Android shell (Trusted Web Activity)
+# Coding Boss Review Queue Android shell (Trusted Web Activity)
 
 A thin Android app that opens the hub's phone page (`/review-queue/m/`) full screen in Chrome (Trusted Web Activity, library
 `androidbrowserhelper` 2.7.4). Design and decisions: [../docs/hub.md](../docs/hub.md) sections 4 and 11. This folder is **not** shipped in the

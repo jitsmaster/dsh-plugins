@@ -1,6 +1,6 @@
 {
-  "name": "Task list",
-  "short_name": "Task list",
+  "name": "Coding Boss Review Queue",
+  "short_name": "Coding Boss Review Queue",
   "description": "What is waiting on you across your DSH sessions.",
   "start_url": "./",
   "scope": "./",

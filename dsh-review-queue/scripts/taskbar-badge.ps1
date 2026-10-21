@@ -78,7 +78,7 @@ if ($Count -le 0) {
     $hr = [Native]::SetOverlay($hwnd, [IntPtr]::Zero, '')
 } else {
     $icon = New-BadgeIcon $Count
-    $label = if ($Count -eq 1) { '1 item waiting in the Task list' } else { "$Count items waiting in the Task list" }
+    $label = if ($Count -eq 1) { '1 item waiting in the Coding Boss Review Queue' } else { "$Count items waiting in the Coding Boss Review Queue" }
     $hr = [Native]::SetOverlay($hwnd, $icon, $label)
     [void][Native]::DestroyIcon($icon)
 }

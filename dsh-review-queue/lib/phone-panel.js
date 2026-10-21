@@ -9,7 +9,7 @@
 /** How often a mounted panel re-reads the device list, so a phone paired while the panel is open shows up without leaving it. */
 export const PHONE_REFRESH_MS = 3000
 
-const HUB_DOWN = 'The hub is not running, so phones cannot be paired or managed right now (see the notice at the top of the task list).'
+const HUB_DOWN = 'The hub is not running, so phones cannot be paired or managed right now (see the notice at the top of the Coding Boss Review Queue).'
 
 /** The words for a failed call. */
 function errorText(status, json) {

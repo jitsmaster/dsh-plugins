@@ -110,7 +110,7 @@ test('for every filter chip and a search the phone list is the desktop list: sam
 
 test('after a failed or unauthorised poll the next request does not long-wait, so the banner clears as soon as the link is back', () => {
   assert.equal(pollWaitMs({ error: null, auth: false }, 20000), 20000)
-  assert.equal(pollWaitMs({ error: 'Task list unreachable', auth: false }, 20000), 0)
+  assert.equal(pollWaitMs({ error: 'Coding Boss Review Queue unreachable', auth: false }, 20000), 0)
   assert.equal(pollWaitMs({ error: null, auth: true }, 20000), 0)
 })
 

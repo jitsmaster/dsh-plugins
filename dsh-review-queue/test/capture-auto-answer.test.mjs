@@ -229,7 +229,7 @@ test('after the auto answer a done card for the session describes the decision',
   await w.advance(110_000)
   const [card] = w.doneCards()
   assert.ok(card, 'a done card was added')
-  const text = 'The question "Which port?" was about to time out, so the task list answered it for you with the recommended option: "' + REC + '". The assistant received that as the answer; you did not choose it. Reply in this session to change course.'
+  const text = 'The question "Which port?" was about to time out, so the Coding Boss Review Queue answered it for you with the recommended option: "' + REC + '". The assistant received that as the answer; you did not choose it. Reply in this session to change course.'
   assert.equal(card.status, 'open')
   assert.equal(card.title, 'Question auto-answered')
   assert.equal(card.summary, text)
@@ -261,7 +261,7 @@ test('with several questions the card text lists each question and the option ch
   await w.advance(110_000)
   const [card] = w.doneCards()
   assert.ok(card, 'a done card was added')
-  for (const part of ['Which port?', REC, 'Which host?', 'Y (Recommended)', 'the task list answered them for you with the recommended options', 'The assistant received those as the answers; you did not choose them.', 'Reply in this session to change course.']) assert.ok(card.summary.includes(part), part + ' in ' + card.summary)
+  for (const part of ['Which port?', REC, 'Which host?', 'Y (Recommended)', 'the Coding Boss Review Queue answered them for you with the recommended options', 'The assistant received those as the answers; you did not choose them.', 'Reply in this session to change course.']) assert.ok(card.summary.includes(part), part + ' in ' + card.summary)
 })
 
 test('the decision card is not sent to the summarizer and is never hidden as no-action', async (t) => {

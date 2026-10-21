@@ -24,11 +24,11 @@ export function recommendedAnswers(questions) {
   return answers
 }
 
-/** The text of the done card: what was about to time out and which option the task list (not the user) gave the assistant as the answer. */
+/** The text of the done card: what was about to time out and which option the Coding Boss Review Queue (not the user) gave the assistant as the answer. */
 export function autoAnswerText(questions, answers) {
   const quoted = (text) => '"' + text + '"'
   const lines = questions.map((q) => quoted(cleanText(q.question, { maxChars: MAX_QUESTION_CHARS })) + (questions.length > 1 ? ': ' + quoted(shownLabel(answers.find((a) => a.id === q.id)?.selected[0] ?? '')) : ''))
   const tail = ' Reply in this session to change course.'
-  if (questions.length === 1) return 'The question ' + lines[0] + ' was about to time out, so the task list answered it for you with the recommended option: ' + quoted(shownLabel(answers[0].selected[0])) + '. The assistant received that as the answer; you did not choose it.' + tail
-  return questions.length + ' questions were about to time out, so the task list answered them for you with the recommended options: ' + lines.join('; ') + '. The assistant received those as the answers; you did not choose them.' + tail
+  if (questions.length === 1) return 'The question ' + lines[0] + ' was about to time out, so the Coding Boss Review Queue answered it for you with the recommended option: ' + quoted(shownLabel(answers[0].selected[0])) + '. The assistant received that as the answer; you did not choose it.' + tail
+  return questions.length + ' questions were about to time out, so the Coding Boss Review Queue answered them for you with the recommended options: ' + lines.join('; ') + '. The assistant received those as the answers; you did not choose them.' + tail
 }

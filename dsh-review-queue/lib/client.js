@@ -694,7 +694,7 @@ function imageFilesOf(data) {
 				} catch (e) {
 					if (e && e.name === "AbortError" && !stopped) continue; // our own abort: ask again at once
 					fails++;
-					if (!stopped) set({ error: "Task list unreachable (" + String((e && e.message) || e) + "). Is dsh-review-queue loaded? Restart DSH after installing it." });
+					if (!stopped) set({ error: "Coding Boss Review Queue unreachable (" + String((e && e.message) || e) + "). Is dsh-review-queue loaded? Restart DSH after installing it." });
 					await new Promise((r) => setTimeout(r, Math.min(10000, 1000 * fails)));
 				}
 			}
@@ -749,7 +749,7 @@ function imageFilesOf(data) {
 				"bad-images": "An attached image is not valid. Remove it and paste it again.", "too-many-images": "At most " + IMAGE_MAX + " images can be attached.", "unknown-image": "An attached image is no longer on the PC. Remove it and paste it again.", "bad-image": "That is not an image the session can take (png, jpeg, webp or gif).", "too-large": "That image is over 8 MB.",
 		};
 
-		const OLD_SERVER = "The Task list server is older than this page and does not know this action. Restart DSH.";
+		const OLD_SERVER = "The Coding Boss Review Queue server is older than this page and does not know this action. Restart DSH.";
 		/** The words for a failed action. An unknown route is HTTP 404 (new servers say "unknown-action", an OLD server that lacks the
 		 *  route says "not-found", so any 404 counts); a missing item is a 409 "not-found" and keeps its own text. */
 		function errorText(status, body) {
@@ -1480,7 +1480,7 @@ function imageFilesOf(data) {
 			const n = snap ? waitingCount(snap.open) : 0;
 			const paused = snap ? pausedCount(snap.open) : 0;
 			const sessions = sessionsText(snap && snap.sessions);
-			return h("div", { className: "rq-head" }, h("h2", null, "Task list"), h("span", { className: "rq-count" }, n),
+			return h("div", { className: "rq-head" }, h("h2", null, "Coding Boss Review Queue"), h("span", { className: "rq-count" }, n),
 				sessions ? h("span", { className: "rq-count rq-sess", title: sessionsTitle }, sessions) : null,
 				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
 				h("span", { className: "rq-grow" }),
@@ -1596,7 +1596,7 @@ function imageFilesOf(data) {
 			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), tip);
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
 			const extra = h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Task list" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
@@ -1635,7 +1635,7 @@ function imageFilesOf(data) {
 			ensureStyle();
 			const st = useStore();
 			const n = st.snap ? waitingCount(st.snap.open) : 0;
-			return h("span", { className: "rq rq-hwrap" }, h("button", { className: "rq-hbtn" + (st.overlay ? " on" : ""), "data-rq": "anchor", title: st.overlay ? "Close the task list" : "Open the task list (" + n + " waiting)", "aria-keyshortcuts": "Control+Alt+L", "aria-label": "Task list", "aria-expanded": st.overlay, onClick: () => setOverlay(!st.overlay) },
+			return h("span", { className: "rq rq-hwrap" }, h("button", { className: "rq-hbtn" + (st.overlay ? " on" : ""), "data-rq": "anchor", title: st.overlay ? "Close the Coding Boss Review Queue" : "Open the Coding Boss Review Queue (" + n + " waiting)", "aria-keyshortcuts": "Control+Alt+L", "aria-label": "Coding Boss Review Queue", "aria-expanded": st.overlay, onClick: () => setOverlay(!st.overlay) },
 				"✔", n > 0 ? h("span", { className: "b" }, n > 99 ? "99+" : n) : null));
 		}
 
@@ -1669,7 +1669,7 @@ function imageFilesOf(data) {
 			ctx.effect(() => (typeof window === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installHotkey(window)), "review-queue: hotkey");
 			ctx.effect(() => (typeof window === "undefined" || typeof document === "undefined" || typeof window.addEventListener !== "function" ? () => {} : installDraftFlush(window, document)), "review-queue: todo draft flush");
 			// order 1000: after every other utility, i.e. next to the right-sidebar (corner) button.
-			ctx.effect(() => ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({ name: "conversation.session.header.utilities", id: ANCHOR_ID, order: 1000, label: () => "Task list" }, HeaderAnchor)), "review-queue: header button");
+			ctx.effect(() => ctx.slots.inject("conversation.session.header.utilities", () => ctx.slots.register({ name: "conversation.session.header.utilities", id: ANCHOR_ID, order: 1000, label: () => "Coding Boss Review Queue" }, HeaderAnchor)), "review-queue: header button");
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */

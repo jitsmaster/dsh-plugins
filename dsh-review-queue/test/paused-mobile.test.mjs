@@ -42,7 +42,7 @@ test('pausedView is read only: the facts and a note where to act, no actions', a
   const { pausedView } = await model()
   const v = pausedView(core, paused('a'), 1000 + 5 * 60_000)
   assert.deepEqual(plain(v.facts), ['Cut off in the middle of a turn', 'Last activity 5 min ago'])
-  assert.equal(v.note, 'To resume this session, use the Task list on the PC.')
+  assert.equal(v.note, 'To resume this session, use the Coding Boss Review Queue on the PC.')
   assert.equal(v.actions, undefined)
 })
 

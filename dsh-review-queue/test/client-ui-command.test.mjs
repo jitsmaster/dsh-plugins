@@ -108,15 +108,16 @@ test('end to end: the poll loop sends the ui sequence back and applies a command
   } finally { cleanups.forEach((f) => f()) }
 })
 
-test('user-visible labels say "Task list", identifiers keep the plugin name', () => {
-  assert.match(source, /h\("h2", null, "Task list"\)/)
-  assert.match(source, /"aria-label": "Task list"/)
-  assert.match(source, /title: st\.overlay \? "Close the task list" : "Open the task list \("/)
-  assert.match(source, /label: \(\) => "Task list"/)
-  assert.match(source, /"Task list unreachable \("/)
+test('user-visible labels say "Coding Boss Review Queue", identifiers keep the plugin name', () => {
+  assert.match(source, /h\("h2", null, "Coding Boss Review Queue"\)/)
+  assert.match(source, /"aria-label": "Coding Boss Review Queue"/)
+  assert.match(source, /title: st\.overlay \? "Close the Coding Boss Review Queue" : "Open the Coding Boss Review Queue \("/)
+  assert.match(source, /label: \(\) => "Coding Boss Review Queue"/)
+  assert.match(source, /"Coding Boss Review Queue unreachable \("/)
   const strings = [...source.matchAll(/"([^"\n]*)"/g)].map((m) => m[1])
-  const visible = strings.filter((s) => /\b(review queue|review)\b/i.test(s) && !/^(reviewed|review-queue|dsh-review-queue|\/review-queue|dsh-review-queue\..*|review-queue: .*)$/.test(s) && !/Is dsh-review-queue loaded/.test(s))
-  assert.deepEqual(visible, [], 'no user-visible "Review queue"/"Review" label is left')
+  const visible = strings.filter((s) => /\b(review queue|review)\b/i.test(s.split('Coding Boss Review Queue').join('')) && !/^(reviewed|review-queue|dsh-review-queue|\/review-queue|dsh-review-queue\..*|review-queue: .*)$/.test(s) && !/Is dsh-review-queue loaded/.test(s))
+  assert.deepEqual(visible, [], 'no user-visible "Review queue"/"Review" label is left besides the brand name')
+  assert.deepEqual(strings.filter((x) => /task list/i.test(x)), [], 'no user-visible "Task list" label is left')
   assert.match(source, /const ANCHOR_ID = "review-queue"/)
   assert.match(source, /const API = "\/review-queue"/)
   assert.match(source, /"dsh-review-queue\.overlay"/)

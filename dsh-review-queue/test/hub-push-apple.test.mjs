@@ -89,7 +89,7 @@ async function subjectOf(t, config, hubOver = {}) {
   const h = await startPhoneHub(t, { config, sendPush: async (subscription, payload, opts) => { calls.push(opts); return { ok: true, status: 201, gone: false } }, ...hubOver })
   const added = h.hub.push.upsert({ subscription: appleSub(), name: 'iPhone' })
   assert.equal(added.ok, true)
-  const sent = await h.hub.push.send(added.device.id, { title: 'Task list', body: 'x', tag: 'x', url: '#/' })
+  const sent = await h.hub.push.send(added.device.id, { title: 'Coding Boss Review Queue', body: 'x', tag: 'x', url: '#/' })
   assert.equal(sent.ok, true)
   assert.equal(calls.length, 1)
   return { subject: calls[0].vapid.subject, h }

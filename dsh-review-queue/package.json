@@ -1,7 +1,7 @@
 {
   "name": "dsh-review-queue",
   "version": "0.1.0",
-  "description": "Review queue for DeepSeek Harness: completed work and open questions/permission requests from every session, in a full-screen overlay opened from a button in the session header.",
+  "description": "Coding Boss Review Queue for DeepSeek Harness: completed work and open questions/permission requests from every session, in a full-screen overlay opened from a button in the session header.",
   "type": "module",
   "main": "index.js",
   "exports": {

@@ -5,7 +5,7 @@
  * only its own subscription (anything else is "unknown device"); without a deviceId (the desktop, the standalone server) every record is in reach.
  */
 
-const TEST_PAYLOAD = { title: 'Task list', body: 'Test notification', tag: 'test', url: '#/' }
+const TEST_PAYLOAD = { title: 'Coding Boss Review Queue', body: 'Test notification', tag: 'test', url: '#/' }
 const TEST_TTL_SEC = 300
 // Validation failures from push.js are the phone's mistake (400); a full device list is a conflict.
 const STATUS = { 'unknown-device': 404, 'too-many-devices': 409 }

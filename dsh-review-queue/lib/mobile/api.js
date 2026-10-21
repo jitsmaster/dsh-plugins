@@ -123,7 +123,7 @@ async function pollLoop() {
     } catch (e) {
       if (e && e.name === 'AbortError' && !timedOut) continue // the page woke up or came back online: ask again at once
       fails++
-      if (!stopped) set({ error: 'Task list unreachable (' + String((e && e.message) || e) + '). Retrying…' })
+      if (!stopped) set({ error: 'Coding Boss Review Queue unreachable (' + String((e && e.message) || e) + '). Retrying…' })
       await new Promise((r) => setTimeout(r, Math.min(10000, 1000 * fails)))
     } finally { clearTimeout(timeout) }
   }

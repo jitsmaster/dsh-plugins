@@ -60,7 +60,7 @@ test('a push with no usable data still shows something (Android requires it) and
     const { listeners, log } = boot()
     await fire(listeners, 'push', ev)
     assert.equal(log.shown.length, 1)
-    assert.equal(log.shown[0].title, 'Task list')
+    assert.equal(log.shown[0].title, 'Coding Boss Review Queue')
     assert.equal(log.shown[0].options.tag, 'task-list')
     assert.equal(log.shown[0].options.data.url, SCOPE)
   }

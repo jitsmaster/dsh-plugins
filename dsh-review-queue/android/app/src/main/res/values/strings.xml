@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- default_url, twa_host, twa_path_prefix and asset_statements are generated into values/twa.xml by tools/gen-resources.mjs (build.ps1 runs it). -->
 <resources>
-    <string name="app_name" translatable="false">Review Queue</string>
+    <string name="app_name" translatable="false">Coding Boss Review Queue</string>
 </resources>

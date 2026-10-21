@@ -25,7 +25,7 @@ export function PairView({ message }) {
   return html`<div class="app"><header><h1>Pair this phone</h1></header>
     <main><form class="pair" onSubmit=${submit}>
       ${message ? html`<div class="banner">${message}</div>` : null}
-      <p class="sub">On the desktop open the task list, press <strong>Phone</strong>, then <strong>Pair a phone</strong>. Type the code it shows. The code works once and only for five minutes.</p>
+      <p class="sub">On the desktop open the Coding Boss Review Queue, press <strong>Phone</strong>, then <strong>Pair a phone</strong>. Type the code it shows. The code works once and only for five minutes.</p>
       <label class="sub" for="pair-code">Code</label>
       <input id="pair-code" class="input" value=${code} autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" placeholder="ABCD-EFGH" onInput=${(e) => setCode(e.target.value)} />
       <label class="sub" for="pair-name">Name of this phone</label>

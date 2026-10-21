@@ -180,7 +180,7 @@ test('quiet hours: done and merged wait and arrive as one count-only digest when
   assert.deepEqual(sent, [], 'held for the night')
   clock.advance(8 * 3600_000 + 5000); await settle()
   assert.equal(sent.length, 1)
-  assert.deepEqual(sent[0].payload, { title: 'Task list', body: '2 done, 1 PR merged waiting', tag: 'digest', url: '#/' })
+  assert.deepEqual(sent[0].payload, { title: 'Coding Boss Review Queue', body: '2 done, 1 PR merged waiting', tag: 'digest', url: '#/' })
   assert.equal(sent[0].opts.urgency, 'normal')
 })
 

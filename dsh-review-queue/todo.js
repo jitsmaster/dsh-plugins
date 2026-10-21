@@ -171,7 +171,7 @@ export function sparcPrompt(text, skill) {
   const head = [
     text, '',
     'This is the /sparc flow for a NEW task (not a handoff): the user chose SPARC for the task above, so treat Step -1 as answered ("no handoff to resume, start a new task") and go on with the task.',
-    'The user is not watching this session: anything you need to ask or get approved reaches them in their Task list, so use ask_user_question when you need a decision.',
+    'The user is not watching this session: anything you need to ask or get approved reaches them in their Coding Boss Review Queue, so use ask_user_question when you need a decision.',
     'Remain in SPARC mode for the whole session, including writing the next handoff in the sparc format when needed.',
   ].join('\n')
   return typeof skill === 'string' && skill.trim() ? head + '\n\n--- modes:sparc skill content ---\n' + skill : head + '\nInvoke Skill(modes:sparc) if available.'

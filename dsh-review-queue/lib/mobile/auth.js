@@ -22,7 +22,7 @@ export const isAuthFailure = (status, body) => status === 401 && !!body && body.
 
 export const authFailureText = (hadToken) => (hadToken
   ? 'This phone was signed out: it was removed on the desktop, or not used for 180 days. Pair it again with a new code.'
-  : 'Pair this phone first: on the desktop open the task list, press Phone, then Pair a phone, and enter the code here.')
+  : 'Pair this phone first: on the desktop open the Coding Boss Review Queue, press Phone, then Pair a phone, and enter the code here.')
 
 /** "#/pair/ABCD-EFGH" -> { isPair: true, code }; the code travels only in the fragment, so it never reaches a server log. */
 export function parsePairHash(hash) {
@@ -39,7 +39,7 @@ export function pairErrorText(status, body, retryAfter) {
   if (status === 0) return 'Could not reach the hub. Is Tailscale on and the address right?'
   if (code === 'bad-code') return 'That code is wrong, expired or already used. Ask for a new one on the desktop (Phone, then Pair a phone).'
   if (code === 'rate-limited') return 'Too many tries. ' + (Number(retryAfter) > 0 ? 'Wait ' + Number(retryAfter) + ' seconds and try again.' : 'Wait a moment and try again.')
-  if (code === 'login-not-allowed') return 'This Tailscale account is not allowed to use the task list.'
+  if (code === 'login-not-allowed') return 'This Tailscale account is not allowed to use the Coding Boss Review Queue.'
   if (code === 'too-many-devices') return 'Too many phones are paired. Remove one on the desktop first.'
   if (!body && status >= 400 && status < 500) return 'This address does not answer like the hub (HTTP ' + status + '). Open the address of the hub, not the DSH page.'
   return 'Pairing failed (' + (code || 'HTTP ' + status) + ').'

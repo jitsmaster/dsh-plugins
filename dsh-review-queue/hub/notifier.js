@@ -117,7 +117,7 @@ export function createNotifier({ store, push, now = Date.now, timers = globalThi
     const waiting = [...entry.ids].map((id) => store.get(id)).filter((i) => i?.status === 'open')
     const parts = DIGEST_WORDS.map(([type, words]) => [waiting.filter((i) => i.type === type).length, words]).filter(([n]) => n > 0).map(([n, words]) => n + ' ' + words)
     if (!parts.length) return
-    const ok = await deliver(record, { title: 'Task list', body: parts.join(', ') + ' waiting', tag: 'digest', url: '#/' }, 'normal', 'digest')
+    const ok = await deliver(record, { title: 'Coding Boss Review Queue', body: parts.join(', ') + ' waiting', tag: 'digest', url: '#/' }, 'normal', 'digest')
     log('push digest (' + waiting.length + ' items): ' + (ok ? 'sent' : 'not delivered'))
   }
 
