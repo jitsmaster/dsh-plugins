@@ -266,12 +266,17 @@ function TodoBody({ item }) {
   </div>`
 }
 
-/** A session a restart cut off: read only. The phone shows why it is listed; resuming or dismissing it is done at the PC. */
+/** A session a restart cut off: the phone shows why it is listed and can Dismiss it (it needs no action); resuming it is done at the PC. */
 function PausedBody({ item }) {
+  const st = useStore()
+  const busy = st.busy[item.id]
   const v = pausedView(getCore(), item, now())
   return html`<div>
     ${v.facts.map((f, i) => html`<div class=${i === 0 ? 'text' : 'sub'} key=${i}>${f}</div>`)}
     <div class="sub">${v.note}</div>
+    <div class="row">
+      <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/paused-dismiss', { id: item.id }, item.id)) go('/') }}>Dismiss</button>
+    </div>
   </div>`
 }
 

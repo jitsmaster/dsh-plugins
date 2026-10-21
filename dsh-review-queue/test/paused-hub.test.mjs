@@ -54,7 +54,7 @@ test('a refusal of the owner app (the session is gone) reaches the desktop as a 
   assert.deepEqual([res.status, res.json], [409, { ok: false, error: 'session-gone' }])
 })
 
-test('the phone sees paused items in the list but may not resume or dismiss them: 403 desktop-only, nothing queued', async (t) => {
+test('the phone sees paused items and may dismiss one (the owner app gets paused-dismiss) but not resume it: 403 desktop-only', async (t) => {
   const h = await startPhoneHub(t)
   const a = agentOf(h.port)
   await a.register({ sync: sync() })
@@ -64,18 +64,21 @@ test('the phone sees paused items in the list but may not resume or dismiss them
   const item = snap.json.open.find((i) => i.type === 'paused')
   assert.deepEqual([item.sessionTitle, item.title], ['Fix it', 'Fix it'])
   assert.match(item.spoken.headline, /^Item 1\. Paused session Fix it/)
-  for (const kind of ['paused-resume', 'paused-dismiss']) {
-    const res = await p.call('POST', P + '/v1/' + kind, { id: a.itemId(1) })
-    assert.deepEqual([res.status, res.json.error], [403, 'desktop-only'], kind)
-  }
+  const resume = await p.call('POST', P + '/v1/paused-resume', { id: a.itemId(1) })
+  assert.deepEqual([resume.status, resume.json.error], [403, 'desktop-only'], 'paused-resume')
   assert.deepEqual((await a.poll(0, 0)).json.commands, [])
+  const pending = p.call('POST', P + '/v1/paused-dismiss', { id: a.itemId(1) })
+  const cmd = (await a.poll(0, 3000)).json.commands[0]
+  assert.deepEqual([cmd.kind, cmd.itemId], ['paused-dismiss', a.itemId(1)])
+  await a.result(cmd.cid, { ok: true })
+  assert.deepEqual([(await pending).status, (await pending).json], [200, { ok: true }])
 })
 
-test('DEVICE_ACTIONS has no paused action on the phone list', () => {
+test('DEVICE_ACTIONS has paused-dismiss but not paused-resume on the phone list', () => {
   const http = readFileSync(join(root, 'hub', 'http.js'), 'utf8')
   const m = /const DEVICE_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(http)
   const actions = m[1].split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean).sort()
-  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'deny', 'late-answer', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
+  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'deny', 'late-answer', 'paused-dismiss', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
 })
 
 test('a paused item sends no push: the phone is told nothing about it', () => {

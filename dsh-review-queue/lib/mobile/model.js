@@ -29,13 +29,13 @@ export function listModel(core, snap, filter) {
 export function pausedNote(n) {
   if (!n) return undefined
   return n === 1
-    ? '1 session was paused by a restart. Resume or dismiss it at the PC.'
-    : n + ' sessions were paused by a restart. Resume or dismiss them at the PC.'
+    ? '1 session was paused by a restart. Resume it at the PC, or dismiss it here.'
+    : n + ' sessions were paused by a restart. Resume them at the PC, or dismiss them here.'
 }
 
-/** The read-only card of a paused session: the facts the desktop card shows (core.pausedFacts) and where to act. No actions. */
+/** The card of a paused session: the facts the desktop card shows (core.pausedFacts) and where to act. Resume is for the PC; Dismiss is on the card (views.js PausedBody). */
 export function pausedView(core, item, now) {
-  return { facts: core.pausedFacts(item, now), note: 'To resume this session, use the Coding Boss Review Queue on the PC.' }
+  return { facts: core.pausedFacts(item, now), note: 'To resume this session, use the Coding Boss Review Queue on the PC. If it needs no action, dismiss it here.' }
 }
 
 /** The read-only todo card: the task, SPARC, and the same sentence the desktop card shows for the state (no workspaces are loaded here). */

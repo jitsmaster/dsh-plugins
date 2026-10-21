@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
-// The phone shows paused sessions read-only: an indicator and a list, never a Resume or a Dismiss (DEVICE_ACTIONS stays as it is).
+// The phone lists paused sessions and can Dismiss one (they need no action); Resume stays at the PC.
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 function loadOverlay() {
   let registered
@@ -34,21 +34,23 @@ test('the list model: paused sessions do not raise the waiting count and have th
 test('pausedNote is the indicator line: how many, and where to resume them', async () => {
   const { pausedNote } = await model()
   assert.equal(pausedNote(0), undefined)
-  assert.equal(pausedNote(1), '1 session was paused by a restart. Resume or dismiss it at the PC.')
-  assert.equal(pausedNote(3), '3 sessions were paused by a restart. Resume or dismiss them at the PC.')
+  assert.equal(pausedNote(1), '1 session was paused by a restart. Resume it at the PC, or dismiss it here.')
+  assert.equal(pausedNote(3), '3 sessions were paused by a restart. Resume them at the PC, or dismiss them here.')
 })
 
-test('pausedView is read only: the facts and a note where to act, no actions', async () => {
+test('pausedView gives the facts and a note: resume at the PC, dismiss here', async () => {
   const { pausedView } = await model()
   const v = pausedView(core, paused('a'), 1000 + 5 * 60_000)
   assert.deepEqual(plain(v.facts), ['Cut off in the middle of a turn', 'Last activity 5 min ago'])
-  assert.equal(v.note, 'To resume this session, use the Coding Boss Review Queue on the PC.')
+  assert.equal(v.note, 'To resume this session, use the Coding Boss Review Queue on the PC. If it needs no action, dismiss it here.')
   assert.equal(v.actions, undefined)
 })
 
-test('the phone has no way to resume or dismiss: no route in its code, nothing on its action list, a style for the chip', () => {
+test('the phone can dismiss but not resume: only the dismiss route in its code, a Dismiss button on the card, a style for the chip', () => {
   const mobile = ['api.js', 'views.js', 'model.js', 'app.js', 'core.js'].map((f) => readFileSync(join(root, 'lib', 'mobile', f), 'utf8')).join('\n')
-  assert.ok(!/paused-resume|paused-dismiss|paused-scan/.test(mobile))
+  assert.ok(!/paused-resume|paused-scan/.test(mobile))
+  assert.ok(/'\/v1\/paused-dismiss'/.test(mobile))
+  assert.match(readFileSync(join(root, 'lib', 'mobile', 'views.js'), 'utf8'), />Dismiss<\/button>/)
   assert.ok(/PausedBody/.test(readFileSync(join(root, 'lib', 'mobile', 'views.js'), 'utf8')))
   assert.ok(/\.chip\.paused/.test(readFileSync(join(root, 'lib', 'mobile', 'style.css'), 'utf8')))
 })
