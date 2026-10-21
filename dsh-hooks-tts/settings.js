@@ -24,7 +24,7 @@ function validate(partial) {
     if (!Number.isFinite(n) || n < 0 || n > 99) throw new Error('warnPercent must be 0 (off) to 99')
     out.warnPercent = Math.round(n)
   }
-  for (const key of ['ttsEnabled', 'autoResumeHandoff', 'handoffAhead', 'alwaysFullAccess', 'pollPrComments', 'voiceControl', 'decideChime', 'keepAwake', 'keepDisplayOn']) {
+  for (const key of ['ttsEnabled', 'autoResumeHandoff', 'archiveAfterHandoff', 'handoffAhead', 'alwaysFullAccess', 'pollPrComments', 'voiceControl', 'decideChime', 'keepAwake', 'keepDisplayOn']) {
     if (partial[key] !== undefined) {
       if (typeof partial[key] !== 'boolean') throw new Error(`${key} must be true or false`)
       out[key] = partial[key]
@@ -40,7 +40,7 @@ function validate(partial) {
  */
 export function createSettings(stateDir, defaults, onError = () => {}) {
   const path = join(stateDir, 'settings.json')
-  const base = { contextCapTokens: 400_000, warnPercent: 85, ttsEnabled: true, autoResumeHandoff: true, handoffAhead: true, alwaysFullAccess: false, pollPrComments: true, voiceControl: false, decideChime: true, keepAwake: true, keepDisplayOn: false, ...validate(defaults) }
+  const base = { contextCapTokens: 400_000, warnPercent: 85, ttsEnabled: true, autoResumeHandoff: true, archiveAfterHandoff: true, handoffAhead: true, alwaysFullAccess: false, pollPrComments: true, voiceControl: false, decideChime: true, keepAwake: true, keepDisplayOn: false, ...validate(defaults) }
   let cached = { ...base }
   let mtime = -1
 

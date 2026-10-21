@@ -314,7 +314,39 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     if (!existsSync(job.path)) { trace(`turn ended for ${agent.id}; note not found yet: ${job.path}`); return }
     pending.delete(agent.id)
     if (!settings.get().autoResumeHandoff) { trace('autoResumeHandoff is off'); return }
-    await spawnSession(agent, job)
+    if (await spawnSession(agent, job)) archiveSource(agent)
+  }
+
+  // ---- the handoff session is archived once its new session(s) exist ----
+  const archiveDelayMs = Number.isFinite(config?.archiveDelayMs) ? config.archiveDelayMs : 2000
+  const archiving = new Set()
+  const archiveWanted = () => settings.get().archiveAfterHandoff !== false && typeof ctx.get('workspaceRegistry')?.archiveSession === 'function'
+  /**
+   * Archives the session a handoff came from. Spawning runs inside the agent/turn-stopping hook of that very session, so the archive is a later step (archiveDelayMs);
+   * it never throws and never touches the spawn. settled() resolves when every pending archive has run (tests).
+   */
+  function archiveSource(agent) {
+    if (!archiveWanted()) return
+    const run = new Promise((resolve) => {
+      const timer = setTimeout(async () => {
+        try {
+          await ctx.get('workspaceRegistry').archiveSession(agent.id, { stopActivity: true })
+          trace(`archived ${agent.id} after its handoff`)
+        } catch (error) { trace(`archive of ${agent.id} failed: ${error?.stack ?? error}`) }
+        resolve()
+      }, archiveDelayMs)
+      timer.unref?.()
+    })
+    archiving.add(run)
+    run.finally(() => archiving.delete(run))
+  }
+  const settled = async () => { while (archiving.size) await Promise.all([...archiving]) }
+  /** The last line of a new session's first prompt: where the session it continues is (a plain line, not a dsh-session mention: that would attach a copy of the old session). */
+  function previousSessionLine(agent, old) {
+    const name = old ? ` "${old.replace(/"/g, "'")}"` : ''
+    return archiveWanted()
+      ? `Previous session (archived after this handoff; open it from the archived sessions if you need it):${name} (session id ${agent.id})`
+      : `Previous session:${name} (session id ${agent.id})`
   }
 
   const prHandovers = new Set()
@@ -378,8 +410,9 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const extra = rest === undefined
       ? '\n\nNote: the previous session\'s remaining-work handoff was not written (or not found). Tell the user; the remaining work may need to be handed over manually.'
       : ''
-    await spawnSession(agent, { ...job, path: job.pr, kind: 'pr', extra })
-    if (rest !== undefined && !NO_REMAINING.test(rest)) await spawnSession(agent, { ...job, path: job.rest, kind: 'after' })
+    let ok = Boolean(await spawnSession(agent, { ...job, path: job.pr, kind: 'pr', extra }))
+    if (ok && rest !== undefined && !NO_REMAINING.test(rest)) ok = Boolean(await spawnSession(agent, { ...job, path: job.rest, kind: 'after' }))
+    if (ok) archiveSource(agent) // once, when every session that was asked for exists
   }
 
   /** The first message of the remaining-work session: it asks before doing anything. */
@@ -432,6 +465,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
           trace(`renamed "${old}" -> "${next}"`)
         } else trace('source has no title; not renaming')
       } catch (error) { trace(`rename failed: ${error?.stack ?? error}`) }
+      const old = (() => { try { return stripHold(ctx.get('sessionTitle')?.get(agent.session)?.title) } catch { return undefined } })()
       let text
       if (job.kind === 'pr') {
         text = {
@@ -452,7 +486,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         requestId: `handoff-${randomUUID()}`,
         sessionId: created.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: text.value }],
+        content: [{ type: 'text', text: text.value.trimEnd() + '\n\n' + previousSessionLine(agent, old) }],
       }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
       // The remaining-work session starts by itself once its PR is merged, whatever the user answered to its question.
       if (job.kind === 'after') { try { waitForPr?.(created.sessionId, job.prId) } catch (error) { trace(`could not register the PR wait: ${error?.message ?? error}`) } }
@@ -506,9 +540,10 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       if (!agent.id) agent = Object.assign(Object.create(agent), { id: sessionId })
       trace(`follow-up from handoff requested for ${sessionId}: ${path}`)
       const created = await spawnSession(agent, { path, cwd: agent.session?.header?.cwd, streak: 0, kind: 'followup' })
+      if (created) archiveSource(agent)
       return created ? { status: 200, sessionId: created } : { status: 500, error: 'the follow-up session could not be created or started (see spawn.log)' }
     } finally { followingUp.delete(sessionId) }
   }
 
-  return { prCreated, followUp }
+  return { prCreated, followUp, settled }
 }

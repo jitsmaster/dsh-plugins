@@ -8,7 +8,7 @@ import { createSettings } from '../settings.js'
 import { createGroups, deriveGroupName } from '../groups.js'
 import { createHandoffTracker } from '../handoffs.js'
 
-function harness({ cap = 400_000, prLines, ...extra } = {}) {
+function harness({ cap = 400_000, prLines, archiveFails = false, noArchive = false, ...extra } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cap-'))
   const settings = createSettings(dir, { contextCapTokens: cap, ...extra })
   const state = { tokens: 0, title: undefined, events: [], workspace: undefined, messages: [] }
@@ -20,6 +20,8 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
     rename: async (r) => { calls.rename.push(r) },
     prompt: async (req) => { calls.prompt++; sink?.push(req) },
   }
+  const archives = []
+  const registry = { archiveSession: async (id, opts) => { if (archiveFails) throw new Error('archive broke'); archives.push([id, opts]) } }
   const handlers = {}
   const ctx = {
     logger: { warn() {}, info() {} },
@@ -27,14 +29,14 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
       if (name === 'sessionProjections') return { snapshot: () => ({ values: { contextPressure: { projectedTokens: state.tokens } } }) }
       if (name === 'sessionTitle') return { get: () => (state.title === undefined ? undefined : { title: state.title }) }
       if (name === 'sessionController') return controller
-      if (name === 'workspaceRegistry') return { list: () => (state.workspace ? [{ id: state.workspace, sessionIds: ['a'] }] : []) }
+      if (name === 'workspaceRegistry') return { list: () => (state.workspace ? [{ id: state.workspace, sessionIds: ['a'] }] : []), ...(noArchive ? {} : registry) }
       return undefined
     },
     on: (event, fn) => { handlers[event] = fn },
   }
   const groups = createGroups(dir)
   const handoffs = createHandoffTracker(dir)
-  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md') }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined, groups, handoffs })
+  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md'), archiveDelayMs: 0 }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined, groups, handoffs })
   const steered = []
   const agent = { id: 'a', session: { header: { cwd: 'C:/proj' }, snapshotEvents: () => state.events, deriveMessages: () => state.messages }, steer: (m) => steered.push(m) }
   const step = async (tokens) => {
@@ -47,7 +49,7 @@ function harness({ cap = 400_000, prLines, ...extra } = {}) {
     return (await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] }))).messages
   }
   const stop = async (tokens) => { state.tokens = tokens; await handlers['agent/turn-stopping']({ agent }) }
-  return { agentRef: agent, groups, handoffs, dir, prCreated: cap_.prCreated, followUp: cap_.followUp, controller, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
+  return { archives, settled: cap_.settled, agentRef: agent, groups, handoffs, dir, prCreated: cap_.prCreated, followUp: cap_.followUp, controller, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
 }
 
 test('warns once at warnPercent, then hands off at the cap', async () => {
@@ -604,4 +606,131 @@ test('prCreated: a ticket session gets "PR 42 - Fix: ... - 12345" for the PR ses
   h.setPromptSink([])
   await h.stop(10_000)
   assert.deepEqual(h.calls.rename, [{ sessionId: 's2', title: 'PR 42 - Fix: Login redirect loops - 12345' }, { sessionId: 's3', title: 'Fix: Login redirect loops - 12345 - after PR 42' }])
+})
+
+// ---- the handoff session is archived once its new session(s) exist, and the new session's prompt names it ----
+const PREV = /Previous session \(archived after this handoff; open it from the archived sessions if you need it\): "(.*)" \(session id (.+)\)$/
+
+test('archive: a cap handoff archives the old session after the new one is created and prompted, and the prompt ends with the previous-session line', async () => {
+  const h = harness()
+  h.state.title = 'feature work'
+  const [msg] = await h.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], '# note\nMode: plain\n')
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(450_000)
+  await h.settled()
+  assert.equal(h.calls.create, 1)
+  assert.deepEqual(h.archives, [['a', { stopActivity: true }]])
+  const lines = prompts[0].content[0].text.trimEnd().split('\n')
+  assert.deepEqual(PREV.exec(lines.at(-1)).slice(1), ['feature work', 'a'])
+})
+
+test('archive: not before the spawn has finished (the archive is a later step, never part of the hook)', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  const [msg] = await h.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], '# note\nMode: plain\n')
+  await h.stop(450_000)
+  assert.equal(h.archives.length, 0, 'delayed: nothing archived inside the hook')
+  await h.settled()
+  assert.equal(h.archives.length, 1)
+})
+
+test('archive: setting off -> nothing archived and the line says nothing about archiving', async () => {
+  const h = harness({ archiveAfterHandoff: false })
+  h.state.title = 'feature'
+  const [msg] = await h.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], '# note\nMode: plain\n')
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(450_000)
+  await h.settled()
+  assert.equal(h.archives.length, 0)
+  const last = prompts[0].content[0].text.trimEnd().split('\n').at(-1)
+  assert.match(last, /^Previous session: "feature" \(session id a\)$/)
+})
+
+test('archive: a PR hand-over archives once, after BOTH the PR session and the after-PR session exist', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  h.state.title = 'feature'
+  const p = await startHandover(h)
+  writeFileSync(p.pr, '# pr\nMode: plain\n')
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(10_000)
+  await h.settled()
+  assert.equal(h.calls.create, 2)
+  assert.deepEqual(h.archives, [['a', { stopActivity: true }]])
+  for (const r of prompts) assert.ok(PREV.test(r.content[0].text.trimEnd().split('\n').at(-1)))
+  assert.match(prompts[0].content[0].text, /^PR-POLL: 42$/m)
+})
+
+test('archive: a PR hand-over with no remaining work archives after the PR session alone', async () => {
+  const h = harness()
+  const p = await startHandover(h)
+  writeFileSync(p.pr, '# pr\n')
+  writeFileSync(p.rest, 'NO-REMAINING-WORK\n')
+  await h.stop(10_000)
+  await h.settled()
+  assert.equal(h.calls.create, 1)
+  assert.equal(h.archives.length, 1)
+})
+
+test('archive: a PR hand-over where the second session cannot be created does not archive', async () => {
+  const h = harness()
+  const p = await startHandover(h)
+  writeFileSync(p.pr, '# pr\n')
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
+  const create = h.controller.create
+  let n = 0
+  h.controller.create = async (...a) => { if (++n === 2) throw new Error('no second session'); return create(...a) }
+  await h.stop(10_000)
+  await h.settled()
+  assert.equal(h.archives.length, 0)
+})
+
+test('archive: the menu follow-up archives the source session too', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  const [msg] = await h.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], '# note\nMode: plain\n')
+  const prompts = []
+  h.setPromptSink(prompts)
+  assert.equal((await h.followUp('a')).status, 200)
+  await h.settled()
+  assert.deepEqual(h.archives, [['a', { stopActivity: true }]])
+  assert.ok(PREV.test(prompts[0].content[0].text.trimEnd().split('\n').at(-1)))
+})
+
+test('archive: a failed spawn archives nothing', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  const [msg] = await h.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], '# note\nMode: plain\n')
+  h.controller.create = async () => { throw new Error('no session') }
+  await h.stop(450_000)
+  await h.settled()
+  assert.equal(h.archives.length, 0)
+})
+
+test('archive: a failing archive never throws and a registry without archiveSession is tolerated', async () => {
+  for (const extra of [{ archiveFails: true }, { noArchive: true }]) {
+    const h = harness(extra)
+    h.state.title = 'feature'
+    const [msg] = await h.stepFull(450_000)
+    writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], '# note\nMode: plain\n')
+    await h.stop(450_000)
+    await h.settled()
+    assert.equal(h.calls.create, 1)
+  }
+})
+
+test('archive: the setting is a validated boolean, on by default', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cap-'))
+  const settings = createSettings(dir, {})
+  assert.equal(settings.get().archiveAfterHandoff, true)
+  assert.throws(() => settings.set({ archiveAfterHandoff: 'yes' }))
+  assert.equal(settings.set({ archiveAfterHandoff: false }).archiveAfterHandoff, false)
 })
