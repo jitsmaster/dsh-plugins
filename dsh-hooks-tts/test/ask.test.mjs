@@ -10,8 +10,7 @@ function harness({ skipAll = false } = {}) {
   const pending = { content: [{ type: 'text', text: '{"pending":true,"callId":"c1","message":"No answer batch arrived before the timeout."}' }] }
   const answered = { content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["A"]}]}' }] }
   const post = (name, result) => handlers['tools/post-execute']({ name, agent }, result, async () => ({ kind: 'accept' }))
-  const step = async () => (await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] })))
-  return { post, step }
+  return { post }
 }
 
 test('a pending ask_user_question result adds the combine-and-continue instruction', async () => {
@@ -34,11 +33,8 @@ test('answered, other tools, and skipped agents are untouched', async () => {
   assert.equal((await s.post('ask_user_question', { content: [{ type: 'text', text: '{"pending":true}' }] })).additionalContexts, undefined)
 })
 
-test('the first step of a session gets the timeout guidance once', async () => {
-  const h = harness()
-  const first = await h.step()
-  assert.match(first.messages[0].text, /timeout/)
-  assert.match(first.messages[0].text, /360 seconds multiplied by the number of questions/)
-  assert.match(first.messages[0].text, /3 questions -> timeout 1080/)
-  assert.equal((await h.step()).messages.length, 0)
+test('no step-start hook: the model is never told to pass a timeout, so questions wait with no deadline', () => {
+  const handlers = {}
+  installAskUserTuning({ on: (event, fn) => { handlers[event] = fn } }, { skip: () => false, makeMessage: (text) => ({ text }) })
+  assert.deepEqual(Object.keys(handlers), ['tools/post-execute'])
 })
