@@ -63,7 +63,7 @@ export async function listFollowUpSessions({ controller, registry, titlesOf, sni
     const optional = async (read, forIds, capMs, what) => {
       if (typeof read !== 'function' || !forIds.length) return new Map()
       const stop = new AbortController() // the reader is told when its answer is no longer wanted (given, or given up on): it must not go on reading
-      try { const got = await within(Promise.resolve().then(() => read(forIds, stop.signal, log)), left(capMs)); return got instanceof Map ? got : new Map() } catch (error) { log('follow-up: ' + what + ' failed: ' + errorText(error)); return new Map() } finally { stop.abort() }
+      try { const got = await within(Promise.resolve().then(() => read(forIds, stop.signal, log)), left(capMs)); return got instanceof Map ? got : new Map() } catch (error) { log('follow-up: ' + what + ' failed: ' + codeOf(error)); return new Map() } finally { stop.abort() }
     }
     let titles, snippets
     if (refNumbersOf(query).size) {
@@ -89,7 +89,7 @@ export async function listFollowUpSessions({ controller, registry, titlesOf, sni
       }
     })
   } catch (error) {
-    log('follow-up: session list failed: ' + errorText(error))
+    log('follow-up: session list failed: ' + codeOf(error))
     return []
   }
 }

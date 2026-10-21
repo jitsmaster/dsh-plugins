@@ -41,8 +41,8 @@ test('uiStep: the first snapshot only records the sequence, later newer ones act
 
 test('sinceOf builds the long-poll token with snapshot id, focus, reading and the ui sequence', () => {
   const { T } = load()
-  assert.equal(T.sinceOf({ snapshotId: 'e:3', focusId: 'f', reading: 'r', ui: { seq: 9, cmd: 'show' } }), 'e:3|f|r|9')
-  assert.equal(T.sinceOf({ snapshotId: 'e:3' }), 'e:3|||0')
+  assert.equal(T.sinceOf({ snapshotId: 'e:3', focusId: 'f', reading: 'r', ui: { seq: 9, cmd: 'show' } }), 'e:3|f|r|9||')
+  assert.equal(T.sinceOf({ snapshotId: 'e:3' }), 'e:3|||0||')
 })
 
 test('applyUi: the first snapshot does not act, a newer show opens the overlay and persists, hide closes it', () => {

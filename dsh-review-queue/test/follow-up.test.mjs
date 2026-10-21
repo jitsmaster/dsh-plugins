@@ -126,7 +126,7 @@ test('never throws: a failing list, no controller or garbage give [] and the fai
   const logs = []
   const log = (line) => logs.push(line)
   assert.deepEqual(await listFollowUpSessions({ controller: { list: async () => { throw new Error('down') } }, registry: registry(), log }), [])
-  assert.ok(logs.length === 1 && /down/.test(logs[0]), JSON.stringify(logs))
+  assert.ok(logs.length === 1 && /Error/.test(logs[0]) && !/down/.test(logs[0]), JSON.stringify(logs)) // the error name only: a message can carry a path or content
   assert.deepEqual(await listFollowUpSessions({ controller: undefined, registry: registry(), log }), [])
   assert.deepEqual(await listFollowUpSessions({ controller: {}, registry: registry(), log }), [])
   assert.deepEqual(await listFollowUpSessions({ controller: { list: async () => ({ items: 'x' }) }, registry: registry(), log }), [])

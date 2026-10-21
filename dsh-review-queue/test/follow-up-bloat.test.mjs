@@ -11,12 +11,14 @@ async function waitingItem(over = {}) {
   await ctx.queue.todoIdle()
   return { ...ctx, id }
 }
+// The suggested session of the fixtures is running: a model pick of a working session is only sent when the user picks it, so every confirm here picks it.
+const PICK = { sessionId: 's-pr' }
 const many = (n, make = () => ({})) => Array.from({ length: n }, (_, i) => ({ sessionId: 's' + i, title: 'Title ' + i, updatedAt: 1000 - i, ...make(i) }))
 
 test('a follow-up that was sent drops its candidates and keeps the suggestion and the session title', async () => {
   const { queue, store, id } = await waitingItem()
   assert.equal(store.get(id).candidates.length, 3, 'while it waits the card needs the list')
-  queue.confirmTodo(id)
+  queue.confirmTodo(id, PICK)
   await queue.todoIdle()
   const item = store.get(id)
   assert.deepEqual([item.status, item.state], ['resolved', 'started'])
@@ -42,12 +44,12 @@ test('a cancelled follow-up drops its candidates and keeps the suggestion; a wor
 
 test('a failed send keeps the candidates (Retry is a confirm again); the list goes once the retry is sent', async () => {
   const { queue, store, id, controller } = await waitingItem({ promptError: { message: 'no' } })
-  queue.confirmTodo(id)
+  queue.confirmTodo(id, PICK)
   await queue.todoIdle()
   assert.equal(store.get(id).state, 'failed')
   assert.equal(store.get(id).candidates.length, 3)
   controller.prompt = async () => ({})
-  assert.deepEqual(queue.confirmTodo(id), { ok: true, state: 'starting' })
+  assert.deepEqual(queue.confirmTodo(id, PICK), { ok: true, state: 'starting' })
   await queue.todoIdle()
   assert.deepEqual([store.get(id).state, store.get(id).candidates], ['started', undefined])
 })
@@ -130,7 +132,7 @@ test('a model pick is written as before: the add with the list, then the order a
 test('sending is the same three writes as before (starting, started with the list gone, resolved): the clean-up is part of the started write', async () => {
   const { queue, store, id } = await waitingItem()
   const n = changes(store)
-  queue.confirmTodo(id)
+  queue.confirmTodo(id, PICK)
   await queue.todoIdle()
   assert.equal(n.count, 3)
 })

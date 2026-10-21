@@ -171,7 +171,7 @@ export function createFollowUps({ store, controllerOf, sessionsOf, llm, timeoutM
   /** This app's own candidates, read in the background (like the workspace suggestion), then the suggestion. The words go to the reader: a number that decides needs no snippets. */
   async function loadLater(id, query, text) {
     let candidates = []
-    try { candidates = normalizeCandidates(await within(Promise.resolve().then(() => sessionsOf?.({ query })), LOAD_TIMEOUT_MS)) } catch (error) { log('todo: follow-up sessions failed: ' + oneLine(error?.message ?? error).slice(0, 120)) }
+    try { candidates = normalizeCandidates(await within(Promise.resolve().then(() => sessionsOf?.({ query })), LOAD_TIMEOUT_MS)) } catch (error) { log('todo: follow-up sessions failed: ' + codeOf(error)) }
     if (!stillWaiting(id)) return
     if (!candidates.length) { store.update(id, { suggesting: false, suggestNote: noSessionsNote(0) }); return }
     const found = suggestSessionByRef(query, candidates)
