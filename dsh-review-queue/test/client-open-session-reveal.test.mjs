@@ -71,6 +71,28 @@ test('a row hidden in a collapsed group opens that group by its header, then scr
   assert.equal(hidden.scrolls.length, 1)
 })
 
+test('a row that is not there is looked for behind the collapsed "Show more sessions" buttons: each is clicked once, then the row is scrolled to', () => {
+  const { T } = loadClient()
+  need(T, 'revealSessionRow')
+  const rows = {}
+  const clicks = []
+  const button = (id, expanded = 'false') => ({ getAttribute: (n) => (n === 'aria-expanded' ? expanded : null), click: () => { clicks.push(id); if (expanded === 'false' && id === 'w2') rows.s7 = row() } })
+  const buttons = [button('w1'), button('w2'), button('w3', 'true')]
+  const doc = { ...fakeDoc(rows), querySelectorAll: (sel) => (sel === '[data-row-key^="overflow:"][aria-expanded="false"]' ? buttons.filter((b) => b.getAttribute('aria-expanded') === 'false') : []) }
+  const q = timers()
+  T.revealSessionRow('s7', { doc, later: q.later })
+  while (q.run());
+  assert.deepEqual(clicks, ['w1', 'w2'], 'only the collapsed buttons, each once')
+  assert.equal(rows.s7.scrolls.length, 1)
+})
+
+test('without querySelectorAll or without any Show more button the lookup still ends quietly', () => {
+  const { T } = loadClient()
+  need(T, 'revealSessionRow')
+  const q = timers()
+  assert.doesNotThrow(() => { T.revealSessionRow('s1', { doc: { ...fakeDoc({}), querySelectorAll: () => [] }, later: q.later }); while (q.run()); })
+})
+
 test('a session id with quotes cannot break out of the selector', () => {
   const { T } = loadClient()
   need(T, 'revealSessionRow')

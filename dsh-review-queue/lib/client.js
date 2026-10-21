@@ -769,16 +769,25 @@ function imageFilesOf(data) {
 		const REVEAL_DELAYS_MS = [0, 120, 300, 700, 1400]; // the row may not be rendered yet when the host call returns
 		const quoteAttr = (s) => String(s).replace(/["\\]/g, "\\$&");
 		/** Scrolls the left panel (DSH's session tree) to the row of a session, so it is visible once it is selected. A row hidden inside a collapsed group of the
-		 *  dsh-hooks-tts tree opens that group by clicking its header; a row that is not there (yet) is looked for again a few times. opts: { doc, later } for tests. */
+		 *  dsh-hooks-tts tree opens that group by clicking its header; a row that is not there (yet) is looked for again a few times, and behind the collapsed Show more buttons. opts: { doc, later } for tests. */
 		function revealSessionRow(id, opts) {
 			const doc = opts && "doc" in opts ? opts.doc : typeof document === "undefined" ? undefined : document;
 			const later = (opts && opts.later) || ((fn, ms) => setTimeout(fn, ms));
 			if (!doc || typeof doc.querySelector !== "function" || !id) return;
 			const sel = '[data-row-key="session:' + quoteAttr(id) + '"]';
 			let i = 0;
+			const opened = new Set();
+			/** The session may sit behind a workspace's collapsed "Show N more sessions" button (data-row-key="overflow:<workspace>"): each such button is clicked once. */
+			const openOverflow = () => {
+				if (typeof doc.querySelectorAll !== "function") return;
+				let buttons = [];
+				try { buttons = Array.from(doc.querySelectorAll('[data-row-key^="overflow:"][aria-expanded="false"]')); } catch (_e) { return; }
+				buttons.forEach((b) => { if (!opened.has(b) && typeof b.click === "function") { opened.add(b); try { b.click(); } catch (_e) { /* a button that cannot be clicked is skipped */ } } });
+			};
 			const attempt = () => {
 				let row = null;
 				try { row = doc.querySelector(sel); } catch (_e) { return; }
+				if (!row && i >= 1) openOverflow(); // the first look gets the normal render time; after that a row that is still missing may be behind a Show more
 				if (row) {
 					if (row.offsetParent !== null) { try { row.scrollIntoView({ block: "center" }); } catch (_e) { /* a row that cannot scroll is still selected */ } return; }
 					const gid = typeof row.getAttribute === "function" ? row.getAttribute("data-hooks-gt-group") : null;
