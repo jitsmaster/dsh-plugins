@@ -89,10 +89,10 @@ test('the description may be 300 characters (after trimming) and not 301; the te
   assert.deepEqual(newTodoPayload(follow({ text: 'x'.repeat(4001) })), { ok: false, message: 'That is too long.' })
 })
 
-test('the validation messages are the desktop\'s own (core.todoFormProblem is not exported, so the wording is checked against lib/client.js)', () => {
-  const src = readFileSync(join(root, 'lib', 'client.js'), 'utf8')
-  assert.match(src, /"Say which session this is for\."/)
-  assert.match(src, /"Describe the session in " \+ FOLLOWUP_MAX \+ " characters or fewer\."/)
+test('the phone form still takes the session in words (the desktop form picks it in a dropdown), so its own validation messages say so', () => {
+  const src = readFileSync(join(root, 'lib', 'mobile', 'todo-form.js'), 'utf8')
+  assert.match(src, /'Say which session this is for\.'/)
+  assert.match(src, /'Describe the session in ' \+ FOLLOWUP_MAX \+ ' characters or fewer\.'/)
 })
 
 test('a New session draft is unchanged by the follow-up work: same body as before, a stray followUp in the draft is ignored', async () => {

@@ -348,8 +348,7 @@ window.__ModuleLoader__.load({
 		// ---- Todo: start a new session from the list ----------------------------------------------------
 		const TODO_MAX = 4000;
 		// A follow-up todo (kind "followup") sends its text to an EXISTING session found from words; its card and form reuse the todo ones with sessions in place of workspaces.
-		const FOLLOWUP_MAX = 300;
-		// Source of truth for what a follow-up item is: kind 'followup' of todo-follow-up.js (a browser copy of that check; this file is one self-contained script).
+				// Source of truth for what a follow-up item is: kind 'followup' of todo-follow-up.js (a browser copy of that check; this file is one self-contained script).
 		const isFollowUp = (item) => !!item && item.kind === "followup";
 		const isFollowUpForm = (f) => !!f && f.mode === "followup";
 // Images pasted into the New session form: png, jpeg, webp or gif, at most IMAGE_MAX of up to IMAGE_BYTES each (the server checks the same again).
@@ -372,8 +371,11 @@ function imageFilesOf(data) {
 		const sessionPick = (item, pick) => (pick && Array.isArray(item.candidates) && item.candidates.some((c) => c.sessionId === pick) ? pick : undefined);
 		// Source of truth: REF_REASON of todo-follow-up.js, the reason of the deterministic ticket / PR number match. Anything else comes from the model, which read untrusted titles and snippets.
 		const REF_REASON = "ticket or PR number in the words";
+		// Source of truth: PICKED_REASON of follow-up-shared.js, the reason of a session the user picked in the form's dropdown (no model was asked).
+		const PICKED_REASON = "picked by you";
+		const isTrustedReason = (r) => r === REF_REASON || r === PICKED_REASON;
 		/** A model suggestion for a RUNNING session is never preselected: the user picks it (a crafted title must not steer a message into a working session). */
-		function needsOwnPick(item) { const s = item && item.suggested; if (!s || s.reason === REF_REASON) return false; const c = (item.candidates || []).find((x) => x.sessionId === s.sessionId); return s.running === true || !!(c && c.running === true); }
+		function needsOwnPick(item) { const s = item && item.suggested; if (!s || isTrustedReason(s.reason)) return false; const c = (item.candidates || []).find((x) => x.sessionId === s.sessionId); return s.running === true || !!(c && c.running === true); }
 		const sessionLabel = (c) => (c.title || "a session") + (c.workspaceTitle ? " · " + c.workspaceTitle : "");
 		const sessionPlace = (c) => (c.title || "a session") + (c.workspaceTitle ? " (" + c.workspaceTitle + ")" : "");
 		/** Which card a todo shows: confirm (a suggestion), pick (none), suggesting (looking), starting, started, failed, cancelled. */
@@ -408,7 +410,7 @@ function imageFilesOf(data) {
 					const s = item.suggested;
 					const p = sessionPick(item, pick);
 					if (p && !(s && s.sessionId === p)) return "Send to " + sessionPlace(item.candidates.find((c) => c.sessionId === p));
-					if (s) return (!p && needsOwnPick(item) ? "Model suggests: " : "Session: ") + sessionPlace(s) + (s.reason ? " — " + (s.reason === REF_REASON ? "" : "Model says: ") + s.reason : "");
+					if (s) return (!p && needsOwnPick(item) ? "Model suggests: " : "Session: ") + sessionPlace(s) + (s.reason ? " — " + (isTrustedReason(s.reason) ? "" : "Model says: ") + s.reason : "");
 					if (item.suggesting) return "Finding the session…";
 					return typeof item.suggestNote === "string" && item.suggestNote ? "Pick a session (no suggestion: " + item.suggestNote + ")" : "Pick a session";
 				}
@@ -543,14 +545,13 @@ function imageFilesOf(data) {
 		}
 		/** Ctrl+Enter (or Cmd+Enter) submits the todo form; plain Enter is a new line. */
 		const isSubmitKey = (e) => !!e && e.key === "Enter" && !!(e.ctrlKey || e.metaKey) && !e.isComposing;
-		/** What is wrong with the form, if anything. followUp is the description of the session of a follow-up; undefined for a todo that starts a new session. */
+		/** What is wrong with the form, if anything. followUp is the id of the session picked for a follow-up; undefined for a todo that starts a new session. */
 		function todoFormProblem(text, followUp) {
 			const t = String(text || "").trim();
 			if (!t) return "Type the task first.";
 			if (t.length > TODO_MAX) return "That is too long.";
 			if (followUp === undefined) return undefined;
-			const q = String(followUp || "").trim();
-			return !q ? "Say which session this is for." : q.length > FOLLOWUP_MAX ? "Describe the session in " + FOLLOWUP_MAX + " characters or fewer." : undefined;
+			return String(followUp || "").trim() ? undefined : "Pick the session this is for.";
 		}
 		/** The Tune prompt button works on a text that is there and while nothing else is going on. */
 		const canTune = (f) => !!f && !f.busy && !f.tuning && !!String(f.text || "").trim();
@@ -608,7 +609,7 @@ function imageFilesOf(data) {
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
-			todoForm: loadTodoForm(), workspaces: null, todoPick: {}, tipDeeper: {}, tipUse: { open: false, workspaceId: "" },
+			todoForm: loadTodoForm(), workspaces: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
 		const listeners = new Set();
@@ -814,6 +815,25 @@ function imageFilesOf(data) {
 				if (res.ok) { const j = await res.json(); if (j && Array.isArray(j.workspaces)) { set({ workspaces: j.workspaces }); dropStaleWorkspace(j.workspaces); } }
 			} catch (_e) { /* keep what we have */ }
 		}
+		/** The dropdown's sessions of the Follow up form (sessionId, title, workspaceTitle?, running?), newest first; asked again every time the form is shown, the list changes. Best effort. */
+		async function loadFollowSessions() {
+			try {
+				const res = await fetch(API + "/v1/follow-up-sessions", { credentials: "same-origin" });
+				if (res.ok) {
+					const j = await res.json();
+					if (j && Array.isArray(j.sessions)) { const list = j.sessions.filter((x) => x && typeof x.sessionId === "string"); set({ followSessions: list }); dropStaleFollowSession(list); }
+				}
+			} catch (_e) { /* keep what we have */ }
+		}
+		/** A restored draft may name a session that is gone (or hold the words an older form took): once a non-empty list is known and lacks it, the pick is cleared. */
+		function dropStaleFollowSession(list) {
+			const id = state.todoForm.followUp;
+			if (id && list.length && !list.some((x) => x.sessionId === id)) patchForm({ followUp: "" });
+		}
+		/** The first option of the session dropdown: says what is going on while it has no sessions. */
+		const followPlaceholder = (list) => (!Array.isArray(list) ? "Loading sessions…" : list.length ? "Which session?" : "No session is listed yet");
+		/** A session as the dropdown shows it: its title, its workspace, and a mark when it is working right now. */
+		const followLabel = (c) => sessionLabel(c) + (c.running === true ? " (working)" : "");
 		/** A restored draft may name a workspace that is gone: once a non-empty list is known and lacks it, the pick falls back to "Choose for me" (an empty list may just not be loaded yet). */
 		function dropStaleWorkspace(list) {
 			const id = state.todoForm.workspaceId;
@@ -825,9 +845,9 @@ function imageFilesOf(data) {
 		const workspacesNote = (list) => (Array.isArray(list) && !list.length ? "No workspace is listed yet (the app may still be loading them). Choose for me works without one." : undefined);
 		// Each tune takes a number; closing or reopening the form takes the next one, so the answer of a tune from before is ignored and cannot overwrite the saved draft.
 		let tuneSeq = 0;
-		function openTodoForm() { if (!state.todoForm.open) tuneSeq++; patchForm({ open: true, error: undefined }); if (!isFollowUpForm(state.todoForm)) loadWorkspaces(); }
-		/** The switch of the form: New session (the dropdown needs the workspaces) or Follow up (it never asks for them). */
-		function setTodoMode(mode) { patchForm({ mode: mode === "followup" ? "followup" : "new", error: undefined }); if (mode !== "followup") ensureWorkspaces(); }
+		function openTodoForm() { if (!state.todoForm.open) tuneSeq++; patchForm({ open: true, error: undefined }); if (isFollowUpForm(state.todoForm)) loadFollowSessions(); else loadWorkspaces(); }
+		/** The switch of the form: New session (the dropdown needs the workspaces) or Follow up (its dropdown needs the sessions, never the workspaces). */
+		function setTodoMode(mode) { patchForm({ mode: mode === "followup" ? "followup" : "new", error: undefined }); if (mode === "followup") loadFollowSessions(); else ensureWorkspaces(); }
 		function closeTodoForm() { tuneSeq++; patchForm({ open: false, error: undefined, tuning: false, questions: undefined }); }
 		// ---- Pasted images of the New session form (never part of the saved draft: the files live on the PC until the todo starts) ----
 		let imageEpoch = 0; // a new number whenever the images are cleared: an upload that was on its way then is dropped
@@ -1421,7 +1441,9 @@ function imageFilesOf(data) {
 						im.url ? h("img", { src: im.url, alt: im.name || "Pasted image", title: im.name || "" }) : h("span", { className: "rq-sub" }, im.name || "image"),
 						h("button", { className: "rq-thumb-x", type: "button", title: "Remove this image", "aria-label": "Remove image " + (im.name || ""), disabled: f.busy, onClick: () => removeImage(im.id) }, "✕"))),
 					f.uploading > 0 ? h("span", { className: "rq-sub" }, "Uploading…") : null) : null,
-				follow ? h("input", { className: "rq-input", type: "text", required: true, maxLength: FOLLOWUP_MAX, "aria-label": "Which session", placeholder: "Which session? Describe it in your own words", value: f.followUp || "", disabled: f.busy, onChange: (e) => patchForm({ followUp: e.target.value, error: undefined }), onKeyDown: submitOnKey }) : null,
+				follow ? h("select", { className: "rq-input rq-sel", required: true, "aria-label": "Which session", value: f.followUp || "", disabled: f.busy, onChange: (e) => patchForm({ followUp: e.target.value, error: undefined }), onKeyDown: submitOnKey },
+					h("option", { value: "" }, followPlaceholder(st.followSessions)),
+					(st.followSessions || []).map((c) => h("option", { key: c.sessionId, value: c.sessionId }, followLabel(c)))) : null,
 				h("div", { className: "rq-row" },
 					follow ? null : h("select", { className: "rq-input rq-sel", value: f.workspaceId, disabled: f.busy, "aria-label": "Workspace", onChange: (e) => patchForm({ workspaceId: e.target.value }) }, h("option", { value: "" }, "Choose for me"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
 					follow ? null : h("label", { className: "rq-sub" }, h("input", { type: "checkbox", checked: !!f.sparc, disabled: f.busy, onChange: (e) => patchForm({ sparc: e.target.checked }) }), " Use SPARC"),
@@ -1630,7 +1652,7 @@ function imageFilesOf(data) {
 		function apply(ctx) {
 			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
 			stopped = false;
-			if (state.todoForm.open && !isFollowUpForm(state.todoForm)) ensureWorkspaces(); // a draft restored open needs its dropdown (a follow-up has none)
+			if (state.todoForm.open) { if (isFollowUpForm(state.todoForm)) loadFollowSessions(); else ensureWorkspaces(); } // a draft restored open needs its dropdown (the workspaces, or for a follow-up the sessions)
 			ctx.effect(() => { pollLoop(); return () => { stopped = true; if (pollCtl) pollCtl.abort(); }; }, "review-queue: polling");
 			ctx.effect(() => (typeof document === "undefined" || typeof document.addEventListener !== "function" ? () => {} : installRepoll(document)), "review-queue: visibility");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
@@ -1647,7 +1669,7 @@ function imageFilesOf(data) {
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
-		Object.assign(exports.__test, { todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
+		Object.assign(exports.__test, { loadFollowSessions, followLabel, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });

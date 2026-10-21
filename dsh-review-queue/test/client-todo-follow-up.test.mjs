@@ -344,20 +344,31 @@ test('form, New session (the default): the switch has two options with New sessi
   assert.match(textOf(tree), /Nothing starts until you confirm the workspace\./)
 })
 
-test('form, Follow up: its own placeholder, the "Which session" input, no workspace dropdown, no SPARC, the hint and the button label', () => {
+const LIST = [
+  { sessionId: 's1', title: 'PR 6563 review', workspaceTitle: 'CTnP-Final' },
+  { sessionId: 's2', title: 'Visitor mix', workspaceTitle: 'CTnP-Final', running: true },
+  { sessionId: 's3', title: 'Loose session' },
+]
+
+test('form, Follow up: its own placeholder, the "Which session" dropdown of the sessions, no workspace dropdown, no SPARC, the hint and the button label', () => {
   const { T } = render()
-  T.set({ todoForm: FORM({ mode: 'followup', followUp: 'the PR 6563 session' }) })
+  T.set({ todoForm: FORM({ mode: 'followup', followUp: 's2' }), followSessions: LIST })
   const tree = T.TodoForm()
   const [a, b] = buttons(switchOf(tree))
   assert.deepEqual([a.props['aria-pressed'], b.props['aria-pressed']], [false, true])
   assert.equal(findAll(tree, (n) => n.type === 'textarea')[0].props.placeholder, 'What should the existing session do next? (Ctrl+Enter adds it)')
-  const input = findAll(tree, (n) => n.type === 'input' && n.props['aria-label'] === 'Which session')
-  assert.equal(input.length, 1)
-  assert.equal(input[0].props.placeholder, 'Which session? Describe it in your own words')
-  assert.equal(input[0].props.maxLength, 300)
-  assert.equal(input[0].props.required, true)
-  assert.equal(input[0].props.value, 'the PR 6563 session')
-  assert.equal(findAll(tree, (n) => n.type === 'select').length, 0, 'the workspace dropdown is hidden')
+  assert.equal(findAll(tree, (n) => n.type === 'input' && n.props['aria-label'] === 'Which session').length, 0, 'no free text any more')
+  const sel = findAll(tree, (n) => n.type === 'select')
+  assert.equal(sel.length, 1, 'the workspace dropdown is hidden: the one dropdown is the session one')
+  assert.equal(sel[0].props['aria-label'], 'Which session')
+  assert.equal(sel[0].props.required, true)
+  assert.equal(sel[0].props.value, 's2')
+  assert.deepEqual(optionsOf(sel[0]), [
+    { value: '', label: 'Which session?' },
+    { value: 's1', label: 'PR 6563 review · CTnP-Final' },
+    { value: 's2', label: 'Visitor mix · CTnP-Final (working)' },
+    { value: 's3', label: 'Loose session' },
+  ])
   assert.equal(findAll(tree, (n) => n.type === 'input' && n.props.type === 'checkbox').length, 0, 'Use SPARC is hidden')
   assert.doesNotMatch(textOf(tree), /SPARC|Choose for me|confirm the workspace/)
   assert.match(textOf(tree), /Nothing is sent until you confirm the session\./)
@@ -376,20 +387,21 @@ test('form: the Add button needs a text in both modes; the description is checke
   assert.equal(button(T.TodoForm(), 'Adding…').props.disabled, true)
 })
 
-test('form: the switch changes the mode, typing in the input stores the description and clears the error', () => {
+test('form: the switch changes the mode, choosing in the dropdown stores the session and clears the error', () => {
   const { T } = render()
-  T.set({ todoForm: FORM({ error: 'old' }) })
+  T.set({ todoForm: FORM({ error: 'old' }), followSessions: LIST })
   const [, follow] = buttons(switchOf(T.TodoForm()))
   follow.props.onClick()
   assert.equal(T.state.todoForm.mode, 'followup')
   assert.equal(T.state.todoForm.error, undefined)
-  const input = findAll(T.TodoForm(), (n) => n.type === 'input' && n.props['aria-label'] === 'Which session')[0]
-  input.props.onChange({ target: { value: 'the visitor mix one' } })
-  assert.equal(T.state.todoForm.followUp, 'the visitor mix one')
+  const input = findAll(T.TodoForm(), (n) => n.type === 'select' && n.props['aria-label'] === 'Which session')[0]
+  input.props.onChange({ target: { value: 's2' } })
+  assert.equal(T.state.todoForm.followUp, 's2')
+  assert.equal(T.state.todoForm.error, undefined)
   const [again] = buttons(switchOf(T.TodoForm()))
   again.props.onClick()
   assert.equal(T.state.todoForm.mode, 'new')
-  assert.equal(T.state.todoForm.followUp, 'the visitor mix one', 'the words stay while the other mode is shown')
+  assert.equal(T.state.todoForm.followUp, 's2', 'the pick stays while the other mode is shown')
   assert.equal(T.state.todoForm.text, '')
 })
 
@@ -399,10 +411,10 @@ test('form: the mode cannot be switched while a request is on its way', () => {
   assert.deepEqual(buttons(switchOf(T.TodoForm())).map((b) => b.props.disabled), [true, true])
 })
 
-test('form: Ctrl+Enter in the description input adds the follow-up, plain Enter does nothing', async () => {
+test('form: Ctrl+Enter in the session dropdown adds the follow-up, plain Enter does nothing', async () => {
   const { T, calls } = render()
   T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 'that session' }) })
-  const input = findAll(T.TodoForm(), (n) => n.type === 'input' && n.props['aria-label'] === 'Which session')[0]
+  const input = findAll(T.TodoForm(), (n) => n.type === 'select' && n.props['aria-label'] === 'Which session')[0]
   let prevented = 0
   input.props.onKeyDown({ key: 'Enter', preventDefault: () => { prevented++ } })
   await tick()
@@ -496,39 +508,32 @@ test('submit, New session: the body is what it was (a stale description in the f
   assert.deepEqual(calls, [['/review-queue/v1/todo', { text: 'Fix it', workspaceId: 'w1', sparc: true }]])
 })
 
-test('submit, Follow up: an empty or blank description is refused before any request, with its own message', async () => {
+test('submit, Follow up: no session picked is refused before any request, with its own message', async () => {
   const { T, calls } = render()
   for (const followUp of ['', '   ', '\n ', undefined]) {
     T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp }) })
     assert.equal(await T.submitTodo(), false, JSON.stringify(followUp))
-    assert.equal(T.state.todoForm.error, 'Say which session this is for.')
+    assert.equal(T.state.todoForm.error, 'Pick the session this is for.')
     assert.equal(T.state.todoForm.busy, false)
     assert.equal(T.state.todoForm.open, true)
   }
   assert.equal(calls.length, 0)
 })
 
-test('submit, Follow up: a description over 300 characters is refused, 300 is fine; an empty text says so first', async () => {
-  const { T, calls } = render()
-  T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 'x'.repeat(301) }) })
-  assert.equal(await T.submitTodo(), false)
-  assert.equal(T.state.todoForm.error, 'Describe the session in 300 characters or fewer.')
-  assert.equal(calls.length, 0)
-  T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 'x'.repeat(300) }) })
-  assert.equal(await T.submitTodo(), true)
+test('submit, Follow up: an empty text says so before the missing session', async () => {
+  const { T } = render()
   T.set({ todoForm: FORM({ mode: 'followup', text: '  ', followUp: '' }) })
   await T.submitTodo()
   assert.equal(T.state.todoForm.error, 'Type the task first.')
 })
 
-test('todoFormProblem: the second argument is the description of a follow-up; none means a todo for a new session', () => {
+test('todoFormProblem: the second argument is the session picked for a follow-up; none means a todo for a new session', () => {
   const { T } = loadClient()
   assert.equal(T.todoFormProblem('Do it'), undefined, 'a new-session todo needs no description')
   assert.equal(T.todoFormProblem('Do it', 'that one'), undefined)
-  assert.equal(T.todoFormProblem('Do it', ''), 'Say which session this is for.')
+  assert.equal(T.todoFormProblem('Do it', ''), 'Pick the session this is for.')
   assert.equal(T.todoFormProblem('', 'that one'), 'Type the task first.')
   assert.equal(T.todoFormProblem('x'.repeat(4001), 'that one'), 'That is too long.')
-  assert.equal(T.todoFormProblem('Do it', 'x'.repeat(301)), 'Describe the session in 300 characters or fewer.')
 })
 
 test('submit, Follow up: a refusal of the server keeps the form and shows the reason in words', async () => {
@@ -558,6 +563,67 @@ test('Tune prompt keeps working in Follow up mode: it tunes the text and leaves 
   assert.equal(T.state.todoForm.original, 'rough idea')
   assert.equal(T.state.todoForm.followUp, 'that one')
   assert.equal(T.state.todoForm.mode, 'followup')
+})
+
+// ---- the sessions of the dropdown ----------------------------------------------------------------------------
+
+test('the sessions of the dropdown come from GET /v1/follow-up-sessions when the form opens in Follow up mode or is switched to it, each time', async () => {
+  const { T, calls } = render({ answer: (url) => okJson(url.endsWith('/v1/follow-up-sessions') ? { sessions: LIST } : { workspaces: [] }) })
+  const loads = () => calls.filter(([u]) => u.endsWith('/v1/follow-up-sessions')).length
+  T.set({ todoForm: FORM({ open: false, mode: 'followup' }) })
+  T.openTodoForm()
+  await tick()
+  assert.equal(loads(), 1)
+  assert.deepEqual(plain(T.state.followSessions).map((x) => x.sessionId), ['s1', 's2', 's3'])
+  T.setTodoMode('new')
+  await tick()
+  assert.equal(loads(), 1, 'New session mode does not ask for sessions')
+  T.setTodoMode('followup')
+  await tick()
+  assert.equal(loads(), 2, 'asked again: the sessions change')
+  T.set({ todoForm: FORM({ open: false, mode: 'new' }) })
+  T.openTodoForm()
+  await tick()
+  assert.equal(loads(), 2, 'a New session form never does')
+})
+
+test('the dropdown says what is going on: loading, none listed, or the question', () => {
+  const { T } = render()
+  assert.equal(T.followPlaceholder(null), 'Loading sessions…')
+  assert.equal(T.followPlaceholder([]), 'No session is listed yet')
+  assert.equal(T.followPlaceholder(LIST), 'Which session?')
+  T.set({ todoForm: FORM({ mode: 'followup' }), followSessions: [] })
+  assert.deepEqual(optionsOf(selectOf(T.TodoForm())), [{ value: '', label: 'No session is listed yet' }])
+})
+
+test('a pick (or the words of an older draft) that is not in the loaded list is cleared; an empty list clears nothing (it may not be loaded yet)', async () => {
+  const { T } = render({ answer: () => okJson({ sessions: LIST }) })
+  T.set({ todoForm: FORM({ open: true, mode: 'followup', followUp: 'the PR 6563 session' }) })
+  await T.loadFollowSessions()
+  assert.equal(T.state.todoForm.followUp, '', 'words of an older draft are not a session')
+  T.set({ todoForm: FORM({ open: true, mode: 'followup', followUp: 's3' }) })
+  await T.loadFollowSessions()
+  assert.equal(T.state.todoForm.followUp, 's3', 'a listed session stays')
+  const { T: empty } = render({ answer: () => okJson({ sessions: [] }) })
+  empty.set({ todoForm: FORM({ open: true, mode: 'followup', followUp: 's3' }) })
+  await empty.loadFollowSessions()
+  assert.equal(empty.state.todoForm.followUp, 's3')
+})
+
+test('a failed list keeps what was there and the form works with it', async () => {
+  const { T } = render({ answer: () => okJson({ error: 'x' }, 500) })
+  T.set({ todoForm: FORM({ open: true, mode: 'followup' }), followSessions: LIST })
+  await T.loadFollowSessions()
+  assert.equal(T.state.followSessions.length, 3)
+})
+
+test('card: a session the user picked in the form is trusted like a number match: a working one is preselected and the line does not say "Model says"', () => {
+  const { T } = loadClient()
+  const item = fu({ suggested: { sessionId: 's2', title: 'Visitor mix', reason: 'picked by you', running: true }, candidates: [{ sessionId: 's2', title: 'Visitor mix', running: true }] })
+  assert.equal(T.todoTarget(item, ''), 's2')
+  assert.doesNotMatch(T.todoLine(item, ''), /Model/)
+  const model = fu({ suggested: { sessionId: 's2', title: 'Visitor mix', reason: 'looks right', running: true }, candidates: [{ sessionId: 's2', title: 'Visitor mix', running: true }] })
+  assert.equal(T.todoTarget(model, ''), undefined, 'a model pick of a working session still needs the user')
 })
 
 // ---- no workspaces for a follow-up --------------------------------------------------------------------------
