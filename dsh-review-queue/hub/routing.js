@@ -142,6 +142,8 @@ export function createRouting({ store, queue, instances, commands, log = () => {
   }
 
   return {
+    /** The sessions of every online app for the follow-up form's dropdown (no snippets): { sessions, skippedApps }. */
+    followUpSessions: (caller) => followUps.sessionList(caller),
     /** @param {{ role?: string, caller?: string }} [ctx] role 'device' is the phone, any other credential the desktop (D8). */
     async act(kind, body, { role, caller } = {}) {
       if (kind === 'todo') return body.followUp !== undefined && body.followUp !== null ? followUps.add(body, caller) : addTodo(body, caller, role)

@@ -76,6 +76,12 @@ export function cleanSessions(list, { owner } = {}) {
 
 /** The reason of the deterministic ticket / PR number match: the mark the cards trust (a model that writes it as its reason does not get it). */
 export const REF_REASON = 'ticket or PR number in the words'
+/** The reason of a session the user picked in the form's dropdown (the form sends the session id as the words): as deterministic as the number match, so the cards trust it too. */
+export const PICKED_REASON = 'picked by you'
+/** True for a reason that no model wrote: a ticket / PR number match or the user's own pick. */
+export const isTrustedReason = (reason) => reason === REF_REASON || reason === PICKED_REASON
+/** The words are one session id (the dropdown of the form sends it): no title or log needs reading to decide. */
+export const isSessionIdWords = (query) => typeof query === 'string' && SESSION_ID.test(query.trim())
 const NUMBER_WITH_KEYWORD = /(?<![A-Za-z])(?:AB#|PR\s*#?|pull\s+request\s*#?|work\s+item\s*#?|ticket\s*#?)\s*(\d{1,9})(?!\d)|#\s*(\d{1,9})(?!\d)/gi
 /**
  * The number as a whole number of the title: not part of a longer digit run, and not glued to another number by - . / : either (a date 2026-10-20, a version 1.10.3, a time 10:30 or
@@ -92,6 +98,10 @@ export const refNumbersOf = (query) => new Set(typeof query === 'string' ? [...q
  */
 export function suggestSessionByRef(query, candidates) {
   if (!Array.isArray(candidates) || !candidates.length) return undefined
+  if (isSessionIdWords(query)) {
+    const own = candidates.find((c) => c?.sessionId === query.trim())
+    if (own) return { sessionId: own.sessionId, title: own.title, reason: PICKED_REASON }
+  }
   const picked = new Map()
   for (const number of refNumbersOf(query)) {
     const hits = candidates.filter((c) => typeof c?.title === 'string' && hasWholeNumber(c.title, number))

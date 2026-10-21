@@ -234,6 +234,17 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     return serve(req, res)
   }
 
+  /** The sessions of every app for the follow-up form's dropdown: the hub's union; this app's own when the hub cannot answer. */
+  async function followUpSessions(req, res) {
+    if (req.method !== 'GET') return send(res, 405, { error: 'method' })
+    if (mode !== 'hub') return serve(req, res)
+    const r = await callHub('GET', '/v1/follow-up-sessions')
+    if (r.status !== undefined) return send(res, r.status, r.json)
+    if (r.badGateway) return send(res, 502, { error: 'bad-gateway' })
+    noteUnreachable(r.unreachable ?? 'no answer')
+    return serve(req, res)
+  }
+
   async function devices(req, res, route) {
     if (req.method !== route.method) return send(res, 405, { error: 'method' })
     let body
@@ -276,6 +287,7 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
           return await snapshot(req, res, url)
         }
         if (path === '/v1/workspaces') return await workspaces(req, res)
+        if (path === '/v1/follow-up-sessions') return await followUpSessions(req, res)
         const device = deviceRoute(path)
         if (device) return await devices(req, res, device)
         if (HUB_ACTIONS.has(path) && !LOCAL_ROUTES.has(path)) return await action(req, res, path)

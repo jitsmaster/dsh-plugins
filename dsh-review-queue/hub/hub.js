@@ -148,6 +148,8 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
       return () => { off(); sessionListeners.delete(listener) }
     },
     workspaces: (opts) => instances.workspaces(opts),
+    /** The sessions of every online app for the follow-up form's dropdown: { sessions, skippedApps }. */
+    followUpSessions: (caller) => routing.followUpSessions(caller),
     assetLinks: () => buildAssetLinks(config.android),
     /** Any request but a health probe counts as activity for the idle exit. */
     touch() { lastActivity = now() },

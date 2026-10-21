@@ -7,7 +7,7 @@
  * app, or, as for a todo started in another app's workspace, the item moves there first and moves back when that fails.
  * The candidates only ever come from the apps: nothing a client puts in its body is used for them.
  */
-import { MAX_QUERY, MAX_TODO, MAX_WAITING_FOLLOW_UPS, MAY_HAVE_BEEN_SENT, REF_REASON, SESSIONS_LIMIT, TOO_MANY_FOLLOW_UPS, cleanSessions, codeOf, refNumbersOf, suggestSessionByRef } from '../follow-up-shared.js'
+import { MAX_QUERY, MAX_TODO, MAX_WAITING_FOLLOW_UPS, MAY_HAVE_BEEN_SENT, SESSIONS_LIMIT, TOO_MANY_FOLLOW_UPS, cleanSessions, codeOf, isSessionIdWords, isTrustedReason, refNumbersOf, suggestSessionByRef } from '../follow-up-shared.js'
 
 export { MAX_WAITING_FOLLOW_UPS, MAY_HAVE_BEEN_SENT, SESSIONS_LIMIT, cleanSessions } // the old home of the shared cleaner: tests and callers keep importing it from here
 
@@ -105,7 +105,7 @@ export function createHubFollowUps({ store, instances, reachable, send, tell, lo
     const wanted = given || item.suggested?.sessionId
     if (!wanted) return { ok: false, error: 'no-session' }
     // A session that is running now may be in the middle of a task: a MODEL's pick of it is never sent without the user choosing a session (the cards do not preselect it). The deterministic ticket / PR number pick and an explicit session are.
-    if (!given && item.suggested?.running === true && item.suggested.reason !== REF_REASON) return { ok: false, error: 'no-session' }
+    if (!given && item.suggested?.running === true && !isTrustedReason(item.suggested.reason)) return { ok: false, error: 'no-session' }
     const hit = (item.candidates ?? []).find((c) => c.sessionId === wanted)
     if (!hit) return { ok: false, error: 'unknown-session' }
     const target = hit.owner ?? (item.suggested?.sessionId === wanted ? item.suggested.owner : undefined) ?? item.owner
@@ -130,6 +130,9 @@ export function createHubFollowUps({ store, instances, reachable, send, tell, lo
   }
 
   return {
+    /** GET /v1/follow-up-sessions: the sessions of every app (no snippets) for the form's dropdown, the caller's own first: { sessions, skippedApps }. */
+    async sessionList(caller) { return sessions(caller, false) },
+
     /** POST /v1/todo with followUp: the words and the text are checked first, then the apps are asked, then the coordinator suggests. */
     async add(body, caller) {
       const text = typeof body.text === 'string' ? body.text.trim() : ''
@@ -144,8 +147,8 @@ export function createHubFollowUps({ store, instances, reachable, send, tell, lo
       adding++
       try {
         let found
-        if (refNumbersOf(followUp).size) {
-          found = await sessions(caller, false) // a number of the words may decide on the titles: then no app reads a log for a snippet
+        if (refNumbersOf(followUp).size || isSessionIdWords(followUp)) {
+          found = await sessions(caller, false) // a number of the words (or one session id, the form's dropdown) may decide on the titles: then no app reads a log for a snippet
           if (!suggestSessionByRef(followUp, found.sessions)) found = await sessions(caller)
         } else found = await sessions(caller)
         return await send(coordinator, { kind: 'followup-suggest', args: { text, followUp, sessions: found.sessions, ...(found.skippedApps ? { skippedApps: found.skippedApps } : {}) } })

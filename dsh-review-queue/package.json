@@ -41,6 +41,7 @@
     "sessions.js",
     "follow-up.js",
     "follow-up-shared.js",
+    "titles.js",
     "todo-follow-up.js",
     "hub",
     "agent",

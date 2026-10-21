@@ -13,7 +13,7 @@
  * session reuses one requestId (made of the item id), so a controller that dedupes by requestId does not run it twice.
  */
 import { NOTE_NO_FIT, NOTE_UNUSABLE, createModelRun, within } from './summary.js'
-import { MAX_CANDIDATES, MAX_QUERY, MAX_WAITING_FOLLOW_UPS, MAY_HAVE_BEEN_SENT, PROMPT_TIMEOUT_MS, REF_REASON, SESSIONS_APP_BUDGET_MS, TOO_MANY_FOLLOW_UPS, codeOf, isAwaitingConfirm, isSentFollowUp, suggestSessionByRef } from './follow-up-shared.js'
+import { MAX_CANDIDATES, MAX_QUERY, MAX_WAITING_FOLLOW_UPS, MAY_HAVE_BEEN_SENT, PROMPT_TIMEOUT_MS, SESSIONS_APP_BUDGET_MS, TOO_MANY_FOLLOW_UPS, codeOf, isAwaitingConfirm, isSentFollowUp, isTrustedReason, suggestSessionByRef } from './follow-up-shared.js'
 
 export { MAX_CANDIDATES, MAX_QUERY, isSentFollowUp, suggestSessionByRef } // the shared constants and functions (follow-up-shared.js), still exported from here
 
@@ -125,8 +125,8 @@ function parsePick(out, candidates) {
   const hit = sessionFor(chosen, candidates)
   if (!hit) return { note: NOTE_UNUSABLE, alternatives }
   return {
-    // REF_REASON is the mark of the deterministic match, which the cards trust: a model that writes it as its reason does not get it.
-    suggested: { sessionId: hit.sessionId, title: hit.title, reason: (clip(obj.reason, MAX_FIELD) === REF_REASON ? '' : clip(obj.reason, MAX_FIELD)) || 'suggested by the model', ...(hit.workspaceTitle ? { workspaceTitle: hit.workspaceTitle } : {}), ...(hit.running === true ? { running: true } : {}), ...(hit.owner ? { owner: hit.owner } : {}) },
+    // REF_REASON and PICKED_REASON are the marks of a deterministic match, which the cards trust: a model that writes one as its reason does not get it.
+    suggested: { sessionId: hit.sessionId, title: hit.title, reason: (isTrustedReason(clip(obj.reason, MAX_FIELD)) ? '' : clip(obj.reason, MAX_FIELD)) || 'suggested by the model', ...(hit.workspaceTitle ? { workspaceTitle: hit.workspaceTitle } : {}), ...(hit.running === true ? { running: true } : {}), ...(hit.owner ? { owner: hit.owner } : {}) },
     alternatives: alternatives.filter((id) => id !== hit.sessionId),
   }
 }
@@ -225,7 +225,7 @@ export function createFollowUps({ store, controllerOf, sessionsOf, llm, timeoutM
       const wanted = typeof sessionId === 'string' && sessionId ? sessionId : item.suggested?.sessionId
       if (!wanted) return { ok: false, error: 'no-session' }
       // A session that is running now may be in the middle of a task: a MODEL's pick of it is never sent without the user choosing a session (the deterministic number pick and an explicit session are).
-      if (wanted === item.suggested?.sessionId && !(typeof sessionId === 'string' && sessionId) && item.suggested.running === true && item.suggested.reason !== REF_REASON) return { ok: false, error: 'no-session' }
+      if (wanted === item.suggested?.sessionId && !(typeof sessionId === 'string' && sessionId) && item.suggested.running === true && !isTrustedReason(item.suggested.reason)) return { ok: false, error: 'no-session' }
       const hit = (item.candidates ?? []).find((c) => c.sessionId === wanted)
       if (!hit) return { ok: false, error: 'unknown-session' }
       store.update(item.id, { state: 'starting', suggesting: false, targetSessionId: hit.sessionId, sessionTitle: hit.title, error: undefined })

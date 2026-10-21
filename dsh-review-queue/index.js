@@ -36,6 +36,7 @@ import { createStoreAdapter } from './agent/store-adapter.js'
 import { wireHub } from './agent/wire.js'
 import { createStore } from './store.js'
 import { createSummarizer } from './summary.js'
+import { createTitleReader } from './titles.js'
 import { createTuner } from './todo-tune.js'
 import { createTodoImages } from './todo-images.js'
 import { createTipper, recentTopics } from './tip.js'
@@ -162,16 +163,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const agentsOf = () => { try { return ctx.get?.('agents') ?? ctx.agents } catch { return undefined } }
   const registryOf = () => { try { return ctx.get?.('workspaceRegistry') ?? ctx.workspaceRegistry } catch { return undefined } }
   // Todo: recent session titles help the model pick a workspace (best effort), and a SPARC todo inlines the modes:sparc text like dsh-hooks-tts does.
-  const titlesOf = async (ids) => {
-    const titles = new Map()
-    try {
-      const query = ctx.get?.('sessionQuery')
-      if (!ids.length || typeof query?.readTitleSnapshots !== 'function') return titles
-      const results = await query.readTitleSnapshots(ids)
-      results.forEach((r, i) => { if (r?.status === 'fulfilled' && typeof r.value?.title?.title === 'string') titles.set(ids[i], r.value.title.title) })
-    } catch { /* titles are a bonus */ }
-    return titles
-  }
+  const titlesOf = createTitleReader(() => ctx.get?.('sessionQuery'))
   const sparcText = () => {
     try { return readFileSync(resolve(config.sparcCommandPath ?? join(homedir(), '.claude', 'commands', 'modes', 'sparc.md')), 'utf8').replace(/^---[\s\S]*?\n---\s*/, '') } catch { return '' }
   }

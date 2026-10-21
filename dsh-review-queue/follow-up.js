@@ -11,7 +11,7 @@ import { openSessionItems } from './sessions.js'
 import { listWorkspaces } from './todo.js'
 import { within } from './summary.js'
 import { createThreadCache } from './thread.js'
-import { FOLLOW_UP_LIMIT, SESSIONS_APP_BUDGET_MS, codeOf, refNumbersOf, suggestSessionByRef } from './follow-up-shared.js'
+import { FOLLOW_UP_LIMIT, SESSIONS_APP_BUDGET_MS, codeOf, isSessionIdWords, refNumbersOf, suggestSessionByRef } from './follow-up-shared.js'
 
 export { FOLLOW_UP_LIMIT } // the one session limit (follow-up-shared.js), still exported from here
 /** The snippets (the last chat message of a session) decode whole session logs: only the newest few sessions get one. */
@@ -66,7 +66,7 @@ export async function listFollowUpSessions({ controller, registry, titlesOf, sni
       try { const got = await within(Promise.resolve().then(() => read(forIds, stop.signal, log)), left(capMs)); return got instanceof Map ? got : new Map() } catch (error) { log('follow-up: ' + what + ' failed: ' + codeOf(error)); return new Map() } finally { stop.abort() }
     }
     let titles, snippets
-    if (refNumbersOf(query).size) {
+    if (refNumbersOf(query).size || isSessionIdWords(query)) {
       // A number of the words may decide on the titles alone: then no log is read for a snippet.
       titles = await optional(titlesOf, ids, TITLES_TIMEOUT_MS, 'titles')
       const named = open.map((i) => ({ sessionId: i.sessionId, title: oneLine(titles.get(i.sessionId)) }))

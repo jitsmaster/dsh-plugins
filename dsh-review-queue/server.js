@@ -151,6 +151,10 @@ export function createRouter({ queue, dev, pushRoutes }) {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })
         return send(res, 200, { workspaces: queue.workspaces() })
       }
+      if (url.pathname === '/v1/follow-up-sessions') {
+        if (req.method !== 'GET') return send(res, 405, { error: 'method' })
+        return send(res, 200, { sessions: await queue.followUpSessions({ snippets: false }) })
+      }
       if (url.pathname === '/v1/todo-image') {
         if (req.method !== 'POST') return send(res, 405, { error: 'method' })
         const image = await readImage(req)
