@@ -35,7 +35,8 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
-  const followUpSessions = (opts = {}) => listFollowUpSessions({ controller: attempt(controllerOf, 'controller'), registry: attempt(registryOf, 'registry'), titlesOf, snippetsOf: opts?.snippets === false ? undefined : snippetsOf, query: opts?.query, log })
+  const listMemory = {} // the last good session list: given when the host is too busy to list sessions
+  const followUpSessions = (opts = {}) => listFollowUpSessions({ memory: listMemory, now, controller: attempt(controllerOf, 'controller'), registry: attempt(registryOf, 'registry'), titlesOf, snippetsOf: opts?.snippets === false ? undefined : snippetsOf, query: opts?.query, log })
   const todos = createTodos({ store, controllerOf, registryOf, images: todoImages, llm, titlesOf, sessionsOf: followUpSessions, now, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
   const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)

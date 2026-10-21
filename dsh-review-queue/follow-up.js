@@ -21,6 +21,7 @@ export const SNIPPET_TIMEOUT_MS = 3000
 const LIST_TIMEOUT_MS = 10_000
 const LIST_GRACE_MS = 1000 // a list call that ignores its signal is given up this long after the signal's time (when the overall deadline allows)
 const TITLES_TIMEOUT_MS = 3000
+const STALE_LIST_MS = 10 * 60_000 // a list that failed (the host is busy) is answered with the last good one for this long
 const UNTITLED = 'Untitled session'
 const THREAD_CONCURRENCY = 4
 /** The thread cache of the snippet reads (apart from the one the phone's chat uses, which they must not push entries out of): one entry per session they ask about. */
@@ -32,14 +33,14 @@ const oneLine = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
 const errorText = (error) => oneLine(error?.message ?? error).slice(0, 120)
 
 /**
- * @param {{ controller?: { list?: Function }, registry?: any, titlesOf?: (ids: string[]) => Promise<Map<string, string>>, snippetsOf?: (ids: string[], signal?: AbortSignal, log?: (line: string) => void) => Promise<Map<string, string>>, archived?: Iterable<string>, query?: string, limit?: number, snippetLimit?: number, log?: (line: string) => void, totalMs?: number, listTimeoutMs?: number, snippetTimeoutMs?: number }} [deps]
+ * @param {{ memory?: { list?: object[], at?: number }, now?: () => number, staleMs?: number, controller?: { list?: Function }, registry?: any, titlesOf?: (ids: string[]) => Promise<Map<string, string>>, snippetsOf?: (ids: string[], signal?: AbortSignal, log?: (line: string) => void) => Promise<Map<string, string>>, archived?: Iterable<string>, query?: string, limit?: number, snippetLimit?: number, log?: (line: string) => void, totalMs?: number, listTimeoutMs?: number, snippetTimeoutMs?: number }} [deps]
  *   totalMs: the one deadline of the whole answer (session list, titles and snippets share it; SESSIONS_APP_BUDGET_MS by default, below the hub's 6 s for the command). A list that has not
  *   answered by then gives []; titles or snippets that are late are left out and the candidates are returned without them.
  *   query: the words the user typed. When they hold a ticket / PR number (refNumbersOf) the titles are read first, and the snippets only when no title decides (the deterministic match
  *   of suggestSessionByRef needs none): reading a snippet decodes a session log. snippetsOf is given an AbortSignal that is aborted when the answer is given or the reader is given up on, and the log (the reader's own, if it was built with one, is used first).
  * @returns {Promise<Candidate[]>}
  */
-export async function listFollowUpSessions({ controller, registry, titlesOf, snippetsOf, archived, query, limit = FOLLOW_UP_LIMIT, snippetLimit = SNIPPET_LIMIT, log = () => {}, totalMs = SESSIONS_APP_BUDGET_MS, listTimeoutMs = LIST_TIMEOUT_MS, snippetTimeoutMs = SNIPPET_TIMEOUT_MS } = {}) {
+export async function listFollowUpSessions({ controller, registry, titlesOf, snippetsOf, archived, query, limit = FOLLOW_UP_LIMIT, snippetLimit = SNIPPET_LIMIT, log = () => {}, totalMs = SESSIONS_APP_BUDGET_MS, listTimeoutMs = LIST_TIMEOUT_MS, snippetTimeoutMs = SNIPPET_TIMEOUT_MS, memory, now = Date.now, staleMs = STALE_LIST_MS } = {}) {
   try {
     if (typeof controller?.list !== 'function') return []
     const deadline = Date.now() + totalMs
@@ -75,7 +76,7 @@ export async function listFollowUpSessions({ controller, registry, titlesOf, sni
     const workspaces = listWorkspaces(() => registry) ?? []
     const workspaceOf = (id) => workspaces.find((w) => w.sessionIds.includes(id))
 
-    return open.map((i) => {
+    const result = open.map((i) => {
       const title = oneLine(titles.get(i.sessionId))
       const ws = workspaceOf(i.sessionId)
       const snippet = asked.includes(i.sessionId) && typeof snippets.get(i.sessionId) === 'string' ? oneLine(snippets.get(i.sessionId)).slice(0, SNIPPET_CHARS) : ''
@@ -88,7 +89,14 @@ export async function listFollowUpSessions({ controller, registry, titlesOf, sni
         ...(snippet ? { snippet } : {}),
       }
     })
+    if (memory) { memory.list = result.map((c) => ({ ...c })); memory.at = now() }
+    return result
   } catch (error) {
+    const age = memory?.list?.length && Number.isFinite(memory.at) ? now() - memory.at : Infinity
+    if (age <= staleMs) {
+      log('follow-up: session list failed: ' + codeOf(error) + '; the list of ' + Math.round(age / 1000) + ' s ago is given')
+      return memory.list.map((c) => ({ ...c }))
+    }
     log('follow-up: session list failed: ' + codeOf(error))
     return []
   }
