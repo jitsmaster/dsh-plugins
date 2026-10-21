@@ -37,19 +37,38 @@ const plain = (text) => tidy(String(text).replace(/[<>]/g, ' '))
 const EXFIL = /\.env\b|id_rsa|\bcredentials?\b|\bsecrets?\b|\bpasswords?\b|\bprivate key|\bapi[ _-]?keys?\b|\b(?:upload|post|send|e-?mail|mail|exfiltrate|leak)\b[^.!?]{0,60}\b(?:to|into|onto)\b/i
 const DESTRUCTIVE = /\b(?:delete|wipe|erase|drop|disable|skip|bypass|turn off)\s+(?:(?:all|the|every|any|existing|those|these)\s+)*(?:tests?|files?|folders?|directories|database|tables?|security|checks?|backups?|logs?|lint(?:ing)?|validation|authentication)\b/i
 
+/**
+ * The paragraphs of a longer explanation as { paragraphs }, or { problem } with the code of the first rule the answer breaks: 'shape' (not the JSON asked for),
+ * 'paragraphs' (not 2 to 4 text paragraphs of a sentence or more), 'too-long', 'leak' (URL, path, address, key) or 'noise' (code, link, command, instruction).
+ * Only the code is ever logged or sent back to the model, never the text.
+ */
+export function deeperProblem(raw) {
+  const data = jsonObjectOf(raw)
+  if (!data || !Array.isArray(data.paragraphs)) return { problem: 'shape' }
+  const count = data.paragraphs.length
+  if (count < MIN_PARAGRAPHS || count > MAX_PARAGRAPHS) return { problem: 'paragraphs' }
+  if (data.paragraphs.some((p) => typeof p !== 'string')) return { problem: 'paragraphs' }
+  const paragraphs = data.paragraphs.map(tidy)
+  if (paragraphs.some((p) => p.length < MIN_PARAGRAPH)) return { problem: 'paragraphs' }
+  if (paragraphs.reduce((sum, p) => sum + p.length, 0) > MAX_DEEPER) return { problem: 'too-long' }
+  const all = paragraphs.join(' ')
+  if (hasLeak(all)) return { problem: 'leak' }
+  if (hasNoise(all)) return { problem: 'noise' }
+  return { paragraphs }
+}
+
 /** The paragraphs of a longer explanation, or undefined when the answer is not usable (shape, size, a leak or an instruction in it). */
 export function parseDeeper(raw) {
-  const data = jsonObjectOf(raw)
-  if (!data || !Array.isArray(data.paragraphs)) return undefined
-  const count = data.paragraphs.length
-  if (count < MIN_PARAGRAPHS || count > MAX_PARAGRAPHS) return undefined
-  if (data.paragraphs.some((p) => typeof p !== 'string')) return undefined
-  const paragraphs = data.paragraphs.map(tidy)
-  if (paragraphs.some((p) => p.length < MIN_PARAGRAPH)) return undefined
-  if (paragraphs.reduce((sum, p) => sum + p.length, 0) > MAX_DEEPER) return undefined
-  const all = paragraphs.join(' ')
-  if (hasLeak(all) || hasNoise(all)) return undefined
-  return paragraphs
+  return deeperProblem(raw).paragraphs
+}
+
+// What the one repair try says after a refusal: fixed words per problem code (the refused text itself is never sent back).
+const REPAIR = {
+  'too-long': 'Your previous answer was too long. Use at most 900 characters in all, in 2 or 3 paragraphs.',
+  leak: 'Your previous answer contained a URL, a path, an e-mail address or a long token. Leave all of those out.',
+  noise: 'Your previous answer contained code, a link, a command or an instruction to the reader. Write plain explanatory prose only.',
+  paragraphs: 'Your previous answer did not have 2 to 4 paragraphs of at least one full sentence each. Write 2 or 3 paragraphs.',
+  shape: 'Your previous answer was not the JSON object asked for. Answer with ONLY {"paragraphs": [string, ...]}.',
 }
 
 /** The text of a drafted todo, or undefined: plain text of 40 to 1200 characters without a URL, path, e-mail address, key, code span, link or heading. */
@@ -135,9 +154,24 @@ export function createExpander({ llm: llmOrFn, tips, topicsOf, workspacesOf, log
     }
   }
 
+  /** The paragraphs for a tip: one model call, and when its answer is refused one more that names the problem (Haiku often overshoots a limit); a second refusal throws. */
+  async function runDeeper(tip) {
+    const attempt = async (user) => {
+      const ac = new AbortController()
+      try { return deeperProblem(await within(ask(llmNow(), DEEPER_SYSTEM, user, ac.signal), timeoutMs)) } catch (error) { ac.abort(); throw error }
+    }
+    const first = await attempt(tipBlock(tip))
+    if (first.paragraphs) return first.paragraphs
+    log('tip: longer text refused (' + first.problem + '), asking once more')
+    const second = await attempt(tipBlock(tip) + REPAIR[first.problem])
+    if (second.paragraphs) return second.paragraphs
+    log('tip: longer text refused again (' + second.problem + ')')
+    throw new Error(NOT_VALID)
+  }
+
   async function makeDeeper(tip) {
     try {
-      const paragraphs = await run(DEEPER_SYSTEM, tipBlock(tip), parseDeeper)
+      const paragraphs = await runDeeper(tip)
       const deeper = { paragraphs, source: 'model' }
       if (tips.attach(tip.id, deeper)) return { ok: true, deeper }
       // Not attached: the tip is gone (its slot ended meanwhile), or it is still the current one but its longest hold is over: then the text it paid for is shown, not kept.

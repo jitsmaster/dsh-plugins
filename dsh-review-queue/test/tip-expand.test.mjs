@@ -51,6 +51,62 @@ test('parseDeeper rejects URLs, paths, keys, code, links, commands and "do this"
   for (const text of bad) assert.equal(parseDeeper(goodDeeper({ paragraphs: [PARAS[0], text + ' ' + PARAS[1].slice(0, 20), PARAS[2]] })), undefined, text.slice(0, 40))
 })
 
+test('deeperProblem names why an answer is refused (a code, never the text) and returns the paragraphs of a good one', async () => {
+  const { deeperProblem } = await load()
+  const long = 'Sentence number one is long enough to count. '.repeat(10)
+  assert.deepEqual(deeperProblem(goodDeeper()), { paragraphs: PARAS })
+  assert.deepEqual(deeperProblem('not json'), { problem: 'shape' })
+  assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [PARAS[0]] })), { problem: 'paragraphs' })
+  assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [PARAS[0], 'short'] })), { problem: 'paragraphs' })
+  assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [long, long, long] })), { problem: 'too-long' })
+  assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [PARAS[0], 'See https://example.com/x for the proof of this.', PARAS[2]] })), { problem: 'leak' })
+  assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [PARAS[0], 'Call `contains()` on the filter before you fetch the page again.', PARAS[2]] })), { problem: 'noise' })
+})
+
+/** An llm whose n-th model call answers answers[n] (the last one repeats); every request is kept in seen.requests. */
+function sequenceLlm(answers, seen) {
+  seen.calls = 0
+  seen.requests = []
+  return {
+    listProviders: async () => [{ id: 'p1' }],
+    listModels: async () => [{ id: 'claude-haiku-x' }],
+    prepareCall: async () => ({ config: {}, stream: async function* (req) { seen.requests.push(req); const a = answers[Math.min(seen.calls, answers.length - 1)]; seen.calls++; yield { type: 'text-delta', text: a } } }),
+  }
+}
+
+test('deeper: a first answer that is refused (too long, say) gets one repair try that names the problem; a good second answer is attached', async () => {
+  const seen = {}
+  const long = 'Sentence number one is long enough to count. '.repeat(10)
+  const { expander, tips, logs } = await make({ llm: sequenceLlm([goodDeeper({ paragraphs: [long, long, long] }), goodDeeper()], seen) })
+  assert.deepEqual(await expander.deeper('t1'), { ok: true, deeper: { paragraphs: PARAS, source: 'model' } })
+  assert.equal(seen.calls, 2)
+  assert.deepEqual(tips.attached, [['t1', { paragraphs: PARAS, source: 'model' }]])
+  const second = seen.requests[1].messages.map((m) => m.content.map((c) => c.text).join('')).join('\n')
+  assert.match(second, /<tip>[\s\S]*Bloom filters[\s\S]*<\/tip>/)
+  assert.match(second, /too long/i)
+  assert.doesNotMatch(second, /Sentence number one/, 'the refused text is not sent back')
+  assert.ok(logs.some((l) => /too-long/.test(l)), 'the reason is logged')
+})
+
+test('deeper: two refused answers are an LLM error after exactly two calls, and the log names the reasons but not the text', async () => {
+  const seen = {}
+  const bad = goodDeeper({ paragraphs: [PARAS[0], 'See https://example.com/secret-path for the proof of this.', PARAS[2]] })
+  const { expander, tips, logs } = await make({ llm: sequenceLlm([bad, bad], seen) })
+  assert.deepEqual(await expander.deeper('t1'), { ok: false, error: 'LLM error' })
+  assert.equal(seen.calls, 2)
+  assert.deepEqual(tips.attached, [])
+  const log = logs.join('\n')
+  assert.match(log, /leak/)
+  assert.doesNotMatch(log, /secret-path|example\.com/)
+})
+
+test('deeper: a model that fails outright is not asked a second time', async () => {
+  const seen = {}
+  const { expander } = await make({ llm: fakeLlm({ fail: true, seen }) })
+  assert.deepEqual(await expander.deeper('t1'), { ok: false, error: 'LLM error' })
+  assert.equal(seen.calls, 1)
+})
+
 test('parseDraft accepts a plain-text prompt of 40 to 1200 characters and rejects the rest', async () => {
   const { parseDraft, MAX_DRAFT } = await load()
   assert.equal(parseDraft(goodDraft()), DRAFT)
@@ -153,7 +209,7 @@ test('deeper: a failure is not kept for long: after the cooldown the next reques
   answer = goodDeeper()
   t += 60_000 // after the short cooldown of a failure
   assert.equal((await expander.deeper('t1')).ok, true)
-  assert.equal(seen.calls, 2)
+  assert.equal(seen.calls, 3, 'the failed request asked twice (one repair try), the later one once')
 })
 
 // ---- Use in my code ----------------------------------------------------------------------------------------------------------------------
