@@ -19,7 +19,7 @@ export function replyAnswers(content) {
  * prefixes of the prompts this plugin family sends on its own (PR polling ticks, resume after a restart, a started todo, a handoff): they
  * are not the user typing. 'review-' (a reply typed on a card) and 'voice-' (a spoken reply) are user-driven and are deliberately absent.
  */
-const PROGRAMMATIC_PROMPT_ID = /^(?:pr-poll|resume|todo|handoff)-/
+const PROGRAMMATIC_PROMPT_ID = /^(?:pr-poll|resume|todo|handoff|onhold)-/
 
 /** A message the user typed (source 'user', or no source), as opposed to injected context, goal rounds, a prompt a plugin sent or a reply to a question. */
 export const isHumanMessage = (message) => {

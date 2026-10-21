@@ -112,7 +112,7 @@ test('DEVICE_ACTIONS is exactly the old phone actions plus todo, todo-confirm, t
   const m = /const DEVICE_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(http)
   assert.ok(m, 'DEVICE_ACTIONS literal')
   const actions = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
-  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'deny', 'late-answer', 'paused-dismiss', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
+  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'deny', 'hold', 'hold-continue', 'hold-release', 'late-answer', 'paused-dismiss', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
   assert.ok(!actions.includes('open-session'))
 })
 

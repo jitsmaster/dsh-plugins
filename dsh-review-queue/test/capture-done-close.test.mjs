@@ -45,9 +45,9 @@ for (const source of [{ kind: 'goal' }, { kind: 'schedule' }, { kind: 'user-appr
 }
 
 // The host stamps every sessionController.prompt as source { kind: 'user', rpcId: <the requestId> } (session-controller commands.ts), so a
-// prompt this plugin family sent itself is told apart by the id it chose: pr-poll-, resume-, todo-, handoff- are not the user typing.
+// prompt this plugin family sent itself is told apart by the id it chose: pr-poll-, resume-, todo-, handoff-, onhold- are not the user typing.
 // review- (a reply from the card) and voice- (a spoken reply) are user-driven and stay human.
-for (const prefix of ['pr-poll-', 'resume-', 'todo-', 'handoff-']) {
+for (const prefix of ['pr-poll-', 'resume-', 'todo-', 'handoff-', 'onhold-']) {
   test('a plugin-sent prompt (rpcId "' + prefix + '...") does not close the done card nor the open question of its session', async () => {
     const x = setup()
     await x.fire('agent/turn-stopping', { agent: x.agent('a1', 'Pushed the branch.') })

@@ -16,6 +16,8 @@ export function listModel(core, snap, filter) {
   return {
     waiting: core.waitingCount(open), // a todo that is being started, or a paused session, does not wait on the user
     paused: core.pausedCount(open), // sessions a restart cut off: read only here, resumed at the PC
+    held: core.heldCount(open), // sessions on hold: their own tab, never waiting, never in All
+    heldOpen: core.filterItems(open, { type: 'onhold', query: f.query }),
     sessions: core.sessionsText(snap && snap.sessions), // "N working / M open" like the desktop header; '' while unknown
     open: core.filterItems(open, f),
     resolved: core.filterItems(resolved, f),
@@ -36,6 +38,11 @@ export function pausedNote(n) {
 /** The card of a paused session: the facts the desktop card shows (core.pausedFacts) and where to act. Resume is for the PC; Dismiss is on the card (views.js PausedBody). */
 export function pausedView(core, item, now) {
   return { facts: core.pausedFacts(item, now), note: 'To resume this session, use the Coding Boss Review Queue on the PC. If it needs no action, dismiss it here.' }
+}
+
+/** The card of a session on hold: the facts the desktop card shows (core.heldFacts); Continue and Release are on the card (views.js HeldBody). */
+export function heldView(core, item, now) {
+  return { facts: core.heldFacts(item, now) }
 }
 
 /** The read-only todo card: the task, SPARC, and the same sentence the desktop card shows for the state (no workspaces are loaded here). */

@@ -327,7 +327,7 @@ test('count(): a todo waits while it needs the user (awaiting or failed), not wh
   const { queue } = setup({ createError: 'boom' })
   const a = queue.addTodo('Update the dsh-plugins readme').id
   await queue.todoIdle()
-  assert.deepEqual(queue.count(), { total: 1, byType: { question: 0, permission: 0, completed: 0, 'pr-merged': 0, todo: 1, paused: 0 } })
+  assert.deepEqual(queue.count(), { total: 1, byType: { question: 0, permission: 0, completed: 0, 'pr-merged': 0, todo: 1, paused: 0, onhold: 0 } })
   queue.confirmTodo(a)
   assert.equal(queue.count().total, 0, 'starting')
   await queue.todoIdle()

@@ -29,6 +29,8 @@
     "mobile.js",
     "reader.js",
     "paused.js",
+    "onhold.js",
+    "onhold-command.js",
     "idle-resume.js",
     "thread.js",
     "post-key.js",

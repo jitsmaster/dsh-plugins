@@ -107,7 +107,7 @@ test('by default a pending question is answered with its recommended option 10 s
   assert.deepEqual({ kind: x.question().resolution.kind, by: x.question().resolution.by }, { kind: 'answered', by: 'auto' })
   const card = x.queue.snapshot().open.find((i) => i.type === 'completed')
   assert.equal(card?.title, 'Question auto-answered')
-  assert.match(card.summary, /the task list answered it for you with the recommended option: "A \(Recommended\)"/)
+  assert.match(card.summary, /the Coding Boss Review Queue answered it for you with the recommended option: "A \(Recommended\)"/)
 })
 
 test('questionWindowSeconds is the window of a question the model gave no timeout', (t) => {

@@ -250,7 +250,7 @@ const payloadOf = (c) => ({
  * place, one that is not cut off any more (or was dismissed) is resolved. A failed scan changes nothing. Scans never overlap.
  * @param {{ store: any, scan: () => Promise<any>, dismissals: ReturnType<typeof createDismissals>, log?: (line: string) => void }} deps
  */
-export function createPausedTracker({ store, scan, dismissals, log = () => {} }) {
+export function createPausedTracker({ store, scan, dismissals, heldIds = () => new Set(), log = () => {} }) {
   let running
   async function run() {
     let result
@@ -259,7 +259,8 @@ export function createPausedTracker({ store, scan, dismissals, log = () => {} })
       return { ok: false, error: 'scan-failed' }
     }
     if (!result?.ok) return { ok: false, error: result?.error ?? 'scan-failed' }
-    const wanted = result.candidates.filter((c) => !dismissals.has(c.sessionId, c.lastWrite))
+    const held = heldIds() // a session on hold is parked on purpose, not cut off
+    const wanted = result.candidates.filter((c) => !dismissals.has(c.sessionId, c.lastWrite) && !held.has(c.sessionId))
     const open = new Map(store.list({ status: 'open' }).filter((i) => i.type === 'paused').map((i) => [i.sessionId, i]))
     let added = 0
     let updated = 0

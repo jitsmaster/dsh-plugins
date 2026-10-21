@@ -161,7 +161,7 @@ export function createIdleJudge({ llm, timeoutMs = 30_000, maxTokens = 300, log 
  *   idleMs?: number, maxAgeMs?: number, maxPerPass?: number, io?: { read: () => string | undefined, write: (text: string) => void }, log?: (line: string) => void }} deps
  */
 export function createIdleResumer({ controllerOf, registryOf = () => undefined, readLog, judge, unsure = () => {}, resumed = () => {}, now = Date.now, startedAt = 0,
-  idleMs = IDLE_MS, maxAgeMs = MAX_AGE_MS, maxPerPass = MAX_PER_PASS, io, log = () => {} }) {
+  idleMs = IDLE_MS, maxAgeMs = MAX_AGE_MS, maxPerPass = MAX_PER_PASS, io, heldIds = () => new Set(), log = () => {} }) {
   let state = {} // sessionId -> { updatedAt, at, resumes: [ms] }
   try {
     const data = JSON.parse(io?.read?.() ?? 'null')
@@ -213,8 +213,9 @@ export function createIdleResumer({ controllerOf, registryOf = () => undefined, 
     const archived = new Set((() => { try { return registryOf()?.archivedSessionIds ?? [] } catch { return [] } })().map(String))
     const busyParents = new Set(items.filter((i) => i?.running === true && i.parentSessionId).map((i) => String(i.parentSessionId)))
     const t = now()
+    const held = heldIds() // a session on hold is parked on purpose: never resumed by the idle check
     const candidates = items
-      .filter((i) => i && typeof i.sessionId === 'string' && isTopLevel(i) && i.running !== true && i.blank !== true && !archived.has(i.sessionId) && !busyParents.has(i.sessionId)
+      .filter((i) => i && typeof i.sessionId === 'string' && !held.has(i.sessionId) && isTopLevel(i) && i.running !== true && i.blank !== true && !archived.has(i.sessionId) && !busyParents.has(i.sessionId)
         && Number.isFinite(i.updatedAt) && t - i.updatedAt >= idleMs && t - i.updatedAt <= maxAgeMs && !isHandled(i))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, maxPerPass)

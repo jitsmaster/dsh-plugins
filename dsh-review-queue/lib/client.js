@@ -89,6 +89,9 @@ window.__ModuleLoader__.load({
 				case "resumed": return "Resumed";
 				case "dismissed": return "Dismissed";
 				case "recovered": return "No longer cut off (it continued or ended)";
+				case "held": return "Put on hold";
+				case "released": return "Taken off hold";
+				case "continued": return r.by === "ticket" ? "Continued: the ticket changed" + (r.changes && r.changes.length ? " (" + r.changes.join("; ") + ")" : "") : "Continued from hold";
 				case "session-ended": return "Session ended";
 				case "cancelled": return r.by === "restart" ? "Cancelled when the server restarted" : "Cancelled";
 				default: return "Resolved";
@@ -154,9 +157,10 @@ window.__ModuleLoader__.load({
 			const words = ((f && f.query) || "").toLowerCase().split(/\s+/).filter(Boolean);
 			return (items || []).filter((it) => {
 				if (type !== "all" && it.type !== type) return false;
+				if (type === "all" && it.type === "onhold") return false; // the held queue is its own view ("onhold"), never part of the waiting list
 				if (!words.length) return true;
 				const p = it.payload || {};
-				const hay = [it.title, it.sessionTitle, it.workspace, plainAction(it.summary), it.text, p.summary, ...(p.questions || []).map((q) => q && q.question)].filter(Boolean).join("\n").toLowerCase();
+				const hay = [it.title, it.sessionTitle, it.workspace, plainAction(it.summary), it.text, p.summary, p.reason, ...(p.questions || []).map((q) => q && q.question)].filter(Boolean).join("\n").toLowerCase();
 				return words.every((w) => hay.includes(w));
 			});
 		}
@@ -341,7 +345,7 @@ window.__ModuleLoader__.load({
 		// (the numbers part is sessionsKey of sessions.js, this file being one self-contained script)
 		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0) + "|" + (b.sessions && Number.isFinite(b.sessions.working) && Number.isFinite(b.sessions.open) ? b.sessions.working + "/" + b.sessions.open : "") + "|" + ((b.tip && b.tip.id) || "");
 
-		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", todo: "Todo", paused: "Paused" };
+		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", todo: "Todo", paused: "Paused", onhold: "On hold" };
 		const typeLabel = (t) => TYPE[t] || t;
 		const recommended = (q, label) => /\(recommended\)/i.test(label);
 
@@ -440,7 +444,23 @@ function imageFilesOf(data) {
 			}
 		}
 		/** What waits on the user: a todo that is being started does not, and a session paused by a restart has its own count. */
-		const waitingCount = (open) => (open || []).filter((i) => i.type !== "paused" && !(i.type === "todo" && i.state === "starting")).length;
+		const waitingCount = (open) => (open || []).filter((i) => i.type !== "paused" && i.type !== "onhold" && !(i.type === "todo" && i.state === "starting")).length;
+		/** How many sessions are on hold (open onhold items): their own queue, never counted as waiting. */
+		const heldCount = (open) => (open || []).filter((i) => i.type === "onhold").length;
+		/** How often the plugin looks at the ticket of a held session (onHoldCheckMs, default 10 minutes; a test keeps the text honest only by this note). */
+		const HELD_CHECK_TEXT = "every 10 minutes";
+		/** The lines an on-hold card shows: why, the ticket being watched, how long it has been held, when it was last checked, and what went wrong. The phone card shows the same. */
+		function heldFacts(item, now) {
+			const p = (item && item.payload) || {};
+			const facts = [p.reason || "On hold"];
+			if (p.ticket && p.ticket.id) facts.push("Waiting on ticket " + p.ticket.id + " (checked " + HELD_CHECK_TEXT + "; a new comment, state, assignee or description change continues the session)");
+			else facts.push("No ticket to watch: use Continue or Release when it can go on");
+			facts.push("Held " + fmtAge(now - (p.heldAt || 0)));
+			if (p.ticket && p.ticket.id) facts.push(p.lastCheckedAt ? "Last checked " + fmtAge(now - p.lastCheckedAt) : "Not checked yet");
+			if (p.checkError) facts.push("Could not read the ticket (" + p.checkError + ")");
+			if (p.continueError) facts.push("Could not prompt the session (" + p.continueError + ")");
+			return facts;
+		}
 		/** How many sessions a restart cut off (open paused items). */
 		const pausedCount = (open) => (open || []).filter((i) => i.type === "paused").length;
 		/** The lines a paused card shows: why, how long ago, a tool call that may be half done, the last request. The phone card shows the same. */
@@ -608,7 +628,7 @@ function imageFilesOf(data) {
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
-			selected: null, showResolved: false, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
+			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
@@ -648,7 +668,7 @@ function imageFilesOf(data) {
 			version++;
 			listeners.forEach((l) => l());
 		}
-		function visibleOpen() { return state.snap ? filterItems(state.snap.open, state.filter) : []; }
+		function visibleOpen() { return state.snap ? filterItems(state.snap.open, state.showHeld ? { ...state.filter, type: "onhold" } : state.filter) : []; }
 		/** The selected card: the chosen one, else the one the voice focus is on, else the oldest. */
 		function currentItem() {
 			const open = visibleOpen();
@@ -745,7 +765,7 @@ function imageFilesOf(data) {
 			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
 			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-power": "Pausing and quitting is not available in this app.",
 			"no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "empty-query": "Say which session this is for.", "unknown-session": "That session is not in the list any more. Pick another one.", "too-many-follow-ups": "Too many follow-ups are waiting: confirm or cancel one first.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.",
-			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "busy": "A message to that session is already on its way. Try again in a moment.",
+			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "onhold": "That session is on hold. Continue it first (or release it).", "not-holdable": "Only finished work or a paused session can be put on hold.", "no-onhold": "Putting a session on hold is not available in this app.", "busy": "A message to that session is already on its way. Try again in a moment.",
 				"bad-images": "An attached image is not valid. Remove it and paste it again.", "too-many-images": "At most " + IMAGE_MAX + " images can be attached.", "unknown-image": "An attached image is no longer on the PC. Remove it and paste it again.", "bad-image": "That is not an image the session can take (png, jpeg, webp or gif).", "too-large": "That image is over 8 MB.",
 		};
 
@@ -1119,7 +1139,7 @@ function imageFilesOf(data) {
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
 			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}"
-			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
+			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-chip.onhold{color:var(--rq-mute)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
 			+ ".rq-text{white-space:pre-wrap;word-break:break-word}.rq-clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}"
@@ -1281,7 +1301,9 @@ function imageFilesOf(data) {
 					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (reply.trim() && !busy) send(); } } })) : null,
 				h("div", { className: "rq-row" },
 					full ? h("button", { className: "rq-btn pri", disabled: busy || !reply.trim(), onClick: send }, "Send reply") : null,
-					h("button", { className: "rq-btn", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Reviewed")));
+					h("button", { className: "rq-btn", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Reviewed"),
+					full ? h(HoldButton, { item }) : null),
+				full ? h(HoldForm, { item }) : null);
 		}
 
 		/** A merged pull request: archive the session that worked on it (the follow-up sessions were already told to start). */
@@ -1349,7 +1371,9 @@ function imageFilesOf(data) {
 				(full ? facts.slice(1) : facts.slice(1, 2)).map((f, n) => h("div", { key: n, className: "rq-sub" }, f)),
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: busy, title: "Prompt the session to check its worktree and continue where it stopped", onClick: () => act("/v1/paused-resume", { id: item.id }, item.id, { advance: true }) }, busy ? "Resuming…" : "Resume"),
-					h("button", { className: "rq-btn", disabled: busy, title: "Do not resume it; it stays out of the list", onClick: () => act("/v1/paused-dismiss", { id: item.id }, item.id, { advance: true }) }, "Dismiss")));
+					h("button", { className: "rq-btn", disabled: busy, title: "Do not resume it; it stays out of the list", onClick: () => act("/v1/paused-dismiss", { id: item.id }, item.id, { advance: true }) }, "Dismiss"),
+					h(HoldButton, { item })),
+				h(HoldForm, { item }));
 		}
 
 		function Card({ item, forceFull, selected, onSelect }) {
@@ -1357,7 +1381,7 @@ function imageFilesOf(data) {
 			const now = useNow(item.type === "question" && !!item.expiresAt);
 			const full = forceFull || !!st.expanded[item.id];
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
-			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "todo" ? (isFollowUp(item) ? FollowUpBody : TodoBody) : item.type === "paused" ? PausedBody : CompletedBody;
+			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "todo" ? (isFollowUp(item) ? FollowUpBody : TodoBody) : item.type === "paused" ? PausedBody : item.type === "onhold" ? OnHoldBody : CompletedBody;
 			const reading = !!(st.snap && st.snap.reading === item.id);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },
@@ -1376,6 +1400,38 @@ function imageFilesOf(data) {
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn rq-play", disabled: st.busy[item.id], title: reading ? "Stop reading" : "Read the whole message aloud", "aria-pressed": reading, onClick: () => (reading ? act("/v1/stop", {}, item.id) : act("/v1/read", { id: item.id }, item.id)) }, reading ? "■ Stop reading" : "▶ Read aloud"),
 					hostApi.openSession && item.type !== "todo" ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
+		}
+
+		/** The Hold button of a Done or Paused card: it opens the reason line (HoldForm) under the row. */
+		function HoldButton({ item }) {
+			const st = useStore();
+			return h("button", { className: "rq-btn", disabled: st.busy[item.id] || st.holdOpen[item.id] !== undefined, title: "Park this session in the On hold queue; with an Azure DevOps ticket it is watched and continued when the ticket changes", onClick: () => set({ holdOpen: { ...state.holdOpen, [item.id]: "" } }) }, "Hold…");
+		}
+		/** The reason line and the confirm of a hold (the reason is optional; a ticket in the session title is found by the plugin). */
+		function HoldForm({ item }) {
+			const st = useStore();
+			const draft = st.holdOpen[item.id];
+			if (draft === undefined) return null;
+			const busy = st.busy[item.id];
+			const close = () => { const m = { ...state.holdOpen }; delete m[item.id]; set({ holdOpen: m }); };
+			const send = async () => { if (await act("/v1/hold", { id: item.id, reason: draft }, item.id, { advance: true })) close(); };
+			return h("div", { className: "rq-row" },
+				h("input", { className: "rq-input rq-fsearch", placeholder: "Why? (optional, e.g. waiting for the customer)", value: draft, disabled: busy, maxLength: 300, autoFocus: true, onChange: (e) => set({ holdOpen: { ...state.holdOpen, [item.id]: e.target.value } }), onKeyDown: (e) => { const ne = e.nativeEvent || e; if (isSendKey(ne)) { e.preventDefault(); if (!busy) send(); } else if (e.key === "Escape") { e.stopPropagation(); close(); } } }),
+				h("button", { className: "rq-btn pri", disabled: busy, onClick: send }, busy ? "Holding…" : "Put on hold"),
+				h("button", { className: "rq-btn", disabled: busy, onClick: close }, "Cancel"));
+		}
+
+		/** A session on hold: why, the ticket being watched, when it was last checked; Continue prompts the session now, Release just takes it off hold. */
+		function OnHoldBody({ item, full }) {
+			const st = useStore();
+			const busy = st.busy[item.id];
+			const facts = heldFacts(item, useNow(false));
+			return h(React.Fragment, null,
+				h("div", { className: "rq-text" }, facts[0]),
+				(full ? facts.slice(1) : facts.slice(1, 3)).map((x, n) => h("div", { key: n, className: "rq-sub" }, x)),
+				h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn pri", disabled: busy, title: "Prompt the session to continue now", onClick: () => act("/v1/hold-continue", { id: item.id }, item.id, { advance: true }) }, busy ? "Continuing…" : "Continue"),
+					h("button", { className: "rq-btn", disabled: busy, title: "Take it off hold without prompting the session", onClick: () => act("/v1/hold-release", { id: item.id }, item.id, { advance: true }) }, "Release")));
 		}
 
 		/** A resolved card can jump to its session when the host can open sessions and the item knows one (also after session-ended: the host may still refuse). */
@@ -1479,6 +1535,7 @@ function imageFilesOf(data) {
 			const st = useStore();
 			const n = snap ? waitingCount(snap.open) : 0;
 			const paused = snap ? pausedCount(snap.open) : 0;
+			const held = snap ? heldCount(snap.open) : 0;
 			const sessions = sessionsText(snap && snap.sessions);
 			return h("div", { className: "rq-head" }, h("h2", null, "Coding Boss Review Queue"), h("span", { className: "rq-count" }, n),
 				sessions ? h("span", { className: "rq-count rq-sess", title: sessionsTitle }, sessions) : null,
@@ -1487,7 +1544,8 @@ function imageFilesOf(data) {
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
 				h("button", { className: "rq-btn", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"),
-				h("button", { className: "rq-btn", onClick: () => set({ showResolved: !st.showResolved, showPhone: false }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
+				held || st.showHeld ? h("button", { className: "rq-btn", title: "Sessions parked until they can continue; a held session with a ticket is checked " + HELD_CHECK_TEXT, "aria-pressed": st.showHeld, onClick: () => set({ showHeld: !st.showHeld, showResolved: false, showPhone: false, selected: null }) }, st.showHeld ? "Waiting" : "On hold (" + held + ")") : null,
+				h("button", { className: "rq-btn", onClick: () => set({ showResolved: !st.showResolved, showHeld: false, showPhone: false, selected: null }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
 				h("button", { className: "rq-btn", title: "Pair a phone and manage the paired phones (opens a window)", "aria-haspopup": "dialog", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
 				extra);
 		}
@@ -1587,16 +1645,16 @@ function imageFilesOf(data) {
 			const snap = st.snap;
 			const open = visibleOpen();
 			const sel = currentItem();
-			const none = snap && snap.open.length ? "Nothing matches this filter." : "Nothing waiting on you.";
+			const none = st.showHeld ? "No session is on hold." : snap && snap.open.some((i) => i.type !== "onhold") ? "Nothing matches this filter." : "Nothing waiting on you.";
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
 			// With no open item at all the tip shows in the right panel (the detail pane, empty then); the left list keeps only the message.
 			// The narrow layout hides both panes and shows one column, so there the tip sits under the message. Never next to cards, never in Resolved.
-			const tip = snap && !snap.open.length && snap.tip ? h(TipCard, { tip: snap.tip }) : null;
+			const tip = snap && !st.showHeld && !snap.open.some((i) => i.type !== "onhold") && snap.tip ? h(TipCard, { tip: snap.tip }) : null;
 			const emptySide = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none));
 			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), tip);
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
 			const extra = h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, h(FilterBar, { snap }),
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, st.showHeld ? null : h(FilterBar, { snap }),
 				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
@@ -1673,14 +1731,14 @@ function imageFilesOf(data) {
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
+		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { loadFollowSessions, followLabel, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
-		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, startResumeAll, askResumeAll });
+		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldForm, HoldButton, PausedBody, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, imageFilesOf, addImages, removeImage, clearImages, TodoForm });

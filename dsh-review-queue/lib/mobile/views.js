@@ -4,7 +4,7 @@ import { state, subscribe, set, act, getCore, loadWorkspaces, startTodo, NEW_TOD
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { backHref, listModel, pausedNote, pausedView, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
+import { backHref, heldView, listModel, pausedNote, pausedView, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
@@ -216,7 +216,9 @@ function CompletedBody({ item }) {
     ${item.payload && item.payload.reply ? html`<details open=${(item.payload.reply || '').length < 1500}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>
+      <${OnHoldButton} item=${item} />
     </div>
+    <${OnHoldForm} item=${item} />
   </div>`
 }
 
@@ -276,6 +278,43 @@ function PausedBody({ item }) {
     <div class="sub">${v.note}</div>
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/paused-dismiss', { id: item.id }, item.id)) go('/') }}>Dismiss</button>
+      <${OnHoldButton} item=${item} />
+    </div>
+    <${OnHoldForm} item=${item} />
+  </div>`
+}
+
+/** Hold (Done and Paused cards): park the session in the On hold tab. The reason is optional; OnHoldButton sits in the row, OnHoldForm (the reason line) under it. */
+const holdOpen = new Set() // item ids whose reason line is open (survives a re-render of the card)
+function OnHoldButton({ item }) {
+  const st = useStore()
+  return html`<button class="btn" disabled=${st.busy[item.id] || holdOpen.has(item.id)} onClick=${() => { holdOpen.add(item.id); set({}) }}>Hold…</button>`
+}
+function OnHoldForm({ item }) {
+  const st = useStore()
+  const [reason, setReason] = useState('')
+  const busy = st.busy[item.id]
+  if (!holdOpen.has(item.id)) return null
+  const close = () => { holdOpen.delete(item.id); set({}) }
+  return html`<div class="holdbox" data-holdbox>
+    <input class="input" placeholder="Why? (optional, e.g. waiting for the customer)" maxlength="300" value=${reason} disabled=${busy} onInput=${(e) => setReason(e.target.value)} />
+    <div class="row">
+      <button class="btn pri" disabled=${busy} onClick=${async () => { if (await act('/v1/hold', { id: item.id, reason }, item.id)) { close(); go('/') } }}>${busy ? 'Holding…' : 'Put on hold'}</button>
+      <button class="btn" disabled=${busy} onClick=${close}>Cancel</button>
+    </div>
+  </div>`
+}
+
+/** A session on hold: why, the ticket being watched and when it was last checked; Continue prompts the session now, Release takes it off hold. */
+function HeldBody({ item }) {
+  const st = useStore()
+  const busy = st.busy[item.id]
+  const v = heldView(getCore(), item, now())
+  return html`<div>
+    ${v.facts.map((f, i) => html`<div class=${i === 0 ? 'text' : 'sub'} key=${i}>${f}</div>`)}
+    <div class="row">
+      <button class="btn pri" disabled=${busy} onClick=${async () => { if (await act('/v1/hold-continue', { id: item.id }, item.id)) go('/onhold') }}>${busy ? 'Working…' : 'Continue'}</button>
+      <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/hold-release', { id: item.id }, item.id)) go('/onhold') }}>Release</button>
     </div>
   </div>`
 }
@@ -447,7 +486,18 @@ function WaitingList() {
     <div class="row todo-link"><a class="btn pri" href="#/new">+ New todo</a></div>
     ${note ? html`<div class="banner paused-note" role="status">⏸ ${note} <button class="btn" type="button" onClick=${() => set({ filter: { ...st.filter, type: 'paused' } })}>Show</button></div>` : null}
     ${model.barVisible ? html`<${FilterBar} model=${model} />` : null}
-    ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
+    ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
+  </div>`
+}
+
+/** The On hold tab (#/onhold): sessions parked until they can continue, with the search box of the other lists. */
+function HeldList() {
+  const st = useStore()
+  const model = listModel(getCore(), st.snap, st.filter)
+  const f = st.filter
+  return html`<div>
+    <input class="input" type="search" placeholder="Search…" value=${f.query} onInput=${(e) => set({ filter: { ...f, query: e.target.value } })} />
+    ${model.heldOpen.length ? model.heldOpen.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${model.held ? 'Nothing matches this search.' : 'No session is on hold.'}</div>`}
   </div>`
 }
 
@@ -523,7 +573,7 @@ function ItemView({ id }) {
   const item = open || resolved
   if (!item) return html`<div class="empty">${st.snap ? 'That item is no longer here.' : 'Loading…'}<div class="row"><a class="btn" href="#/">Back to the list</a></div></div>`
   const late = resolved && item.type === 'question' && item.resolution && item.resolution.kind === 'expired'
-  const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'todo' ? TodoBody : item.type === 'paused' ? PausedBody : CompletedBody
+  const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'todo' ? TodoBody : item.type === 'paused' ? PausedBody : item.type === 'onhold' ? HeldBody : CompletedBody
   const chat = hasThread(item) // every item with a session (not a todo): its conversation below the actions
   const writable = canPost(item) // and a composer at the bottom, except for a paused one (it is resumed at the PC)
   return html`<article class="card">
@@ -559,7 +609,7 @@ export function App() {
   if (!st.ready && !st.snap) return html`<p class="boot">${st.error || 'Loading the Coding Boss Review Queue…'}</p>`
   const item = /^\/item\/(.+)$/.exec(route)
   const isNew = route === '/new'
-  const tab = route === '/resolved' ? 'resolved' : route === '/settings' ? 'settings' : 'waiting'
+  const tab = route === '/resolved' ? 'resolved' : route === '/settings' ? 'settings' : route === '/onhold' ? 'onhold' : 'waiting'
   const model = listModel(getCore(), st.snap, st.filter)
   const count = model.waiting
   const guard = viewIssue({ userAgent: navigator.userAgent, innerWidth: window.innerWidth, maxTouchPoints: navigator.maxTouchPoints })
@@ -571,10 +621,11 @@ export function App() {
     ${install ? html`<div class="banner install-hint">${install} <button class="btn" type="button" onClick=${() => { dismissInstallHint(); setHintGone(true) }}>Dismiss</button></div>` : null}
     ${st.error ? html`<div class="banner">${st.error}</div>` : null}
     <main>
-      ${item ? html`<${ItemView} id=${decodeURIComponent(item[1])} />` : isNew ? html`<${NewTodoView} />` : tab === 'resolved' ? html`<${ResolvedList} />` : tab === 'settings' ? html`<${SettingsView} />` : html`<${WaitingList} />`}
+      ${item ? html`<${ItemView} id=${decodeURIComponent(item[1])} />` : isNew ? html`<${NewTodoView} />` : tab === 'resolved' ? html`<${ResolvedList} />` : tab === 'onhold' ? html`<${HeldList} />` : tab === 'settings' ? html`<${SettingsView} />` : html`<${WaitingList} />`}
     </main>
     <nav>
       <a class=${tab === 'waiting' && !item ? 'on' : ''} href="#/">Waiting${count ? html`<span class="badge">${count}</span>` : null}</a>
+      ${model.held || tab === 'onhold' ? html`<a class=${tab === 'onhold' && !item ? 'on' : ''} href="#/onhold">On hold${model.held ? html`<span class="badge dim">${model.held}</span>` : null}</a>` : null}
       <a class=${tab === 'resolved' && !item ? 'on' : ''} href="#/resolved">Resolved${model.resolvedCount ? html`<span class="badge dim">${model.resolvedCount}</span>` : null}</a>
       <a class=${tab === 'settings' && !item ? 'on' : ''} href="#/settings">Settings</a>
     </nav>

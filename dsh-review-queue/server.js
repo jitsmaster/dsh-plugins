@@ -103,6 +103,9 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/paused-resume': (b) => queue.resumePaused(String(b.id)),
     '/v1/paused-dismiss': (b) => queue.dismissPaused(String(b.id)),
     '/v1/paused-scan': () => queue.scanPaused(),
+    '/v1/hold': (b) => queue.holdItem(String(b.id), { reason: b.reason }),
+    '/v1/hold-release': (b) => queue.releaseHold(String(b.id)),
+    '/v1/hold-continue': (b) => queue.continueHold(String(b.id)),
     '/v1/running-sessions': () => queue.runningSessions(),
     '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true, followUp: b.followUp, images: b.images }), // never body.sessions: the candidates are this app's own (the hub gives the union)
     '/v1/todo-tune': (b) => queue.tuneTodo(b.text),

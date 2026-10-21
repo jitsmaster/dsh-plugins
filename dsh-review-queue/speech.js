@@ -145,6 +145,15 @@ function bodyParts(item) {
     return { headline: pr + ' merged in ' + who + '.', full: pr + ' is merged in ' + who + '.' + told + ' You can archive this session.' }
   }
   if (item.type === 'todo') return todoParts(item)
+  if (item.type === 'onhold') {
+    const session = cleanText(item.sessionTitle, { maxWords: 8, maxChars: 80 })
+    const reason = cleanText(item.payload?.reason, { maxChars: 200 })
+    const ticket = item.payload?.ticket?.id ? ' Ticket ' + cleanText(String(item.payload.ticket.id), { maxChars: 12 }) + ' is checked every few minutes; the session continues when it changes.' : ' It has no ticket, so continue or release it yourself.'
+    return {
+      headline: 'Session' + (session ? ' ' + session : '') + ' is on hold.',
+      full: 'Session' + (session ? ' ' + session : '') + ' is on hold.' + (reason ? ' ' + sentence(reason) : '') + ticket,
+    }
+  }
   if (item.type === 'paused') {
     const session = cleanText(item.sessionTitle, { maxWords: 8, maxChars: 80 })
     const reason = cleanText(item.payload?.reason, { maxChars: 200 })
@@ -182,6 +191,7 @@ export function titleFor(item) {
   }
   if (item.type === 'pr-merged') return 'PR ' + cleanText(String(item.payload?.prId ?? ''), { maxChars: 12 }) + ' merged'
   if (item.type === 'paused') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Paused session'
+  if (item.type === 'onhold') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Session on hold'
   if (item.type === 'todo') {
     const first = cleanText(String(item.text ?? '').split(/\r?\n/).find((l) => l.trim()), { maxWords: 10 })
     return item.kind === 'followup' ? (first ? 'Follow up: ' + first : 'Follow up') : first || 'Todo'
@@ -287,7 +297,7 @@ export function fullTextFor(item, position) {
     const reason = cleanText(item.payload?.reason, { maxChars: 600 })
     return withLead(position, reason ? base.replace(/ Say approve or deny\.$/, '') + ' Reason: ' + sentence(reason) + ' Say approve or deny.' : base, '\n\n')
   }
-  if (item.type === 'question' || item.type === 'pr-merged' || item.type === 'todo' || item.type === 'paused') {
+  if (item.type === 'question' || item.type === 'pr-merged' || item.type === 'todo' || item.type === 'paused' || item.type === 'onhold') {
     return spokenFor(item, position).full
   }
   const reply = speakable(item.payload?.reply) || cleanText(item.summary) || 'Finished.'

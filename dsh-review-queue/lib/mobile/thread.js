@@ -105,6 +105,7 @@ const POST_ERRORS = {
   'session-unavailable': 'That session is not available in any running DSH app, so the message was not sent.',
   'post-failed': 'The message could not be sent to the session. Try again.',
   paused: 'This session was paused by a restart. Resume it at the PC first.',
+  onhold: 'This session is on hold. Continue it first (or release it), then write to it.',
   busy: 'A message to this session is already on its way. Wait for it, then try again.',
 }
 /** The sentence for a failed post whose code the shared errorText words poorly; undefined leaves it to the shared text. */
@@ -112,8 +113,8 @@ export const postErrorText = (code) => (typeof code === 'string' && Object.hasOw
 
 /** The conversation of an item can be read when it has a session (every type except a todo, which has none of its own; a paused item too). A follow-up todo that was sent has the session it went to, but the phone never reads or posts into it (hub/routing.js refuses both to a phone): its card only says where it was sent. */
 export const hasThread = (item) => !!item && item.type !== 'todo' && typeof item.sessionId === 'string' && item.sessionId !== ''
-/** A follow-up can be written to such an item, except a paused one: resuming a paused session is done at the PC. */
-export const canPost = (item) => hasThread(item) && item.type !== 'paused'
+/** A follow-up can be written to such an item, except a paused one (resuming it is done at the PC) and one on hold (Continue it first). */
+export const canPost = (item) => hasThread(item) && item.type !== 'paused' && item.type !== 'onhold'
 
 /** The chat polls only on the screen of such an item, while the page is visible and nothing (a pairing screen) pauses it. */
 export function shouldPoll({ route, visible, item, paused }) {

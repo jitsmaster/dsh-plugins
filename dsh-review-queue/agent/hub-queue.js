@@ -95,6 +95,9 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     post: (id, text, opts = {}) => action('post', { id, text, ...only(opts.key !== undefined, { key: opts.key }) }, () => local.post(id, text, opts)),
     resumePaused: (id) => action('paused-resume', { id }, () => local.resumePaused(id)),
     dismissPaused: (id) => action('paused-dismiss', { id }, () => local.dismissPaused(id)),
+    holdItem: (id, opts = {}) => action('hold', { id, ...only(opts.reason !== undefined, { reason: opts.reason }) }, () => local.holdItem(id, opts)),
+    releaseHold: (id) => action('hold-release', { id }, () => local.releaseHold(id)),
+    continueHold: (id) => action('hold-continue', { id }, () => local.continueHold(id)),
     addTodo: (text, opts = {}) => action('todo', { text, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sparc === true, { sparc: true }), ...only(opts.followUp !== undefined && opts.followUp !== null, { followUp: opts.followUp }), ...only(opts.images !== undefined && opts.images !== null, { images: opts.images }) }, () => local.addTodo(text, opts)), // never opts.sessions: the hub asks the apps itself
     confirmTodo: (id, opts = {}) => action('todo-confirm', { id, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sessionId !== undefined, { sessionId: opts.sessionId }) }, () => local.confirmTodo(id, opts)),
     cancelTodo: (id) => action('todo-cancel', { id }, () => local.cancelTodo(id)),

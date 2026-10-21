@@ -31,6 +31,9 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     archive: (c) => queue.archive(c.itemId),
     'paused-resume': (c) => queue.resumePaused(c.itemId),
     'paused-dismiss': (c) => queue.dismissPaused(c.itemId),
+    hold: (c) => queue.holdItem(c.itemId, { reason: c.args.reason }),
+    'hold-release': (c) => queue.releaseHold(c.itemId),
+    'hold-continue': (c) => queue.continueHold(c.itemId),
     'todo-suggest': (c) => queue.addTodo(c.args.text, { sparc: c.args.sparc, workspaces: c.args.workspaces, ...(c.args.images !== undefined ? { images: c.args.images } : {}) }),
     'todo-cancel': (c) => queue.cancelTodo(c.itemId),
     // Follow-up todo: this app's candidates (a read), the follow-up item with the hub's union of sessions, and the send of its message (an item moved here is adopted first).

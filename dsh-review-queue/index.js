@@ -44,6 +44,9 @@ import { createExpander } from './tip-expand.js'
 import { createSessionCounter } from './sessions.js'
 import { installCapture, cancelStalePending } from './capture.js'
 import { installTicketSessions } from './ticket-session.js'
+import { createOnHold } from './onhold.js'
+import { installOnHoldCommand } from './onhold-command.js'
+import { fetchTicketState } from './ado-ticket.js'
 import { createReviewQueue } from './service.js'
 import { createReader } from './reader.js'
 import { listWorkspaces } from './todo.js'
@@ -183,9 +186,11 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const liveSessionIds = () => new Set([...capture.seenSessionIds(), ...(safe(() => agentsOf()?.list?.()) ?? []).map((a) => a?.id).filter((id) => typeof id === 'string')])
   const sessionsRoot = join(dshHome, 'sessions')
   const pausedScan = () => (config.pausedScan ?? scanSessionLogs)({ root: sessionsRoot, startedAt, liveIds: liveSessionIds(), skipIds: archivedIds() })
+  let onHold // the on-hold queue (onhold.js), created below; the paused scan and the idle check ask it which sessions are parked on purpose
+  const heldIds = () => onHold?.heldSessionIds() ?? new Set()
   const paused = pausedWanted
     ? createPausedTracker({
-      store, scan: pausedScan, log,
+      store, scan: pausedScan, log, heldIds,
       dismissals: createDismissals({ io: stateDir ? fileIo(join(stateDir, 'paused-dismissed.json')) : undefined }),
     })
     : undefined
@@ -197,7 +202,11 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const tipExpand = createExpander({ llm: () => (llmService() ? llm : undefined), tips: tipper, topicsOf: () => recentTopics({ store, titlesOf }), workspacesOf: () => listWorkspaces(registryOf) ?? [], log, ...(config.tipExpandDeps ?? {}) })
   // "N working / M open": this app's sessions from the session controller, cached for 2 s (sessions.js); config.sessionCounter: { ttlMs, minEmitMs } for tests.
   const sessionCounter = createSessionCounter({ controllerOf, registryOf, log, ...(config.sessionCounter ?? {}) })
-  const queue = createReviewQueue({ store, capture, controllerOf, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
+  // On hold: sessions parked on purpose, in their own queue; one on an Azure DevOps ticket is continued by the plugin when the ticket gets a comment or a state, assignee or description change.
+  onHold = createOnHold({ store, controllerOf, ticketStateOf: config.onHoldDeps?.ticketStateOf ?? ((ref) => fetchTicketState(ref, { log })), log })
+  // A session goes on hold by "/onhold <reason>" typed in it, or by an ONHOLD marker line it prints itself (off with onHoldCommands: false).
+  installOnHoldCommand(ctx, { onHoldOf: () => onHold, log, enabled: () => config.onHoldCommands !== false })
+  const queue = createReviewQueue({ store, capture, controllerOf, onHold, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }
@@ -212,7 +221,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const openPausedOf = (sessionId) => store.list({ status: 'open' }).filter((i) => i.type === 'paused' && i.sessionId === sessionId)
   const idle = idleWanted
     ? createIdleResumer({
-      controllerOf, registryOf, startedAt, idleMs, log,
+      controllerOf, registryOf, startedAt, idleMs, log, heldIds,
       readLog: config.idleDeps?.readLog ?? createLogReader({ root: sessionsRoot }),
       judge: config.idleDeps?.judge ?? createIdleJudge({ llm, log }),
       io: stateDir ? fileIo(join(stateDir, 'idle-resume.json')) : undefined,
@@ -236,13 +245,24 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     if (every > 0) { const t = setInterval(() => { void idle.check() }, every); t.unref?.(); idleTimers.push(t) }
   }
 
+  // The ticket check of the held sessions every onHoldCheckMs (default 10 minutes; 0 turns it off; off in node --test runs unless onHoldCheckMs is set).
+  const holdTimers = []
+  const holdEvery = Number.isFinite(config.onHoldCheckMs) ? config.onHoldCheckMs : (process.env.NODE_TEST_CONTEXT === undefined ? 10 * 60_000 : 0)
+  if (holdEvery > 0) {
+    const first = setTimeout(() => { void onHold.check() }, config.onHoldStartMs ?? 60_000)
+    first.unref?.()
+    const t = setInterval(() => { void onHold.check() }, holdEvery)
+    t.unref?.()
+    holdTimers.push(first, t)
+  }
+
   const pruneTimer = setInterval(() => { store.prune(); try { todoImages?.prune() } catch { /* next hour */ } }, 3600_000)
   pruneTimer.unref?.()
   // The session numbers are looked at every few seconds, so a change reaches the open screens by itself (the counter caches and rate limits the events).
   const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
   sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.

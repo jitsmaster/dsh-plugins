@@ -22,16 +22,16 @@ const POST_KEY_TTL_MS = 10 * 60_000
 const RUNNING_POLL_LIST_MS = 5_000 // the session list call of runningSessions (Resume all asks every 3 s)
 const RUNNING_SHARE_MS = 1_500 // an answer of runningSessions is reused this long after it completed (several lanes or windows ask on the same rhythm)
 const RUNNING_LIST_LIMIT_MS = RUNNING_POLL_LIST_MS + 1_000 // a list call that has not answered by then fails for every caller sharing it
-const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo', 'paused']
-/** A todo being started, or a session paused by a restart (it has its own count), is not waiting on the user. */
-const needsUser = (item) => item.type !== 'paused' && !(item.type === 'todo' && item.state === 'starting')
+const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo', 'paused', 'onhold']
+/** A todo being started, a session paused by a restart, or a session on hold (each has its own count or queue), is not waiting on the user. */
+const needsUser = (item) => item.type !== 'paused' && item.type !== 'onhold' && !(item.type === 'todo' && item.state === 'starting')
 
 // Show/hide commands for the browsers. The default state is module-level so that re-creating the queue inside one server run
 // (a plugin reload) does not reset the sequence: a tab that already saw seq N would otherwise ignore every later command.
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, onHold, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
@@ -312,6 +312,25 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       store.resolve(id, { kind: 'dismissed', by: 'card' })
       return { ok: true }
     },
+    /**
+     * Moves a Done or Paused card to the on-hold queue (onhold.js): the card closes as held, a paused one is marked handled so the scan does not bring it back,
+     * and an onhold item opens for its session with the reason. -> { ok: true, id } | { ok: false, error }.
+     */
+    async holdItem(id, { reason } = {}) {
+      if (!onHold) return { ok: false, error: 'no-onhold' }
+      const item = openItem(id)
+      if (!item) return { ok: false, error: 'not-open' }
+      if (item.type !== 'completed' && item.type !== 'paused') return { ok: false, error: 'not-holdable' }
+      const held = await onHold.hold({ sessionId: item.sessionId, sessionTitle: item.sessionTitle, workspace: item.workspace, reason })
+      if (!held.ok) return held
+      if (item.type === 'paused') paused?.markHandled(item)
+      store.resolve(id, { kind: 'held', by: 'card' })
+      return { ok: true, id: held.id }
+    },
+    /** Takes a session off hold without prompting it. */
+    releaseHold: (id) => (onHold ? onHold.release(String(id)) : { ok: false, error: 'no-onhold' }),
+    /** Takes a session off hold and prompts it to continue. */
+    continueHold: async (id) => (onHold ? onHold.continueNow(String(id)) : { ok: false, error: 'no-onhold' }),
     /** Looks for sessions cut off by a restart now (the agent also does at startup): { ok, added, updated, resolved, total }. */
     scanPaused: async () => (paused ? paused.scan() : { ok: false, error: 'no-scanner' }),
     /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc?, followUp?, sessions? }) -> { ok, id, state }; confirmTodo(id, { workspaceId?, sessionId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). followUp (words) makes it a message for an existing session; sessions (the hub's union) are its candidates. */
@@ -344,6 +363,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const all = store.snapshot().open
       for (const item of all) if (item.type in byType && needsUser(item)) byType[item.type]++
       byType.paused = all.filter((i) => i.type === 'paused').length
+      byType.onhold = all.filter((i) => i.type === 'onhold').length
       return { total: all.filter(needsUser).length, byType }
     },
     /** The oldest open item (position 1), or undefined. */
@@ -491,6 +511,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       if (!item) return { ok: false, error: 'not-found' }
       if (!hasSession(item)) return { ok: false, error: 'not-a-session' }
       if (item.type === 'paused') return { ok: false, error: 'paused' }
+      if (item.type === 'onhold' && item.status === 'open') return { ok: false, error: 'onhold' } // Continue (or Release) it first: a plain prompt would leave the hold open
       const idem = postKeyOf(key)
       const repeat = seenPostKey(idem)
       if (repeat) return repeat

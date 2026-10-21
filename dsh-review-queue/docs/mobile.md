@@ -69,6 +69,13 @@ Sessions a DSH restart cut off in the middle of work are listed as items of type
 - **Card**: chip *Paused*; the facts the desktop card shows (why it is listed, how long ago it last wrote, a tool call that may be half done, the last request) "To resume this session, use the Coding Boss Review Queue on the PC. If it needs no action, dismiss it here." and a **Dismiss** button (back to the list on success).
 - **Code**: `pausedNote`, `pausedView` and the `paused` count of `listModel` in [lib/mobile/model.js](../lib/mobile/model.js) (the facts and the count come from `pausedFacts` / `pausedCount` of the overlay's `exports.shared`); `PausedBody` in views.js.
 
+## On hold (its own tab)
+
+Sessions parked with Hold (desktop, phone, `/onhold` or an `ONHOLD` line; see the README section *On hold* and [hub.md](hub.md) 6.7b) are items of type `onhold`. They are **not** waiting, not in *All* and have no filter chip: the nav bar gets an **On hold** tab (with its count; shown while any session is held, or while the tab is open), route `#/onhold`, a list with a search box.
+- **Card**: chip *On hold*; the facts of the desktop card (reason, ticket and check interval, how long held, last check, errors) from `heldFacts`; **Continue** (`/v1/hold-continue`) and **Release** (`/v1/hold-release`). No composer: a held session cannot be written to from the phone (`canPost`, error `onhold`); the conversation can be read.
+- **Hold button**: on a *Done* card and on a *Paused* card (`/v1/hold {id, reason}`; the reason is optional).
+- **Code**: `heldView` and the `held` / `heldOpen` fields of `listModel` in [lib/mobile/model.js](../lib/mobile/model.js); `HeldBody`, `HeldList`, `OnHoldButton`, `OnHoldForm` in [lib/mobile/views.js](../lib/mobile/views.js).
+
 ## Session count in the top bar
 The top bar shows `N working / M open` (sessions of DSH with a turn running / open sessions, summed over every connected app) under the waiting count, in its own line with tabular digits and a reserved height, so nothing moves when it changes (it fits at 390 px). The words come from the desktop's shared helper (`sessionsText`), the numbers from the snapshot's `sessions` (hub sum; hidden while unknown). The phone never shows the tip of the day; its long-poll token carries the numbers so a change reaches it by itself.
 

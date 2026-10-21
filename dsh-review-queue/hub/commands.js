@@ -10,7 +10,7 @@ import { PROMPT_TIMEOUT_MS } from '../follow-up-shared.js'
 // sessions-list stays above SESSIONS_APP_BUDGET_MS (follow-up-shared.js: the one deadline an app has for its answer), and followup-send above PROMPT_TIMEOUT_MS (the app's own limit for the prompt call).
 export const TIMEOUT_MS = Object.freeze({
   answer: 10_000, deny: 10_000, approve: 10_000, 'approve-similar': 10_000, 'late-answer': 15_000, reply: 35_000, archive: 35_000,
-  'paused-resume': 35_000, 'paused-dismiss': 10_000, 'todo-suggest': 10_000, 'todo-start': 10_000, 'sessions-list': 6_000, 'followup-suggest': 10_000, 'followup-send': PROMPT_TIMEOUT_MS + 5000, 'todo-cancel': 10_000, 'open-session': 10_000, apply: 10_000, thread: 15_000, post: 35_000,
+  'paused-resume': 35_000, 'paused-dismiss': 10_000, hold: 15_000, 'hold-release': 10_000, 'hold-continue': 35_000, 'todo-suggest': 10_000, 'todo-start': 10_000, 'sessions-list': 6_000, 'followup-suggest': 10_000, 'followup-send': PROMPT_TIMEOUT_MS + 5000, 'todo-cancel': 10_000, 'open-session': 10_000, apply: 10_000, thread: 15_000, post: 35_000,
 })
 const DEFAULT_TIMEOUT_MS = 10_000
 

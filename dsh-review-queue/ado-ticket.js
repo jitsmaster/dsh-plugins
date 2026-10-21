@@ -14,6 +14,7 @@
  * When the title cannot be read (no PAT, offline, no such ticket) the title is made from the text itself: the number is always right.
  * Never throws; the PAT is never logged.
  */
+import { createHash } from 'node:crypto'
 import { cleanText } from './speech.js'
 
 /** Where a bare number ("AB#123", "ticket 123") is looked up: the CTnP project. */
@@ -86,4 +87,44 @@ export async function ticketTitleFor(text, deps = {}) {
   if (!ref) return undefined
   const title = (await fetchTicketTitle(ref, deps)) ?? (fallbackTitle(text) || 'ticket ' + ref.id)
   return ticketSessionTitle(title, ref.id)
+}
+
+const STATE_FIELDS = ['System.State', 'System.AssignedTo', 'System.Description', 'System.CommentCount']
+const fingerprint = (text) => createHash('sha256').update(String(text ?? '')).digest('hex').slice(0, 16)
+
+/**
+ * What the on-hold watch compares: { ok: true, state: { state, assignee, descriptionHash, commentCount } } or { ok: false, error } with a short code
+ * (no-pat, untrusted-host, http-<status>, unreachable, bad-answer). One call. Never throws; the PAT is never in the result or the log.
+ */
+export async function fetchTicketState(ref, { env = process.env, fetchImpl = globalThis.fetch, timeoutMs = FETCH_TIMEOUT_MS, log = () => {} } = {}) {
+  const pat = env?.AZURE_DEVOPS_EXT_PAT
+  if (!pat) return { ok: false, error: 'no-pat' }
+  let url
+  try { url = new URL(ref.base + '/_apis/wit/workitems/' + ref.id + '?fields=' + STATE_FIELDS.join(',') + '&api-version=' + API_VERSION) } catch { return { ok: false, error: 'untrusted-host' } }
+  if (url.protocol !== 'https:' || !trustedHost(url.hostname.toLowerCase())) return { ok: false, error: 'untrusted-host' }
+  try {
+    const res = await fetchImpl(url, { headers: { Authorization: 'Basic ' + Buffer.from(':' + pat).toString('base64'), Accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) })
+    if (!res.ok) return { ok: false, error: 'http-' + res.status }
+    const fields = (await res.json())?.fields
+    if (!fields || typeof fields !== 'object') return { ok: false, error: 'bad-answer' }
+    const who = fields['System.AssignedTo']
+    const assignee = typeof who === 'string' ? who : who?.displayName ?? who?.uniqueName ?? ''
+    const count = Number(fields['System.CommentCount'])
+    return { ok: true, state: { state: String(fields['System.State'] ?? ''), assignee: String(assignee), descriptionHash: fingerprint(fields['System.Description']), commentCount: Number.isFinite(count) && count > 0 ? count : 0 } }
+  } catch (error) {
+    log('ado-ticket: state of ticket ' + ref.id + ' not read: ' + String(error?.name ?? 'error'))
+    return { ok: false, error: 'unreachable' }
+  }
+}
+
+/** What changed between two ticket states, as short phrases: new comments, state, assignee, description. Anything else (title, revision) is not an update. */
+export function diffTicket(before, after) {
+  if (!before || !after) return []
+  const changes = []
+  const more = after.commentCount - before.commentCount
+  if (more > 0) changes.push(more + ' new comment' + (more === 1 ? '' : 's'))
+  if (after.state !== before.state) changes.push('state ' + before.state + ' -> ' + after.state)
+  if (after.assignee !== before.assignee) changes.push('assignee ' + (before.assignee || 'nobody') + ' -> ' + (after.assignee || 'nobody'))
+  if (after.descriptionHash !== before.descriptionHash) changes.push('description changed')
+  return changes
 }
