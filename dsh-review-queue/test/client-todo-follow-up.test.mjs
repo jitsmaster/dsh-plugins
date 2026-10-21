@@ -438,6 +438,57 @@ test('submit, Follow up: POST /v1/todo with the trimmed text and followUp only (
   assert.equal(f.busy, false)
 })
 
+test('submit, Follow up: the form closes as soon as the add is sent (the server reads the sessions first, which takes seconds), like a new todo', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const { T, calls } = render({ answer: async () => { await gate; return okJson({ ok: true }) } })
+  T.set({ todoForm: FORM({ mode: 'followup', text: 'Reply to it', followUp: 'the PR 6563 session' }) })
+  const done = T.submitTodo()
+  await tick()
+  assert.equal(calls.length, 1)
+  assert.equal(T.state.todoForm.open, false, 'closed while the request is still on its way')
+  assert.equal(T.state.todoForm.busy, true, 'a second add of the same text is still refused')
+  assert.equal(T.TodoForm(), null)
+  release()
+  assert.equal(await done, true)
+  assert.equal(T.state.todoForm.open, false)
+  assert.equal(T.state.todoForm.text, '')
+  assert.equal(T.state.todoForm.busy, false)
+})
+
+test('submit, Follow up: a refusal after the form closed brings the form back with the text, the description and the reason', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const { T } = render({ answer: async () => { await gate; return okJson({ ok: false, error: 'unknown-session' }, 400) } })
+  T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 'that one' }) })
+  const done = T.submitTodo()
+  await tick()
+  assert.equal(T.state.todoForm.open, false)
+  release()
+  assert.equal(await done, false)
+  const form = T.state.todoForm
+  assert.equal(form.open, true)
+  assert.equal(form.busy, false)
+  assert.equal(form.text, 'Do it')
+  assert.equal(form.followUp, 'that one')
+  assert.equal(form.mode, 'followup')
+  assert.match(form.error, /session/i)
+})
+
+test('submit, New session: the form still stays open and busy until the add is answered (only a follow-up closes early)', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const { T } = render({ answer: async () => { await gate; return okJson({ ok: true }) } })
+  T.set({ todoForm: FORM({ mode: 'new', text: 'Fix it', workspaceId: 'w1' }) })
+  const done = T.submitTodo()
+  await tick()
+  assert.equal(T.state.todoForm.open, true)
+  assert.equal(T.state.todoForm.busy, true)
+  release()
+  assert.equal(await done, true)
+  assert.equal(T.state.todoForm.open, false)
+})
+
 test('submit, New session: the body is what it was (a stale description in the form is not sent)', async () => {
   const { T, calls } = render()
   T.set({ todoForm: FORM({ mode: 'new', text: 'Fix it', workspaceId: 'w1', sparc: true, followUp: 'left over words' }) })

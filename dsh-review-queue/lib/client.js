@@ -889,9 +889,10 @@ function imageFilesOf(data) {
 			if (!follow && f.uploading > 0) { patchForm({ error: "Wait for the image to finish uploading." }); return false; }
 			const problem = todoFormProblem(f.text, follow ? f.followUp || "" : undefined);
 			if (problem) { patchForm({ error: problem }); return false; }
-			patchForm({ busy: true, error: undefined });
+			// A follow-up add answers only after the server has read the sessions (seconds), so the form closes at once, like a new todo; busy stays set, and a refusal brings the form back with the text.
+			patchForm({ busy: true, error: undefined, ...(follow ? { open: false } : {}) });
 			const error = await post("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim() } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
-			if (error) { patchForm({ busy: false, error }); return false; }
+			if (error) { patchForm({ busy: false, error, ...(follow ? { open: true } : {}) }); return false; }
 			clearImages();
 			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined } });
 			return true;
