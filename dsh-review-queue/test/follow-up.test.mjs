@@ -215,3 +215,57 @@ test('snippetsFromThread is undefined without a thread reader, and reads with a 
   assert.equal(out.size, 12)
   assert.ok(peak <= 4, 'peak ' + peak)
 })
+
+// The real session name, the way DSH itself shows it (sessions service displayTitleOf): the durable title the list row already carries
+// (projections.values.title, host-computed, live or from the persisted cache), else the project folder name, else the id. No log is read for it.
+const withTitle = (sessionId, title, extra = {}) => item(sessionId, { projections: { kind: 'cached', asOfSeq: 3, values: { title } }, ...extra })
+
+test('the title is the one the list row carries (projections.values.title): titlesOf is not asked for those sessions', async () => {
+  const asked = []
+  const controller = controllerOf([withTitle('a', 'Fix: login - 25001', { updatedAt: 3 }), item('b', { updatedAt: 2 }), withTitle('c', '  Docs \n cleanup ', { updatedAt: 1 })])
+  const out = await listFollowUpSessions({ controller, registry: registry(), titlesOf: async (ids) => { asked.push(ids); return new Map([['b', 'Read title']]) } })
+  assert.deepEqual(out.map((c) => [c.sessionId, c.title]), [['a', 'Fix: login - 25001'], ['b', 'Read title'], ['c', 'Docs cleanup']])
+  assert.deepEqual(asked, [['b']])
+})
+
+test('with every title on the list rows no title read is made at all, and a titlesOf that never answers costs nothing', async () => {
+  let called = 0
+  const controller = controllerOf([withTitle('a', 'Alpha', { updatedAt: 2 }), withTitle('b', 'Beta', { updatedAt: 1 })])
+  const started = Date.now()
+  const out = await listFollowUpSessions({ controller, registry: registry(), titlesOf: () => { called++; return new Promise(() => {}) } })
+  assert.equal(called, 0)
+  assert.ok(Date.now() - started < 500)
+  assert.deepEqual(out.map((c) => c.title), ['Alpha', 'Beta'])
+})
+
+test('the list-row title wins over a title read; an empty or non-string one does not count', async () => {
+  const controller = controllerOf([withTitle('a', 'Row title', { updatedAt: 3 }), withTitle('b', '', { updatedAt: 2 }), withTitle('c', 42, { updatedAt: 1 })])
+  const out = await listFollowUpSessions({ controller, registry: registry(), titlesOf: titles({ a: 'Read a', b: 'Read b', c: 'Read c' }) })
+  assert.deepEqual(out.map((c) => c.title), ['Row title', 'Read b', 'Read c'])
+})
+
+test('with no title anywhere the session is named after its project folder (as the DSH sidebar does), the id is never shown, "Untitled session" is the last resort', async () => {
+  const controller = controllerOf([
+    item('a', { updatedAt: 4, cwd: 'D:\\dev\\ai\\dsh-plugins' }),
+    item('b', { updatedAt: 3, cwd: '/home/me/work/site/' }),
+    item('c', { updatedAt: 2, cwd: '' }),
+    item('d', { updatedAt: 1 }),
+    item('e', { updatedAt: 0, cwd: 'D:\\dev\\CTnP-Final' }),
+  ])
+  const out = await listFollowUpSessions({ controller, registry: registry(), titlesOf: titles({ e: 'Real title' }) })
+  assert.deepEqual(out.map((c) => [c.sessionId, c.title]), [['a', 'dsh-plugins'], ['b', 'site'], ['c', 'Untitled session'], ['d', 'Untitled session'], ['e', 'Real title']])
+})
+
+test('the project name stands in when the title read fails or is late too', async () => {
+  const controller = controllerOf([item('a', { cwd: 'D:\\dev\\ai\\dsh-plugins' })])
+  const out = await listFollowUpSessions({ controller, registry: registry(), titlesOf: async () => { throw new Error('x') } })
+  assert.equal(out[0].title, 'dsh-plugins')
+})
+
+test('a ticket number in the words is matched against the list-row titles with no title read', async () => {
+  let called = 0
+  const controller = controllerOf([withTitle('a', 'Fix: login - 25001', { updatedAt: 2 }), withTitle('b', 'Other', { updatedAt: 1 })])
+  const out = await listFollowUpSessions({ controller, registry: registry(), query: '25001', titlesOf: () => { called++; return new Map() }, snippetsOf: async () => new Map() })
+  assert.equal(called, 0)
+  assert.deepEqual(out.map((c) => c.title), ['Fix: login - 25001', 'Other'])
+})

@@ -30,6 +30,13 @@ const SNIPPET_CACHE_ENTRIES = SNIPPET_LIMIT
 /** Never throws: undefined when fn does; what failed is reported (the error's code or name only: its message can carry a path) when a log is given. */
 const safe = (fn, log, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' failed: ' + codeOf(error)); return undefined } }
 const oneLine = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
+/**
+ * The durable session title the list row itself carries: the host's "title" projection (projections.values.title, live for an open session, from the persisted cache for the others),
+ * the very value the DSH sidebar shows. Reading it costs nothing; readTitleSnapshots (titlesOf) folds session logs and is only for rows that do not carry one.
+ */
+const rowTitleOf = (item) => { const t = item?.projections?.values?.title; return typeof t === 'string' ? oneLine(t) : '' }
+/** The last folder of the session's cwd, the sidebar's name for a session with no title yet (DSH workspaceTitleOf); '' when there is none. */
+const folderNameOf = (cwd) => { if (typeof cwd !== 'string') return ''; const t = cwd.replace(/[/\\]+$/, ''); return oneLine(t.slice(Math.max(t.lastIndexOf('/'), t.lastIndexOf('\\')) + 1)) }
 const errorText = (error) => oneLine(error?.message ?? error).slice(0, 120)
 
 /**
@@ -66,13 +73,21 @@ export async function listFollowUpSessions({ controller, registry, titlesOf, sni
       const stop = new AbortController() // the reader is told when its answer is no longer wanted (given, or given up on): it must not go on reading
       try { const got = await within(Promise.resolve().then(() => read(forIds, stop.signal, log)), left(capMs)); return got instanceof Map ? got : new Map() } catch (error) { log('follow-up: ' + what + ' failed: ' + codeOf(error)); return new Map() } finally { stop.abort() }
     }
+    // The row's own title first; only the sessions whose row has none are read (a log fold, slow on a cold start).
+    const rowTitles = new Map(open.map((i) => [i.sessionId, rowTitleOf(i)]).filter(([, t]) => t))
+    const unread = ids.filter((id) => !rowTitles.has(id))
+    const titled = (read) => new Map([...rowTitles, ...[...read].filter(([id, t]) => !rowTitles.has(id) && oneLine(t))])
     let titles, snippets
     if (refNumbersOf(query).size || isSessionIdWords(query)) {
       // A number of the words may decide on the titles alone: then no log is read for a snippet.
-      titles = await optional(titlesOf, ids, TITLES_TIMEOUT_MS, 'titles')
+      titles = titled(await optional(titlesOf, unread, TITLES_TIMEOUT_MS, 'titles'))
       const named = open.map((i) => ({ sessionId: i.sessionId, title: oneLine(titles.get(i.sessionId)) }))
       snippets = suggestSessionByRef(query, named) ? new Map() : await optional(snippetsOf, asked, snippetTimeoutMs, 'snippets')
-    } else [titles, snippets] = await Promise.all([optional(titlesOf, ids, TITLES_TIMEOUT_MS, 'titles'), optional(snippetsOf, asked, snippetTimeoutMs, 'snippets')])
+    } else {
+      let read
+      [read, snippets] = await Promise.all([optional(titlesOf, unread, TITLES_TIMEOUT_MS, 'titles'), optional(snippetsOf, asked, snippetTimeoutMs, 'snippets')])
+      titles = titled(read)
+    }
     const workspaces = listWorkspaces(() => registry) ?? []
     const workspaceOf = (id) => workspaces.find((w) => w.sessionIds.includes(id))
 
@@ -82,7 +97,7 @@ export async function listFollowUpSessions({ controller, registry, titlesOf, sni
       const snippet = asked.includes(i.sessionId) && typeof snippets.get(i.sessionId) === 'string' ? oneLine(snippets.get(i.sessionId)).slice(0, SNIPPET_CHARS) : ''
       return {
         sessionId: i.sessionId,
-        title: title || UNTITLED,
+        title: title || folderNameOf(i.cwd) || UNTITLED,
         ...(ws ? { workspaceId: ws.id, workspaceTitle: ws.title } : {}),
         ...(Number.isFinite(i.updatedAt) ? { updatedAt: i.updatedAt } : {}),
         running: i.running === true,
