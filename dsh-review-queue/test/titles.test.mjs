@@ -52,3 +52,34 @@ test('the cache holds at most max titles, the oldest go first', async () => {
   await read(['a'])
   assert.deepEqual(asked, [['a', 'b', 'c'], ['a']])
 })
+
+test('what a read gave is logged: how many titled, untitled and rejected (the error code only) and how long it took', async () => {
+  const lines = []
+  const query = { readTitleSnapshots: async (ids) => ids.map((id) => (id === 'bad' ? { status: 'rejected', reason: Object.assign(new Error('secret path C:/x'), { code: 'ENOENT' }) } : id === 'none' ? { status: 'fulfilled', value: {} } : ok('T ' + id))) }
+  const read = createTitleReader(() => query, { log: (l) => lines.push(l) })
+  await read(['a', 'bad', 'none'])
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /titles: read 3 in \d+ ms: 1 titled, 1 untitled, 1 rejected \(ENOENT\)/)
+  assert.doesNotMatch(lines[0], /secret/)
+})
+
+test('a service that is missing or throws is logged by its error code or name only', async () => {
+  const lines = []
+  await createTitleReader(() => ({ readTitleSnapshots: async () => { throw new TypeError('secret') } }), { log: (l) => lines.push(l) })(['a'])
+  await createTitleReader(() => undefined, { log: (l) => lines.push(l) })(['a'])
+  assert.deepEqual(lines, ['titles: read failed: TypeError', 'titles: no session query service'])
+})
+
+test('calls that overlap share one read of the same ids, they do not start another each', async () => {
+  let release
+  const gate = new Promise((r) => { release = r })
+  const asked = []
+  const query = { readTitleSnapshots: async (ids) => { asked.push([...ids]); await gate; return ids.map((id) => ok('T ' + id)) } }
+  const read = createTitleReader(() => query)
+  const first = read(['a', 'b'])
+  const second = read(['a', 'b', 'c'])
+  release()
+  assert.deepEqual([...(await first)], [['a', 'T a'], ['b', 'T b']])
+  assert.deepEqual([...(await second)].sort(), [['a', 'T a'], ['b', 'T b'], ['c', 'T c']])
+  assert.deepEqual(asked, [['a', 'b'], ['c']])
+})

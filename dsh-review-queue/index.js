@@ -163,7 +163,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const agentsOf = () => { try { return ctx.get?.('agents') ?? ctx.agents } catch { return undefined } }
   const registryOf = () => { try { return ctx.get?.('workspaceRegistry') ?? ctx.workspaceRegistry } catch { return undefined } }
   // Todo: recent session titles help the model pick a workspace (best effort), and a SPARC todo inlines the modes:sparc text like dsh-hooks-tts does.
-  const titlesOf = createTitleReader(() => ctx.get?.('sessionQuery'))
+  const titlesOf = createTitleReader(() => ctx.get?.('sessionQuery'), { log })
   const sparcText = () => {
     try { return readFileSync(resolve(config.sparcCommandPath ?? join(homedir(), '.claude', 'commands', 'modes', 'sparc.md')), 'utf8').replace(/^---[\s\S]*?\n---\s*/, '') } catch { return '' }
   }

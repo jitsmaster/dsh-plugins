@@ -1,35 +1,58 @@
 /**
  * titlesOf(ids) -> Map(id -> title) for the session titles the follow-up list, the todo suggestion and the tip topics show. Reading a title decodes part of a session
  * log, so a read of many sessions can take longer than the callers wait (3 s): a read that is given up on by its caller still finishes here and fills the cache, and the
- * next call finds the titles there instead of timing out again (the list then showed every session as "Untitled session"). Never throws.
+ * next call finds the titles there instead of timing out again (the list then showed every session as "Untitled session"). Calls that overlap share one read of the same id. What a read gave (counts, error codes only) is logged when a log is given. Never throws.
  *
  * @param {() => { readTitleSnapshots?: (ids: string[]) => Promise<{ status: string, value?: { title?: { title?: unknown } } }[]> } | undefined} queryOf the session query service
- * @param {{ now?: () => number, ttlMs?: number, max?: number }} [opts] ttlMs: how long a title is reused (a renamed session shows its new name after that)
+ * @param {{ now?: () => number, ttlMs?: number, max?: number, log?: (line: string) => void }} [opts] ttlMs: how long a title is reused (a renamed session shows its new name after that)
  */
-export function createTitleReader(queryOf, { now = Date.now, ttlMs = 120_000, max = 500 } = {}) {
+export function createTitleReader(queryOf, { now = Date.now, ttlMs = 120_000, max = 500, log = () => {} } = {}) {
   const cache = new Map() // id -> { title, at }
+  const pending = new Map() // id -> the read that is asking for it
+  const codeOf = (e) => String(typeof e === 'string' ? e : e?.code ?? e?.name ?? 'error').replace(/[^A-Za-z0-9_:. /-]/g, '?').slice(0, 40) // never the message: it can carry a path
+  const say = (line) => { try { log(line) } catch { /* the log is a bonus too */ } }
+  async function read(ids) {
+    const started = now()
+    try {
+      const query = queryOf()
+      if (typeof query?.readTitleSnapshots !== 'function') { say('titles: no session query service'); return }
+      const results = await query.readTitleSnapshots(ids)
+      let titled = 0
+      const rejected = new Map()
+      results.forEach((r, i) => {
+        if (r?.status === 'rejected') { const code = codeOf(r.reason); rejected.set(code, (rejected.get(code) ?? 0) + 1); return }
+        const title = r?.status === 'fulfilled' ? r.value?.title?.title : undefined
+        if (typeof title !== 'string') return
+        titled++
+        cache.delete(ids[i]) // re-inserted last: the oldest entries go first
+        cache.set(ids[i], { title, at: now() })
+      })
+      while (cache.size > max) cache.delete(cache.keys().next().value)
+      const bad = [...rejected.values()].reduce((a, b) => a + b, 0)
+      say(`titles: read ${ids.length} in ${now() - started} ms: ${titled} titled, ${ids.length - titled - bad} untitled, ${bad} rejected${bad ? ' (' + [...rejected.keys()].join(', ') + ')' : ''}`)
+    } catch (error) { say('titles: read failed: ' + codeOf(error)) } // titles are a bonus
+  }
   return async function titlesOf(ids) {
     const titles = new Map()
-    const missing = []
+    const waits = new Set()
+    const fresh = []
     for (const id of ids) {
       const hit = cache.get(id)
       if (hit && now() - hit.at < ttlMs) titles.set(id, hit.title)
-      else missing.push(id)
+      else if (pending.has(id)) waits.add(pending.get(id))
+      else fresh.push(id)
     }
-    if (!missing.length) return titles
-    try {
-      const query = queryOf()
-      if (typeof query?.readTitleSnapshots !== 'function') return titles
-      const results = await query.readTitleSnapshots(missing)
-      results.forEach((r, i) => {
-        const title = r?.status === 'fulfilled' ? r.value?.title?.title : undefined
-        if (typeof title !== 'string') return
-        cache.delete(missing[i]) // re-inserted last: the oldest entries go first
-        cache.set(missing[i], { title, at: now() })
-        titles.set(missing[i], title)
-      })
-      while (cache.size > max) cache.delete(cache.keys().next().value)
-    } catch { /* titles are a bonus */ }
+    if (fresh.length) {
+      const run = read(fresh).finally(() => { for (const id of fresh) pending.delete(id) })
+      for (const id of fresh) pending.set(id, run)
+      waits.add(run)
+    }
+    if (!waits.size) return titles
+    await Promise.all(waits)
+    for (const id of ids) {
+      const hit = cache.get(id)
+      if (hit && !titles.has(id)) titles.set(id, hit.title)
+    }
     return titles
   }
 }
