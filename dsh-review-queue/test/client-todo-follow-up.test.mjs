@@ -617,6 +617,23 @@ test('a failed list keeps what was there and the form works with it', async () =
   assert.equal(T.state.followSessions.length, 3)
 })
 
+test('a list that cannot be loaded is said so in the dropdown instead of "Loading sessions…" for ever (an older server answers 404: Restart DSH)', async () => {
+  const { T } = render({ answer: () => okJson({ error: 'not-found' }, 404) })
+  T.set({ todoForm: FORM({ open: true, mode: 'followup' }), followSessions: null })
+  await T.loadFollowSessions()
+  assert.equal(T.state.followSessions, null, 'nothing loaded')
+  assert.match(optionsOf(selectOf(T.TodoForm()))[0].label, /Restart DSH/)
+  const { T: other } = render({ answer: () => okJson({ error: 'x' }, 500) })
+  other.set({ todoForm: FORM({ open: true, mode: 'followup' }), followSessions: null })
+  await other.loadFollowSessions()
+  assert.match(optionsOf(selectOf(other.TodoForm()))[0].label, /Could not load the sessions/)
+  const { T: ok } = render({ answer: () => okJson({ sessions: LIST }) })
+  ok.set({ todoForm: FORM({ open: true, mode: 'followup' }), followSessions: null })
+  await ok.loadFollowSessions()
+  assert.equal(ok.state.followSessionsError, undefined)
+  assert.equal(optionsOf(selectOf(ok.TodoForm()))[0].label, 'Which session?')
+})
+
 test('card: a session the user picked in the form is trusted like a number match: a working one is preselected and the line does not say "Model says"', () => {
   const { T } = loadClient()
   const item = fu({ suggested: { sessionId: 's2', title: 'Visitor mix', reason: 'picked by you', running: true }, candidates: [{ sessionId: 's2', title: 'Visitor mix', running: true }] })

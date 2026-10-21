@@ -821,9 +821,10 @@ function imageFilesOf(data) {
 				const res = await fetch(API + "/v1/follow-up-sessions", { credentials: "same-origin" });
 				if (res.ok) {
 					const j = await res.json();
-					if (j && Array.isArray(j.sessions)) { const list = j.sessions.filter((x) => x && typeof x.sessionId === "string"); set({ followSessions: list }); dropStaleFollowSession(list); }
+					if (j && Array.isArray(j.sessions)) { const list = j.sessions.filter((x) => x && typeof x.sessionId === "string"); set({ followSessions: list, followSessionsError: undefined }); dropStaleFollowSession(list); return; }
 				}
-			} catch (_e) { /* keep what we have */ }
+				set({ followSessionsError: res.status === 404 ? OLD_SERVER : "Could not load the sessions. Close and reopen the form to try again." });
+			} catch (_e) { set({ followSessionsError: "Could not load the sessions. Close and reopen the form to try again." }); }
 		}
 		/** A restored draft may name a session that is gone (or hold the words an older form took): once a non-empty list is known and lacks it, the pick is cleared. */
 		function dropStaleFollowSession(list) {
@@ -831,7 +832,7 @@ function imageFilesOf(data) {
 			if (id && list.length && !list.some((x) => x.sessionId === id)) patchForm({ followUp: "" });
 		}
 		/** The first option of the session dropdown: says what is going on while it has no sessions. */
-		const followPlaceholder = (list) => (!Array.isArray(list) ? "Loading sessions…" : list.length ? "Which session?" : "No session is listed yet");
+		const followPlaceholder = (list, error) => (!Array.isArray(list) ? (error || "Loading sessions…") : list.length ? "Which session?" : "No session is listed yet");
 		/** A session as the dropdown shows it: its title, its workspace, and a mark when it is working right now. */
 		const followLabel = (c) => sessionLabel(c) + (c.running === true ? " (working)" : "");
 		/** A restored draft may name a workspace that is gone: once a non-empty list is known and lacks it, the pick falls back to "Choose for me" (an empty list may just not be loaded yet). */
@@ -1442,7 +1443,7 @@ function imageFilesOf(data) {
 						h("button", { className: "rq-thumb-x", type: "button", title: "Remove this image", "aria-label": "Remove image " + (im.name || ""), disabled: f.busy, onClick: () => removeImage(im.id) }, "✕"))),
 					f.uploading > 0 ? h("span", { className: "rq-sub" }, "Uploading…") : null) : null,
 				follow ? h("select", { className: "rq-input rq-sel", required: true, "aria-label": "Which session", value: f.followUp || "", disabled: f.busy, onChange: (e) => patchForm({ followUp: e.target.value, error: undefined }), onKeyDown: submitOnKey },
-					h("option", { value: "" }, followPlaceholder(st.followSessions)),
+					h("option", { value: "" }, followPlaceholder(st.followSessions, st.followSessionsError)),
 					(st.followSessions || []).map((c) => h("option", { key: c.sessionId, value: c.sessionId }, followLabel(c)))) : null,
 				h("div", { className: "rq-row" },
 					follow ? null : h("select", { className: "rq-input rq-sel", value: f.workspaceId, disabled: f.busy, "aria-label": "Workspace", onChange: (e) => patchForm({ workspaceId: e.target.value }) }, h("option", { value: "" }, "Choose for me"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
