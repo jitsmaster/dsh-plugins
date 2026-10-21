@@ -83,3 +83,16 @@ test('calls that overlap share one read of the same ids, they do not start anoth
   assert.deepEqual([...(await second)].sort(), [['a', 'T a'], ['b', 'T b'], ['c', 'T c']])
   assert.deepEqual(asked, [['a', 'b'], ['c']])
 })
+
+test('a session with no title yet is not read again on every call, only after the short untitled ttl; a rejected one is asked again at once', async () => {
+  const asked = []
+  let t = 1000
+  const query = { readTitleSnapshots: async (ids) => { asked.push([...ids]); return ids.map((id) => (id === 'bad' ? { status: 'rejected', reason: new Error('x') } : id === 'none' ? { status: 'fulfilled', value: {} } : ok('T ' + id))) } }
+  const read = createTitleReader(() => query, { now: () => t, ttlMs: 120_000, untitledTtlMs: 500 })
+  assert.deepEqual([...(await read(['a', 'none', 'bad']))], [['a', 'T a']])
+  assert.deepEqual([...(await read(['a', 'none', 'bad']))], [['a', 'T a']])
+  assert.deepEqual(asked, [['a', 'none', 'bad'], ['bad']], 'the untitled one is not asked again, the rejected one is')
+  t += 600
+  await read(['none'])
+  assert.deepEqual(asked.at(-1), ['none'], 'after the untitled ttl it is asked again')
+})
