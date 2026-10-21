@@ -739,6 +739,43 @@ window.__ModuleLoader__.load({
 			["display", "flexDirection"].forEach((p) => { sec.style[p] = ""; });
 			sec.removeAttribute(GT_MARK);
 		}
+		// A group header: a fixed 16px slot for the arrow (the same width as the workspace row's folder/chevron slot) and the title in a span of its own,
+		// so the label starts at the same x whether the group is open or closed; the title is one line with an ellipsis.
+		function gtFillHeader(el, g) {
+			let arrow = el.children[0];
+			let title = el.children[1];
+			if (!arrow || !title || el.children.length !== 2) {
+				el.textContent = "";
+				arrow = document.createElement("span");
+				title = document.createElement("span");
+				[["width", "16px"], ["flex", "none"], ["textAlign", "center"], ["display", "inline-block"]].forEach(([p, v]) => { arrow.style[p] = v; });
+				[["overflow", "hidden"], ["textOverflow", "ellipsis"], ["whiteSpace", "nowrap"], ["minWidth", "0"]].forEach(([p, v]) => { title.style[p] = v; });
+				el.appendChild(arrow);
+				el.appendChild(title);
+			}
+			const glyph = g.collapsed ? "\u25B8" : "\u25BE";
+			const label = g.name + " (" + g.count + ")";
+			if (arrow.textContent !== glyph) arrow.textContent = glyph;
+			if (title.textContent !== label) title.textContent = label;
+		}
+		// The look of the session tree. Group headers: a faded green background (stronger on hover). The selected session: DSH paints it with the same color as the mouse-over,
+		// so it gets its own stronger accent (the business-primary color, else blue) and a bar on the left, a bit stronger again on hover.
+		const SIDEBAR_STYLE_ID = "hooks-sidebar-style";
+		function sidebarStyleText() {
+			const accent = "var(--dsw-alias-state-business-primary, #3b82f6)";
+			const sel = "[data-row-key^='session:'][aria-selected='true']";
+			return "[" + GT_HEADER + "]{background:rgba(46,160,67,.16) !important;display:flex;align-items:center;gap:6px}"
+				+ "[" + GT_HEADER + "]:hover{background:rgba(46,160,67,.26) !important}"
+				+ sel + "{background:color-mix(in srgb, " + accent + " 28%, transparent) !important;box-shadow:inset 3px 0 0 " + accent + "}"
+				+ sel + ":hover{background:color-mix(in srgb, " + accent + " 38%, transparent) !important}";
+		}
+		function ensureSidebarStyle() {
+			if (document.getElementById(SIDEBAR_STYLE_ID)) return;
+			const st = document.createElement("style");
+			st.id = SIDEBAR_STYLE_ID;
+			st.textContent = sidebarStyleText();
+			document.head.appendChild(st);
+		}
 		// One workspace's chunk of a section whose flex layout is active: every child needs an explicit order.
 		function gtApply(sec, wsRow, wsId, children, plan) {
 			const have = new Map([...sec.children].filter((c) => c.hasAttribute(GT_HEADER) && c.getAttribute("data-ws") === wsId).map((c) => [c.getAttribute(GT_HEADER), c]));
@@ -754,8 +791,7 @@ window.__ModuleLoader__.load({
 					sec.appendChild(el);
 				}
 				if (el.className !== wsRow.className) el.className = wsRow.className;
-				const label = (g.collapsed ? "\u25B8 " : "\u25BE ") + g.name + " (" + g.count + ")";
-				if (el.textContent !== label) el.textContent = label;
+				gtFillHeader(el, g);
 				gtSet(el, "order", String(g.order)); gtSet(el, "cursor", "pointer"); gtSet(el, "marginLeft", "10px");
 				el.setAttribute("aria-expanded", g.collapsed ? "false" : "true");
 			}
@@ -772,6 +808,7 @@ window.__ModuleLoader__.load({
 		}
 		function syncGroupTree() {
 			try {
+				ensureSidebarStyle();
 				const secs = new Set();
 				document.querySelectorAll("[data-row-key^='workspace:']").forEach((r) => { const w = r.parentElement; if (w && w.parentElement) secs.add(w.parentElement); });
 				for (const sec of secs) {
@@ -841,6 +878,8 @@ window.__ModuleLoader__.load({
 		function removeGroupTree() {
 			try {
 				document.querySelectorAll("[" + GT_HEADER + "]").forEach((n) => n.remove());
+				const style = document.getElementById(SIDEBAR_STYLE_ID);
+				if (style) style.remove();
 				document.querySelectorAll("[" + GT_MARK + "]").forEach((n) => { ["order", "display", "marginLeft", "flexDirection"].forEach((p) => { n.style[p] = ""; }); n.removeAttribute(GT_MARK); n.removeAttribute("data-hooks-gt-group"); });
 			} catch (_e) { /* ignore */ }
 		}
@@ -865,6 +904,7 @@ window.__ModuleLoader__.load({
 
 		exports.inject = inject;
 		exports.apply = apply;
+		exports.__test = { gtApply, sidebarStyleText, ensureSidebarStyle, removeGroupTree, planGroupTree };
 		return module.exports;
 	}
 });
