@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { FORM, loadClient, savedDraft, formOf, okJson, deferred, tick } from './client-todo-helpers.mjs'
 
 // A tune that is still running when the form is closed (Cancel, Escape) or reopened must not write its late text into the saved draft.
-const route = (tuneImpl) => async (url, opts) => (url.endsWith('/v1/workspaces') ? okJson({ workspaces: [] }) : tuneImpl(url, opts))
+const route = (tuneImpl) => async (url, opts) => (url.endsWith('/v1/workspaces') ? okJson({ workspaces: [] }) : url.endsWith('/v1/model-efforts') ? okJson({ ok: true, efforts: [] }) : tuneImpl(url, opts))
 
 test('closing the form while it tunes: the late tuned text is ignored, the saved draft keeps what the user typed', async () => {
   const gate = deferred()

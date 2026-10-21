@@ -616,12 +616,12 @@ function imageFilesOf(data) {
 		}
 		/** The unsent todo form (text, workspace, SPARC, open, the text before a tune) is restored after a reload or a crash; busy, error and tuning never are. */
 		function loadTodoForm() {
-			const form = { open: false, text: "", workspaceId: "", sparc: false, mode: "new", followUp: "", busy: false, error: undefined };
+			const form = { open: false, text: "", workspaceId: "", sparc: false, effort: "", mode: "new", followUp: "", busy: false, error: undefined };
 			try {
 				const j = JSON.parse(storage.get(LS.todoDraft) || "null");
 				if (!j || typeof j !== "object" || Array.isArray(j)) return form;
 				const str = (v) => (typeof v === "string" ? v : "");
-				return { ...form, open: j.open === true, text: str(j.text), workspaceId: str(j.workspaceId), sparc: j.sparc === true, mode: j.mode === "followup" ? "followup" : "new", followUp: str(j.followUp), ...(str(j.original) ? { original: j.original } : {}) };
+				return { ...form, open: j.open === true, text: str(j.text), workspaceId: str(j.workspaceId), sparc: j.sparc === true, effort: str(j.effort), mode: j.mode === "followup" ? "followup" : "new", followUp: str(j.followUp), ...(str(j.original) ? { original: j.original } : {}) };
 			} catch (_e) { return form; }
 		}
 		const saved = loadSaved();
@@ -629,7 +629,7 @@ function imageFilesOf(data) {
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
-			todoForm: loadTodoForm(), workspaces: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipUse: { open: false, workspaceId: "" },
+			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
 		const listeners = new Set();
@@ -650,7 +650,7 @@ function imageFilesOf(data) {
 		/** Writes the todo form draft NOW (no timer: a crash right after a keystroke must not lose it). The text is never shortened. */
 		function saveTodoForm() {
 			const f = state.todoForm;
-			storage.set(LS.todoDraft, JSON.stringify({ text: f.text, workspaceId: f.workspaceId, sparc: !!f.sparc, open: !!f.open, ...(isFollowUpForm(f) ? { mode: "followup" } : {}), ...(f.followUp ? { followUp: f.followUp } : {}), ...(f.original ? { original: f.original } : {}) }));
+			storage.set(LS.todoDraft, JSON.stringify({ text: f.text, workspaceId: f.workspaceId, sparc: !!f.sparc, ...(f.effort ? { effort: f.effort } : {}), open: !!f.open, ...(isFollowUpForm(f) ? { mode: "followup" } : {}), ...(f.followUp ? { followUp: f.followUp } : {}), ...(f.original ? { original: f.original } : {}) }));
 		}
 		/** The page going away or to the background saves the draft once more; returns the remover. */
 		function installDraftFlush(win, doc) {
@@ -758,7 +758,7 @@ function imageFilesOf(data) {
 		}
 		const ERRORS = {
 			"not-open": "That item is no longer waiting.", "not-pending": "That request is no longer waiting for an answer.",
-			"bad-answer": "That answer does not match the question.", "empty": "Type something first.", "too-long": "That is too long.",
+			"bad-answer": "That answer does not match the question.", "bad-effort": "That effort is not valid.", "empty": "Type something first.", "too-long": "That is too long.",
 			"no-controller": "Cannot reach the session right now.", "not-completed": "That only applies to finished work.", "not-pr-merged": "That only applies to a merged pull request.", "needs-confirm": "Confirm the approval first.", "needs-hold": "A risky request needs the press-and-hold confirmation.", "no-registry": "Cannot reach the session list right now.",
 			"not-expired": "That question is not waiting for a late answer.", "no-session": "That session is not running any more, so the answer cannot be delivered.", "reply-queued": "An answer is already on its way to that session.",
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
@@ -837,11 +837,28 @@ function imageFilesOf(data) {
 			if (step.action) setOverlay(step.action === "show");
 		}
 		const patchForm = (p) => set({ todoForm: { ...state.todoForm, ...p } });
+		/** The efforts the dropdown lists (the default model's), [] before they are known. */
+		const effortChoices = (e) => (e && Array.isArray(e.efforts) ? e.efforts.filter((x) => x && typeof x.id === "string") : []);
+		const effortName = (e, id) => { const x = effortChoices(e).find((c) => c.id === id); return x ? x.name || x.id : id; };
+		/** "Default (Medium)": the first option, the effort the model uses unless one is picked. */
+		const defaultEffortLabel = (e) => (e && e.defaultEffort ? "Default (" + effortName(e, e.defaultEffort) + ")" : "Default");
 		/** The dropdown's workspaces (id, title); best effort, the todo form and the cards work without them (Choose for me). */
 		async function loadWorkspaces() {
 			try {
 				const res = await fetch(API + "/v1/workspaces", { credentials: "same-origin" });
 				if (res.ok) { const j = await res.json(); if (j && Array.isArray(j.workspaces)) { set({ workspaces: j.workspaces }); dropStaleWorkspace(j.workspaces); } }
+			} catch (_e) { /* keep what we have */ }
+		}
+		/** The efforts of the default model for the Effort dropdown (GET /v1/model-efforts); best effort, the form works without it (no dropdown). A saved effort the model no longer has is dropped. */
+		async function loadEfforts() {
+			try {
+				const res = await fetch(API + "/v1/model-efforts", { credentials: "same-origin" });
+				if (!res.ok) return;
+				const j = await res.json();
+				if (!j || !Array.isArray(j.efforts)) return;
+				set({ efforts: j });
+				const cur = state.todoForm.effort;
+				if (cur && !j.efforts.some((e) => e && e.id === cur)) patchForm({ effort: "" });
 			} catch (_e) { /* keep what we have */ }
 		}
 		/** The dropdown's sessions of the Follow up form (sessionId, title, workspaceTitle?, running?), newest first; asked again every time the form is shown, the list changes. Best effort. */
@@ -875,9 +892,9 @@ function imageFilesOf(data) {
 		const workspacesNote = (list) => (Array.isArray(list) && !list.length ? "No workspace is listed yet (the app may still be loading them). Choose for me works without one." : undefined);
 		// Each tune takes a number; closing or reopening the form takes the next one, so the answer of a tune from before is ignored and cannot overwrite the saved draft.
 		let tuneSeq = 0;
-		function openTodoForm() { if (!state.todoForm.open) tuneSeq++; patchForm({ open: true, error: undefined }); if (isFollowUpForm(state.todoForm)) loadFollowSessions(); else loadWorkspaces(); }
+		function openTodoForm() { if (!state.todoForm.open) tuneSeq++; patchForm({ open: true, error: undefined }); if (isFollowUpForm(state.todoForm)) loadFollowSessions(); else { loadWorkspaces(); loadEfforts(); } }
 		/** The switch of the form: New session (the dropdown needs the workspaces) or Follow up (its dropdown needs the sessions, never the workspaces). */
-		function setTodoMode(mode) { patchForm({ mode: mode === "followup" ? "followup" : "new", error: undefined }); if (mode === "followup") loadFollowSessions(); else ensureWorkspaces(); }
+		function setTodoMode(mode) { patchForm({ mode: mode === "followup" ? "followup" : "new", error: undefined }); if (mode === "followup") loadFollowSessions(); else { ensureWorkspaces(); loadEfforts(); } }
 		function closeTodoForm() { tuneSeq++; patchForm({ open: false, error: undefined, tuning: false, questions: undefined }); }
 		// ---- Pasted images of the New session form (never part of the saved draft: the files live on the PC until the todo starts) ----
 		let imageEpoch = 0; // a new number whenever the images are cleared: an upload that was on its way then is dropped
@@ -941,10 +958,10 @@ function imageFilesOf(data) {
 			if (problem) { patchForm({ error: problem }); return false; }
 			// A follow-up add answers only after the server has read the sessions (seconds), so the form closes at once, like a new todo; busy stays set, and a refusal brings the form back with the text.
 			patchForm({ busy: true, error: undefined, ...(follow ? { open: false } : {}) });
-			const error = await post("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim() } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
+			const error = await post("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim() } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.effort ? { effort: f.effort } : {}), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
 			if (error) { patchForm({ busy: false, error, ...(follow ? { open: true } : {}) }); return false; }
 			clearImages();
-			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, busy: false, error: undefined } });
+			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, effort: "", busy: false, error: undefined } });
 			return true;
 		}
 		/** The tuned text (POST /v1/todo-tune); { ok, text } or { ok: false, error }. */
@@ -1334,6 +1351,7 @@ function imageFilesOf(data) {
 			return h(React.Fragment, null,
 				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.text),
 				item.sparc ? h("div", { className: "rq-sub" }, "Use SPARC") : null,
+				item.effort ? h("div", { className: "rq-sub" }, "Effort: " + effortName(st.efforts, item.effort)) : null,
 				h("div", { className: s === "failed" ? "rq-err" : "rq-sub" }, todoLine(item, pick, st.workspaces)),
 				waiting ? h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: busy || !canConfirm(item, pick), onClick: () => confirmTodo(item, pick) }, s === "failed" ? "Retry" : "Start"),
@@ -1513,6 +1531,9 @@ function imageFilesOf(data) {
 				h("div", { className: "rq-row" },
 					follow ? null : h("select", { className: "rq-input rq-sel", value: f.workspaceId, disabled: f.busy, "aria-label": "Workspace", onChange: (e) => patchForm({ workspaceId: e.target.value }) }, h("option", { value: "" }, "Choose for me"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
 					follow ? null : h("label", { className: "rq-sub" }, h("input", { type: "checkbox", checked: !!f.sparc, disabled: f.busy, onChange: (e) => patchForm({ sparc: e.target.checked }) }), " Use SPARC"),
+					follow || !effortChoices(st.efforts).length ? null : h("select", { className: "rq-input rq-sel", value: f.effort || "", disabled: f.busy, "aria-label": "Effort", title: "Only this session uses it; the default effort stays as it is", onChange: (e) => patchForm({ effort: e.target.value }) },
+						h("option", { value: "" }, defaultEffortLabel(st.efforts)),
+						effortChoices(st.efforts).map((x) => h("option", { key: x.id, value: x.id }, x.name || x.id))),
 					h("span", { className: "rq-grow" }),
 					h("button", { className: "rq-btn", title: "Rewrite the prompt with the prompt-tune rules and put the result in the box", disabled: !canTune(f), onClick: tuneTodo }, f.tuning ? "Tuning…" : "Tune prompt"),
 					f.original ? h("button", { className: "rq-link", title: "Put back the text you typed before tuning", disabled: f.busy || f.tuning, onClick: undoTune }, "Undo tune") : null,
@@ -1720,7 +1741,7 @@ function imageFilesOf(data) {
 		function apply(ctx) {
 			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
 			stopped = false;
-			if (state.todoForm.open) { if (isFollowUpForm(state.todoForm)) loadFollowSessions(); else ensureWorkspaces(); } // a draft restored open needs its dropdown (the workspaces, or for a follow-up the sessions)
+			if (state.todoForm.open) { if (isFollowUpForm(state.todoForm)) loadFollowSessions(); else { ensureWorkspaces(); loadEfforts(); } } // a draft restored open needs its dropdown (the workspaces, or for a follow-up the sessions)
 			ctx.effect(() => { pollLoop(); return () => { stopped = true; if (pollCtl) pollCtl.abort(); }; }, "review-queue: polling");
 			ctx.effect(() => (typeof document === "undefined" || typeof document.addEventListener !== "function" ? () => {} : installRepoll(document)), "review-queue: visibility");
 			ctx.effect(mountOverlayRoot, "review-queue: overlay");
@@ -1741,7 +1762,7 @@ function imageFilesOf(data) {
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldForm, HoldButton, PausedBody, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
-		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, imageFilesOf, addImages, removeImage, clearImages, TodoForm });
+		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;
 	}

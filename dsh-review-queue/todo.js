@@ -177,7 +177,24 @@ export function sparcPrompt(text, skill) {
   return typeof skill === 'string' && skill.trim() ? head + '\n\n--- modes:sparc skill content ---\n' + skill : head + '\nInvoke Skill(modes:sparc) if available.'
 }
 
-export function createTodos({ store, controllerOf, registryOf = () => undefined, llm, titlesOf, sessionsOf, images: imageStore, now = Date.now, sparcText = () => '', suggestTimeoutMs = SUGGEST_TIMEOUT_MS, uuid = () => randomUUID().slice(0, 8), log = () => {}, ticketTitleOf = (text) => ticketTitleFor(text, { log }) }) {
+/** The effort a new todo asks for: an id of the default model's reasoning efforts, at most this long. */
+const MAX_EFFORT = 60
+const effortOf = (v) => (v === undefined || v === null || v === '' ? { ok: true } : typeof v === 'string' && v.trim() && v.trim().length <= MAX_EFFORT ? { ok: true, value: v.trim() } : { ok: false })
+
+/** The default model of a model catalog: { provider, id, name, efforts, defaultEffort } (efforts [] when it has none or the catalog does not list it). */
+function defaultModelInfo(catalog) {
+  const def = catalog?.default
+  const model = (catalog?.groups ?? []).find((g) => g.id === def?.provider)?.models?.find((m) => m.id === def?.model)
+  const reasoning = model?.reasoning
+  return {
+    provider: def?.provider, id: def?.model, name: model?.name ?? def?.model,
+    efforts: (reasoning?.efforts ?? []).map((e) => ({ id: e.id, name: e.name, ...(e.description ? { description: e.description } : {}) })),
+    defaultEffort: def?.reasoningEffort ?? reasoning?.defaultEffort,
+    selection: def,
+  }
+}
+
+export function createTodos({ store, controllerOf, registryOf = () => undefined, defaultModelOf = () => undefined, llm, titlesOf, sessionsOf, images: imageStore, now = Date.now, sparcText = () => '', suggestTimeoutMs = SUGGEST_TIMEOUT_MS, uuid = () => randomUUID().slice(0, 8), log = () => {}, ticketTitleOf = (text) => ticketTitleFor(text, { log }) }) {
   const running = new Set()
   const track = (promise) => { running.add(promise); promise.finally(() => running.delete(promise)); return promise }
   const suggestByModel = createSuggester({ llm, titlesOf, timeoutMs: suggestTimeoutMs })
@@ -196,6 +213,24 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
     const { suggested, note, raw } = await suggestByModel(text, workspaces, history)
     if (!suggested) log('todo: no workspace suggestion (' + note + ')' + (raw ? '; the model said: ' + oneLine(raw).slice(0, 200) : ''))
     if (stillWaiting(id)) store.update(id, { suggesting: false, ...(suggested ? { suggested } : { suggestNote: note }) })
+  }
+
+  /**
+   * Gives the new session another reasoning effort than the default, for that session only. Remote selectModel also saves its selection as the DEFAULT
+   * model selection, so the default as it was is saved again right after (saves commit in submission order): future sessions keep the old default.
+   * An effort the default model does not have, or one that already is the default, is not selected (the first throws, the second does nothing).
+   */
+  async function applyEffort(sc, sessionId, effort) {
+    if (typeof sc.modelCatalog !== 'function' || typeof sc.selectModel !== 'function') throw new Error('choosing an effort is not available')
+    const catalog = await sc.modelCatalog()
+    const info = defaultModelInfo(catalog)
+    if (!info.efforts.some((e) => e.id === effort)) throw new Error('The effort "' + effort + '" is not available for ' + (info.name ?? 'the default model'))
+    if (effort === info.defaultEffort) return
+    await sc.selectModel({ sessionId, provider: info.provider, model: info.id, reasoningEffort: effort })
+    const keeper = defaultModelOf()
+    if (typeof keeper?.saveSelection === 'function') {
+      try { await keeper.saveSelection(info.selection) } catch (error) { log('todo: the default model could not be restored after choosing an effort: ' + (error?.message ?? error)) }
+    }
   }
 
   /** Creates the session like dsh-hooks-tts spawnSession does (create, rename, prompt); the session is not focused or opened. */
@@ -217,6 +252,7 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
         if (typeof sessionId !== 'string' || !sessionId) throw new Error('the session was not created')
         store.update(id, { sessionId })
       }
+      if (item.effort) await applyEffort(sc, sessionId, item.effort)
       // A task that mentions an Azure DevOps ticket is titled "Fix: <ticket title> - <number>"; the lookup never throws and never blocks the start for long.
       let ticketTitle
       try { ticketTitle = await ticketTitleOf(item.text) } catch (error) { log('todo: ticket title failed: ' + (error?.message ?? error)) }
@@ -236,7 +272,7 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
 
   return {
     /** { ok, id, state } at once; the session is created (or the suggestion looked for) in the background. */
-    add(text, { workspaceId, sparc, workspaces, followUp, sessions, skippedApps, images } = {}) {
+    add(text, { workspaceId, sparc, effort, workspaces, followUp, sessions, skippedApps, images } = {}) {
       const body = typeof text === 'string' ? text.trim() : ''
       if (!body) return { ok: false, error: 'empty' }
       if (body.length > MAX_TODO) return { ok: false, error: 'too-long' }
@@ -250,10 +286,12 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
       }
       const pasted = checkImages(images)
       if (!pasted.ok) return { ok: false, error: pasted.error }
+      const asked = effortOf(effort)
+      if (!asked.ok) return { ok: false, error: 'bad-effort' }
       // A list given by the caller (the hub's union of every app's workspaces) replaces this app's own registry.
       const list = Array.isArray(workspaces) ? normalizeWorkspaces(workspaces) : listWorkspaces(registryOf)
       const given = workspaceId === undefined || workspaceId === null || workspaceId === '' ? undefined : String(workspaceId)
-      const base = { type: 'todo', text: body, sparc: sparc === true, ...(pasted.ids.length ? { imageIds: pasted.ids } : {}) }
+      const base = { type: 'todo', text: body, sparc: sparc === true, ...(asked.value ? { effort: asked.value } : {}), ...(pasted.ids.length ? { imageIds: pasted.ids } : {}) }
       if (given !== undefined) {
         if (!list) return { ok: false, error: 'no-registry' }
         const ws = list.find((w) => w.id === given)
@@ -296,6 +334,16 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
       store.update(id, { state: 'cancelled', suggesting: false, imageIds: undefined, ...(item.kind === 'followup' ? { candidates: undefined } : {}) }) // a cancelled follow-up does not keep its list of sessions
       store.resolve(id, { kind: 'cancelled', by: 'card' })
       return { ok: true }
+    },
+    /** The reasoning efforts of the default model, for the form's dropdown: { ok: true, model?, efforts: [{ id, name, description? }], defaultEffort? } (efforts [] when there are none or the catalog cannot be read). */
+    async efforts() {
+      try {
+        const sc = controllerOf()
+        if (typeof sc?.modelCatalog !== 'function') return { ok: true, efforts: [] }
+        const info = defaultModelInfo(await sc.modelCatalog())
+        if (!info.efforts.length) return { ok: true, model: { provider: info.provider, id: info.id, name: info.name }, efforts: [] }
+        return { ok: true, model: { provider: info.provider, id: info.id, name: info.name }, efforts: info.efforts, ...(info.defaultEffort ? { defaultEffort: info.defaultEffort } : {}) }
+      } catch (error) { log('todo: the efforts could not be listed: ' + (error?.message ?? error)); return { ok: true, efforts: [] } }
     },
     /** The workspaces a todo can start in: [{ id, title }] (empty without a registry). */
     workspaces: () => (listWorkspaces(registryOf) ?? []).map((w) => ({ id: w.id, title: w.title })),

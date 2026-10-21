@@ -34,7 +34,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     hold: (c) => queue.holdItem(c.itemId, { reason: c.args.reason }),
     'hold-release': (c) => queue.releaseHold(c.itemId),
     'hold-continue': (c) => queue.continueHold(c.itemId),
-    'todo-suggest': (c) => queue.addTodo(c.args.text, { sparc: c.args.sparc, workspaces: c.args.workspaces, ...(c.args.images !== undefined ? { images: c.args.images } : {}) }),
+    'todo-suggest': (c) => queue.addTodo(c.args.text, { sparc: c.args.sparc, ...(c.args.effort !== undefined ? { effort: c.args.effort } : {}), workspaces: c.args.workspaces, ...(c.args.images !== undefined ? { images: c.args.images } : {}) }),
     'todo-cancel': (c) => queue.cancelTodo(c.itemId),
     // Follow-up todo: this app's candidates (a read), the follow-up item with the hub's union of sessions, and the send of its message (an item moved here is adopted first).
     // args.snippets false: the hub is not after the snippets (yet: a ticket number of the words may decide without them).
@@ -49,7 +49,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     'todo-start'(c) {
       if (c.args.item) adapter.adopt(c.args.item) // an item moved here by the hub
       if (c.itemId) return queue.confirmTodo(c.itemId, { workspaceId: c.args.workspaceId })
-      return queue.addTodo(c.args.text, { workspaceId: c.args.workspaceId, sparc: c.args.sparc, ...(c.args.images !== undefined ? { images: c.args.images } : {}) })
+      return queue.addTodo(c.args.text, { workspaceId: c.args.workspaceId, sparc: c.args.sparc, ...(c.args.effort !== undefined ? { effort: c.args.effort } : {}), ...(c.args.images !== undefined ? { images: c.args.images } : {}) })
     },
   }
 

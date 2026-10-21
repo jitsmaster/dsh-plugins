@@ -31,13 +31,13 @@ const needsUser = (item) => item.type !== 'paused' && item.type !== 'onhold' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, paused, onHold, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, defaultModelOf, paused, onHold, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
   const listMemory = {} // the last good session list: given when the host is too busy to list sessions
   const followUpSessions = (opts = {}) => listFollowUpSessions({ memory: listMemory, now, controller: attempt(controllerOf, 'controller'), registry: attempt(registryOf, 'registry'), titlesOf, snippetsOf: opts?.snippets === false ? undefined : snippetsOf, query: opts?.query, log })
-  const todos = createTodos({ store, controllerOf, registryOf, images: todoImages, llm, titlesOf, sessionsOf: followUpSessions, now, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
+  const todos = createTodos({ store, controllerOf, registryOf, defaultModelOf, images: todoImages, llm, titlesOf, sessionsOf: followUpSessions, now, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
   const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)
   const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
@@ -335,6 +335,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     scanPaused: async () => (paused ? paused.scan() : { ok: false, error: 'no-scanner' }),
     /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc?, followUp?, sessions? }) -> { ok, id, state }; confirmTodo(id, { workspaceId?, sessionId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). followUp (words) makes it a message for an existing session; sessions (the hub's union) are its candidates. */
     addTodo: (text, opts) => todos.add(text, opts),
+    modelEfforts: () => todos.efforts(),
     /** One pasted image of the new-todo form (raw bytes): { ok, id, mediaType, bytes } | { ok: false, error }. Local files: never forwarded to the hub. */
     saveTodoImage: (bytes) => (todoImages ? todoImages.save(bytes) : { ok: false, error: 'bad-image' }),
     confirmTodo: (id, opts) => todos.confirm(String(id), opts),

@@ -98,7 +98,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     holdItem: (id, opts = {}) => action('hold', { id, ...only(opts.reason !== undefined, { reason: opts.reason }) }, () => local.holdItem(id, opts)),
     releaseHold: (id) => action('hold-release', { id }, () => local.releaseHold(id)),
     continueHold: (id) => action('hold-continue', { id }, () => local.continueHold(id)),
-    addTodo: (text, opts = {}) => action('todo', { text, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sparc === true, { sparc: true }), ...only(opts.followUp !== undefined && opts.followUp !== null, { followUp: opts.followUp }), ...only(opts.images !== undefined && opts.images !== null, { images: opts.images }) }, () => local.addTodo(text, opts)), // never opts.sessions: the hub asks the apps itself
+    addTodo: (text, opts = {}) => action('todo', { text, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sparc === true, { sparc: true }), ...only(typeof opts.effort === 'string' && opts.effort !== '', { effort: opts.effort }), ...only(opts.followUp !== undefined && opts.followUp !== null, { followUp: opts.followUp }), ...only(opts.images !== undefined && opts.images !== null, { images: opts.images }) }, () => local.addTodo(text, opts)), // never opts.sessions: the hub asks the apps itself
     confirmTodo: (id, opts = {}) => action('todo-confirm', { id, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sessionId !== undefined, { sessionId: opts.sessionId }) }, () => local.confirmTodo(id, opts)),
     cancelTodo: (id) => action('todo-cancel', { id }, () => local.cancelTodo(id)),
 
@@ -108,6 +108,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     scanPaused: () => local.scanPaused(), // the session logs are on this PC: always this app that scans
     saveTodoImage: (bytes) => local.saveTodoImage(bytes), // the files are on this PC (a folder every app and the hub share): never asked of the hub
     tuneTodo: (text) => local.tuneTodo(text), // this app's own model: never asked of the hub
+    modelEfforts: () => local.modelEfforts(), // this app's own default model: never asked of the hub
     runningSessions: () => local.runningSessions(), // the sessions are this app's: never asked of the hub
   }
 }

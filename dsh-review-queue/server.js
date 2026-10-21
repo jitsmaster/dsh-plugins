@@ -47,7 +47,7 @@ async function readImage(req, max = MAX_IMAGE_BYTES) {
 }
 
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
-const BAD_INPUT = new Set(['bad-images', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session'])
+const BAD_INPUT = new Set(['bad-images', 'bad-effort', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session'])
 // 'no-session' is a 409 for a reply or an archive (this app's controller does not know the session) but a 400 for a follow-up confirm with no session to send to.
 export const CONFIRM_BAD_INPUT = new Set(['no-session'])
 // The hub's answer when the owning app did not report back in time: a gateway timeout, not a refusal.
@@ -107,7 +107,7 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/hold-release': (b) => queue.releaseHold(String(b.id)),
     '/v1/hold-continue': (b) => queue.continueHold(String(b.id)),
     '/v1/running-sessions': () => queue.runningSessions(),
-    '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true, followUp: b.followUp, images: b.images }), // never body.sessions: the candidates are this app's own (the hub gives the union)
+    '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true, effort: b.effort, followUp: b.followUp, images: b.images }), // never body.sessions: the candidates are this app's own (the hub gives the union)
     '/v1/todo-tune': (b) => queue.tuneTodo(b.text),
     '/v1/todo-confirm': (b) => queue.confirmTodo(String(b.id), { workspaceId: workspaceOf(b), sessionId: sessionOf(b) }),
     '/v1/todo-cancel': (b) => queue.cancelTodo(String(b.id)),
@@ -153,6 +153,10 @@ export function createRouter({ queue, dev, pushRoutes }) {
       if (url.pathname === '/v1/workspaces') {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })
         return send(res, 200, { workspaces: queue.workspaces() })
+      }
+      if (url.pathname === '/v1/model-efforts') {
+        if (req.method !== 'GET') return send(res, 405, { error: 'method' })
+        return send(res, 200, await queue.modelEfforts())
       }
       if (url.pathname === '/v1/follow-up-sessions') {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })

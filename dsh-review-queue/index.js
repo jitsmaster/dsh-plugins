@@ -145,6 +145,8 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     keepDone: config.doneKeepPerSession, // capture.js falls back to its default (20) for anything that is not a positive integer
   })
   const controllerOf = () => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } }
+// The default model selection service: a todo that picks another effort gives the default back after selecting it for its session (todo.js applyEffort).
+const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ctx.agentDefaultModel } catch { return undefined } }
   // A prompt typed into a session that mentions an Azure DevOps ticket renames the session "Fix: <ticket title> - <number>" (off with ticketSessionTitles: false).
   installTicketSessions(ctx, { controllerOf, log, enabled: () => config.ticketSessionTitles !== false })
   // The play button speaks through the sibling dsh-hooks-tts plugin's TTS client (same server, mute switch and stop hotkey).
@@ -206,7 +208,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   onHold = createOnHold({ store, controllerOf, ticketStateOf: config.onHoldDeps?.ticketStateOf ?? ((ref) => fetchTicketState(ref, { log })), log })
   // A session goes on hold by "/onhold <reason>" typed in it, or by an ONHOLD marker line it prints itself (off with onHoldCommands: false).
   installOnHoldCommand(ctx, { onHoldOf: () => onHold, log, enabled: () => config.onHoldCommands !== false })
-  const queue = createReviewQueue({ store, capture, controllerOf, onHold, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, onHold, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }

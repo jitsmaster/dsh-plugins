@@ -107,7 +107,7 @@ export function createRouting({ store, queue, instances, commands, log = () => {
   async function addTodo(body, caller, role) {
     const wanted = text(body.workspaceId)
     // Pasted images are the desktop form's (files on this PC): a phone never sends any, and what it sends as images is dropped.
-    const base = { text: body.text, sparc: body.sparc === true, ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}) }
+    const base = { text: body.text, sparc: body.sparc === true, ...(role === 'device' || typeof body.effort !== 'string' || !body.effort ? {} : { effort: body.effort }), ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}) }
     if (wanted !== undefined) {
       const target = findWorkspace(wanted)
       if (!target) return { ok: false, error: instances.list().some((i) => i.state === 'online') ? 'unknown-workspace' : 'no-registry' }
