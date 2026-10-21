@@ -8,7 +8,7 @@ import { TOKEN_KEY, authFailureText, hubBase, isAuthFailure, pairBody, pairError
 import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
 import { pollWaitMs } from './model.js'
-import { bindDraftFlush, dropStaleWorkspace, emptyTodoDraft, loadTodoDraft, saveTodoDraft } from './todo-form.js'
+import { bindDraftFlush, dropStaleEffort, dropStaleWorkspace, emptyTodoDraft, loadTodoDraft, saveTodoDraft } from './todo-form.js'
 import {
   POST_TIMEOUT_MS, THREAD_TIMEOUT_MS, applyEarlier, applyNewest, expirePending, markSent, mergeMessages, pendingMessage, pollDelay, postErrorText, postKeyFor, postPayload, removeMessage,
   sameThread, shouldPoll, threadErrorText, threadPayload, touchThreads, trimThread,
@@ -34,7 +34,7 @@ export const state = {
   ready: false, snap: null, error: null, auth: false, needsPairing: false, pairMessage: null, skew: 0,
   drafts: {}, replies: {}, busy: {}, errors: {}, filter: { type: 'all', query: '' }, version: 0,
   // The "+ New todo" form: the draft survives moving between screens, a reload and a crash (saved on every change, cleared after a successful start); the workspace dropdown's list.
-  todoDraft: loadTodoDraft(storage), workspaces: null, workspacesError: null,
+  todoDraft: loadTodoDraft(storage), workspaces: null, workspacesError: null, efforts: null,
   // The chat thread of each session item that was opened: { messages, hasMore, cursor, loading, loadingEarlier, error, offline }.
   threads: {},
 }
@@ -154,6 +154,18 @@ export async function loadWorkspaces() {
     const draft = dropStaleWorkspace(state.todoDraft, workspaces) // a restored draft may name a workspace that is gone
     set({ workspaces, workspacesError: null, ...(draft !== state.todoDraft ? { todoDraft: draft } : {}) })
   } catch (e) { set({ workspacesError: 'Request failed: ' + String((e && e.message) || e) }) }
+}
+
+/** Loads the efforts of the default model for the form's Effort dropdown (GET /v1/model-efforts, answered by the hub); best effort: without them the form has no dropdown. A draft effort the model no longer has is dropped. */
+export async function loadEfforts() {
+  try {
+    const res = await call(API + '/v1/model-efforts')
+    const body = await res.json().catch(() => null)
+    if (handleAuthFailure(res.status, body)) return
+    if (!res.ok || !body || !Array.isArray(body.efforts)) return
+    const draft = dropStaleEffort(state.todoDraft, body)
+    set({ efforts: body, ...(draft !== state.todoDraft ? { todoDraft: draft } : {}) })
+  } catch { /* keep what we have */ }
 }
 
 /** The unsent "+ New todo" form is thrown away, in state and on disk (after a successful start). */

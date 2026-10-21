@@ -1,7 +1,7 @@
 /**
  * Runs the hub's commands (docs/hub.md 6.2) against this app's own services, one at a time in the order given, and remembers the
  * last 200 results by cid: a command delivered again after a lost response gets the same answer and does not run twice.
- * `thread` and `sessions-list` are the exception: they only read and may run any number of times, so they run at once (a slow log read never delays an approve behind
+ * `thread`, `sessions-list` and `model-efforts` are the exception: they only read and may run any number of times, so they run at once (a slow log read never delays an approve behind
  * them) and their results are not kept (a chat page would push the results that matter out of the 200).
  * Nothing here throws; a failure is the answer { ok: false, error }.
  */
@@ -9,7 +9,7 @@ import { SESSIONS_LIMIT, cleanSessions } from '../follow-up-shared.js'
 
 const CACHE_SIZE = 200
 /** Reads: they run at once and their results are not kept. */
-const READS = new Set(['thread', 'sessions-list'])
+const READS = new Set(['thread', 'sessions-list', 'model-efforts'])
 
 /**
  * @param {{ queue: any, adapter: any, openSession?: (sessionId: string) => Promise<any>, cacheSize?: number }} deps
@@ -38,6 +38,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     'todo-cancel': (c) => queue.cancelTodo(c.itemId),
     // Follow-up todo: this app's candidates (a read), the follow-up item with the hub's union of sessions, and the send of its message (an item moved here is adopted first).
     // args.snippets false: the hub is not after the snippets (yet: a ticket number of the words may decide without them).
+    'model-efforts': () => queue.modelEfforts(),
     'sessions-list': async (c) => ({ ok: true, sessions: cleanSessions(await (c.args.snippets === false ? queue.followUpSessions({ snippets: false }) : queue.followUpSessions())).slice(0, SESSIONS_LIMIT) }),
     'followup-suggest': (c) => queue.addTodo(c.args.text, { followUp: c.args.followUp, sessions: c.args.sessions, ...(c.args.skippedApps ? { skippedApps: c.args.skippedApps } : {}) }),
     'followup-send'(c) {

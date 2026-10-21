@@ -145,7 +145,7 @@ test('the README endpoint rows document the follow-up body fields and the new er
   const rows = source('README.md').split('\n')
   const todo = rows.find((r) => r.startsWith('| `/v1/todo` |'))
   const confirm = rows.find((r) => r.startsWith('| `/v1/todo-confirm` |'))
-  assert.match(todo, /\{text, workspaceId\?, sparc\?, followUp\?(, images\?)?\}/)
+  assert.match(todo, /\{text, workspaceId\?, sparc\?, (effort\?, )?followUp\?(, images\?)?\}/)
   for (const code of ['empty-query', 'too-many-follow-ups']) assert.match(todo, new RegExp(code))
   assert.match(confirm, /\{id, workspaceId\?, sessionId\?\}/)
   for (const code of ['unknown-session', 'no-session', 'unknown-outcome', 'warning']) assert.match(confirm, new RegExp(code))

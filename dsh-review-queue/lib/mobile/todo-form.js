@@ -32,10 +32,10 @@ export function withTodoMode(draft, mode) {
   return mode === 'followup' ? { ...rest, mode: 'followup' } : rest
 }
 
-/** Writes the draft (text, workspaceId, sparc, and only when set: mode followup, followUp; nothing else, never shortened) at once. storage is { get, set }; a storage that throws (private mode, quota) is ignored. */
+/** Writes the draft (text, workspaceId, sparc, and only when set: effort, mode followup, followUp; nothing else, never shortened) at once. storage is { get, set }; a storage that throws (private mode, quota) is ignored. */
 export function saveTodoDraft(storage, draft) {
   const { text, workspaceId, sparc } = { ...emptyTodoDraft(), ...draft }
-  const saved = { text, workspaceId, sparc, ...(isFollowUpDraft(draft) ? { mode: 'followup' } : {}), ...(draft && typeof draft.followUp === 'string' && draft.followUp ? { followUp: draft.followUp } : {}) }
+  const saved = { text, workspaceId, sparc, ...(draft && typeof draft.effort === 'string' && draft.effort ? { effort: draft.effort } : {}), ...(isFollowUpDraft(draft) ? { mode: 'followup' } : {}), ...(draft && typeof draft.followUp === 'string' && draft.followUp ? { followUp: draft.followUp } : {}) }
   try { storage.set(TODO_DRAFT_KEY, JSON.stringify(saved)) } catch { /* the draft stays in memory */ }
 }
 
@@ -46,6 +46,7 @@ export function loadTodoDraft(storage) {
   if (!j || typeof j !== 'object' || Array.isArray(j)) return emptyTodoDraft()
   return {
     text: typeof j.text === 'string' ? j.text : '', workspaceId: typeof j.workspaceId === 'string' ? j.workspaceId : '', sparc: j.sparc === true,
+    ...(typeof j.effort === 'string' && j.effort ? { effort: j.effort } : {}),
     ...(j.mode === 'followup' ? { mode: 'followup' } : {}), ...(typeof j.followUp === 'string' && j.followUp ? { followUp: j.followUp } : {}),
   }
 }
@@ -75,7 +76,7 @@ export function bindDraftFlush(win, doc, flush) {
  * The request body for POST /v1/todo, or the message to show instead. The workspace is sent only when one was picked.
  * A follow-up draft sends only { text, followUp } (no workspace, no SPARC), with the desktop's messages for a missing or too long description.
  */
-export function newTodoPayload({ text, workspaceId, sparc, mode, followUp } = {}) {
+export function newTodoPayload({ text, workspaceId, sparc, effort, mode, followUp } = {}) {
   const t = typeof text === 'string' ? text.trim() : ''
   if (!t) return { ok: false, message: 'Type the task first.' }
   if (t.length > TODO_MAX) return { ok: false, message: 'That is too long.' }
@@ -87,7 +88,34 @@ export function newTodoPayload({ text, workspaceId, sparc, mode, followUp } = {}
   }
   const body = { text: t, sparc: !!sparc }
   if (workspaceId) body.workspaceId = workspaceId
+  if (typeof effort === 'string' && effort) body.effort = effort // only another than Default; this session alone uses it
   return { ok: true, body }
+}
+
+/** The efforts the model lists ({ efforts: [{ id, name }] }, from GET /v1/model-efforts), [] while they are not known. */
+const effortList = (e) => (e && Array.isArray(e.efforts) ? e.efforts.filter((x) => x && typeof x.id === 'string') : [])
+
+/** The name of an effort (its id when the list does not have it). */
+export function effortName(efforts, id) {
+  const x = effortList(efforts).find((c) => c.id === id)
+  return x ? x.name || x.id : id
+}
+
+/** The Effort dropdown: "Default (<the effort the model uses now>)" first, then every effort; [] (no dropdown) for a model without efforts or before the list is known. */
+export function effortChoices(efforts) {
+  const list = effortList(efforts)
+  if (!list.length) return []
+  const label = efforts.defaultEffort ? 'Default (' + effortName(efforts, efforts.defaultEffort) + ')' : 'Default'
+  return [{ value: '', label }, ...list.map((x) => ({ value: x.id, label: x.name || x.id }))]
+}
+
+/** The draft without an effort the model does not have (it may have changed since the draft was saved); the same object when nothing changes or the list is not known yet. */
+export function dropStaleEffort(draft, efforts) {
+  const list = effortList(efforts)
+  if (!draft || !draft.effort || !list.length) return draft
+  if (list.some((x) => x.id === draft.effort)) return draft
+  const { effort: _gone, ...rest } = draft
+  return rest
 }
 
 /** The workspace dropdown: "Choose for me" first, then every workspace by title. */

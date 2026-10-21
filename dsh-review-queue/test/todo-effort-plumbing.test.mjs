@@ -10,7 +10,7 @@ import { postJson } from './hub-helpers.mjs'
 import { P, agentOf, startHub, sync } from './hub-agent-helpers.mjs'
 
 // The effort of a new todo travels like SPARC does: form -> POST /v1/todo -> hub (todo-start / todo-suggest) -> the app's addTodo.
-// GET /v1/model-efforts answers the form's dropdown. A phone sends no effort (its form has none).
+// GET /v1/model-efforts answers the form's dropdown. The phone has the field too (todo-effort-phone.test.mjs).
 
 test('GET /v1/model-efforts and POST /v1/todo with an effort, on the app server', async (t) => {
   const store = createStore({})

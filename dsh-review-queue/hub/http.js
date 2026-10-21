@@ -113,6 +113,10 @@ export function createHttp({ hub, log = () => {} }) {
       if (req.method !== 'GET') return send(res, 405, { error: 'method' })
       return path === '/v1/snapshot' ? await snapshot(req, res, url, who) : send(res, 200, { workspaces: hub.workspaces({ caller }) })
     }
+    if (path === '/v1/model-efforts') { // the efforts of the default model for the New todo form: a phone has no app of its own, so the coordinator app is asked
+      if (req.method !== 'GET') return send(res, 405, { error: 'method' })
+      return send(res, 200, await hub.modelEfforts(caller))
+    }
     if (path === '/v1/follow-up-sessions') {
       if (req.method !== 'GET') return send(res, 405, { error: 'method' })
       if (who.role === 'device') return send(res, 403, { error: 'desktop-only' }) // the titles of every session of every app are for the desktop's form, not a phone

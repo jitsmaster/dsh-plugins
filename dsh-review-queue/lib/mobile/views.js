@@ -1,6 +1,6 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
-import { state, subscribe, set, act, getCore, loadWorkspaces, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow } from './api.js'
+import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow } from './api.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
@@ -9,7 +9,7 @@ import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
 import { bubbleChanged, canPost, createDraftBuffer, hasThread, isNearBottom, scrollPlan } from './thread.js'
-import { FOLLOWUP_HINT, FOLLOWUP_MAX, FOLLOWUP_QUERY_PLACEHOLDER, FOLLOWUP_TEXT_PLACEHOLDER, TODO_MAX, isFollowUpDraft, newTodoPayload, todoErrorText, withTodoMode, workspaceChoices, workspacesNote } from './todo-form.js'
+import { FOLLOWUP_HINT, FOLLOWUP_MAX, FOLLOWUP_QUERY_PLACEHOLDER, FOLLOWUP_TEXT_PLACEHOLDER, TODO_MAX, effortChoices, effortName, isFollowUpDraft, newTodoPayload, todoErrorText, withTodoMode, workspaceChoices, workspacesNote } from './todo-form.js'
 
 export function useStore() {
   const [, tick] = useState(0)
@@ -256,6 +256,7 @@ function TodoBody({ item }) {
   return html`<div>
     <div class="text">${m.text}</div>
     ${m.sparc ? html`<div class="sub">Use SPARC</div>` : null}
+    ${m.effort ? html`<div class="sub">Effort: ${effortName(st.efforts, m.effort)}</div>` : null}
     ${m.line ? html`<div class=${m.failed ? 'err' : 'sub'}>${m.line}</div>` : null}
     ${m.canAct ? html`<select class="input" aria-label=${m.selectLabel} value=${m.selected} disabled=${busy} onChange=${(e) => setPick(e.target.value)}>
         ${m.placeholder ? html`<option value="" disabled selected=${!m.selected}>${m.placeholder}</option>` : null}
@@ -524,6 +525,7 @@ function NewTodoView() {
   const follow = isFollowUpDraft(draft) // Follow up: the text goes to an existing session described in words (no workspace, no SPARC)
   const [message, setMessage] = useState(null)
   useEffect(() => { if (!follow && !state.workspaces) loadWorkspaces() }, [follow]) // a follow-up never needs the workspaces
+  useEffect(() => { if (!follow) loadEfforts() }, [follow]) // nor the efforts; asked again each time the form is shown (the default model may have changed)
   const edit = (patch) => set({ todoDraft: typeof patch === 'function' ? patch(state.todoDraft) : { ...state.todoDraft, ...patch } })
   const note = follow ? null : workspacesNote(st.workspaces, st.workspacesError)
   const start = async () => {
@@ -556,6 +558,11 @@ function NewTodoView() {
     ${note ? html`<div class="sub">${note}</div>` : null}
     ${!follow && (st.workspacesError || (st.workspaces && !st.workspaces.length)) ? html`<div class="row"><button class="btn" type="button" onClick=${() => loadWorkspaces()}>Reload workspaces</button></div>` : null}
     ${follow ? null : html`<label class="switch"><input type="checkbox" checked=${draft.sparc} disabled=${busy} onChange=${(e) => edit({ sparc: e.target.checked })} /> Use SPARC</label>`}
+    ${!follow && effortChoices(st.efforts).length ? html`<label class="field">Effort
+      <select class="input" aria-label="Effort" title="Only this session uses it; the default effort stays as it is" value=${draft.effort || ''} disabled=${busy} onChange=${(e) => edit({ effort: e.target.value })}>
+        ${effortChoices(st.efforts).map((o) => html`<option key=${o.value} value=${o.value} selected=${o.value === (draft.effort || '')}>${o.label}</option>`)}
+      </select>
+    </label>` : null}
     ${follow ? html`<div class="sub">${FOLLOWUP_HINT}</div>` : null}
     ${message ? html`<div class="err">${message}</div>` : null}
     <div class="row">

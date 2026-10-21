@@ -71,6 +71,7 @@ export function todoCardModel(core, item, workspaces, pick) {
     kind: followUp ? 'followup' : 'todo',
     text: item.text,
     sparc: !!item.sparc,
+    effort: typeof item.effort === 'string' ? item.effort : '',
     line: core.todoLine(item, pick, workspaces),
     failed,
     canAct,

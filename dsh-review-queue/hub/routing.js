@@ -107,7 +107,7 @@ export function createRouting({ store, queue, instances, commands, log = () => {
   async function addTodo(body, caller, role) {
     const wanted = text(body.workspaceId)
     // Pasted images are the desktop form's (files on this PC): a phone never sends any, and what it sends as images is dropped.
-    const base = { text: body.text, sparc: body.sparc === true, ...(role === 'device' || typeof body.effort !== 'string' || !body.effort ? {} : { effort: body.effort }), ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}) }
+    const base = { text: body.text, sparc: body.sparc === true, ...(typeof body.effort !== 'string' || !body.effort ? {} : { effort: body.effort }), ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}) }
     if (wanted !== undefined) {
       const target = findWorkspace(wanted)
       if (!target) return { ok: false, error: instances.list().some((i) => i.state === 'online') ? 'unknown-workspace' : 'no-registry' }
@@ -142,6 +142,13 @@ export function createRouting({ store, queue, instances, commands, log = () => {
   }
 
   return {
+    /** The efforts of the default model of the coordinator app for the New todo form (the phone has no app of its own): the app's answer, or an empty list when there is none or it fails. */
+    async modelEfforts(caller) {
+      const coordinator = instances.coordinator(caller)
+      if (!coordinator) return { ok: true, efforts: [] }
+      const result = await send(coordinator, { kind: 'model-efforts' })
+      return result?.ok === true && Array.isArray(result.efforts) ? result : { ok: true, efforts: [] }
+    },
     /** The sessions of every online app for the follow-up form's dropdown (no snippets): { sessions, skippedApps }. */
     followUpSessions: (caller) => followUps.sessionList(caller),
     /** @param {{ role?: string, caller?: string }} [ctx] role 'device' is the phone, any other credential the desktop (D8). */
