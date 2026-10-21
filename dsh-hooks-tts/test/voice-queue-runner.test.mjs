@@ -33,8 +33,8 @@ test('match: a matcher result when the queue exists, nothing when it is absent',
 
 test('show and hide broadcast the ui command and say so', async () => {
   const { runner, calls } = setup()
-  assert.deepEqual(await runner.run({ kind: 'show' }), { outcome: 'show', line: 'Task list showing.' })
-  assert.deepEqual(await runner.run({ kind: 'hide' }), { outcome: 'hide', line: 'Task list hidden.' })
+  assert.deepEqual(await runner.run({ kind: 'show' }), { outcome: 'show', line: 'Coding Boss Review Queue showing.' })
+  assert.deepEqual(await runner.run({ kind: 'hide' }), { outcome: 'hide', line: 'Coding Boss Review Queue hidden.' })
   assert.deepEqual(calls, [['uiCommand', 'show'], ['uiCommand', 'hide']])
 })
 

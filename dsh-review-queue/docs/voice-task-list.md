@@ -18,7 +18,7 @@ Status: DRAFT, awaiting the user's go-ahead. The review queue is the user's prim
 | Item changed while dictating | "That item changed. Nothing done." (frozen item id + snapshotId, checked at the yes). |
 
 ## Spoken lines
-- Show: "Task list showing." Hide: "Task list hidden."
+- Show: "Coding Boss Review Queue showing." Hide: "Coding Boss Review Queue hidden."
 - Count: "Three waiting: one question, one permission, one done." or "Nothing waiting."
 - Read first / again / item N / next: starts reading, no lead-in. Empty list or no such item: "Nothing waiting." / "There is no item N."
 - Stop: stops at once, no line.

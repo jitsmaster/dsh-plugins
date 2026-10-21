@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { matchQueueCommand } from '../voice/queue-commands.js'
 
-const NAMES = ['task list', 'the task list', 'task-list', 'tasks', 'the queue', 'queue', 'review queue', 'the review queue', 'review list', 'my to-do list', 'todo list', 'the todo list', 'to do list']
+const NAMES = ['task list', 'the task list', 'task-list', 'tasks', 'the queue', 'queue', 'review queue', 'the review queue', 'coding boss review queue', 'the coding boss review queue', 'review list', 'my to-do list', 'todo list', 'the todo list', 'to do list']
 
 const eq = (text, expected) => assert.deepEqual(matchQueueCommand(text), expected, JSON.stringify(text))
 

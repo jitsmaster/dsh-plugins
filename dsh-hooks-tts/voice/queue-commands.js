@@ -38,7 +38,7 @@ const NUM = `(?:${Object.keys(TENS).join('|')}) (?:${UNITS.slice(0, 9).join('|')
 const ORD = `(?:${ORDINALS.join('|')}|\\d{1,3}(?:st|nd|rd|th))`
 const NOUN = '(?:item|task|thing|entry|one)'
 /** The task list under any of its names. */
-const LIST = '(?:(?:the|my|our) )?(?:task ?lists?|tasks|queue|review queue|review list|to do list|todo list)(?: (?:screen|panel|window|view|overlay|sidebar))?'
+const LIST = '(?:(?:the|my|our) )?(?:task ?lists?|tasks|queue|coding boss review queue|review queue|review list|to do list|todo list)(?: (?:screen|panel|window|view|overlay|sidebar))?'
 
 const FILLER_LEAD = /^(?:(?:hey|hi|ok|okay|no|well|so|please|kindly|(?:can|could|would|will) you|i would like you to|id like you to|i want you to|i need you to|i want to|i wanna|i need to|lets|go ahead and) )+/
 const FILLER_TRAIL = /(?: (?:please|thanks|thank you|now|for me))+$/

@@ -11,7 +11,7 @@
  *     prepareReply(intent) → Promise<{ ok:true, frozen } | { ok:false, outcome, line? }>: freezes the first item for a voice reply
  *     replyReadBack(frozen, text) → the confirm line; sendReply(frozen, text) → Promise<{ outcome, line }> (re-checks the item first)
  *
- * Spoken lines (spec, "Spoken lines"): "Task list showing." · "Task list hidden." · "Three waiting: one question, one permission,
+ * Spoken lines (spec, "Spoken lines"): "Coding Boss Review Queue showing." · "Coding Boss Review Queue hidden." · "Three waiting: one question, one permission,
  * one done." · "Nothing waiting." · "There is no item 7." · "Nothing has been read yet." · "The speaker is not available." ·
  * "Opened <title>.". A read that starts says nothing; a muted speaker is silence.
  * Reply lines: "Send to <title>: <text>. Say yes to send, or say the prompt again to replace it." · "Task <title>, reply sent. N waiting." ·
@@ -108,8 +108,8 @@ export function createQueueRunner({ queue = () => undefined, select }) {
   async function run(intent) {
     const q = service()
     switch (intent?.kind) {
-      case 'show': uiCommand(q, 'show'); return { outcome: 'show', line: 'Task list showing.' }
-      case 'hide': uiCommand(q, 'hide'); return { outcome: 'hide', line: 'Task list hidden.' }
+      case 'show': uiCommand(q, 'show'); return { outcome: 'show', line: 'Coding Boss Review Queue showing.' }
+      case 'hide': uiCommand(q, 'hide'); return { outcome: 'hide', line: 'Coding Boss Review Queue hidden.' }
       case 'count': return { outcome: 'count', line: countLine(need(q, 'count').count()) }
       case 'read': return readOutcome(need(q, 'readPosition').readPosition(intent.n), intent)
       case 'next': return readOutcome(need(q, 'next').next(), intent)

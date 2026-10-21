@@ -77,7 +77,7 @@ test('SQ3 end to end: "show the task list" runs against the service and speaks t
   h.send({ type: 'transcript', revision: 1, text: 'Show the task list.', context: null, source: 'hotkey' })
   await tick()
   assert.deepEqual(q.calls, [['uiCommand', 'show']])
-  assert.deepEqual(h.spoken.map((s) => s[0]), ['Task list showing.'])
+  assert.deepEqual(h.spoken.map((s) => s[0]), ['Coding Boss Review Queue showing.'])
 })
 
 test('SQ4 end to end: how many items speaks the count wording', async () => {
