@@ -33,14 +33,28 @@ test('parseDeeper accepts 2 to 4 paragraphs as JSON (also in a code fence or aft
   assert.deepEqual(parseDeeper(goodDeeper({ paragraphs: PARAS.map((p) => '  ' + p.replace(/ /g, '   ') + ' ') })), PARAS)
 })
 
-test('parseDeeper rejects wrong shapes, too few or too many paragraphs, and too much text', async () => {
+test('parseDeeper rejects wrong shapes, too few or too many paragraphs, and far too much text', async () => {
   const { parseDeeper, MAX_DEEPER } = await load()
-  const long = 'Sentence number one is long enough to count. '.repeat(10)
+  const huge = 'Sentence number one is long enough to count. '.repeat(40) // 1800 characters: two of them are over the cap
   const bad = ['', 'not json', '{}', '[1]', goodDeeper({ paragraphs: 'text' }), goodDeeper({ paragraphs: [] }), goodDeeper({ paragraphs: [PARAS[0]] }),
     goodDeeper({ paragraphs: [...PARAS, PARAS[0], PARAS[1]] }), goodDeeper({ paragraphs: [PARAS[0], 5, PARAS[2]] }), goodDeeper({ paragraphs: [PARAS[0], 'short'] }),
-    goodDeeper({ paragraphs: [long, long, long] }), goodDeeper({ paragraphs: [PARAS[0], '   ', PARAS[2]] })]
-  assert.ok(MAX_DEEPER <= 1200)
+    goodDeeper({ paragraphs: [huge, huge, huge] }), goodDeeper({ paragraphs: [PARAS[0], '   ', PARAS[2]] })]
+  assert.ok(MAX_DEEPER >= 2000 && MAX_DEEPER <= 4000, 'the cap is a generous presentation limit, not a tight one')
   for (const raw of bad) assert.equal(parseDeeper(raw), undefined, String(raw).slice(0, 50))
+})
+
+test('an answer between the old 1200 and the cap is accepted whole; one a little over the cap loses its last paragraphs instead of being refused', async () => {
+  const { deeperProblem, MAX_DEEPER } = await load()
+  const para = (n) => ('Sentence number ' + n + ' is long enough to count. ').repeat(14).trim() // about 480 characters
+  const six = [para(1), para(2), para(3)]
+  assert.equal(deeperProblem(goodDeeper({ paragraphs: six })).paragraphs.length, 3, 'about 1450 characters: was refused before')
+  const big = Math.ceil(MAX_DEEPER / 3) + 100
+  const wide = (n) => ('Sentence number ' + n + ' is long enough to count. ').repeat(Math.ceil(big / 40)).trim()
+  const four = [wide(1), wide(2), wide(3), wide(4)]
+  const got = deeperProblem(goodDeeper({ paragraphs: four })).paragraphs
+  assert.ok(got.length >= 2 && got.length < 4, 'trailing paragraphs dropped, got ' + (got && got.length))
+  assert.deepEqual(got, four.slice(0, got.length).map((x) => x.replace(/\s+/g, ' ').trim()))
+  assert.ok(got.join('').length <= MAX_DEEPER)
 })
 
 test('parseDeeper rejects URLs, paths, keys, code, links, commands and "do this" instructions', async () => {
@@ -53,12 +67,12 @@ test('parseDeeper rejects URLs, paths, keys, code, links, commands and "do this"
 
 test('deeperProblem names why an answer is refused (a code, never the text) and returns the paragraphs of a good one', async () => {
   const { deeperProblem } = await load()
-  const long = 'Sentence number one is long enough to count. '.repeat(10)
+  const huge = 'Sentence number one is long enough to count. '.repeat(40)
   assert.deepEqual(deeperProblem(goodDeeper()), { paragraphs: PARAS })
   assert.deepEqual(deeperProblem('not json'), { problem: 'shape' })
   assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [PARAS[0]] })), { problem: 'paragraphs' })
   assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [PARAS[0], 'short'] })), { problem: 'paragraphs' })
-  assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [long, long, long] })), { problem: 'too-long' })
+  assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [huge, huge, huge] })), { problem: 'too-long' })
   assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [PARAS[0], 'See https://example.com/x for the proof of this.', PARAS[2]] })), { problem: 'leak' })
   assert.deepEqual(deeperProblem(goodDeeper({ paragraphs: [PARAS[0], 'Call `contains()` on the filter before you fetch the page again.', PARAS[2]] })), { problem: 'noise' })
 })
@@ -76,7 +90,7 @@ function sequenceLlm(answers, seen) {
 
 test('deeper: a first answer that is refused (too long, say) gets one repair try that names the problem; a good second answer is attached', async () => {
   const seen = {}
-  const long = 'Sentence number one is long enough to count. '.repeat(10)
+  const long = 'Sentence number one is long enough to count. '.repeat(40)
   const { expander, tips, logs } = await make({ llm: sequenceLlm([goodDeeper({ paragraphs: [long, long, long] }), goodDeeper()], seen) })
   assert.deepEqual(await expander.deeper('t1'), { ok: true, deeper: { paragraphs: PARAS, source: 'model' } })
   assert.equal(seen.calls, 2)
