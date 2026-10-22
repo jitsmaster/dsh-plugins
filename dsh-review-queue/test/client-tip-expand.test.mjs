@@ -324,3 +324,9 @@ test('a Pop out button opens the tip window as a small popup under /review-queue
   assert.match(opened[0][2], /popup/)
   assert.match(opened[0][2], /width=\d+/)
 })
+
+test('the topic row has its own space above it, apart from the action buttons', () => {
+  const css = source.match(/\.rq-tip-actions\{margin-top:(\d+)px\}/), gap = source.match(/\.rq-tip-topicrow\{margin-top:(\d+)px\}/)
+  assert.ok(css && gap)
+  assert.ok(Number(gap[1]) >= 16 && Number(gap[1]) > Number(css[1]))
+})
