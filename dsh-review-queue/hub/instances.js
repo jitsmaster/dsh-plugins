@@ -20,7 +20,7 @@ export const ORPHAN_KEEP_MS = 24 * 3600 * 1000
 const ID = /^[A-Za-z0-9]{4,32}$/
 const ENDED = new Set(['question', 'permission'])
 /** Only work that outlives its process can change hands: a question or permission died with the app that held its promise. */
-const ADOPTABLE = new Set(['completed', 'pr-merged', 'todo', 'onhold'])
+const ADOPTABLE = new Set(['completed', 'pr-merged', 'archive', 'todo', 'onhold'])
 const BLOCKED = [...HUB_FIELDS, '__proto__']
 const short = (id) => id.slice(0, 4)
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)

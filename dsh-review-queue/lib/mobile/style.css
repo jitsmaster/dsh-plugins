@@ -52,6 +52,7 @@ nav a.on { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
 .chip.question { background: #1f2f4a; color: #8fbcff; }
 .chip.completed { background: #1c3328; color: #84d9ac; }
 .chip.pr-merged { background: #2e2447; color: #c3a6ff; }
+.chip.archive { background: #3a2f1a; color: #f0c674; }
 .chip.paused { background: #3a2f12; color: #f0c674; }
 .chip.onhold { background: #262b33; color: #9aa7b8; }
 .holdbox { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }

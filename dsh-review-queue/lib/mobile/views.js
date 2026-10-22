@@ -222,6 +222,23 @@ function CompletedBody({ item }) {
   </div>`
 }
 
+function ArchiveBody({ item }) {
+  const st = useStore()
+  const [ask, setAsk] = useState(false)
+  const busy = st.busy[item.id]
+  const reason = (item.payload && item.payload.reason) || ''
+  return html`<div>
+    <div class="text">This session asks to be archived.</div>
+    ${reason ? html`<div class="sub">Reason: ${reason}</div>` : null}
+    <div class="row">
+      <button class="btn pri" disabled=${busy} onClick=${() => setAsk(true)}>${busy ? 'Archiving…' : 'Archive session…'}</button>
+      <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Keep session</button>
+    </div>
+    ${ask ? html`<${Sheet} title="Archive this session?" lines=${[item.sessionTitle || 'This session', 'Anything it is still running is stopped.']} confirmLabel="Archive"
+      onConfirm=${async () => { setAsk(false); if (await act('/v1/archive', { id: item.id }, item.id)) go('/') }} onCancel=${() => setAsk(false)} />` : null}
+  </div>`
+}
+
 function PrMergedBody({ item }) {
   const st = useStore()
   const [ask, setAsk] = useState(false)
@@ -580,7 +597,7 @@ function ItemView({ id }) {
   const item = open || resolved
   if (!item) return html`<div class="empty">${st.snap ? 'That item is no longer here.' : 'Loading…'}<div class="row"><a class="btn" href="#/">Back to the list</a></div></div>`
   const late = resolved && item.type === 'question' && item.resolution && item.resolution.kind === 'expired'
-  const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'todo' ? TodoBody : item.type === 'paused' ? PausedBody : item.type === 'onhold' ? HeldBody : CompletedBody
+  const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'archive' ? ArchiveBody : item.type === 'todo' ? TodoBody : item.type === 'paused' ? PausedBody : item.type === 'onhold' ? HeldBody : CompletedBody
   const chat = hasThread(item) // every item with a session (not a todo): its conversation below the actions
   const writable = canPost(item) // and a composer at the bottom, except for a paused one (it is resumed at the PC)
   return html`<article class="card">

@@ -46,6 +46,7 @@ import { installCapture, cancelStalePending } from './capture.js'
 import { installTicketSessions } from './ticket-session.js'
 import { createOnHold } from './onhold.js'
 import { installOnHoldCommand } from './onhold-command.js'
+import { installArchiveOffer } from './archive-offer.js'
 import { fetchTicketState } from './ado-ticket.js'
 import { createReviewQueue } from './service.js'
 import { createReader } from './reader.js'
@@ -209,7 +210,9 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   onHold = createOnHold({ store, controllerOf, ticketStateOf: config.onHoldDeps?.ticketStateOf ?? ((ref) => fetchTicketState(ref, { log })), log })
   // A session goes on hold by "/onhold <reason>" typed in it, or by an ONHOLD marker line it prints itself (off with onHoldCommands: false).
   installOnHoldCommand(ctx, { onHoldOf: () => onHold, log, enabled: () => config.onHoldCommands !== false })
-  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, onHold, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
+  // A session asks the user to archive it by "/archive-offer <reason>" typed in it or an ARCHIVE-OFFER marker line it prints itself: an archive card (desktop and phone), nothing is archived before the user presses it (off with archiveOfferCommands: false).
+installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.archiveOfferCommands !== false })
+const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, onHold, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }

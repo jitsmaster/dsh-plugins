@@ -345,7 +345,7 @@ window.__ModuleLoader__.load({
 		// (the numbers part is sessionsKey of sessions.js, this file being one self-contained script)
 		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0) + "|" + (b.sessions && Number.isFinite(b.sessions.working) && Number.isFinite(b.sessions.open) ? b.sessions.working + "/" + b.sessions.open : "") + "|" + ((b.tip && b.tip.id) || "");
 
-		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", todo: "Todo", paused: "Paused", onhold: "On hold" };
+		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", archive: "Archive", todo: "Todo", paused: "Paused", onhold: "On hold" };
 		const typeLabel = (t) => TYPE[t] || t;
 		const recommended = (q, label) => /\(recommended\)/i.test(label);
 
@@ -1174,7 +1174,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
 			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}"
-			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-chip.onhold{color:var(--rq-mute)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
+			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.archive{color:var(--rq-warn)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-chip.onhold{color:var(--rq-mute)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
 			+ ".rq-text{white-space:pre-wrap;word-break:break-word}.rq-clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}"
@@ -1341,6 +1341,19 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				full ? h(HoldForm, { item }) : null);
 		}
 
+		/** A session asked to be archived (ARCHIVE-OFFER marker or /archive-offer): nothing happens until the button is pressed. */
+		function ArchiveBody({ item }) {
+			const st = useStore();
+			const busy = st.busy[item.id];
+			const reason = (item.payload && item.payload.reason) || "";
+			return h(React.Fragment, null,
+				h("div", { className: "rq-text" }, "This session asks to be archived."),
+				reason ? h("div", { className: "rq-sub" }, "Reason: " + reason) : null,
+				h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn pri", disabled: busy, title: "Archive this session (stops anything it is still running)", onClick: () => act("/v1/archive", { id: item.id }, item.id, { advance: true }) }, busy ? "Archiving…" : "Archive session"),
+					h("button", { className: "rq-btn", disabled: busy, title: "Keep the session and clear this item", onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Keep session")));
+		}
+
 		/** A merged pull request: archive the session that worked on it (the follow-up sessions were already told to start). */
 		function PrMergedBody({ item }) {
 			const st = useStore();
@@ -1417,7 +1430,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const now = useNow(item.type === "question" && !!item.expiresAt);
 			const full = forceFull || !!st.expanded[item.id];
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
-			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "todo" ? (isFollowUp(item) ? FollowUpBody : TodoBody) : item.type === "paused" ? PausedBody : item.type === "onhold" ? OnHoldBody : CompletedBody;
+			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "archive" ? ArchiveBody : item.type === "todo" ? (isFollowUp(item) ? FollowUpBody : TodoBody) : item.type === "paused" ? PausedBody : item.type === "onhold" ? OnHoldBody : CompletedBody;
 			const reading = !!(st.snap && st.snap.reading === item.id);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },

@@ -106,6 +106,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     cancelTodo: (id) => action('todo-cancel', { id }, () => local.cancelTodo(id)),
 
     notifyPrMerged: (info) => local.notifyPrMerged(info),
+    offerArchive: (info) => local.offerArchive(info),
     todoIdle: () => local.todoIdle(),
     uiCommand: (cmd) => local.uiCommand(cmd),
     scanPaused: () => local.scanPaused(), // the session logs are on this PC: always this app that scans

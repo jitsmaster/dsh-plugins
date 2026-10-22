@@ -563,7 +563,7 @@ export function cancelStalePending(store, { only, log } = {}) {
       continue
     }
     if (item.type === 'paused') continue // the next scan of the session logs decides whether it is still cut off
-    if (item.type !== 'completed' && item.type !== 'pr-merged' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) {
+    if (item.type !== 'completed' && item.type !== 'pr-merged' && item.type !== 'archive' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) {
       n++
       log?.('capture: ' + item.type + ' ' + item.id + ' cancelled: its request died with the earlier process')
     }

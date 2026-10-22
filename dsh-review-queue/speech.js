@@ -138,6 +138,10 @@ function bodyParts(item) {
     const what = cleanText(item.payload?.summary, { maxWords: 20 }) || cleanText(item.payload?.toolName, { maxWords: 4 }) || 'a tool'
     return { headline: 'Permission from ' + who + ': ' + what, full: 'Permission request from ' + who + ': ' + what + '. Say approve or deny.' }
   }
+  if (item.type === 'archive') {
+    const why = cleanText(item.payload?.reason, { maxChars: 200 })
+    return { headline: 'Archive ' + who + '?', full: who + ' asks to be archived.' + (why ? ' Reason: ' + sentence(why) : '') + ' You can archive this session.' }
+  }
   if (item.type === 'pr-merged') {
     const pr = 'Pull request ' + cleanText(String(item.payload?.prId ?? ''), { maxChars: 12 })
     const followUps = (item.payload?.followUps ?? []).length
@@ -189,6 +193,7 @@ export function titleFor(item) {
   if (item.type === 'permission') {
     return cleanText(item.payload?.summary, { maxWords: 10 }) || cleanText(item.payload?.toolName, { maxWords: 4 }) || 'Permission request'
   }
+  if (item.type === 'archive') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Archive this session?'
   if (item.type === 'pr-merged') return 'PR ' + cleanText(String(item.payload?.prId ?? ''), { maxChars: 12 }) + ' merged'
   if (item.type === 'paused') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Paused session'
   if (item.type === 'onhold') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Session on hold'
@@ -297,7 +302,7 @@ export function fullTextFor(item, position) {
     const reason = cleanText(item.payload?.reason, { maxChars: 600 })
     return withLead(position, reason ? base.replace(/ Say approve or deny\.$/, '') + ' Reason: ' + sentence(reason) + ' Say approve or deny.' : base, '\n\n')
   }
-  if (item.type === 'question' || item.type === 'pr-merged' || item.type === 'todo' || item.type === 'paused' || item.type === 'onhold') {
+  if (item.type === 'question' || item.type === 'pr-merged' || item.type === 'archive' || item.type === 'todo' || item.type === 'paused' || item.type === 'onhold') {
     return spokenFor(item, position).full
   }
   const reply = speakable(item.payload?.reply) || cleanText(item.summary) || 'Finished.'

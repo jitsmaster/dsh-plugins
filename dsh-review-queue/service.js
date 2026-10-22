@@ -22,7 +22,7 @@ const POST_KEY_TTL_MS = 10 * 60_000
 const RUNNING_POLL_LIST_MS = 5_000 // the session list call of runningSessions (Resume all asks every 3 s)
 const RUNNING_SHARE_MS = 1_500 // an answer of runningSessions is reused this long after it completed (several lanes or windows ask on the same rhythm)
 const RUNNING_LIST_LIMIT_MS = RUNNING_POLL_LIST_MS + 1_000 // a list call that has not answered by then fails for every caller sharing it
-const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'todo', 'paused', 'onhold']
+const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'archive', 'todo', 'paused', 'onhold']
 /** A todo being started, a session paused by a restart, or a session on hold (each has its own count or queue), is not waiting on the user. */
 const needsUser = (item) => item.type !== 'paused' && item.type !== 'onhold' && !(item.type === 'todo' && item.state === 'starting')
 
@@ -136,7 +136,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     let archived
     try { archived = new Set((registryOf()?.archivedSessionIds ?? []).map(String)) } catch { return }
     if (!archived.size) return
-    for (const item of store.snapshot().open) if (item.type === 'pr-merged' && archived.has(String(item.sessionId)) && store.resolve(item.id, { kind: 'archived', by: 'elsewhere' })) log?.('service: merged-PR item ' + item.id + ' closed: its session was archived elsewhere')
+    for (const item of store.snapshot().open) if ((item.type === 'pr-merged' || item.type === 'archive') && archived.has(String(item.sessionId)) && store.resolve(item.id, { kind: 'archived', by: 'elsewhere' })) log?.('service: merged-PR item ' + item.id + ' closed: its session was archived elsewhere')
   }
 
   /** One call of the tip expander; a missing expander is no model, a throwing one a generic error (the provider's text can carry endpoints or key fragments: only the log gets a short detail). */
@@ -263,11 +263,27 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       }
       return { ok: true, added }
     },
-    /** Archives the session of a merged-PR item (the card's button), then closes the item. Running work of that session is stopped. */
+    /**
+     * A session asks the user to archive it (it printed an ARCHIVE-OFFER marker or the user typed /archive-offer in it): one open "archive" item per session, whose
+     * card has the Archive session button (desktop and phone). Nothing is archived before the user presses it. info: { sessionId, sessionTitle?, workspace?, reason? }.
+     */
+    offerArchive(info) {
+      const sessionId = typeof info?.sessionId === 'string' ? info.sessionId : ''
+      if (!sessionId) return { ok: false, error: 'bad-input' }
+      const reason = typeof info.reason === 'string' ? info.reason.replace(/\s+/g, ' ').trim().slice(0, 200) : ''
+      const open = store.snapshot().open.find((i) => i.type === 'archive' && i.sessionId === sessionId)
+      if (open) {
+        if (reason && open.payload?.reason !== reason) store.update(open.id, { payload: { ...open.payload, reason } })
+        return { ok: true, id: open.id, updated: true }
+      }
+      const item = store.add({ type: 'archive', sessionId, sessionTitle: typeof info.sessionTitle === 'string' ? info.sessionTitle : '', ...(typeof info.workspace === 'string' && info.workspace ? { workspace: info.workspace } : {}), payload: { ...(reason ? { reason } : {}) } })
+      return { ok: true, id: item.id }
+    },
+    /** Archives the session of a merged-PR or archive-offer item (the card's button), then closes the item. Running work of that session is stopped. */
     async archive(id) {
       const item = openItem(id)
       if (!item) return { ok: false, error: 'not-open' }
-      if (item.type !== 'pr-merged') return { ok: false, error: 'not-pr-merged' }
+      if (item.type !== 'pr-merged' && item.type !== 'archive') return { ok: false, error: 'not-pr-merged' }
       const registry = registryOf()
       if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'no-registry' }
       try {
@@ -489,7 +505,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     markReviewed(id) {
       const item = openItem(id)
       if (!item) return { ok: false, error: 'not-open' }
-      if (item.type !== 'completed' && item.type !== 'pr-merged') return { ok: false, error: 'not-completed' }
+      if (item.type !== 'completed' && item.type !== 'pr-merged' && item.type !== 'archive') return { ok: false, error: 'not-completed' }
       return store.resolve(id, { kind: 'reviewed', by: 'card' }) ? { ok: true } : { ok: false, error: 'not-open' }
     },
     async reply(id, text) {
