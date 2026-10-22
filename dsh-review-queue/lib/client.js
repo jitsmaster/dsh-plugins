@@ -1014,6 +1014,16 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			set({ busy: { ...state.busy, [key]: false }, errors: { ...state.errors, [key]: error }, ...(error ? {} : { tipDeeper: { [tip.id]: paragraphs } }) });
 			return !error;
 		}
+		/** Another tip: replaces this tip by a new one at once (the server holds the old text no longer; the snapshot brings the new tip). */
+		async function anotherTip() {
+			const key = "tip-next";
+			if (state.busy[key]) return false;
+			set({ busy: { ...state.busy, [key]: true }, errors: { ...state.errors, [key]: undefined }, tipUse: { ...state.tipUse, open: false } });
+			const r = await postJson("/v1/tip-next", {});
+			const error = r.ok ? undefined : r.error;
+			set({ busy: { ...state.busy, [key]: false }, errors: { ...state.errors, [key]: error } });
+			return !error;
+		}
 		/** Use in my code: shows or hides the workspace pick (the list is loaded when it opens). */
 		function toggleTipUse() {
 			const open = !state.tipUse.open;
@@ -1653,6 +1663,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				longer.length ? h("div", { className: "rq-tip-dw" }, longer.map((p, n) => h("p", { key: n, className: "rq-tip-d" }, p))) : null,
 				h("div", { className: "rq-row rq-tip-actions" },
 					longer.length ? null : h("button", { type: "button", className: "rq-btn", title: "A longer explanation of this tip, with an example", disabled: !!st.busy[deeperKey], onClick: () => goDeeper(tip) }, st.busy[deeperKey] ? "Writing…" : "Go deeper"),
+					h("button", { type: "button", className: "rq-btn", title: "Not interested? Show a different tip", disabled: !!st.busy["tip-next"], onClick: anotherTip }, st.busy["tip-next"] ? "Finding one…" : "Another tip"),
 					h("button", { type: "button", className: "rq-btn" + (use ? " on" : ""), "aria-expanded": use, title: "Draft a todo that applies this tip to one of your workspaces", onClick: toggleTipUse }, "Use in my code")),
 				use ? h("div", { className: "rq-row rq-tip-use" },
 					h("select", { className: "rq-input rq-sel", value: picked, disabled: !!st.busy[todoKey], "aria-label": "Workspace for the todo", onChange: (e) => set({ tipUse: { ...state.tipUse, workspaceId: e.target.value } }) }, list.map((w) => h("option", { key: w.id, value: w.id }, w.title))),
@@ -1660,7 +1671,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					note ? h("span", { className: "rq-sub" }, note) : null) : null,
 				st.errors[key] ? h("div", { className: "rq-err" }, st.errors[key]) : null,
 				st.errors[deeperKey] ? h("div", { className: "rq-err" }, st.errors[deeperKey]) : null,
-				st.errors[todoKey] ? h("div", { className: "rq-err" }, st.errors[todoKey]) : null);
+				st.errors[todoKey] ? h("div", { className: "rq-err" }, st.errors[todoKey]) : null,
+				st.errors["tip-next"] ? h("div", { className: "rq-err" }, st.errors["tip-next"]) : null);
 		}
 
 		function Panel() {

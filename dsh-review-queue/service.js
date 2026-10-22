@@ -199,6 +199,22 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const chunks = [...(title ? chunkForSpeech(/[.!?:;]$/.test(title) ? title : title + '.') : []), ...[tip.body, ...longer].flatMap((text) => tipSentences(text).flatMap((s) => chunkForSpeech(s)))]
       return speakAs(TIP_READING + tip.id, chunks, false)
     },
+    /**
+     * "Another tip": the reader is bored of this one. Stops the reading of the old tip, makes a new one now (a model call, or a built-in tip) and answers
+     * { ok, tip } | { ok: false, error }. This app's own model, so never forwarded to the hub.
+     */
+    async nextTip() {
+      if (typeof tips?.next !== 'function') return { ok: false, error: 'no model available' }
+      try {
+        if (isTipReading()) stopReading()
+        const tip = await tips.next()
+        emit()
+        return tip ? { ok: true, tip } : { ok: false, error: 'no model available' }
+      } catch (error) {
+        log?.('service: tip action failed: ' + safeReason(error, new Set())) // the code or name only
+        return { ok: false, error: 'LLM error' }
+      }
+    },
     /** "Go deeper": a longer explanation of the current tip (tip-expand.js), kept on the tip: { ok, deeper } | { ok: false, error }. This app's own model, so never forwarded to the hub. */
     tipDeeper: (id) => tipCall(() => tipExpand.deeper(String(id)), 'deeper'),
     /** "Use in my code": a todo text that applies the current tip in a workspace (it only fills the New todo form): { ok, text, workspaceId, source } | { ok: false, error }. */

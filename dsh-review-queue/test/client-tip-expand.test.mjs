@@ -256,3 +256,15 @@ test('the open state of Use in my code has a visible style', () => {
   const { T } = load()
   assert.match(T.CSS, /\.rq-btn\.on\{/)
 })
+
+test('an "Another tip" button sits in the actions row and asks the server for a new tip', async () => {
+  const { T, calls } = load({ routes: { [RQ + '/v1/tip-next']: () => [200, { ok: true, tip: { ...TIP, id: 't2' } }] } })
+  T.state.snap = snap({ tip: TIP })
+  const actions = withClass(card(T), 'rq-tip-actions')[0]
+  const b = buttonText(actions, /Another tip/)
+  assert.ok(b)
+  assert.equal(b.props.type, 'button')
+  b.props.onClick()
+  await tick()
+  assert.deepEqual(calls.filter(([u]) => u.includes('tip-next')), [[RQ + '/v1/tip-next', {}]])
+})

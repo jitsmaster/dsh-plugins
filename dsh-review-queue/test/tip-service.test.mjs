@@ -295,3 +295,34 @@ test('a title that already ends in punctuation gets no second one', () => {
   queue.readTip('tip1')
   assert.deepEqual(speaker.spoken[0], ['Why hash?', 'Speed.'])
 })
+
+// ---- nextTip: "Another tip" -------------------------------------------------------------------------------------------------------------
+
+test('nextTip asks the generator for another tip and answers with it; reading of the old tip ends', async () => {
+  const tips = fakeTips()
+  tips.next = async () => { tips.tip = { ...TIP, id: 'tip2', title: 'Other' }; return tips.tip }
+  const { queue, speaker } = setup({ tips })
+  queue.readTip('tip1')
+  assert.deepEqual(await queue.nextTip('tip1'), { ok: true, tip: { ...TIP, id: 'tip2', title: 'Other' } })
+  assert.ok(speaker.stops >= 1)
+})
+
+test('nextTip without a generator, or with one that throws, is a plain error', async () => {
+  const none = setup({ tips: null })
+  assert.deepEqual(await none.queue.nextTip('x'), { ok: false, error: 'no model available' })
+  const tips = fakeTips(); tips.next = async () => { throw new Error('secret endpoint') }
+  const { queue } = setup({ tips })
+  assert.deepEqual(await queue.nextTip('tip1'), { ok: false, error: 'LLM error' })
+})
+
+test('POST /v1/tip-next answers with the new tip (200), and an error with 409', async (t2) => {
+  const tips = fakeTips(); tips.next = async () => { tips.tip = { ...TIP, id: 'tip9' }; return tips.tip }
+  const { queue } = setup({ tips })
+  const post = await serve(t2, queue)
+  const res = await post('/v1/tip-next', { id: 'tip1' })
+  assert.equal(res.status, 200)
+  assert.equal(res.json.tip.id, 'tip9')
+  const none = setup({ tips: null })
+  const post2 = await serve(t2, none.queue)
+  assert.equal((await post2('/v1/tip-next', {})).status, 409)
+})

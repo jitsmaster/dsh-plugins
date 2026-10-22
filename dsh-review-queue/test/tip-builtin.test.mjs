@@ -6,9 +6,9 @@ import { CATEGORIES, MAX_BODY, MAX_TITLE, parseTip } from '../tip.js'
 // The curated fallback tips (tip-builtin.js): the same shape the model must produce, spread over the three categories.
 const sentences = (text) => text.split(/(?<=[.!?])\s+(?=[A-Z0-9(])/).length
 
-test('there are at least 30 built-in tips and every category has at least 8', () => {
-  assert.ok(BUILTIN_TIPS.length >= 30)
-  for (const c of CATEGORIES) assert.ok(BUILTIN_TIPS.filter((t) => t.category === c).length >= 8, c)
+test('there are at least 55 built-in tips, the first three categories have at least 8 and every other one at least 2', () => {
+  assert.ok(BUILTIN_TIPS.length >= 55)
+  for (const c of CATEGORIES) assert.ok(BUILTIN_TIPS.filter((t) => t.category === c).length >= (CATEGORIES.indexOf(c) < 3 ? 8 : 2), c)
 })
 
 test('every built-in tip has a unique short title, a body of 2 to 4 sentences within the caps and a known category', () => {

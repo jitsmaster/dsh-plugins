@@ -103,7 +103,7 @@ test('the prompt asks for JSON {title, body, category}, names the category to co
   assert.equal(seen.cfg.maxTokens > 0, true)
 })
 
-test('the categories rotate round robin: algorithms, ai, agents, algorithms', async () => {
+test('the category is asked for in the prompt and is not one of the last three', async () => {
   const seen = {}
   const titles = ['Alpha one', 'Beta two', 'Gamma three', 'Delta four']
   let i = 0
@@ -112,17 +112,16 @@ test('the categories rotate round robin: algorithms, ai, agents, algorithms', as
   const asked = []
   llm.prepareCall = async (cfg, signal) => {
     const p = await prepare(cfg, signal)
-    return { ...p, stream: async function* (req) { asked.push(req.messages[0].content[0].text); yield { type: 'text-delta', text: goodJson({ title: titles[i++], category: ['algorithms', 'ai', 'agents', 'algorithms'][i - 1] }) } } }
+    return { ...p, stream: async function* (req) { asked.push(req.messages[0].content[0].text); yield { type: 'text-delta', text: goodJson({ title: titles[i++], category: /Category to cover: (\S+)/.exec(req.messages[0].content[0].text)[1] }) } } }
   }
   const { tipper, c } = await make({ llm })
   const got = []
   for (let k = 0; k < 4; k++) { got.push((await ready(tipper)).category); c.advance(5 * MIN) }
-  assert.deepEqual(got, ['algorithms', 'ai', 'agents', 'algorithms'])
-  assert.match(asked[1], /\bai\b/)
-  assert.match(asked[2], /agents/)
+  assert.equal(got.length, 4)
+  got.forEach((cat, k) => { assert.ok(asked[k].includes('Category to cover: ' + cat)); assert.ok(!got.slice(Math.max(0, k - 3), k).includes(cat), 'repeat at ' + k) })
 })
 
-test('the last titles are passed so the model does not repeat them (at most 12, newest kept)', async () => {
+test('the last titles are passed so the model does not repeat them (at most 40, newest kept)', async () => {
   const seen = {}
   let k = 0
   const llm = fakeLlm({ seen })
@@ -132,11 +131,11 @@ test('the last titles are passed so the model does not repeat them (at most 12, 
     return { ...p, stream: async function* (req) { seen.users = [...(seen.users ?? []), req.messages[0].content[0].text]; yield { type: 'text-delta', text: goodJson({ title: 'Unique title ' + ++k }) } } }
   }
   const { tipper, c } = await make({ llm })
-  for (let i = 0; i < 15; i++) { await ready(tipper); c.advance(5 * MIN) }
+  for (let i = 0; i < 45; i++) { await ready(tipper); c.advance(5 * MIN) }
   const last = seen.users.at(-1)
-  assert.ok(last.includes('Unique title 14'))
-  assert.ok(last.includes('Unique title 3'), 'the 12th newest')
-  assert.ok(!last.includes('Unique title 2\n') && !/Unique title 2(?!\d)/.test(last), 'older ones are dropped')
+  assert.ok(last.includes('Unique title 44'))
+  assert.ok(/Unique title 5(?!\d)/.test(last), 'the 40th newest')
+  assert.ok(!/Unique title 4(?!\d)/.test(last), 'older ones are dropped')
 })
 
 test('the topics steer only: URLs, paths, emails, keys and ids are removed, the count and length are capped', async () => {
@@ -235,7 +234,7 @@ test('without a model the first request already answers with a built-in tip, wit
   const tip = tipper.current()
   assert.equal(tip.source, 'builtin')
   assert.equal(tip.at, c.now())
-  assert.equal(tip.category, 'algorithms')
+  assert.ok((await load()).CATEGORIES.includes(tip.category))
   assert.equal(tipper.current().id, tip.id, 'the same tip inside the slot')
 })
 
@@ -266,11 +265,12 @@ test('the provider error text is not logged at all: only its code or name, cut t
   }
 })
 
-test('built-in tips rotate through the categories and never repeat one of the last 12', async () => {
+test('built-in tips vary the category (never one of the last 3) and never repeat one of the last 12', async () => {
   const { tipper, c } = await make({})
   const got = []
   for (let i = 0; i < 80; i++) { got.push(tipper.current()); c.advance(5 * MIN) }
-  assert.deepEqual(got.slice(0, 6).map((t) => t.category), ['algorithms', 'ai', 'agents', 'algorithms', 'ai', 'agents'])
+  const cats = got.slice(0, 24).map((t) => t.category)
+  for (let i = 3; i < cats.length; i++) assert.ok(!cats.slice(i - 3, i).includes(cats[i]), 'category repeated at ' + i)
   for (let i = 0; i < got.length; i++) {
     const window = got.slice(Math.max(0, i - 12), i).map((t) => t.title)
     assert.ok(!window.includes(got[i].title), 'repeat of a recent tip at ' + i + ': ' + got[i].title)
@@ -283,7 +283,8 @@ test('a list of built-in tips shorter than the memory still gives a tip (the lea
   const { tipper, c } = await make({ builtin: tiny })
   const got = []
   for (let i = 0; i < 9; i++) { got.push(tipper.current().title); c.advance(5 * MIN) }
-  assert.deepEqual(got, ['A', 'B', 'C', 'A', 'B', 'C', 'A', 'B', 'C'])
+  assert.equal(new Set(got.slice(0, 3)).size, 3)
+  got.forEach((title, i) => { if (i >= 3) assert.equal(title, got[i - 3], 'the least recently shown comes back first') })
 })
 
 test('the tipper has no recentTitles accessor (the memory is internal)', async () => {
@@ -361,10 +362,10 @@ test('ordinary words around run, install and commands are fine in a tip', async 
 
 // ---- memory ---------------------------------------------------------------------------------------------------------------------------------
 
-test('the memory is 60 titles, the prompt still lists the last 12', async () => {
+test('the memory is 60 titles, the prompt lists the last 40', async () => {
   const { RECENT_MEMORY, PROMPT_TITLES } = await load()
   assert.equal(RECENT_MEMORY, 60)
-  assert.equal(PROMPT_TITLES, 12)
+  assert.equal(PROMPT_TITLES, 40)
 })
 
 test('the built-in list is cycled completely before any tip comes back', async () => {
@@ -480,4 +481,112 @@ test('with no Haiku model the log says so (not a generic "no model")', async () 
   const { tipper, logs } = await make({ llm: fakeLlm({ answer: goodJson(), models: [{ id: 'gpt-5-mini' }] }) })
   await ready(tipper)
   assert.ok(logs.some((l) => /haiku/i.test(l)), logs.join('|'))
+})
+
+// ---- another tip on demand, and more variety --------------------------------------------------------------------------------------------
+
+const varying = (seen = {}) => {
+  let n = 0
+  return { listProviders: async () => [{ id: 'p1' }], listModels: async () => [{ id: 'claude-haiku-x' }],
+    prepareCall: async () => ({ config: {}, stream: async function* (req) { seen.calls = (seen.calls ?? 0) + 1; seen.req = req; n++
+      yield { type: 'text-delta', text: JSON.stringify({ title: 'Idea number ' + n, body: 'This is idea number ' + n + '. It is a short and valid body for the tip.', category: 'ai' }) } } }) }
+}
+
+test('there are at least 10 categories, and the model may use any of them', async () => {
+  const { CATEGORIES } = await load()
+  assert.ok(CATEGORIES.length >= 10)
+  assert.ok(['algorithms', 'ai', 'agents'].every((c) => CATEGORIES.includes(c)))
+  const { tipper } = await make({ llm: fakeLlm({ answer: goodJson({ category: CATEGORIES[CATEGORIES.length - 1] }) }) })
+  assert.equal((await ready(tipper)).source, 'model')
+})
+
+test('next() replaces the tip at once, without waiting for the 5 minute slot, and resolves with the new tip', async () => {
+  const seen = {}
+  const { tipper } = await make({ llm: varying(seen) })
+  const first = await ready(tipper)
+  const second = await tipper.next()
+  assert.notEqual(second.id, first.id)
+  assert.notEqual(second.title, first.title)
+  assert.equal(tipper.peek().id, second.id)
+  assert.equal(seen.calls, 2)
+})
+
+test('next() without a tip yet, and without a model, gives a built-in tip that is not one of the recent ones', async () => {
+  const { tipper } = await make({})
+  const titles = new Set()
+  for (let i = 0; i < 20; i++) { const t = await tipper.next(); assert.equal(t.source, 'builtin'); assert.ok(!titles.has(t.title), 'repeat ' + t.title); titles.add(t.title) }
+})
+
+test('next() ignores a hold: the user asked for another tip', async () => {
+  const { tipper } = await make({ llm: varying() })
+  const first = await ready(tipper)
+  assert.equal(tipper.hold(first.id), true)
+  const second = await tipper.next()
+  assert.notEqual(second.id, first.id)
+})
+
+test('next() while a generation is in flight still ends with a newer tip and makes at most one call at a time', async () => {
+  const seen = {}
+  const { tipper } = await make({ llm: varying(seen) })
+  tipper.current()
+  const [a, b] = await Promise.all([tipper.next(), tipper.next()])
+  assert.ok(a && b)
+  assert.equal(a.id, b.id, 'two quick presses share one new tip')
+  assert.equal(seen.calls, 2, 'the generation in flight, then one for the presses')
+})
+
+test('next() wakes the listeners and never throws when the model fails', async () => {
+  const { tipper } = await make({ llm: fakeLlm({ fail: true }) })
+  let woke = 0
+  tipper.onChange(() => woke++)
+  woke = 0
+  const t = await tipper.next()
+  assert.equal(t.source, 'builtin')
+  assert.ok(woke >= 1)
+})
+
+test('the categories are not picked in a fixed rotation and none repeats within three tips', async () => {
+  let seed = 7
+  const { tipper } = await make({ random: () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) })
+  const cats = []
+  for (let i = 0; i < 24; i++) cats.push((await tipper.next()).category)
+  for (let i = 3; i < cats.length; i++) assert.ok(!cats.slice(i - 3, i).includes(cats[i]), 'category ' + cats[i] + ' repeated at ' + i)
+  assert.ok(new Set(cats).size >= 6, 'many categories are used: ' + [...new Set(cats)])
+  const rot = cats.every((c, i) => i < 3 || c === cats[i % 3])
+  assert.equal(rot, false)
+})
+
+test('the prompt names the last 40 titles to avoid and asks for the less obvious concept', async () => {
+  const seen = {}
+  const { tipper } = await make({ llm: varying(seen) })
+  for (let i = 0; i < 45; i++) await tipper.next()
+  const user = seen.req.messages.map((m) => m.content.map((c) => c.text).join('')).join('\n')
+  assert.equal((user.match(/- Idea number/g) ?? []).length, 40)
+  assert.match(user, /Angle/i)
+})
+
+test('a hold taken while next() is generating does not make the new tip get dropped', async () => {
+  const { tipper } = await make({ llm: varying() })
+  const first = await ready(tipper)
+  const p = tipper.next()
+  tipper.hold(first.id)
+  const second = await p
+  assert.notEqual(second.id, first.id)
+  assert.equal(tipper.peek().id, second.id)
+})
+
+test('the category recorded is the one asked for, even when the model labels its answer differently', async () => {
+  let seed = 3
+  const { tipper } = await make({ llm: varying(), random: () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) })
+  const cats = []
+  for (let i = 0; i < 12; i++) { await tipper.next(); cats.push(/Category to cover: (\S+)/.exec(tipper.peek().body ? '' : '')?.[1]) }
+  assert.equal(tipper.peek().category, 'ai', 'the model label is shown as it is')
+})
+
+test('the titles to avoid are delimited as untrusted data', async () => {
+  const seen = {}
+  const { tipper } = await make({ llm: varying(seen) })
+  await tipper.next(); await tipper.next()
+  const user = seen.req.messages[0].content[0].text
+  assert.match(user, /<avoid>[\s\S]*Idea number 1[\s\S]*<\/avoid>/)
 })
