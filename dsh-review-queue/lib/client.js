@@ -629,7 +629,7 @@ function imageFilesOf(data) {
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
-			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipUse: { open: false, workspaceId: "" },
+			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipTopic: "", tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
 		const listeners = new Set();
@@ -925,7 +925,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 		/** Attaches the files to the New session form, one upload after the other; true when every one is attached. */
 		async function addImages(files) {
-			if (isFollowUpForm(state.todoForm) || state.todoForm.busy) return false;
+			if (state.todoForm.busy) return false;
 			let all = true;
 			for (const file of files) {
 				const f = state.todoForm;
@@ -945,7 +945,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		function onPasteImages(e) {
 			const data = e && e.clipboardData;
 			const files = imageFilesOf(data);
-			if (!files.length || isFollowUpForm(state.todoForm)) return;
+			if (!files.length) return;
 			const hasText = data && data.items ? Array.from(data.items).some((it) => it && it.kind === "string" && it.type === "text/plain") : false;
 			if (!hasText && typeof e.preventDefault === "function") e.preventDefault();
 			addImages(files);
@@ -955,12 +955,12 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const f = state.todoForm;
 			if (f.busy || f.tuning) return false;
 			const follow = isFollowUpForm(f);
-			if (!follow && f.uploading > 0) { patchForm({ error: "Wait for the image to finish uploading." }); return false; }
+			if (f.uploading > 0) { patchForm({ error: "Wait for the image to finish uploading." }); return false; }
 			const problem = todoFormProblem(f.text, follow ? f.followUp || "" : undefined);
 			if (problem) { patchForm({ error: problem }); return false; }
 			// A follow-up add answers only after the server has read the sessions (seconds), so the form closes at once, like a new todo; busy stays set, and a refusal brings the form back with the text.
 			patchForm({ busy: true, error: undefined, ...(follow ? { open: false } : {}) });
-			const error = await post("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim() } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.effort ? { effort: f.effort } : {}), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
+			const error = await post("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim(), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.effort ? { effort: f.effort } : {}), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
 			if (error) { patchForm({ busy: false, error, ...(follow ? { open: true } : {}) }); return false; }
 			clearImages();
 			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, effort: "", busy: false, error: undefined } });
@@ -1015,14 +1015,20 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return !error;
 		}
 		/** Another tip: replaces this tip by a new one at once (the server holds the old text no longer; the snapshot brings the new tip). */
-		async function anotherTip() {
+		async function anotherTip(topic) {
 			const key = "tip-next";
 			if (state.busy[key]) return false;
+			const asked = typeof topic === "string" ? topic.trim() : "";
+			if (typeof topic === "string" && !asked) return false; // a topic request with an empty box asks for nothing
 			set({ busy: { ...state.busy, [key]: true }, errors: { ...state.errors, [key]: undefined }, tipUse: { ...state.tipUse, open: false } });
-			const r = await postJson("/v1/tip-next", {});
+			const r = await postJson("/v1/tip-next", asked ? { topic: asked } : {});
 			const error = r.ok ? undefined : r.error;
-			set({ busy: { ...state.busy, [key]: false }, errors: { ...state.errors, [key]: error } });
+			set({ busy: { ...state.busy, [key]: false }, errors: { ...state.errors, [key]: error }, ...(asked && !error ? { tipTopic: "" } : {}) });
 			return !error;
+		}
+		/** Pop out: the tip in its own small browser window, to keep beside the work and follow up there. */
+		function popOutTip() {
+			try { window.open(API + "/tip-window/", "dsh-tip-window", "popup=yes,width=480,height=640"); } catch (e) { /* a blocked popup: nothing else to do */ }
 		}
 		/** Use in my code: shows or hides the workspace pick (the list is loaded when it opens). */
 		function toggleTipUse() {
@@ -1532,7 +1538,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-row", role: "group", "aria-label": "Kind of todo" },
 					[["new", "New session"], ["followup", "Follow up"]].map(([mode, label]) => h("button", { key: mode, className: "rq-fchip" + (follow === (mode === "followup") ? " on" : ""), "aria-pressed": follow === (mode === "followup"), disabled: f.busy || f.tuning, onClick: () => setTodoMode(mode) }, label))),
 				h("textarea", { className: "rq-ta", autoFocus: true, placeholder: follow ? "What should the existing session do next? (Ctrl+Enter adds it)" : "What should the new session do? (Ctrl+Enter adds it)", value: f.text, disabled: f.busy || f.tuning, onChange: (e) => patchForm({ text: e.target.value, error: undefined }), onKeyDown: submitOnKey, onPaste: onPasteImages }),
-				!follow && ((f.images && f.images.length) || f.uploading > 0) ? h("div", { className: "rq-thumbs" },
+				((f.images && f.images.length) || f.uploading > 0) ? h("div", { className: "rq-thumbs" },
 					(f.images || []).map((im) => h("span", { key: im.id, className: "rq-thumb" },
 						im.url ? h("img", { src: im.url, alt: im.name || "Pasted image", title: im.name || "" }) : h("span", { className: "rq-sub" }, im.name || "image"),
 						h("button", { className: "rq-thumb-x", type: "button", title: "Remove this image", "aria-label": "Remove image " + (im.name || ""), disabled: f.busy, onClick: () => removeImage(im.id) }, "✕"))),
@@ -1549,7 +1555,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					h("span", { className: "rq-grow" }),
 					h("button", { className: "rq-btn", title: "Rewrite the prompt with the prompt-tune rules and put the result in the box", disabled: !canTune(f), onClick: tuneTodo }, f.tuning ? "Tuning…" : "Tune prompt"),
 					f.original ? h("button", { className: "rq-link", title: "Put back the text you typed before tuning", disabled: f.busy || f.tuning, onClick: undoTune }, "Undo tune") : null,
-					h("button", { className: "rq-btn pri", disabled: f.busy || f.tuning || !f.text.trim() || (!follow && f.uploading > 0), onClick: submitTodo }, f.busy ? "Adding…" : follow ? "Add follow-up" : "Add todo"),
+					h("button", { className: "rq-btn pri", disabled: f.busy || f.tuning || !f.text.trim() || f.uploading > 0, onClick: submitTodo }, f.busy ? "Adding…" : follow ? "Add follow-up" : "Add todo"),
 					h("button", { className: "rq-link", disabled: f.busy, onClick: closeTodoForm }, "Cancel")),
 				f.questions && f.questions.length ? h("div", { className: "rq-tunequestions", role: "group", "aria-label": "Questions about the prompt" },
 					h("div", { className: "rq-sub" }, "The tuned prompt has open choices. Answer what you want to decide (a blank answer leaves it out):"),
@@ -1663,8 +1669,13 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				longer.length ? h("div", { className: "rq-tip-dw" }, longer.map((p, n) => h("p", { key: n, className: "rq-tip-d" }, p))) : null,
 				h("div", { className: "rq-row rq-tip-actions" },
 					longer.length ? null : h("button", { type: "button", className: "rq-btn", title: "A longer explanation of this tip, with an example", disabled: !!st.busy[deeperKey], onClick: () => goDeeper(tip) }, st.busy[deeperKey] ? "Writing…" : "Go deeper"),
-					h("button", { type: "button", className: "rq-btn", title: "Not interested? Show a different tip", disabled: !!st.busy["tip-next"], onClick: anotherTip }, st.busy["tip-next"] ? "Finding one…" : "Another tip"),
+					h("button", { type: "button", className: "rq-btn", title: "Not interested? Show a different tip", disabled: !!st.busy["tip-next"], onClick: () => anotherTip() }, st.busy["tip-next"] ? "Finding one…" : "Another tip"),
+					h("button", { type: "button", className: "rq-btn", title: "Open this tip in its own small window", onClick: popOutTip }, "Pop out"),
 					h("button", { type: "button", className: "rq-btn" + (use ? " on" : ""), "aria-expanded": use, title: "Draft a todo that applies this tip to one of your workspaces", onClick: toggleTipUse }, "Use in my code")),
+				h("div", { className: "rq-row rq-tip-topicrow" },
+					h("input", { type: "text", className: "rq-input rq-tip-topic", maxLength: 120, value: st.tipTopic || "", placeholder: "Or type a topic for a new tip…", "aria-label": "Topic for a new tip", disabled: !!st.busy["tip-next"],
+						onChange: (e) => set({ tipTopic: e.target.value }), onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); return anotherTip(state.tipTopic || ""); } } }),
+					h("button", { type: "button", className: "rq-btn pri", title: "Write a tip on the topic you typed", disabled: !!st.busy["tip-next"], onClick: () => anotherTip(state.tipTopic || "") }, "Write tip")),
 				use ? h("div", { className: "rq-row rq-tip-use" },
 					h("select", { className: "rq-input rq-sel", value: picked, disabled: !!st.busy[todoKey], "aria-label": "Workspace for the todo", onChange: (e) => set({ tipUse: { ...state.tipUse, workspaceId: e.target.value } }) }, list.map((w) => h("option", { key: w.id, value: w.id }, w.title))),
 					h("button", { type: "button", className: "rq-btn pri", disabled: !!st.busy[todoKey] || !picked || !!st.todoForm.busy || !!st.todoForm.tuning, title: "Write the todo text; you can edit it before it is sent", onClick: () => draftTipTodo(tip) }, st.busy[todoKey] ? "Drafting…" : "Draft todo"),

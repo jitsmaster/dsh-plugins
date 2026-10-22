@@ -326,3 +326,33 @@ test('POST /v1/tip-next answers with the new tip (200), and an error with 409', 
   const post2 = await serve(t2, none.queue)
   assert.equal((await post2('/v1/tip-next', {})).status, 409)
 })
+
+test('nextTip passes the topic on; a missing model and a failing one are plain errors', async () => {
+  const seen = []
+  const tips = fakeTips(); tips.next = async (o) => { seen.push(o); return TIP }
+  const { queue } = setup({ tips })
+  assert.deepEqual(await queue.nextTip({ topic: 'raft' }), { ok: true, tip: TIP })
+  assert.deepEqual(seen, [{ topic: 'raft' }])
+  const nomodel = fakeTips(); nomodel.next = async () => { throw new Error('no model available') }
+  assert.deepEqual(await setup({ tips: nomodel }).queue.nextTip({ topic: 'raft' }), { ok: false, error: 'no model available' })
+  const boom = fakeTips(); boom.next = async () => { throw new Error('secret endpoint') }
+  assert.deepEqual(await setup({ tips: boom }).queue.nextTip({ topic: 'raft' }), { ok: false, error: 'LLM error' })
+})
+
+test('currentTip answers with the tip even when the list is not empty, asking the generator for it', async () => {
+  const { store, queue, tips } = setup()
+  store.add(completed())
+  assert.deepEqual(queue.currentTip(), { ok: true, tip: TIP })
+  assert.equal(tips.asked, 1)
+  assert.deepEqual(setup({ tips: null }).queue.currentTip(), { ok: false, error: 'no model available' })
+})
+
+test('POST /v1/tip-next takes a topic and POST /v1/tip-current gives the tip', async (t2) => {
+  const seen = []
+  const tips = fakeTips(); tips.next = async (o) => { seen.push(o); return TIP }
+  const { queue } = setup({ tips })
+  const post = await serve(t2, queue)
+  assert.equal((await post('/v1/tip-next', { topic: 'raft' })).status, 200)
+  assert.deepEqual(seen, [{ topic: 'raft' }])
+  assert.deepEqual(await post('/v1/tip-current', {}), { status: 200, json: { ok: true, tip: TIP } })
+})

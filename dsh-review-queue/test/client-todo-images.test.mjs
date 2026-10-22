@@ -84,12 +84,13 @@ test('at most 5 images; a file over 8 MB is refused before it is sent', async ()
   assert.match(formOf(t2.T).error, /8 MB/)
 })
 
-test('a follow-up form takes no images', async () => {
+test('a follow-up form takes pasted images too', async () => {
   const { fetchImpl, calls } = withFetch(() => saved(1))
   const { T } = loadClient({ fetchImpl })
   T.set({ todoForm: FORM({ text: 'x', mode: 'followup', followUp: 'login' }) })
-  assert.equal(await T.addImages([file('a.png')]), false)
-  assert.equal(calls.length, 0)
+  assert.equal(await T.addImages([file('a.png')]), true)
+  assert.equal(calls.length, 1)
+  assert.equal(formOf(T).images.length, 1)
 })
 
 test('removeImage takes one thumbnail off the form', async () => {
@@ -131,14 +132,14 @@ test('submit without images sends no images key; a failed submit keeps the image
   assert.equal(await T.submitTodo(), true)
 })
 
-test('a follow-up never sends images, even when some were pasted before the switch', async () => {
+test('a follow-up sends the pasted images with its text', async () => {
   const { fetchImpl, calls } = withFetch((url) => (url === UP ? saved(1) : okJson({ ok: true, id: 'i1' })))
   const { T } = loadClient({ fetchImpl })
   T.set({ todoForm: FORM({ text: 'x' }) })
   await T.addImages([file('a.png')])
   T.patchForm({ mode: 'followup', followUp: 'the login session' })
   await T.submitTodo()
-  assert.equal('images' in JSON.parse(calls.at(-1)[1].body), false)
+  assert.equal(JSON.parse(calls.at(-1)[1].body).images.length, 1)
 })
 
 test('submit waits while an image is still uploading', async () => {
@@ -195,8 +196,7 @@ test('the form shows a thumbnail with a remove button per image, an uploading no
   assert.equal(typeof area.props.onPaste, 'function')
   T.set({ todoForm: FORM({ text: 'x', mode: 'followup', followUp: 'q', images: [{ id: 'a', name: 'one.png' }] }) })
   const follow = T.TodoForm()
-  assert.equal(findAll(follow, (n) => n.props?.className === 'rq-thumb').length, 0)
-  assert.doesNotMatch(textOf(follow), /paste an image/i)
+  assert.equal(findAll(follow, (n) => n.props?.className === 'rq-thumb').length, 1)
 })
 
 test('pasting an image into the box uploads it and keeps the browser from pasting a file name; pasted text is left alone', async () => {

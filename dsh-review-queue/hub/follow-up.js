@@ -134,7 +134,7 @@ export function createHubFollowUps({ store, instances, reachable, send, tell, lo
     async sessionList(caller) { return sessions(caller, false) },
 
     /** POST /v1/todo with followUp: the words and the text are checked first, then the apps are asked, then the coordinator suggests. */
-    async add(body, caller) {
+    async add(body, caller, role) {
       const text = typeof body.text === 'string' ? body.text.trim() : ''
       if (!text) return { ok: false, error: 'empty' }
       if (text.length > MAX_TODO) return { ok: false, error: 'too-long' }
@@ -151,7 +151,7 @@ export function createHubFollowUps({ store, instances, reachable, send, tell, lo
           found = await sessions(caller, false) // a number of the words (or one session id, the form's dropdown) may decide on the titles: then no app reads a log for a snippet
           if (!suggestSessionByRef(followUp, found.sessions)) found = await sessions(caller)
         } else found = await sessions(caller)
-        return await send(coordinator, { kind: 'followup-suggest', args: { text, followUp, sessions: found.sessions, ...(found.skippedApps ? { skippedApps: found.skippedApps } : {}) } })
+        return await send(coordinator, { kind: 'followup-suggest', args: { text, followUp, ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}), sessions: found.sessions, ...(found.skippedApps ? { skippedApps: found.skippedApps } : {}) } })
       } finally { adding-- }
     },
 

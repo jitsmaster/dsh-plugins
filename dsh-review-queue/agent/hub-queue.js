@@ -60,7 +60,8 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     snapshot,
     tip: () => local.tip?.(),
     readTip: (id) => local.readTip(id),
-    nextTip: () => local.nextTip(), // this app's own model and tip: never asked of the hub
+    nextTip: (opts) => local.nextTip(opts),
+    currentTip: () => local.currentTip(), // this app's own model and tip: never asked of the hub
     tipDeeper: (id) => local.tipDeeper(id), // this app's own model and tip: never asked of the hub
     // In hub mode the panel lists the hub's workspaces ("<app>/<id>", also those of other apps): the draft only needs the name, which comes from that list.
     tipTodo: (id, workspaceId) => {

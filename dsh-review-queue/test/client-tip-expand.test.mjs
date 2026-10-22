@@ -18,9 +18,10 @@ const PARAS = ['A Bloom filter hashes each key k times and sets k bits.', 'With 
 function load({ routes = {}, stored = {} } = {}) {
   let registered
   const calls = []
+  const opened = []
   const store = { ...stored }
   const sandbox = {
-    window: { __ModuleLoader__: { load: (r) => { registered = r } }, localStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = String(v) } } },
+    window: { open: (...a) => { opened.push(a); return {} }, __ModuleLoader__: { load: (r) => { registered = r } }, localStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = String(v) } } },
     console, setTimeout, clearTimeout, setInterval, clearInterval, AbortController,
     fetch: async (url, init) => {
       calls.push([url, init && init.body ? JSON.parse(init.body) : undefined])
@@ -32,7 +33,7 @@ function load({ routes = {}, stored = {} } = {}) {
   vm.runInNewContext(source, sandbox, { filename: file })
   const stubReact = { createElement: el, Fragment: Symbol('Fragment'), useState() {}, useEffect() {}, useRef() {}, useSyncExternalStore() {} }
   const mod = registered.factory(() => stubReact)
-  return { mod, T: mod.__test, calls, store }
+  return { mod, T: mod.__test, calls, store, opened }
 }
 const find = (node, pred) => (node && typeof node === 'object' ? (pred(node) ? node : (node.children ?? []).map((c) => find(c, pred)).find(Boolean)) : undefined)
 const findAll = (node, pred) => (node && typeof node === 'object' ? [...(pred(node) ? [node] : []), ...(node.children ?? []).flatMap((c) => findAll(c, pred))] : [])
@@ -281,4 +282,45 @@ test('Another tip shows a busy label and closes the workspace pick while it work
   assert.equal(T.state.busy['tip-next'], false)
   assert.ok(T.state.errors['tip-next'])
   assert.ok(withClass(card(T), 'rq-err').length >= 1)
+})
+
+test('a topic box and a Write tip button ask for a tip on that topic; Enter does the same; an empty box does nothing', async () => {
+  const { T, calls } = load({ routes: { [RQ + '/v1/tip-next']: () => [200, { ok: true, tip: { ...TIP, id: 't2' } }] } })
+  T.state.snap = snap({ tip: TIP })
+  const box = () => findAll(card(T), (n) => n.type === 'input' && n.props.className?.includes('rq-tip-topic'))[0]
+  assert.ok(box(), 'a topic input')
+  assert.equal(box().props.type, 'text')
+  assert.equal(box().props.maxLength, 120)
+  assert.equal(await buttonText(card(T), /Write tip/).props.onClick(), false, 'an empty box asks for nothing')
+  assert.equal(calls.filter(([u]) => u.includes('tip-next')).length, 0)
+  box().props.onChange({ target: { value: 'raft leader election' } })
+  assert.equal(box().props.value, 'raft leader election')
+  await buttonText(card(T), /Write tip/).props.onClick()
+  assert.deepEqual(calls.filter(([u]) => u.includes('tip-next')), [[RQ + '/v1/tip-next', { topic: 'raft leader election' }]])
+  assert.equal(T.state.tipTopic, '', 'the box is cleared once the tip is there')
+  box().props.onChange({ target: { value: 'quic' } })
+  await box().props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  assert.deepEqual(calls.filter(([u]) => u.includes('tip-next')).at(-1), [RQ + '/v1/tip-next', { topic: 'quic' }])
+})
+
+test('a failed topic request keeps the text in the box and shows the error', async () => {
+  const { T } = load({ routes: { [RQ + '/v1/tip-next']: () => [409, { ok: false, error: 'no model available' }] } })
+  T.state.snap = snap({ tip: TIP })
+  T.state.tipTopic = 'raft'
+  await buttonText(card(T), /Write tip/).props.onClick()
+  assert.equal(T.state.tipTopic, 'raft')
+  assert.ok(T.state.errors['tip-next'])
+})
+
+test('a Pop out button opens the tip window as a small popup under /review-queue/tip-window/', () => {
+  const { T, opened } = load()
+  T.state.snap = snap({ tip: TIP })
+  const b = buttonText(card(T), /Pop out/)
+  assert.ok(b)
+  assert.equal(b.props.type, 'button')
+  b.props.onClick()
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0][0], '/review-queue/tip-window/')
+  assert.match(opened[0][2], /popup/)
+  assert.match(opened[0][2], /width=\d+/)
 })

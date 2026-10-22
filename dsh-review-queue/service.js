@@ -203,17 +203,23 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
      * "Another tip": the reader is bored of this one. Stops the reading of the old tip, makes a new one now (a model call, or a built-in tip) and answers
      * { ok, tip } | { ok: false, error }. This app's own model, so never forwarded to the hub.
      */
-    async nextTip() {
+    async nextTip(opts) {
       if (typeof tips?.next !== 'function') return { ok: false, error: 'no model available' }
+      const topic = typeof opts?.topic === 'string' && opts.topic.trim() ? { topic: opts.topic } : undefined // the tipper cleans it
       try {
         if (isTipReading()) stopReading()
-        const tip = await tips.next()
+        const tip = await tips.next(topic)
         emit()
         return tip ? { ok: true, tip } : { ok: false, error: 'no model available' }
       } catch (error) {
         log?.('service: tip action failed: ' + safeReason(error, new Set())) // the code or name only
-        return { ok: false, error: 'LLM error' }
+        return { ok: false, error: error?.message === 'no model available' ? 'no model available' : 'LLM error' }
       }
+    },
+    /** The tip as it is now, whether or not the list is empty (the tip pop-out window shows it beside the work): { ok, tip } | { ok: false, error }. */
+    currentTip() {
+      const tip = tipNow()
+      return tip ? { ok: true, tip } : { ok: false, error: 'no model available' }
     },
     /** "Go deeper": a longer explanation of the current tip (tip-expand.js), kept on the tip: { ok, deeper } | { ok: false, error }. This app's own model, so never forwarded to the hub. */
     tipDeeper: (id) => tipCall(() => tipExpand.deeper(String(id)), 'deeper'),

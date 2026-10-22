@@ -607,3 +607,53 @@ test('a second next() inside the cooldown returns the current tip without a mode
   assert.notEqual(d.id, a.id)
   assert.equal(seen.calls, 2)
 })
+
+// ---- a tip on the reader's own topic -----------------------------------------------------------------------------------------------------
+
+const topicLlm = (seen = {}) => ({ listProviders: async () => [{ id: 'p1' }], listModels: async () => [{ id: 'claude-haiku-x' }],
+  prepareCall: async () => ({ config: {}, stream: async function* (req) { seen.calls = (seen.calls ?? 0) + 1; seen.req = req; seen.user = req.messages[0].content[0].text
+    yield { type: 'text-delta', text: JSON.stringify({ title: 'Bloom filters', body: 'A Bloom filter is a bit array with several hashes. It has no false negatives.', category: 'algorithms' }) } } }) })
+
+test('next({ topic }) asks for that topic, delimited as untrusted data, and marks the tip with it', async () => {
+  const seen = {}
+  const { tipper } = await make({ llm: topicLlm(seen) })
+  const tip = await tipper.next({ topic: 'bloom filters in crawlers' })
+  assert.equal(tip.source, 'model')
+  assert.equal(tip.topic, 'bloom filters in crawlers')
+  assert.match(seen.user, /<requested-topic>\s*bloom filters in crawlers\s*<\/requested-topic>/)
+  assert.match(String(seen.req.system), /requested-topic/)
+  assert.ok(!/<topics>\s*-/.test(seen.user), 'the work topics do not steer a topic the reader chose')
+})
+
+test('the requested topic is cleaned: control characters and runs of spaces go, it is cut at 120 characters; an empty one is a plain next()', async () => {
+  const seen = {}
+  const { tipper } = await make({ llm: topicLlm(seen) })
+  const tip = await tipper.next({ topic: '  a\u0000b\n\n c  ' + 'x'.repeat(200) })
+  assert.ok(tip.topic.startsWith('a b c xxx'))
+  assert.equal(tip.topic.length, 120)
+  const plain = await tipper.next({ topic: '  \u0001 ' })
+  assert.equal(plain.topic, undefined)
+})
+
+test('a topic request ignores the cooldown and may repeat a title shown before (the reader asked for it)', async () => {
+  const seen = {}
+  const { tipper } = await make({ llm: topicLlm(seen), cooldownMs: 60_000 })
+  const a = await tipper.next({ topic: 'bloom filters' })
+  const b = await tipper.next({ topic: 'bloom filters again' })
+  assert.notEqual(a.id, b.id)
+  assert.equal(b.title, a.title)
+  assert.equal(seen.calls, 2)
+})
+
+test('a topic request without a model, or with an answer that is not valid, rejects (no built-in tip is passed off as the topic)', async () => {
+  const none = await make({})
+  await assert.rejects(none.tipper.next({ topic: 'bloom filters' }), /no model available/)
+  const bad = await make({ llm: fakeLlm({ answer: 'not json' }) })
+  await assert.rejects(bad.tipper.next({ topic: 'bloom filters' }))
+  assert.equal(bad.tipper.peek(), undefined)
+})
+
+test('a topic answer that carries a URL is rejected like any tip', async () => {
+  const { tipper } = await make({ llm: fakeLlm({ answer: goodJson({ body: 'Read it at https://evil.example now. Second sentence.' }) }) })
+  await assert.rejects(tipper.next({ topic: 'x topic' }))
+})

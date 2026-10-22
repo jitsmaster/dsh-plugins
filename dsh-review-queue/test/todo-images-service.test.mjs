@@ -149,12 +149,30 @@ test('bad image ids are refused before anything is added', () => {
   } finally { done() }
 })
 
-test('images are for a new session only: a follow-up with images is refused', () => {
+test('a follow-up with bad image ids is refused before anything is added', () => {
   const { queue, store, done } = setup()
   try {
-    const a = queue.saveTodoImage(PNG).id
-    assert.deepEqual(queue.addTodo('hello', { followUp: 'the login session', images: [a] }), { ok: false, error: 'bad-images' })
+    assert.deepEqual(queue.addTodo('hello', { followUp: 'the login session', images: ['00000000-0000-4000-8000-000000000000'] }), { ok: false, error: 'unknown-image' })
     assert.equal(store.list().length, 0)
+  } finally { done() }
+})
+
+test('a follow-up carries its images as image parts after the text, then the files are removed', async () => {
+  const { queue, store, calls, files, done } = setup()
+  try {
+    const a = queue.saveTodoImage(PNG).id
+    const added = queue.addTodo('hello', { followUp: 'the login session', images: [a], sessions: [{ sessionId: 'S9', title: 'Login session', updatedAt: 1 }] })
+    assert.equal(added.ok, true)
+    await queue.todoIdle()
+    assert.deepEqual(store.get(added.id).imageIds, [a])
+    assert.deepEqual(queue.confirmTodo(added.id, { sessionId: 'S9' }), { ok: true, state: 'starting' })
+    await queue.todoIdle()
+    const content = prompt(calls).content
+    assert.equal(content[0].text, 'hello')
+    assert.equal(content.length, 2)
+    assert.equal(content[1].type, 'image')
+    assert.equal(files().length, 0)
+    assert.equal(store.get(added.id).imageIds, undefined)
   } finally { done() }
 })
 

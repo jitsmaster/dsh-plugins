@@ -149,8 +149,8 @@ function createSuggester({ llm, timeoutMs, now }) {
 }
 
 /** The follow-up part of the todo service (todo.js delegates to it): { add, confirm }. track(promise) registers background work for idle(). */
-/** @param {{ store: any, controllerOf: () => any, sessionsOf?: () => any, llm?: any, timeoutMs: number, track: Function, now?: () => number, log?: (line: string) => void }} deps */
-export function createFollowUps({ store, controllerOf, sessionsOf, llm, timeoutMs, track, now = Date.now, log = () => {} }) {
+/** @param {{ store: any, controllerOf: () => any, sessionsOf?: () => any, images?: any, llm?: any, timeoutMs: number, track: Function, now?: () => number, log?: (line: string) => void }} deps */
+export function createFollowUps({ store, controllerOf, sessionsOf, images: imageStore, llm, timeoutMs, track, now = Date.now, log = () => {} }) {
   const suggestByModel = createSuggester({ llm, timeoutMs, now })
   const stillWaiting = (id) => isAwaitingConfirm(store.get(id))
 
@@ -191,9 +191,16 @@ export function createFollowUps({ store, controllerOf, sessionsOf, llm, timeoutM
     try {
       const sc = controllerOf()
       if (typeof sc?.prompt !== 'function') throw Object.assign(new Error('the session controller is not available'), { code: NO_CONTROLLER })
-      await sc.prompt({ requestId: 'todo-' + item.id + '-' + sessionId, sessionId, mode: 'queue', content: [{ type: 'text', text: item.text }] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
+      // Pasted images follow the text as image parts; one that is gone fails the send before anything is delivered.
+      let imageParts = []
+      if (item.imageIds?.length) {
+        if (typeof imageStore?.load !== 'function') throw Object.assign(new Error('image attachments are not available'), { code: NO_CONTROLLER })
+        try { imageParts = imageStore.load(item.imageIds) } catch (error) { throw Object.assign(new Error(String(error?.message ?? error)), { code: NO_CONTROLLER }) }
+      }
+      await sc.prompt({ requestId: 'todo-' + item.id + '-' + sessionId, sessionId, mode: 'queue', content: [{ type: 'text', text: item.text }, ...imageParts] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
       if (store.get(id)?.status !== 'open') return
-      store.update(id, { state: 'started', sessionId, error: undefined, candidates: undefined }) // sent: the list of sessions is not needed any more (the suggestion and the session title stay)
+      if (item.imageIds?.length) try { imageStore?.remove(item.imageIds) } catch { /* the weekly prune gets it */ }
+      store.update(id, { state: 'started', sessionId, error: undefined, candidates: undefined, imageIds: undefined }) // sent: the list of sessions is not needed any more (the suggestion and the session title stay)
       store.resolve(id, { kind: 'followed-up', by: 'card', sessionId })
     } catch (error) {
       log('todo: follow-up failed: ' + codeOf(error))
@@ -203,7 +210,7 @@ export function createFollowUps({ store, controllerOf, sessionsOf, llm, timeoutM
 
   return {
     /** The follow-up item (state awaiting-confirm) and { ok, id, state } at once. sessions: the candidates a hub gives (every app's), else this app's own are read in the background. skippedApps: how many apps the hub could not ask (kept on the item, named in the note of an empty result). */
-    add(text, query, sessions, skippedApps) {
+    add(text, query, sessions, skippedApps, imageIds = []) {
       // The cap of the hub (hub/follow-up.js) holds for a standalone app too: this add is synchronous, so counting the waiting ones is enough.
       if (store.count((i) => i.type === 'todo' && i.kind === 'followup' && isAwaitingConfirm(i)) >= MAX_WAITING_FOLLOW_UPS) return { ok: false, error: TOO_MANY_FOLLOW_UPS }
       const skipped = skippedOf(skippedApps)
@@ -215,6 +222,7 @@ export function createFollowUps({ store, controllerOf, sessionsOf, llm, timeoutM
         type: 'todo', kind: 'followup', text, query, sparc: false, state: 'awaiting-confirm',
         ...(found ? decidedPatch(candidates, found) : { candidates: candidates.slice(0, MAX_STORED_CANDIDATES).map(trimmed), ...(none ? { suggestNote: noSessionsNote(skipped) } : { suggesting: true }) }),
         ...(skipped ? { skippedApps: skipped } : {}),
+        ...(imageIds.length ? { imageIds } : {}),
       })
       if (given && candidates.length && !found) track(suggestLater(item.id, query, text, candidates))
       else if (!given) track(loadLater(item.id, query, text))

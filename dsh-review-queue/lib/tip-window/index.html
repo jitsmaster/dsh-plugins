@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tip of the day</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="tip" aria-live="polite">
+  <p class="meta"><span id="category" class="chip"></span> <span id="source" class="sub"></span></p>
+  <h1 id="title">Loading…</h1>
+  <div id="body"></div>
+  <div id="deeper"></div>
+  <p id="error" class="err" role="alert" hidden></p>
+</main>
+<form id="topic-form" class="row" autocomplete="off">
+  <input id="topic" type="text" maxlength="120" placeholder="Ask for a tip on any topic…" aria-label="Topic for a new tip">
+  <button type="submit" id="write">Write tip</button>
+</form>
+<div class="row">
+  <button type="button" id="next">Another tip</button>
+  <button type="button" id="go-deeper">Go deeper</button>
+  <button type="button" id="read">▶ Read aloud</button>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

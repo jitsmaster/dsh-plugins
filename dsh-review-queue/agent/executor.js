@@ -40,7 +40,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     // args.snippets false: the hub is not after the snippets (yet: a ticket number of the words may decide without them).
     'model-efforts': () => queue.modelEfforts(),
     'sessions-list': async (c) => ({ ok: true, sessions: cleanSessions(await (c.args.snippets === false ? queue.followUpSessions({ snippets: false }) : queue.followUpSessions())).slice(0, SESSIONS_LIMIT) }),
-    'followup-suggest': (c) => queue.addTodo(c.args.text, { followUp: c.args.followUp, sessions: c.args.sessions, ...(c.args.skippedApps ? { skippedApps: c.args.skippedApps } : {}) }),
+    'followup-suggest': (c) => queue.addTodo(c.args.text, { followUp: c.args.followUp, sessions: c.args.sessions, ...(c.args.images !== undefined ? { images: c.args.images } : {}), ...(c.args.skippedApps ? { skippedApps: c.args.skippedApps } : {}) }),
     'followup-send'(c) {
       if (c.args.item) adapter.adopt(c.args.item)
       return queue.confirmTodo(c.itemId, { sessionId: c.args.sessionId })

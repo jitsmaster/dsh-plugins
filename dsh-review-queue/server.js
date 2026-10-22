@@ -4,6 +4,7 @@
  * server. Reads are a long-poll on the snapshot id; actions are small JSON POSTs.
  */
 import { serveMobile } from './mobile.js'
+import { serveTipWindow } from './tip-window.js'
 import { sessionsKey } from './sessions.js'
 import { MAX_IMAGE_BYTES } from './todo-images.js'
 
@@ -94,7 +95,8 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/post': (b) => queue.post(String(b.id), b.text, { key: b.key }),
     '/v1/read': (b) => queue.read(String(b.id)),
     '/v1/read-tip': (b) => queue.readTip(String(b.id)),
-    '/v1/tip-next': () => queue.nextTip(),
+    '/v1/tip-next': (b) => queue.nextTip({ topic: typeof b.topic === 'string' ? b.topic : undefined }),
+    '/v1/tip-current': () => queue.currentTip(),
     '/v1/tip-deeper': (b) => queue.tipDeeper(String(b.id)),
     '/v1/tip-todo': (b) => queue.tipTodo(String(b.id), workspaceOf(b)),
     '/v1/stop': () => queue.stop(),
@@ -147,6 +149,7 @@ export function createRouter({ queue, dev, pushRoutes }) {
     try {
       const url = new URL(req.url ?? '/', 'http://local')
       if (await serveMobile(req, res, url.pathname)) return
+      if (await serveTipWindow(req, res, url.pathname)) return
       if (url.pathname === '/v1/snapshot') {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })
         return await snapshot(req, res, url)

@@ -198,7 +198,7 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
   const running = new Set()
   const track = (promise) => { running.add(promise); promise.finally(() => running.delete(promise)); return promise }
   const suggestByModel = createSuggester({ llm, titlesOf, timeoutMs: suggestTimeoutMs })
-  const followUps = createFollowUps({ store, controllerOf, sessionsOf, llm, timeoutMs: suggestTimeoutMs, track, now, log })
+  const followUps = createFollowUps({ store, controllerOf, sessionsOf, images: imageStore, llm, timeoutMs: suggestTimeoutMs, track, now, log })
   const stillWaiting = (id) => isAwaitingConfirm(store.get(id))
   /** The ids of the pasted images of a request: { ok, ids } | { ok: false, error }. Without an image store (tests, an unusable state folder) only "no images" is fine. */
   function checkImages(images) {
@@ -278,11 +278,12 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
       if (body.length > MAX_TODO) return { ok: false, error: 'too-long' }
       // A follow-up: the text is a message for an existing session, found from the words of followUp (the hub gives the candidates of every app in sessions).
       if (followUp !== undefined && followUp !== null) {
-        if (images !== undefined && images !== null && !(Array.isArray(images) && !images.length)) return { ok: false, error: 'bad-images' } // images are for a new session only
+        const attached = checkImages(images) // pasted images go to the session with the text, like a new session's
+        if (!attached.ok) return { ok: false, error: attached.error }
         const query = typeof followUp === 'string' ? followUp.trim() : ''
         if (!query) return { ok: false, error: 'empty-query' }
         if (query.length > MAX_QUERY) return { ok: false, error: 'too-long' }
-        return followUps.add(body, query, sessions, skippedApps)
+        return followUps.add(body, query, sessions, skippedApps, attached.ids)
       }
       const pasted = checkImages(images)
       if (!pasted.ok) return { ok: false, error: pasted.error }

@@ -153,7 +153,7 @@ export function createRouting({ store, queue, instances, commands, log = () => {
     followUpSessions: (caller) => followUps.sessionList(caller),
     /** @param {{ role?: string, caller?: string }} [ctx] role 'device' is the phone, any other credential the desktop (D8). */
     async act(kind, body, { role, caller } = {}) {
-      if (kind === 'todo') return body.followUp !== undefined && body.followUp !== null ? followUps.add(body, caller) : addTodo(body, caller, role)
+      if (kind === 'todo') return body.followUp !== undefined && body.followUp !== null ? followUps.add(body, caller, role) : addTodo(body, caller, role)
       const id = String(body.id)
       if (HUB_LOCAL.includes(kind)) return hubLocal(kind, id)
       const item = store.get(id)
