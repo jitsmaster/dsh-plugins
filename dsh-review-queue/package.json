@@ -25,6 +25,7 @@
     "service.js",
     "todo.js",
     "todo-images.js",
+    "idle-ask.js",
     "server.js",
     "mobile.js",
       "tip-window.js",

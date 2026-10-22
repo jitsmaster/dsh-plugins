@@ -50,3 +50,12 @@ test('the page script only uses the routes that exist, relative to /review-queue
   assert.ok(js.includes("'../v1'"), 'relative to /review-queue/tip-window/')
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(/.test(js))
 })
+
+test('the page refreshes by itself: it polls tip-peek (not tip-current, which would start a model call), only while visible and idle, and re-renders on a new id or new longer text', () => {
+  const js = readFileSync(TIP_WINDOW_FILES['app.js'].file, 'utf8')
+  assert.ok(js.includes("'tip-peek'"))
+  assert.match(js, /setInterval\(/)
+  assert.match(js, /document\.hidden/)
+  assert.match(js, /busy/)
+  assert.match(js, /sameTip\(/)
+})

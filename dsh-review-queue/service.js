@@ -217,6 +217,10 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       }
     },
     /** The tip as it is now, whether or not the list is empty (the tip pop-out window shows it beside the work): { ok, tip } | { ok: false, error }. */
+    peekTip() {
+      try { return { ok: true, tip: tips?.peek() } } catch { return { ok: true, tip: undefined } }
+    },
+    /** The tip as it is now, whether or not the list is empty (the tip pop-out window shows it beside the work): { ok, tip } | { ok: false, error }. */
     currentTip() {
       const tip = tipNow()
       return tip ? { ok: true, tip } : { ok: false, error: 'no model available' }

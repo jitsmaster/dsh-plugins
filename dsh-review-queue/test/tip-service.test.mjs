@@ -356,3 +356,19 @@ test('POST /v1/tip-next takes a topic and POST /v1/tip-current gives the tip', a
   assert.deepEqual(seen, [{ topic: 'raft' }])
   assert.deepEqual(await post('/v1/tip-current', {}), { status: 200, json: { ok: true, tip: TIP } })
 })
+
+test('peekTip answers with the tip as it is and never asks the generator for a new one', async () => {
+  const { queue, tips } = setup()
+  assert.deepEqual(queue.peekTip(), { ok: true, tip: TIP })
+  assert.equal(tips.asked, 0)
+  assert.equal(tips.peeked, 1)
+  assert.deepEqual(setup({ tips: fakeTips(null) }).queue.peekTip(), { ok: true, tip: undefined })
+  assert.deepEqual(setup({ tips: null }).queue.peekTip(), { ok: true, tip: undefined })
+})
+
+test('POST /v1/tip-peek gives the tip without generating', async (t2) => {
+  const { queue, tips } = setup()
+  const post = await serve(t2, queue)
+  assert.deepEqual(await post('/v1/tip-peek', {}), { status: 200, json: { ok: true, tip: TIP } })
+  assert.equal(tips.asked, 0)
+})

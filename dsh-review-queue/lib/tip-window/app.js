@@ -40,6 +40,19 @@
     try { await work() } catch (error) { showError(error.message) }
     setBusy(false)
   }
+  /** The same tip (id and longer text): nothing to redraw. */
+  const sameTip = (a, b) => !!a && !!b && a.id === b.id && ((a.deeper && a.deeper.paragraphs) || []).length === ((b.deeper && b.deeper.paragraphs) || []).length
+  /** Looks at the tip as it is (tip-peek starts no model call) and redraws only when it changed, e.g. in the main panel. */
+  async function refresh() {
+    if (busy || document.hidden) return
+    try {
+      const seen = (await call('tip-peek')).tip
+      if (busy || !seen || sameTip(tip, seen)) return
+      if (!tip || tip.id !== seen.id) reading = false
+      tip = seen
+      render()
+    } catch { /* the next poll tries again */ }
+  }
   const load = () => run(async () => { tip = (await call('tip-current')).tip; render() })
 
   $('next').addEventListener('click', () => run(async () => { reading = false; tip = (await call('tip-next')).tip; render() }))
@@ -55,4 +68,6 @@
     render()
   }))
   load()
+  setInterval(refresh, 4000)
+  document.addEventListener('visibilitychange', refresh)
 })()

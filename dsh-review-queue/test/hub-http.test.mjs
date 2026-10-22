@@ -200,7 +200,7 @@ test('a new todo needs a workspace registry, which only agents have: 409 no-regi
 
 test('read, read-tip, tip-deeper, tip-todo, stop, ui and focus belong to the desktop app that owns the speakers and the screen: 403 local-only', async (t) => {
   const { port } = await startHub(t)
-  for (const action of ['read', 'read-tip', 'tip-next', 'tip-current', 'tip-deeper', 'tip-todo', 'stop', 'ui', 'focus']) {
+  for (const action of ['read', 'read-tip', 'tip-next', 'tip-current', 'tip-peek', 'tip-deeper', 'tip-todo', 'stop', 'ui', 'focus']) {
     const res = await postJson(port, P + '/v1/' + action, { id: 'x' })
     assert.deepEqual([res.status, res.json], [403, { ok: false, error: 'local-only' }], action)
   }

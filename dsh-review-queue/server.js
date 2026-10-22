@@ -97,6 +97,7 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/read-tip': (b) => queue.readTip(String(b.id)),
     '/v1/tip-next': (b) => queue.nextTip({ topic: typeof b.topic === 'string' ? b.topic : undefined }),
     '/v1/tip-current': () => queue.currentTip(),
+    '/v1/tip-peek': () => queue.peekTip(),
     '/v1/tip-deeper': (b) => queue.tipDeeper(String(b.id)),
     '/v1/tip-todo': (b) => queue.tipTodo(String(b.id), workspaceOf(b)),
     '/v1/stop': () => queue.stop(),
