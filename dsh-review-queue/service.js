@@ -296,6 +296,30 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       return { ok: true }
     },
     /**
+     * Archives the session of ANY item that has one (open or resolved; the chat view's Archive button), running work is stopped. The open done / merged-PR / archive-offer items of
+     * that session are then closed as archived (they have nothing left to offer); other open items (a question, a permission) are left to DSH, which drops them with the session.
+     */
+    async archiveSession(id) {
+      const item = store.get(id)
+      if (!item) return { ok: false, error: 'not-found' }
+      if (item.type === 'todo' || typeof item.sessionId !== 'string' || item.sessionId === '') return { ok: false, error: 'not-a-session' }
+      const registry = registryOf()
+      if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'no-registry' }
+      const closable = (i) => i.sessionId === item.sessionId && (i.type === 'completed' || i.type === 'pr-merged' || i.type === 'archive')
+      try {
+        await registry.archiveSession(item.sessionId, { stopActivity: true })
+      } catch (error) {
+        if (error?.name === 'WorkspaceUnknownSessionError') {
+          for (const open of store.snapshot().open) if (closable(open)) store.resolve(open.id, { kind: 'session-ended' })
+          log?.('service: items of session ' + item.sessionId + ' closed as session-ended: DSH does not know it (archive-session)')
+          return { ok: false, error: 'no-session' }
+        }
+        return { ok: false, error: String(error?.message ?? error) }
+      }
+      for (const open of store.snapshot().open) if (closable(open)) store.resolve(open.id, { kind: 'archived', by: 'card' })
+      return { ok: true }
+    },
+    /**
      * Resumes a paused session: prompts the session itself (the same call a reply uses) with the standard resume prompt, queued, then
      * closes the item. The session stays out of the list until its log is written again.
      */

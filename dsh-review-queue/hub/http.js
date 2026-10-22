@@ -21,7 +21,7 @@ const LOCAL_ONLY = new Set(['read', 'read-tip', 'tip-next', 'tip-current', 'tip-
  * owner app, or for "Choose for me" to the most recently desktop-active one) but never open sessions: open-session, and every action
  * not listed here, stays on the desktop (403 desktop-only). It may dismiss a paused session (paused-dismiss: it needs no action) but not resume one. thread and post are the chat view of a session (docs/mobile.md "Chat thread").
  */
-const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'paused-dismiss', 'hold', 'hold-release', 'hold-continue', 'todo', 'todo-confirm', 'todo-cancel', 'thread', 'post'])
+const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'archive-session', 'paused-dismiss', 'hold', 'hold-release', 'hold-continue', 'todo', 'todo-confirm', 'todo-cancel', 'thread', 'post'])
 
 /** Client input in a log line: only safe characters, cut short (a line cannot be forged or flooded). Not a string: '?'. */
 const safeId = (value, max) => (typeof value === 'string' ? value.replace(/[^A-Za-z0-9_-]/g, '?').slice(0, max) : '?')

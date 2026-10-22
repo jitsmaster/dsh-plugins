@@ -421,7 +421,27 @@ function Conversation({ item, defaultOpen }) {
   return html`<details class="conversation" open=${open} onToggle=${(e) => setOpen(e.currentTarget.open)}>
     <summary>Conversation${n ? ' (' + n + (t.hasMore ? '+' : '') + ')' : ''}</summary>
     ${open ? html`<${ThreadView} item=${item} />` : null}
+    <${ArchiveSessionButton} item=${item} onDone=${() => go(backHref(item))} />
   </details>`
+}
+
+/**
+ * The Archive button of the session history (under the conversation): archives the item's session (POST /v1/archive-session; running work is stopped), after a confirm sheet.
+ * Not on the archive-offer and merged-PR cards while they are open: those have their own Archive session button.
+ */
+function ArchiveSessionButton({ item, onDone }) {
+  const st = useStore()
+  const [ask, setAsk] = useState(false)
+  const busy = st.busy[item.id]
+  const open = item.status === 'open'
+  if (open && (item.type === 'archive' || item.type === 'pr-merged')) return null
+  if (!hasThread(item) || (item.resolution && (item.resolution.kind === 'archived' || item.resolution.kind === 'session-ended'))) return null // no session, or already archived
+  return html`<div class="row">
+    <button class="btn" disabled=${busy} onClick=${() => setAsk(true)}>${busy ? 'Archiving…' : 'Archive session…'}</button>
+    ${ask ? html`<${Sheet} title="Archive this session?" lines=${[item.sessionTitle || 'This session', 'Anything it is still running is stopped.']} confirmLabel="Archive"
+      onConfirm=${async () => { setAsk(false); if (await act('/v1/archive-session', { id: item.id }, item.id) && onDone) onDone() }} onCancel=${() => setAsk(false)} />` : null}
+    ${st.errors[item.id] && !open ? html`<div class="err">${st.errors[item.id]}</div>` : null}
+  </div>`
 }
 
 /** Grows the box with its text; the style caps it at about five lines (then it scrolls). */
@@ -527,9 +547,12 @@ function ResolvedList() {
   const shown = model.resolved
   return html`<div>
     <${FilterBar} model=${model} />
-    ${shown.length ? shown.map((i) => html`<a class="rowitem" key=${i.id} href=${'#/item/' + i.id}>
-      <div class="top"><${Chip} type=${i.type} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
-      <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved in the last 7 days.'}</div>`}
+    ${shown.length ? shown.map((i) => html`<div class="resolved-row" key=${i.id}>
+      <a class="rowitem" href=${'#/item/' + i.id}>
+        <div class="top"><${Chip} type=${i.type} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
+        <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>
+      <${ArchiveSessionButton} item=${i} />
+    </div>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved in the last 7 days.'}</div>`}
   </div>`
 }
 

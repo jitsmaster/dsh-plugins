@@ -29,6 +29,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     thread: (c) => queue.thread(c.itemId, c.args),
     post: (c) => queue.post(c.itemId, c.args.text, { key: c.args.key }),
     archive: (c) => queue.archive(c.itemId),
+    'archive-session': (c) => queue.archiveSession(c.itemId),
     'paused-resume': (c) => queue.resumePaused(c.itemId),
     'paused-dismiss': (c) => queue.dismissPaused(c.itemId),
     hold: (c) => queue.holdItem(c.itemId, { reason: c.args.reason }),

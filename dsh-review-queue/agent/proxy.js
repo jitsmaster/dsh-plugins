@@ -16,7 +16,7 @@ import { spokenFor } from '../speech.js'
 
 const MODES = ['starting', 'hub', 'standalone', 'degraded']
 const LOCAL_ROUTES = new Set(['/v1/read', '/v1/read-tip', '/v1/tip-next', '/v1/tip-current', '/v1/tip-peek', '/v1/tip-deeper', '/v1/tip-todo', '/v1/stop', '/v1/ui', '/v1/focus'])
-const HUB_ACTIONS = new Set(['/v1/answer', '/v1/late-answer', '/v1/approve', '/v1/deny', '/v1/reviewed', '/v1/archive', '/v1/paused-resume', '/v1/paused-dismiss', '/v1/hold', '/v1/hold-release', '/v1/hold-continue', '/v1/reply', '/v1/reopen', '/v1/approve-similar', '/v1/todo', '/v1/todo-confirm', '/v1/todo-cancel', '/v1/thread', '/v1/post'])
+const HUB_ACTIONS = new Set(['/v1/answer', '/v1/late-answer', '/v1/approve', '/v1/deny', '/v1/reviewed', '/v1/archive', '/v1/archive-session', '/v1/paused-resume', '/v1/paused-dismiss', '/v1/hold', '/v1/hold-release', '/v1/hold-continue', '/v1/reply', '/v1/reopen', '/v1/approve-similar', '/v1/todo', '/v1/todo-confirm', '/v1/todo-cancel', '/v1/thread', '/v1/post'])
 /** A hub that answers one of these is as good as gone for this request (wrong secret, newer hub, shutting down). */
 const GONE_STATUS = new Set([401, 426, 503])
 const REFUSED = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL'])

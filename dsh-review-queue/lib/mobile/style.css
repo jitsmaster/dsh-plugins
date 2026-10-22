@@ -41,6 +41,9 @@ nav a.on { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
 /* ---- list ---- */
 .rowitem { display: block; min-height: var(--tap); margin: 0 0 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); color: var(--text); text-decoration: none; }
 .rowitem:active { background: var(--panel2); }
+.resolved-row { margin: 0 0 10px; }
+.resolved-row > .rowitem { margin-bottom: 0; }
+.resolved-row > .row { margin-top: 4px; }
 .top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .top .age { margin-left: auto; color: var(--dim); font-size: 13px; }
 .title { font-weight: 600; overflow-wrap: anywhere; }

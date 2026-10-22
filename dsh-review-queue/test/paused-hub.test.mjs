@@ -78,7 +78,7 @@ test('DEVICE_ACTIONS has paused-dismiss but not paused-resume on the phone list'
   const http = readFileSync(join(root, 'hub', 'http.js'), 'utf8')
   const m = /const DEVICE_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(http)
   const actions = m[1].split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean).sort()
-  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'deny', 'hold', 'hold-continue', 'hold-release', 'late-answer', 'paused-dismiss', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
+  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'archive-session', 'deny', 'hold', 'hold-continue', 'hold-release', 'late-answer', 'paused-dismiss', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
 })
 
 test('a paused item sends no push: the phone is told nothing about it', () => {

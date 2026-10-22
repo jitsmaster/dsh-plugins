@@ -94,6 +94,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     reopen: (id) => action('reopen', { id }, () => local.reopen(id)),
     reply: (id, text) => action('reply', { id, text }, () => local.reply(id, text)),
     archive: (id) => action('archive', { id }, () => local.archive(id)),
+    archiveSession: (id) => action('archive-session', { id }, () => local.archiveSession(id)),
     thread: (id, opts = {}) => action('thread', { id, ...only(opts.before !== undefined, { before: opts.before }), ...only(opts.limit !== undefined, { limit: opts.limit }), ...only(opts.after !== undefined, { after: opts.after }) }, () => local.thread(id, opts)),
     post: (id, text, opts = {}) => action('post', { id, text, ...only(opts.key !== undefined, { key: opts.key }) }, () => local.post(id, text, opts)),
     resumePaused: (id) => action('paused-resume', { id }, () => local.resumePaused(id)),
