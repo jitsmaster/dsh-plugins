@@ -188,3 +188,57 @@ test('the session ending logs how many items it closed and for which session', a
   assert.match(line, /session-ended|ended/i)
   assert.ok(!x.logs.some((l) => l.includes('sess-99')), 'the other session is not mentioned')
 })
+
+// ---- a message queued during the turn is not a reply to the card the turn ends with ----
+// The user types while the session works; the host delivers that message right after the turn ends, seconds after the new done card (often a
+// question in its last paragraph) appeared. It was written before the card existed, so it must not close it.
+function clocked(options = {}) {
+  const handlers = {}
+  const logs = []
+  const ctx = { on: (name, fn) => { handlers[name] = fn }, get: () => undefined, logger: { warn() {}, info() {} } }
+  let clock = 1_000_000
+  let n = 0
+  const store = createStore({ now: () => clock, uuid: () => 'g' + ++n })
+  installCapture(ctx, { store, summarizer: { summarize: async () => ({ text: 'Did it.', source: 'llm' }) }, log: (line) => logs.push(line), now: () => clock, ...options })
+  const agent = (id = 'a1', reply = 'Should I push?') => ({ id, session: { id, header: { cwd: 'D:/proj' }, deriveMessages: () => [{ role: 'user', content: 'hi' }, { role: 'assistant', content: [{ type: 'text', text: reply }] }] } })
+  const preStep = (id, messages) => handlers['agent/pre-step']({ agent: agent(id), messages }, async () => ({ kind: 'enter', messages: [] }))
+  return { store, logs, agent, handlers, preStep, advance: (ms) => { clock += ms } }
+}
+const TYPED = [{ role: 'user', source: { kind: 'user', rpcId: 'ab12cd34-0000-4000-8000-000000000000' }, content: 'when you are done, check the PR' }]
+
+test('a message typed in the session 3 s after a done card appeared does not close it', async () => {
+  const x = clocked()
+  await x.handlers['agent/turn-stopping']({ agent: x.agent('a1', 'Should I push the fix?') })
+  x.advance(3000)
+  await x.preStep('a1', TYPED)
+  assert.deepEqual(x.store.snapshot().open.map((i) => i.type), ['completed'], 'the card stays in the list')
+  assert.ok(!x.logs.some((l) => /closed/.test(l)), x.logs.join(' | '))
+})
+
+test('the same message closes the done card once it is 30 s old', async () => {
+  const x = clocked()
+  await x.handlers['agent/turn-stopping']({ agent: x.agent('a1', 'Should I push the fix?') })
+  x.advance(30_000)
+  await x.preStep('a1', TYPED)
+  assert.equal(x.store.snapshot().open.length, 0)
+  assert.equal(x.store.snapshot().resolved[0].resolution.kind, 'replied')
+})
+
+test('an older card is closed while a card younger than the grace period in the same session stays', async () => {
+  const x = clocked()
+  await x.handlers['agent/turn-stopping']({ agent: x.agent('a1', 'Old question?') })
+  x.advance(120_000)
+  await x.handlers['agent/turn-stopping']({ agent: x.agent('a1', 'New question?') })
+  x.advance(2000)
+  await x.preStep('a1', TYPED)
+  const open = x.store.snapshot().open
+  assert.equal(open.length, 1)
+  assert.equal(open[0].payload.reply, 'New question?')
+})
+
+test('replyGraceMs 0 turns the grace period off', async () => {
+  const x = clocked({ replyGraceMs: 0 })
+  await x.handlers['agent/turn-stopping']({ agent: x.agent('a1', 'Should I push the fix?') })
+  await x.preStep('a1', TYPED)
+  assert.equal(x.store.snapshot().open.length, 0)
+})

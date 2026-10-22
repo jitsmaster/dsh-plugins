@@ -16,6 +16,12 @@ const MAX_NOTES = 200
 const MAX_SEEN = 500
 /** The most open done cards one session keeps: a session that never gets a human message (schedule ticks, goal rounds) would pile them up. */
 export const DEFAULT_KEEP_DONE = 20
+/**
+ * A done card younger than this is never closed by a message the user typed in its session. Such a message was queued while the turn was
+ * still running (typed before the card existed) and reaches the session right after the turn ends, so it cannot be a reply to the card; the
+ * user has not had time to read it. Without this the card (often a question in its last paragraph) vanished seconds after it appeared.
+ */
+export const DEFAULT_REPLY_GRACE_MS = 30_000
 
 /** One short line saying what a tool call will do: "shell: git push", "write: D:/a.md", or just the tool name. */
 export function summarizeTool(name, args) {
@@ -140,10 +146,11 @@ function answerWindowMs(req, seconds, defaultWindowMs) {
  * positive timeout, else defaultWindowMs (the ask_user_question row's timeout: the plugin cannot read it, so config questionWindowSeconds
  * must match it). Known limitation: the plugin cannot see the card's "Take time" or an editing hold, so it may answer while the user is
  * still working on the card.
+ * replyGraceMs: a done card younger than this (default 30 s) is not closed by a message typed in its session (a queued message is not a reply to it).
  * keepDone: how many open done cards ('completed') one session keeps (default 20, an invalid value falls back to it); past it the oldest is
  * resolved as 'trimmed' and logged.
  */
-export function installCapture(ctx, { store, summarizer, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE }) {
+export function installCapture(ctx, { store, summarizer, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS }) {
   const keep = Number.isInteger(keepDone) && keepDone > 0 ? keepDone : DEFAULT_KEEP_DONE
   const children = new Set()
   const autoTimers = new Set() // pending auto-answer timers, cleared when their question ends and on dispose
@@ -383,8 +390,9 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
         if (answered && !detachedInFlight.has(item.id)) closeOpen(item.id, { kind: 'answered', by: 'session' }, 'the user answered in the session')
       }
       if (!human) return
+      const grace = Number.isFinite(replyGraceMs) && replyGraceMs > 0 ? replyGraceMs : 0
       for (const item of open) {
-        if (item.type === 'completed' && store.resolve(item.id, { kind: 'replied', by: 'session' })) log('capture: done item "' + nameOf(item) + '" closed: the user replied in the session')
+        if (item.type === 'completed' && now() - item.createdAt >= grace && store.resolve(item.id, { kind: 'replied', by: 'session' })) log('capture: done item "' + nameOf(item) + '" closed: the user replied in the session')
       }
     })
     return next()
