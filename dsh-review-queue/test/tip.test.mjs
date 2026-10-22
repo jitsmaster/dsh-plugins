@@ -13,7 +13,7 @@ async function make(over = {}) {
   const c = clock()
   const logs = []
   let n = 0
-  const tipper = createTipper({ now: c.now, uuid: () => 'id' + ++n, log: (l) => logs.push(l), ...over })
+  const tipper = createTipper({ cooldownMs: 0, now: c.now, uuid: () => 'id' + ++n, log: (l) => logs.push(l), ...over })
   return { tipper, c, logs }
 }
 const ready = async (tipper) => { tipper.current(); await tipper.idle(); return tipper.current() }
@@ -112,13 +112,14 @@ test('the category is asked for in the prompt and is not one of the last three',
   const asked = []
   llm.prepareCall = async (cfg, signal) => {
     const p = await prepare(cfg, signal)
-    return { ...p, stream: async function* (req) { asked.push(req.messages[0].content[0].text); yield { type: 'text-delta', text: goodJson({ title: titles[i++], category: /Category to cover: (\S+)/.exec(req.messages[0].content[0].text)[1] }) } } }
+    return { ...p, stream: async function* (req) { asked.push(req.messages[0].content[0].text); yield { type: 'text-delta', text: goodJson({ title: titles[i++], category: 'ai' }) } } }
   }
   const { tipper, c } = await make({ llm })
   const got = []
   for (let k = 0; k < 4; k++) { got.push((await ready(tipper)).category); c.advance(5 * MIN) }
   assert.equal(got.length, 4)
-  got.forEach((cat, k) => { assert.ok(asked[k].includes('Category to cover: ' + cat)); assert.ok(!got.slice(Math.max(0, k - 3), k).includes(cat), 'repeat at ' + k) })
+  const askedCats = asked.map((p) => /Category to cover: (\S+)/.exec(p)[1])
+  askedCats.forEach((cat, k) => assert.ok(!askedCats.slice(Math.max(0, k - 3), k).includes(cat), 'asked category repeated at ' + k))
 })
 
 test('the last titles are passed so the model does not repeat them (at most 40, newest kept)', async () => {
@@ -496,8 +497,10 @@ test('there are at least 10 categories, and the model may use any of them', asyn
   const { CATEGORIES } = await load()
   assert.ok(CATEGORIES.length >= 10)
   assert.ok(['algorithms', 'ai', 'agents'].every((c) => CATEGORIES.includes(c)))
-  const { tipper } = await make({ llm: fakeLlm({ answer: goodJson({ category: CATEGORIES[CATEGORIES.length - 1] }) }) })
+  const seen = {}
+  const { tipper } = await make({ llm: fakeLlm({ seen, answer: goodJson({ category: CATEGORIES[CATEGORIES.length - 1] }) }) })
   assert.equal((await ready(tipper)).source, 'model')
+  for (const c of CATEGORIES) assert.ok(String(seen.req.system).includes('"' + c + '"'), 'the system prompt names ' + c)
 })
 
 test('next() replaces the tip at once, without waiting for the 5 minute slot, and resolves with the new tip', async () => {
@@ -589,4 +592,18 @@ test('the titles to avoid are delimited as untrusted data', async () => {
   await tipper.next(); await tipper.next()
   const user = seen.req.messages[0].content[0].text
   assert.match(user, /<avoid>[\s\S]*Idea number 1[\s\S]*<\/avoid>/)
+})
+
+test('a second next() inside the cooldown returns the current tip without a model call; after it, a new one', async () => {
+  const seen = {}
+  const { tipper, c } = await make({ llm: varying(seen), cooldownMs: 2000 })
+  const a = await tipper.next()
+  c.advance(500)
+  const b = await tipper.next()
+  assert.equal(b.id, a.id)
+  assert.equal(seen.calls, 1)
+  c.advance(2000)
+  const d = await tipper.next()
+  assert.notEqual(d.id, a.id)
+  assert.equal(seen.calls, 2)
 })

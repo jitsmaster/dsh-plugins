@@ -268,3 +268,17 @@ test('an "Another tip" button sits in the actions row and asks the server for a 
   await tick()
   assert.deepEqual(calls.filter(([u]) => u.includes('tip-next')), [[RQ + '/v1/tip-next', {}]])
 })
+
+test('Another tip shows a busy label and closes the workspace pick while it works, and an error is shown under the card', async () => {
+  const { T } = load({ routes: { [RQ + '/v1/tip-next']: () => [409, { ok: false, error: 'LLM error' }] } })
+  T.state.snap = snap({ tip: TIP })
+  T.state.tipUse = { open: true, workspaceId: '' }
+  const p = buttonText(card(T), /Another tip/).props.onClick()
+  assert.equal(T.state.busy['tip-next'], true)
+  assert.equal(T.state.tipUse.open, false)
+  assert.ok(buttonText(card(T), /Finding one/)?.props.disabled)
+  await p
+  assert.equal(T.state.busy['tip-next'], false)
+  assert.ok(T.state.errors['tip-next'])
+  assert.ok(withClass(card(T), 'rq-err').length >= 1)
+})

@@ -17,6 +17,8 @@ import { BUILTIN_TIPS } from './tip-builtin.js'
 export const CATEGORIES = Object.freeze(['algorithms', 'ai', 'agents', 'databases', 'systems', 'networking', 'security', 'testing', 'architecture', 'languages', 'debugging', 'git'])
 /** The next tip never comes from one of the categories of the last 3 tips. */
 export const AVOID_CATEGORIES = 3
+/** A second "Another tip" press this soon after the last one gets the tip that is there (no model call): a held-down button or a script cannot run up calls. */
+export const NEXT_COOLDOWN_MS = 2000
 /** What the tip should be about, picked at random for each one (the same concept is told differently each time, and the model is steered away from the textbook default). */
 export const ANGLES = Object.freeze([
   'a common pitfall or misconception', 'a performance or cost intuition', 'a tradeoff between two approaches', 'a small worked example with numbers',
@@ -200,10 +202,11 @@ const promptFor = (category, angle, topics, avoid) => 'Category to cover: ' + ca
  *   without one every tip is built in. onChange: called when a model call settled.
  * @returns {{ current: () => object | undefined, peek: () => object | undefined, idle: () => Promise<void>, onChange: (l: () => void) => () => void }}
  */
-export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, now = Date.now, uuid = () => randomUUID().slice(0, 8), log = () => {}, timeoutMs = TIP_TIMEOUT_MS, ttlMs = TIP_TTL_MS, holdMs = HOLD_MS, random = Math.random, maxTokens = 500, onChange } = {}) {
+export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, now = Date.now, uuid = () => randomUUID().slice(0, 8), log = () => {}, timeoutMs = TIP_TIMEOUT_MS, ttlMs = TIP_TTL_MS, holdMs = HOLD_MS, random = Math.random, cooldownMs = NEXT_COOLDOWN_MS, maxTokens = 500, onChange } = {}) {
   let tip
   let inflight
   let chosen
+  let nextAt = -Infinity // when the last next() was served
   let nextFlight // the tip that next() is making (two quick presses share it)
   const categories = [] // the categories of the last tips, oldest first
   let heldId // the tip that is kept past its slot (its longer text is open, or a todo was drafted from it) ...
@@ -316,6 +319,7 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
      * in flight is waited for first, and presses made meanwhile share the one new tip.
      */
     next() {
+      if (!nextFlight && tip && now() - nextAt < cooldownMs) return Promise.resolve(tip)
       nextFlight ??= (async () => {
         try { await inflight } catch { /* generate never rejects; nothing to do */ }
         const llm = llmNow()
@@ -325,7 +329,7 @@ export function createTipper({ llm: llmOrFn, topicsOf, builtin = BUILTIN_TIPS, n
           await inflight
         }
         return tip
-      })().catch(() => tip).finally(() => { nextFlight = undefined })
+      })().catch(() => tip).finally(() => { nextAt = now(); nextFlight = undefined })
       return nextFlight
     },
     /** The tip as it is, without asking for a new one. */
