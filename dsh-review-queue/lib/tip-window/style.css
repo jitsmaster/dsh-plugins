@@ -7,6 +7,7 @@ h1 { font-size: 1.2rem; margin: .4rem 0; }
 #body p, #deeper p { margin: .5rem 0; }
 #deeper { border-left: 3px solid #8883; padding-left: .75rem; }
 .row { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .75rem; }
+#topic-form { margin-top: 1.25rem; }
 #topic { flex: 1 1 14rem; padding: .35rem .5rem; }
 button { padding: .35rem .7rem; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }

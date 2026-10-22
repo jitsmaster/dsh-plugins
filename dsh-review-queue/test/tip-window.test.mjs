@@ -59,3 +59,11 @@ test('the page refreshes by itself: it polls tip-peek (not tip-current, which wo
   assert.match(js, /busy/)
   assert.match(js, /sameTip\(/)
 })
+
+test('the topic form has more space above it than a plain button row', () => {
+  const css = readFileSync(TIP_WINDOW_FILES['style.css'].file, 'utf8')
+  const form = /#topic-form\s*\{[^}]*margin-top:\s*([\d.]+)rem/.exec(css)
+  const row = /\.row\s*\{[^}]*margin-top:\s*([\d.]+)rem/.exec(css)
+  assert.ok(form && row)
+  assert.ok(Number(form[1]) > Number(row[1]))
+})
