@@ -725,3 +725,16 @@ test('source: the card and the form are exported to the tests, the shared helper
   for (const name of ['todoLine', 'todoSelect', 'todoTarget', 'todoCardState', 'cardTitle', 'resolutionText']) assert.equal(typeof mod.shared[name], 'function', 'shared.' + name)
   assert.match(source, /Which session/)
 })
+
+test('form, Follow up: the session dropdown is as wide as the form and shows the full name of the picked session as a tooltip; every option has its name as a tooltip too', () => {
+  const { T } = render()
+  T.set({ todoForm: FORM({ mode: 'followup', followUp: 's2' }), followSessions: LIST })
+  const sel = findAll(T.TodoForm(), (n) => n.type === 'select' && n.props['aria-label'] === 'Which session')[0]
+  assert.match(sel.props.className, /\brq-sel-wide\b/)
+  assert.equal(sel.props.title, 'Visitor mix · CTnP-Final (working)')
+  const opts = findAll(sel, (n) => n.type === 'option')
+  assert.deepEqual(opts.map((o) => o.props.title).slice(1), ['PR 6563 review · CTnP-Final', 'Visitor mix · CTnP-Final (working)', 'Loose session'])
+  T.set({ todoForm: FORM({ mode: 'followup', followUp: '' }), followSessions: LIST })
+  const none = findAll(T.TodoForm(), (n) => n.type === 'select' && n.props['aria-label'] === 'Which session')[0]
+  assert.equal(none.props.title, undefined, 'nothing picked: no tooltip')
+})

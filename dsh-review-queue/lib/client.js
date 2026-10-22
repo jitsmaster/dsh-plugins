@@ -881,6 +881,8 @@ function imageFilesOf(data) {
 		const followPlaceholder = (list, error) => (!Array.isArray(list) ? (error || "Loading sessions…") : list.length ? "Which session?" : "No session is listed yet");
 		/** A session as the dropdown shows it: its title, its workspace, and a mark when it is working right now. */
 		const followLabel = (c) => sessionLabel(c) + (c.running === true ? " (working)" : "");
+/** The full name of the picked session, as the dropdown's tooltip (the closed dropdown cuts a long name); undefined while none is picked. */
+const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.find((x) => x.sessionId === id) : undefined; return c ? followLabel(c) : undefined; };
 		/** A restored draft may name a workspace that is gone: once a non-empty list is known and lacks it, the pick falls back to "Choose for me" (an empty list may just not be loaded yet). */
 		function dropStaleWorkspace(list) {
 			const id = state.todoForm.workspaceId;
@@ -1175,7 +1177,7 @@ function imageFilesOf(data) {
 			+ ".rq-action{font-weight:700;font-size:1.15em;line-height:1.3;text-decoration:none}.rq-md{font-size:13.5px;line-height:1.5}.rq-md p{margin:0 0 8px;white-space:pre-wrap;word-break:break-word}.rq-md ul,.rq-md ol{margin:0 0 8px;padding-left:22px}.rq-md blockquote{margin:0 0 8px;padding:2px 10px;border-left:3px solid var(--rq-border);color:var(--rq-mute)}"
 			+ ".rq-md pre.rq-pre{margin:0 0 8px}.rq-code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--rq-layer2);border-radius:4px;padding:0 4px}.rq-md a{color:var(--rq-accent)}.rq-h{font-weight:600;margin:6px 0 4px}.rq-h1{font-size:16px}.rq-h2{font-size:14.5px}"
 			+ ".rq-replybox{max-height:360px;overflow:auto;background:var(--rq-base);border:1px solid var(--rq-border);border-radius:7px;padding:10px 12px;margin-top:6px}"
-			+ ".rq-todoform{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-sel{width:auto;max-width:260px;padding:6px 8px}.rq-thumbs{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.rq-tunequestions{display:flex;flex-direction:column;gap:8px;padding:8px 10px;border:1px solid var(--rq-border,rgba(127,127,127,.35));border-radius:8px}.rq-tq{display:flex;flex-direction:column;gap:3px;font-size:13px}.rq-thumb{position:relative;display:inline-flex}.rq-thumb img{height:56px;max-width:120px;object-fit:cover;border-radius:6px;border:1px solid var(--rq-border)}.rq-thumb-x{position:absolute;top:-7px;right:-7px;width:18px;height:18px;padding:0;border-radius:50%;border:1px solid var(--rq-border);background:var(--rq-layer);color:inherit;cursor:pointer;line-height:1;font-size:11px}"
+			+ ".rq-todoform{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-sel{width:auto;max-width:260px;padding:6px 8px}.rq-sel-wide{width:100%;max-width:none;box-sizing:border-box;text-overflow:ellipsis}.rq-thumbs{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.rq-tunequestions{display:flex;flex-direction:column;gap:8px;padding:8px 10px;border:1px solid var(--rq-border,rgba(127,127,127,.35));border-radius:8px}.rq-tq{display:flex;flex-direction:column;gap:3px;font-size:13px}.rq-thumb{position:relative;display:inline-flex}.rq-thumb img{height:56px;max-width:120px;object-fit:cover;border-radius:6px;border:1px solid var(--rq-border)}.rq-thumb-x{position:absolute;top:-7px;right:-7px;width:18px;height:18px;padding:0;border-radius:50%;border:1px solid var(--rq-border);background:var(--rq-layer);color:inherit;cursor:pointer;line-height:1;font-size:11px}"
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
 			+ ".rq-filter{flex:none;display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--rq-border);flex-wrap:wrap}.rq-fchip{padding:3px 12px;border-radius:9px;border:1px solid var(--rq-border)!important;font-size:12px;color:var(--rq-mute)}"
 			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
@@ -1374,8 +1376,8 @@ function imageFilesOf(data) {
 				h("div", { className: s === "failed" ? "rq-err" : "rq-sub" }, todoLine(item, pick)),
 				waiting ? h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: busy || !canConfirm(item, pick), onClick: () => confirmTodo(item, pick) }, s === "failed" ? "Retry" : "Send"),
-					h("select", { className: "rq-input rq-sel", value: sel.value, disabled: busy, "aria-label": "Change session", onChange: (e) => set({ todoPick: { ...state.todoPick, [item.id]: e.target.value } }) },
-						sel.placeholder ? h("option", { value: "" }, sel.placeholder) : null, sel.options.map((o) => h("option", { key: o.id, value: o.id }, o.title))),
+					h("select", { className: "rq-input rq-sel", value: sel.value, disabled: busy, "aria-label": "Change session", title: (sel.options.find((o) => o.id === sel.value) || {}).title, onChange: (e) => set({ todoPick: { ...state.todoPick, [item.id]: e.target.value } }) },
+						sel.placeholder ? h("option", { value: "" }, sel.placeholder) : null, sel.options.map((o) => h("option", { key: o.id, value: o.id, title: o.title }, o.title))),
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => cancelTodo(item) }, "Cancel")) : null);
 		}
 
@@ -1525,9 +1527,9 @@ function imageFilesOf(data) {
 						im.url ? h("img", { src: im.url, alt: im.name || "Pasted image", title: im.name || "" }) : h("span", { className: "rq-sub" }, im.name || "image"),
 						h("button", { className: "rq-thumb-x", type: "button", title: "Remove this image", "aria-label": "Remove image " + (im.name || ""), disabled: f.busy, onClick: () => removeImage(im.id) }, "✕"))),
 					f.uploading > 0 ? h("span", { className: "rq-sub" }, "Uploading…") : null) : null,
-				follow ? h("select", { className: "rq-input rq-sel", required: true, "aria-label": "Which session", value: f.followUp || "", disabled: f.busy, onChange: (e) => patchForm({ followUp: e.target.value, error: undefined }), onKeyDown: submitOnKey },
+				follow ? h("select", { className: "rq-input rq-sel rq-sel-wide", required: true, "aria-label": "Which session", value: f.followUp || "", title: followTitle(st.followSessions, f.followUp), disabled: f.busy, onChange: (e) => patchForm({ followUp: e.target.value, error: undefined }), onKeyDown: submitOnKey },
 					h("option", { value: "" }, followPlaceholder(st.followSessions, st.followSessionsError)),
-					(st.followSessions || []).map((c) => h("option", { key: c.sessionId, value: c.sessionId }, followLabel(c)))) : null,
+					(st.followSessions || []).map((c) => h("option", { key: c.sessionId, value: c.sessionId, title: followLabel(c) }, followLabel(c)))) : null,
 				h("div", { className: "rq-row" },
 					follow ? null : h("select", { className: "rq-input rq-sel", value: f.workspaceId, disabled: f.busy, "aria-label": "Workspace", onChange: (e) => patchForm({ workspaceId: e.target.value }) }, h("option", { value: "" }, "Choose for me"), (st.workspaces || []).map((w) => h("option", { key: w.id, value: w.id }, w.title))),
 					follow ? null : h("label", { className: "rq-sub" }, h("input", { type: "checkbox", checked: !!f.sparc, disabled: f.busy, onChange: (e) => patchForm({ sparc: e.target.checked }) }), " Use SPARC"),
@@ -1758,7 +1760,7 @@ function imageFilesOf(data) {
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
-		Object.assign(exports.__test, { loadFollowSessions, followLabel, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
+		Object.assign(exports.__test, { loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldForm, HoldButton, PausedBody, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
