@@ -17,17 +17,14 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const REGISTRY_FILE = 'pr-poll-tasks.json'
 const DEFAULT_INTERVAL_SECONDS = 600
 /** The schedule service rejects anything below one minute. */
 const MIN_INTERVAL_SECONDS = 60
 const MAX_RETIRED = 500
-const MARKER_LINE = /^\[dsh-hooks-tts pr-poll v1 session=(\S+) pr=(\d+)\]$/
 /** A registry id / session id: non-empty, no whitespace or control characters. */
 const SAFE_ID = /^[^\s\u0000-\u001f\u007f]+$/
 const PR_ID = /^\d+$/
 const REMINDER_PROMPT_JSON = 'reminder_prompt_json: '
-const TITLE = /^PR (\d+) comment poll$/
 const BATCH_HEAD = '[SCHEDULE REMINDER BATCH]'
 const SINGLE_HEAD = '[SCHEDULE REMINDER]'
 const BATCH_PAYLOAD = 'reminders_json: '
@@ -36,29 +33,61 @@ const SINGLE_PAYLOAD = 'schedule_id_json: '
 /** Plain text of message content (a string or a list of blocks). */
 export const textOf = (content) => (typeof content === 'string' ? content : (content ?? []).filter((b) => b?.type === 'text').map((b) => b.text).join(''))
 
-export const taskTitle = (prId) => `PR ${prId} comment poll`
-export const markerLine = (sessionId, prId) => `[dsh-hooks-tts pr-poll v1 session=${sessionId} pr=${prId}]`
+/**
+ * What a kind of PR task is: its registry file, title, marker line and fallback prompt. Two kinds exist: the comment poll of a "PR <id>" session
+ * and the approval wait of a "... - after PR <id>" session (the follow-up that starts by itself once the PR is approved).
+ */
+const makeSpec = ({ registryFile, tag, title, prompt }) => ({
+  registryFile,
+  title,
+  marker: (sessionId, prId) => `[dsh-hooks-tts ${tag} v1 session=${sessionId} pr=${prId}]`,
+  markerRe: new RegExp('^\\[dsh-hooks-tts ' + tag + ' v1 session=(\\S+) pr=(\\d+)\\]$'),
+  titleRe: new RegExp('^' + title('(\\d+)') + '$'),
+  prompt,
+})
 
-/** The prompt of the task: the instruction for a model that receives the tick when this plugin is off, plus the marker. */
-export function taskPrompt(sessionId, prId) {
-  return [
+export const POLL_SPEC = makeSpec({
+  registryFile: 'pr-poll-tasks.json',
+  tag: 'pr-poll',
+  title: (prId) => `PR ${prId} comment poll`,
+  prompt: (sessionId, prId, marker) => [
     `Check Azure DevOps pull request ${prId} for review comments you have not handled yet.`,
     'Use the ado-pr-implement skill only up to its user-approval gate (evaluate comments, implement fixes locally, no commit/push/reply/resolve until the user approves).',
     `If nothing is new, reply with exactly: PR-WAIT: ${prId} and do nothing else.`,
-    markerLine(sessionId, prId),
-  ].join('\n')
+    marker,
+  ].join('\n'),
+})
+
+export const APPROVAL_SPEC = makeSpec({
+  registryFile: 'pr-approval-tasks.json',
+  tag: 'pr-approval',
+  title: (prId) => `PR ${prId} approval wait`,
+  prompt: (sessionId, prId, marker) => [
+    `Check whether Azure DevOps pull request ${prId} has been approved by its reviewers (no reviewer vote below approved, at least one approval, every required reviewer approved).`,
+    'If it is approved and you have not started the remaining work yet, start it now as described in your first message: create your own worktree from the latest origin/develop and work only there.',
+    `If it is not approved yet (or you already started), reply with exactly: PR-WAIT: ${prId} and do nothing else.`,
+    marker,
+  ].join('\n'),
+})
+
+export const taskTitle = (prId) => POLL_SPEC.title(prId)
+export const markerLine = (sessionId, prId) => POLL_SPEC.marker(sessionId, prId)
+
+/** The prompt of the task: the instruction for a model that receives the tick when this plugin is off, plus the marker. */
+export function taskPrompt(sessionId, prId, spec = POLL_SPEC) {
+  return spec.prompt(sessionId, prId, spec.marker(sessionId, prId))
 }
 
 /** { sessionId, prId } of our marker when it is the last line of a prompt, else undefined. */
-function markerInPrompt(prompt) {
-  const m = MARKER_LINE.exec(String(prompt ?? '').trim().split('\n').at(-1).trim())
+function markerInPrompt(prompt, spec) {
+  const m = spec.markerRe.exec(String(prompt ?? '').trim().split('\n').at(-1).trim())
   return m ? { sessionId: m[1], prId: m[2] } : undefined
 }
 
 /** { sessionId, prId } of a task record carrying our marker as its last line and our title, else undefined. */
-function markerOf(record) {
-  const marker = markerInPrompt(record?.prompt)
-  if (!marker || TITLE.exec(String(record?.title ?? ''))?.[1] !== marker.prId) return undefined
+function markerOf(record, spec) {
+  const marker = markerInPrompt(record?.prompt, spec)
+  if (!marker || spec.titleRe.exec(String(record?.title ?? ''))?.[1] !== marker.prId) return undefined
   return marker
 }
 
@@ -101,8 +130,10 @@ function parseSingle(text) {
  * @param {(line: string) => void} [deps.trace]
  * @param {number} [deps.intervalSeconds]
  */
-export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, intervalSeconds = DEFAULT_INTERVAL_SECONDS }) {
-  const registryPath = join(stateDir, REGISTRY_FILE)
+export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, intervalSeconds = DEFAULT_INTERVAL_SECONDS, spec = POLL_SPEC }) {
+  const registryPath = join(stateDir, spec.registryFile)
+  const taskTitle = spec.title
+  const taskPrompt = (sessionId, prId) => spec.prompt(sessionId, prId, spec.marker(sessionId, prId))
   /** task id -> { sessionId, prId }: the tasks we created or adopted; survives a restart. */
   const registry = new Map()
   /** ids we deleted (or are deleting): a tick still queued for one is dropped, never answered. */
@@ -155,14 +186,14 @@ export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, inte
   }
 
   /** Whether an active task record is ours for this session: in the registry, or carrying our marker for it. */
-  const isOurs = (record, sessionId) => registry.get(record.id)?.sessionId === sessionId || markerOf(record)?.sessionId === sessionId
+  const isOurs = (record, sessionId) => registry.get(record.id)?.sessionId === sessionId || markerOf(record, spec)?.sessionId === sessionId
 
   async function ensure(sessionId, prId) {
     const service = getSchedule()
     if (!service) return undefined
     const active = await service.list({ sessionId })
     const mine = active.filter((r) => isOurs(r, sessionId))
-    const wanted = mine.find((r) => r.title === taskTitle(prId) && markerOf(r)?.prId === prId)
+    const wanted = mine.find((r) => r.title === taskTitle(prId) && markerOf(r, spec)?.prId === prId)
     // A task the user deleted in the Automation UI is forgotten and, below, recreated (no suppression).
     const live = new Set(active.map((r) => r.id))
     for (const id of idsOf(sessionId)) if (!live.has(id)) { retire(id); forget(id) }
@@ -203,7 +234,7 @@ export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, inte
    * A task id that is neither registered nor retired but whose prompt carries OUR marker for the receiving session is a
    * leftover of an earlier process (the retired set is not persisted): it is treated as retired.
    */
-  const isStale = (prompt, sessionId) => sessionId !== undefined && markerInPrompt(prompt)?.sessionId === sessionId
+  const isStale = (prompt, sessionId) => sessionId !== undefined && markerInPrompt(prompt, spec)?.sessionId === sessionId
 
   /**
    * Whether a tick entry of an unregistered task is a leftover of ours (stale) or of a deleted task (retired): either way it is
@@ -308,9 +339,11 @@ function applyPlan(touched, messages) {
  * @param {(title: unknown) => boolean} deps.isPrTitle
  * @param {() => unknown} [deps.archivedIds] - the currently archived session ids, when the registry is reachable.
  */
-export function installPrScheduleHooks(ctx, { schedule, onTick, onTitleAway, onArchived, isPrTitle, archivedIds, trace = () => {} }) {
+export function installPrScheduleHooks(ctx, { schedule, onTick, onTitleAway, onArchived, isPrTitle, archivedIds, also = [], trace = () => {} }) {
   const problem = (what) => (error) => trace(`${what}: ${error?.message ?? error}`)
-  const dropTasks = (sessionId, why) => { void schedule.deleteTasks(sessionId).catch(problem(`could not delete the poll task of ${sessionId} (${why})`)) }
+  /** Every kind of task this wiring serves: the comment poll, and (`also`) further kinds with the same shape, e.g. the approval wait. They share ONE interceptor. */
+  const kinds = [{ schedule, onTick, onTitleAway, onArchived, isPrTitle }, ...also]
+  const dropTasksOf = (kind, sessionId, why) => { void kind.schedule.deleteTasks(sessionId).catch(problem(`could not delete the PR task of ${sessionId} (${why})`)) }
 
   /**
    * Outermost agent/pre-step: our tick is removed from the claimed batch and starts the poll. A batch that holds nothing
@@ -320,16 +353,24 @@ export function installPrScheduleHooks(ctx, { schedule, onTick, onTitleAway, onA
    */
   async function intercept(payload, next) {
     const claimed = payload?.messages
-    if (!Array.isArray(claimed) || !claimed.length || !schedule.available()) return next()
-    const { touched, ticks } = planTicks(schedule, claimed, payload.agent?.id)
-    if (!touched.size) return next()
-    for (const tick of ticks) {
-      try { onTick(tick.sessionId, tick.prId, payload.agent) } catch (error) { problem('poll trigger failed')(error) }
+    if (!Array.isArray(claimed) || !claimed.length) return next()
+    const plans = []
+    let remaining = claimed
+    for (const kind of kinds) {
+      if (!kind.schedule.available()) continue
+      const { touched, ticks } = planTicks(kind.schedule, remaining, payload.agent?.id)
+      if (!touched.size) continue
+      for (const tick of ticks) {
+        try { kind.onTick(tick.sessionId, tick.prId, payload.agent) } catch (error) { problem('poll trigger failed')(error) }
+      }
+      plans.push(touched)
+      remaining = applyPlan(touched, remaining)
     }
-    if (!applyPlan(touched, claimed).length) return { kind: 'enter', messages: [] }
+    if (!plans.length) return next()
+    if (!remaining.length) return { kind: 'enter', messages: [] }
     const decision = await next()
     if (decision?.kind !== 'enter') return decision
-    return { ...decision, messages: applyPlan(touched, decision.messages ?? []) }
+    return { ...decision, messages: plans.reduce((messages, touched) => applyPlan(touched, messages), decision.messages ?? []) }
   }
 
   // ONE plugin-level listener (the agent/created `this` is a scope carrier without `on`; there is no per-agent listener).
@@ -353,7 +394,7 @@ export function installPrScheduleHooks(ctx, { schedule, onTick, onTitleAway, onA
   // Archive: our task must never block it. Pure filter, never deletes (the actual deletion follows domain/changed).
   ctx.on('workspace/session-activity', async (payload, next) => {
     const rest = await next()
-    const ours = new Set(schedule.taskIdsOf(payload?.sessionId))
+    const ours = new Set(kinds.flatMap((kind) => kind.schedule.taskIdsOf(payload?.sessionId)))
     if (!ours.size || !Array.isArray(rest)) return rest
     return rest.flatMap((entry) => {
       if (entry?.kind !== 'schedule' || !Array.isArray(entry.items)) return [entry]
@@ -377,16 +418,18 @@ export function installPrScheduleHooks(ctx, { schedule, onTick, onTitleAway, onA
     archived = now
     for (const id of now) {
       if (before.has(id)) continue
-      // Memory-only stop first, so that after an unarchive the next step registers the session again and creates one task.
-      try { onArchived?.(id) } catch (error) { problem(`could not stop the poll of ${id}`)(error) }
-      if (schedule.hasTasks(id)) dropTasks(id, 'session archived')
+      for (const kind of kinds) {
+        // Memory-only stop first, so that after an unarchive the next step registers the session again and creates one task.
+        try { kind.onArchived?.(id) } catch (error) { problem(`could not stop the poll of ${id}`)(error) }
+        if (kind.schedule.hasTasks(id)) dropTasksOf(kind, id, 'session archived')
+      }
     }
   })
 
   ctx.on('session/event', (session, event) => {
     if (event?.type !== 'session/title') return
     const id = session?.id
-    if (typeof id !== 'string' || !schedule.hasTasks(id) || isPrTitle(event.data?.title)) return
-    onTitleAway(id)
+    if (typeof id !== 'string') return
+    for (const kind of kinds) if (kind.schedule.hasTasks(id) && !kind.isPrTitle(event.data?.title)) kind.onTitleAway(id)
   })
 }

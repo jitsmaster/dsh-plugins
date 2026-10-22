@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { stripHold } from './hold.js'
-import { createPrSchedule, installPrScheduleHooks, taskTitle, textOf } from './pr-schedule.js'
+import { APPROVAL_SPEC, createPrSchedule, installPrScheduleHooks, taskTitle, textOf } from './pr-schedule.js'
 
 export const PR_TITLE = /^PR \d+/
 /**
@@ -55,6 +55,27 @@ export function mergedStartText(prId) {
     `PR ${prId} was merged.`,
     'Start the remaining work now, as described in your first message (no question needed): if you have not started yet, create your own worktree from the latest origin/develop and work only there; if you already started, rebase onto origin/develop for the tasks marked "(after merge)". Continue in SPARC mode.',
   ].join('\n')
+}
+
+/** The message that starts a follow-up ("... - after PR n") session once PR `prId` is approved (it may still need the merge). */
+export function approvedStartText(prId) {
+  return [
+    `PR ${prId} was approved by its reviewers.`,
+    'Start the remaining work now, as described in your first message (no question needed): if you have not started yet, create your own worktree from the latest origin/develop and work only there; if you already started, ignore this message and carry on.',
+    `PR ${prId} is not merged yet: a later message tells you when it is, and then you rebase onto origin/develop.`,
+  ].join('\n')
+}
+
+/**
+ * Whether the reviewers approved a pull request (Azure DevOps votes: 10 approved, 5 approved with suggestions, 0 none, -5 waiting, -10 rejected):
+ * at least one approval, nobody waiting or rejecting, and every required reviewer approved. Groups (containers) only count through their own vote.
+ */
+export function isApproved(pr) {
+  const reviewers = (Array.isArray(pr?.reviewers) ? pr.reviewers : []).filter((r) => r && !(r.isContainer && !Number(r.vote)))
+  if (!reviewers.length) return false
+  if (reviewers.some((r) => Number(r.vote) < 0)) return false
+  if (reviewers.some((r) => r.isRequired && !(Number(r.vote) >= 5))) return false
+  return reviewers.some((r) => Number(r.vote) >= 5)
 }
 
 /** The session's current title, read live on every call; undefined when unavailable. */
@@ -192,6 +213,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   }
   // The 10-minute trigger: one Automation task per PR session (absent Schedule service: the setInterval fallback below).
   const prSchedule = createPrSchedule({ getSchedule: () => ctx.get('schedule'), stateDir: dirname(settings.path), trace: (line) => trace(scrub(line)), intervalSeconds: Math.round(intervalMs / 1000) })
+  // The approval wait: ONE visible Automation task per follow-up ("... - after PR n") session that waits for its PR; its tick checks the reviewers' votes.
+  const approvalSchedule = createPrSchedule({ getSchedule: () => ctx.get('schedule'), stateDir: dirname(settings.path), trace: (line) => trace(scrub(line)), intervalSeconds: Math.round(intervalMs / 1000), spec: APPROVAL_SPEC })
   const reportTask = (what) => (error) => trace(`${what}: ${scrub(error)}`)
   /** The setInterval trigger of an entry: the fallback when there is no Schedule service or its task cannot be created. */
   function armTimer(entry) {
@@ -516,7 +539,23 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   /** sessionId -> prId. */
   const waitMap = new Map()
   try { for (const [id, pr] of Object.entries(JSON.parse(readFileSync(waitFile, 'utf8')))) waitMap.set(id, String(pr)) } catch { /* none yet */ }
-  const saveWaits = () => { try { writeFileSync(waitFile, JSON.stringify(Object.fromEntries(waitMap))) } catch (error) { trace(`could not save waits: ${scrub(error)}`) } }
+  const saveWaits = () => {
+    try { writeFileSync(waitFile, JSON.stringify(Object.fromEntries(waitMap))) } catch (error) { trace(`could not save waits: ${scrub(error)}`) }
+    // A session that no longer waits (started by the merge, the PR abandoned) has no use for its approval task.
+    if (approvalSchedule.available()) for (const sessionId of approvalSchedule.sessionIds()) if (!waitMap.has(sessionId)) dropApprovalTasks(sessionId)
+  }
+  // ---- approval of the waited-for PR: the visible Automation task "PR <id> approval wait" starts the session once the reviewers approved ----
+  const approvedFile = join(dirname(settings.path), 'pr-approved.json')
+  /** "<sessionId>:<prId>" of the sessions already told that their PR is approved: once per session and PR, also across restarts. */
+  const approvedDone = new Set()
+  try { for (const key of JSON.parse(readFileSync(approvedFile, 'utf8'))) approvedDone.add(String(key)) } catch { /* none yet */ }
+  const saveApproved = () => { try { writeFileSync(approvedFile, JSON.stringify([...approvedDone].slice(-500))) } catch (error) { trace(`could not save approved PRs: ${scrub(error)}`) } }
+  const dropApprovalTasks = (sessionId) => { void approvalSchedule.deleteTasks(sessionId).catch(reportTask(`could not delete the approval task of ${sessionId}`)) }
+  /** Fire-and-forget: the session's approval task exists while it waits for a PR that is not approved yet. */
+  function ensureApprovalTask(sessionId, prId) {
+    if (!approvalSchedule.available() || approvedDone.has(`${sessionId}:${prId}`) || finishedPrs.has(String(prId))) return
+    approvalSchedule.ensureTask(sessionId, prId).catch(reportTask(`could not create the approval task of ${sessionId}`))
+  }
   let waitTimer
   const armWaits = () => {
     if (waitTimer || !waitMap.size) return
@@ -528,6 +567,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     saveWaits()
     armWaits()
     trace(`session ${sessionId} waits for PR ${prId} to finish`)
+    ensureApprovalTask(sessionId, prId)
     void checkWaits() // the PR may already be over
   }
 
@@ -602,6 +642,31 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     try { await onPrMerged?.({ prId: id, prSessions: [...prSessions].map(named), followUps: started.map(named) }) } catch (error) { trace(`merged report for PR ${id} failed: ${scrub(error)}`) }
   }
 
+  /** The PR is approved: tell the waiting session to start, once. Recorded only after the queue accepted the message, so a failed hand-over is retried. */
+  async function startIfApproved(sessionId, prId, pr) {
+    const key = `${sessionId}:${prId}`
+    if (approvedDone.has(key) || !waitMap.has(sessionId) || !isApproved(pr)) return false
+    await queueMessage({ agent: { id: sessionId } }, approvedStartText(prId))
+    approvedDone.add(key)
+    saveApproved()
+    trace(`PR ${prId} approved: told waiting session ${sessionId} to start`)
+    dropApprovalTasks(sessionId)
+    return true
+  }
+  /** One tick of an approval task. Runs inside the wait chain, so it never overlaps a merge check. */
+  function checkApproval(sessionId, prId) {
+    const pat = env.AZURE_DEVOPS_EXT_PAT
+    if (!pat) { trace(`no AZURE_DEVOPS_EXT_PAT; skipping the approval check of PR ${prId}`); return Promise.resolve() }
+    return serial(async () => {
+      try {
+        const pr = await getJson(`${ADO_REPO}/pullRequests/${encodeURIComponent(prId)}?api-version=7.1`, pat)
+        if (pr?.status === 'completed' || pr?.status === 'abandoned') { await checkWaitsOnce(pat); return } // the merge (or abandon) hand-over takes over
+        const started = await startIfApproved(sessionId, prId, pr)
+        trace(`checked approval of PR ${prId} for ${sessionId}: ${started ? 'approved, session told to start' : 'not approved yet'}`)
+      } catch (error) { trace(`approval check of PR ${prId} failed: ${scrub(error)}`) }
+    })
+  }
+
   function checkWaits() {
     const pat = env.AZURE_DEVOPS_EXT_PAT
     if (!pat) return Promise.resolve()
@@ -613,6 +678,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       try {
         const pr = await getJson(`${ADO_REPO}/pullRequests/${encodeURIComponent(prId)}?api-version=7.1`, pat)
         const merged = pr?.status === 'completed'
+        // Without the Schedule service the wait timer is the approval trigger as well.
+        if (!merged && pr?.status === 'active' && !approvalSchedule.available()) await startIfApproved(sessionId, prId, pr)
         if (!merged && pr?.status !== 'abandoned') continue
         // The PR is over: nothing left to poll for it in any PR session.
         markFinished(prId)
@@ -662,8 +729,28 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     onArchived: (sessionId) => stop(sessionId, 'session archived'),
     isPrTitle: (title) => PR_TITLE.test(stripHold(typeof title === 'string' ? title : '') ?? ''),
     archivedIds: () => ctx.get('workspaceRegistry')?.archivedSessionIds,
+    also: [{
+      schedule: approvalSchedule,
+      onTick: (sessionId, prId, agent) => {
+        if (isArchived(sessionId)) { trace(`dropped an approval tick of ${sessionId}: session is archived`); dropApprovalTasks(sessionId); return }
+        if (agent?.id !== sessionId) { trace(`skipped an approval tick of ${sessionId} delivered to ${agent?.id ?? 'no agent'}`); return }
+        if (waitMap.get(sessionId) !== String(prId) || approvedDone.has(`${sessionId}:${prId}`) || finishedPrs.has(String(prId))) { dropApprovalTasks(sessionId); return }
+        void checkApproval(sessionId, String(prId))
+      },
+      onTitleAway: (sessionId) => dropApprovalTasks(sessionId),
+      isPrTitle: (title) => /\s-\s+after PR \d+$/i.test(stripHold(typeof title === 'string' ? title : '') ?? ''),
+    }],
     trace: (line) => trace(scrub(line)),
   })
+  // A waiting session whose task is missing (restart, deleted by hand, Schedule service late) gets it back on its first step of a turn, or at startup.
+  ctx.on('agent/pre-step', async ({ agent, step }, next) => {
+    try {
+      const prId = waitMap.get(agent?.id)
+      if (prId && (step ?? 1) <= 1 && !approvalSchedule.hasTasks(agent.id)) ensureApprovalTask(agent.id, prId)
+    } catch (error) { trace(`approval task check failed: ${scrub(error)}`) }
+    return next()
+  })
+  for (const [sessionId, prId] of waitMap) ensureApprovalTask(sessionId, prId)
   // Poll PR comments on -> off deletes every task of ours; off -> on brings them back for the live and the restored PR sessions.
   const unsubscribeSettings = settings.subscribe?.((next, previous) => {
     if (!prSchedule.available() || Boolean(next.pollPrComments) === Boolean(previous.pollPrComments)) return
