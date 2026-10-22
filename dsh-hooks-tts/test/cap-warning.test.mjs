@@ -596,6 +596,75 @@ test('ahead: the handoff is spawned like any other once the note exists', async 
   assert.equal(h.calls.create, 1)
 })
 
+// ---- several PRs from one session (all-4-1): one PR session per PR, one follow-up for all ----
+
+const multiPaths = (msg) => ({
+  prs: [...msg.text.matchAll(/PR (\d+) handoff note path: (.+)/g)].map((m) => [m[1], m[2]]),
+  rest: /Remaining-work handoff note path: (.+)/.exec(msg.text)[1],
+})
+
+async function startMultiHandover(h, ids, title = 'batch') {
+  h.state.title = title
+  for (const id of ids) await h.prCreated(h.agentRef, id)
+  assert.equal(h.steered.length, 0)
+  await h.stop(10_000)
+  assert.equal(h.steered.length, 1)
+  return multiPaths(h.steered[0])
+}
+
+test('several PRs: one note per PR plus one remaining-work note are requested once', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  const p = await startMultiHandover(h, ['42', '43', '44'])
+  assert.deepEqual(p.prs.map(([id]) => id), ['42', '43', '44'])
+  assert.equal(new Set([...p.prs.map(([, path]) => path), p.rest]).size, 4)
+  assert.match(h.steered[0].text, /PR 43 handoff note path/)
+  assert.match(h.steered[0].text, /PRs 42, 43, 44/)
+})
+
+test('several PRs: one "PR <n>" session per PR, one follow-up session for all PRs, source archived once', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  const p = await startMultiHandover(h, ['42', '43'])
+  for (const [id, path] of p.prs) writeFileSync(path, `# PR ${id}\nMode: plain\n`)
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(10_000)
+  await h.settled()
+  assert.equal(h.calls.create, 3)
+  assert.deepEqual(h.calls.rename.map((r) => r.title), ['PR 42', 'PR 43', 'batch - after PR 42, 43'])
+  const texts = prompts.map((r) => r.content[0].text)
+  assert.match(texts[0], /^PR-POLL: 42$/m)
+  assert.match(texts[1], /^PR-POLL: 43$/m)
+  assert.doesNotMatch(texts[2], /PR-POLL/)
+  assert.match(texts[2], /PRs 42, 43/)
+  assert.match(texts[2], /echo PR-WAIT: 42; echo PR-WAIT: 43/)
+  assert.equal(h.archives.length, 1)
+  await h.stop(10_000)
+  assert.equal(h.calls.create, 3)
+})
+
+test('several PRs: a PR whose note is missing still gets a session from a fallback note', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  const p = await startMultiHandover(h, ['42', '43'])
+  writeFileSync(p.prs[0][1], '# PR 42\nMode: plain\n')
+  writeFileSync(p.rest, 'NO-REMAINING-WORK\n')
+  await h.stop(10_000) // reminder for PR 43
+  assert.equal(h.steered.length, 2)
+  const prompts = []
+  h.setPromptSink(prompts)
+  await h.stop(10_000)
+  assert.equal(h.calls.create, 2)
+  assert.equal(existsSync(p.prs[1][1]), true)
+  assert.match(prompts[1].content[0].text, /^PR-POLL: 43$/m)
+})
+
+test('several PRs: a PR created after the notes were requested is not added', async () => {
+  const h = harness({ autoResumeHandoff: false })
+  await startMultiHandover(h, ['42'])
+  await h.prCreated(h.agentRef, '43')
+  assert.doesNotMatch(h.steered[0].text, /43/)
+})
+
 // ---- ticket sessions: "Fix: <ticket title> - <number>" ----
 
 test('prCreated: a ticket session gets "PR 42 - Fix: ... - 12345" for the PR session and "<title> - after PR 42" for the follow-up', async () => {

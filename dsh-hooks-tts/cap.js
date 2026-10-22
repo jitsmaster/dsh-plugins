@@ -358,7 +358,17 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
    * "<title> - after PR <id>" (asks the user before doing anything). Spawned whatever the auto-resume setting says.
    */
   async function prCreated(agent, id) {
-    if (skip(agent) || isPrSession(ctx, agent) || prHandovers.has(agent.id)) return
+    if (skip(agent) || isPrSession(ctx, agent)) return
+    if (prHandovers.has(agent.id)) {
+      // Another PR of the same run (e.g. all-4-1): it joins the hand-over until the notes are requested.
+      const job = pending.get(agent.id)
+      if (job?.prIds && job.attempts === 0 && !job.prIds.includes(id)) {
+        job.prIds.push(id)
+        job.prNotes[id] = `${job.base}-pr-${id}${job.stamp}-handoff.md`
+        trace(`PR ${id} joined the hand-over of ${agent.id}`)
+      }
+      return
+    }
     prHandovers.add(agent.id)
     groupFor(agent) // the PR starts the group; the spawned PR and follow-up sessions join it
     const base = handoffPath(dir, agent).replace(/-\d{8}-\d{4}-handoff\.md$/, '')
@@ -367,13 +377,14 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     // auto-complete, work item, notification) still runs in this session first.
     handoffs?.record(agent.id, `${base}-after-pr-${id}${stamp}-handoff.md`) // offered once written
     pending.set(agent.id, {
-      prId: id, attempts: 0, cwd: agent.session?.header?.cwd, streak: 0,
-      pr: `${base}-pr-${id}${stamp}-handoff.md`, rest: `${base}-after-pr-${id}${stamp}-handoff.md`,
+      prId: id, prIds: [id], base, stamp, attempts: 0, cwd: agent.session?.header?.cwd, streak: 0,
+      pr: `${base}-pr-${id}${stamp}-handoff.md`, prNotes: { [id]: `${base}-pr-${id}${stamp}-handoff.md` },
+      rest: `${base}-after-pr-${id}${stamp}-handoff.md`,
     })
     trace(`PR ${id} created in ${agent.id}: hand-over notes are requested at the end of the turn`)
   }
 
-  const prInstruction = (job) => [
+  const prInstruction = (job) => job.prIds.length > 1 ? multiPrInstruction(job) : [
     `PR ${job.prId} WAS JUST CREATED. Two new sessions take over from this one, so write TWO handoff notes now, then stop. Do not do any other work.`,
     `PR handoff note path: ${job.pr}`,
     `Remaining-work handoff note path: ${job.rest}`,
@@ -381,6 +392,19 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     `1) PR handoff note: cover ONLY PR ${job.prId} and nothing about remaining work. Title "# PR ${job.prId} Handoff", then the line "Mode: plain". Include the PR URL, source and target branch, and "Worktree: <absolute path> · branch <branch>" (the directory your commands and edits actually run in; verify with \`git rev-parse --show-toplevel\`, \`git branch --show-current\` and \`git worktree list\`). Its only job is to poll the PR's review comments (the plugin does the polling) and run the ado-pr-implement skill on new comments up to its approval gate.`,
     `2) Remaining-work handoff note: ONLY the tasks still remaining after this PR. Use the sparc handoff sections ("# <short title> Handoff", "## Previous Work (summary only)", "## Key Decisions", "## Current State", "## What's Left" with numbered concrete steps, "## Open Questions"). Directly under the title put "Mode: sparc" if this session runs under the modes:sparc / sparcr skill, otherwise "Mode: plain". Mark every task that needs code from PR ${job.prId} with "(after merge)". The resuming session creates its own worktree from origin/develop, so the "Worktree:" line must read: "Worktree: none (the resuming session creates its own from origin/develop)". If nothing remains, write the file with the single line NO-REMAINING-WORK.`,
     'Be specific (file paths, commands, ids). Create the folder if it is missing. When both files are written, reply with the two paths and a two-line summary, then stop.',
+  ].join('\n')
+
+  const prList = (ids) => ids.length > 1 ? `PRs ${ids.join(', ')}` : `PR ${ids[0]}`
+
+  /** Several PRs from one run: one PR note per PR, one remaining-work note for all of them. */
+  const multiPrInstruction = (job) => [
+    `${prList(job.prIds)} WERE JUST CREATED. ${job.prIds.length} PR sessions and one follow-up session take over from this one, so write ${job.prIds.length + 1} handoff notes now, then stop. Do not do any other work.`,
+    ...job.prIds.map((id) => `PR ${id} handoff note path: ${job.prNotes[id]}`),
+    `Remaining-work handoff note path: ${job.rest}`,
+    '',
+    `1) One PR handoff note per PR: each covers ONLY its own PR (cover ONLY PR <n> and nothing about the other PRs or remaining work). Title "# PR <n> Handoff", then the line "Mode: plain". Include the PR URL, source and target branch, and "Worktree: <absolute path> · branch <branch>" (the directory that PR's branch is checked out in; verify with \`git worktree list\`). Its only job is to poll that PR's review comments (the plugin does the polling) and run the ado-pr-implement skill on new comments up to its approval gate.`,
+    `2) ONE remaining-work handoff note for all of ${prList(job.prIds)}: ONLY the tasks still remaining after these PRs. Use the sparc handoff sections ("# <short title> Handoff", "## Previous Work (summary only)", "## Key Decisions", "## Current State", "## What's Left" with numbered concrete steps, "## Open Questions"). Directly under the title put "Mode: sparc" if this session runs under the modes:sparc / sparcr skill, otherwise "Mode: plain". Mark every task that needs code from one of these PRs with "(after merge of PR <n>)". The resuming session creates its own worktree from origin/develop, so the "Worktree:" line must read: "Worktree: none (the resuming session creates its own from origin/develop)". If nothing remains, write the file with the single line NO-REMAINING-WORK.`,
+    'Be specific (file paths, commands, ids). Create the folder if it is missing. When all files are written, reply with the paths and a two-line summary, then stop.',
   ].join('\n')
 
   /** PR hand-over state machine: ask once, remind once, then spawn what exists (the PR session is the priority). */
@@ -391,37 +415,44 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       trace(`requested hand-over notes for PR ${job.prId} from ${agent.id}`)
       return
     }
-    const missing = [['PR handoff note', job.pr], ['Remaining-work handoff note', job.rest]].filter(([, p]) => !existsSync(p))
+    const notes = job.prIds.map((id) => [job.prIds.length > 1 ? `PR ${id} handoff note` : 'PR handoff note', job.prNotes[id]])
+    const missing = [...notes, ['Remaining-work handoff note', job.rest]].filter(([, p]) => !existsSync(p))
     if (missing.length && job.attempts === 1) {
       job.attempts = 2
-      agent.steer(makeMessage(`REMINDER: these PR ${job.prId} hand-over notes are still missing, write them now and then stop:\n${missing.map(([label, p]) => `${label} path: ${p}`).join('\n')}`))
+      agent.steer(makeMessage(`REMINDER: these ${prList(job.prIds)} hand-over notes are still missing, write them now and then stop:\n${missing.map(([label, p]) => `${label} path: ${p}`).join('\n')}`))
       trace(`reminded ${agent.id} about ${missing.length} missing hand-over note(s)`)
       return
     }
     pending.delete(agent.id)
-    if (!existsSync(job.pr)) {
+    for (const id of job.prIds) {
+      const note = job.prNotes[id]
+      if (existsSync(note)) continue
       try {
-        writeFileSync(job.pr, `# PR ${job.prId} Handoff\nMode: plain\n\nPR ${job.prId} was created. Worktree: ${job.cwd ?? 'unknown'} · branch (check \`git branch --show-current\`)\n\nOnly job: poll the PR's review comments and run ado-pr-implement on new ones up to its approval gate.\n`)
-        handoffs?.record(agent.id, job.pr)
-        trace(`PR note missing: wrote fallback ${job.pr}`)
+        writeFileSync(note, `# PR ${id} Handoff\nMode: plain\n\nPR ${id} was created. Worktree: ${job.cwd ?? 'unknown'} · branch (check \`git branch --show-current\`)\n\nOnly job: poll the PR's review comments and run ado-pr-implement on new ones up to its approval gate.\n`)
+        handoffs?.record(agent.id, note)
+        trace(`PR note missing: wrote fallback ${note}`)
       } catch (error) { trace(`fallback PR note failed: ${error}`); return }
     }
     const rest = existsSync(job.rest) ? readFileSync(job.rest, 'utf8') : undefined
     const extra = rest === undefined
       ? '\n\nNote: the previous session\'s remaining-work handoff was not written (or not found). Tell the user; the remaining work may need to be handed over manually.'
       : ''
-    let ok = Boolean(await spawnSession(agent, { ...job, path: job.pr, kind: 'pr', extra }))
+    let ok = true
+    for (const [index, id] of job.prIds.entries()) {
+      // every PR gets its own session; the first carries the note about a missing remaining-work handoff
+      ok = Boolean(await spawnSession(agent, { ...job, prId: id, path: job.prNotes[id], kind: 'pr', extra: index === 0 ? extra : '' })) && ok
+    }
     if (ok && rest !== undefined && !NO_REMAINING.test(rest)) ok = Boolean(await spawnSession(agent, { ...job, path: job.rest, kind: 'after' }))
     if (ok) archiveSource(agent) // once, when every session that was asked for exists
   }
 
   /** The first message of the remaining-work session: it asks before doing anything. */
   const afterPrPrompt = (job, resume) => [
-    `PR ${job.prId} was just created by the session this one continues. Do NOT start any work yet and do not read or edit anything.`,
-    `Use the \`ask_user_question\` tool now to ask the user: "PR ${job.prId} was created. Start the remaining work now, or wait for PR approval (merge)?" with exactly two options: "Start now" / "Wait for PR approval".`,
+    `${prList(job.prIds)} ${job.prIds.length > 1 ? 'were' : 'was'} just created by the session this one continues. Do NOT start any work yet and do not read or edit anything.`,
+    `Use the \`ask_user_question\` tool now to ask the user: "${prList(job.prIds)} ${job.prIds.length > 1 ? 'were' : 'was'} created. Start the remaining work now, or wait for PR approval (merge)?" with exactly two options: "Start now" / "Wait for PR approval".`,
     '- If the user answers "Start now": start as described below.',
-    `- If the user answers "Wait for PR approval": run this shell command and nothing else: \`echo PR-WAIT: ${job.prId}\`, then stop and do nothing. A later message will tell you when PR ${job.prId} is merged or abandoned; then ask the user again and start on Yes.`,
-    `When you start: FIRST create your own git worktree from the latest origin/develop in the repository the handoff names (\`git fetch origin develop\`, \`git worktree add <new path> -b <new branch> origin/develop\`, then \`pnpm install\` in it) and work ONLY there; ignore any other Worktree line. Tasks marked "(after merge)" need PR ${job.prId}'s code: do the others first, and for those wait until PR ${job.prId} is merged, then rebase onto origin/develop. Your work lands in a NEW follow-up PR from your own branch.`,
+    `- If the user answers "Wait for PR approval": run this shell command and nothing else: \`${job.prIds.map((id) => `echo PR-WAIT: ${id}`).join('; ')}\`, then stop and do nothing. A later message will tell you when ${job.prIds.length > 1 ? 'each of these PRs is' : `PR ${job.prId} is`} merged or abandoned; then ask the user again and start on Yes.`,
+    `When you start: FIRST create your own git worktree from the latest origin/develop in the repository the handoff names (\`git fetch origin develop\`, \`git worktree add <new path> -b <new branch> origin/develop\`, then \`pnpm install\` in it) and work ONLY there; ignore any other Worktree line. Tasks marked "(after merge)" need ${job.prIds.length > 1 ? 'the code of the PR they name' : `PR ${job.prId}'s code`}: do the others first, and for those wait until ${job.prIds.length > 1 ? 'that PR is' : `PR ${job.prId} is`} merged, then rebase onto origin/develop. Your work lands in a NEW follow-up PR from your own branch.`,
     '',
     resume,
   ].join('\n')
@@ -460,7 +491,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         const titles = ctx.get('sessionTitle')
         const old = stripHold(titles?.get(agent.session)?.title)
         if (old) {
-          const next = job.kind === 'pr' ? prTitleFor(old, job.prId) : job.kind === 'after' ? afterPrTitle(old, job.prId) : continuationTitle(old)
+          const next = job.kind === 'pr' ? prTitleFor(old, job.prId) : job.kind === 'after' ? afterPrTitle(old, job.prIds ?? job.prId) : continuationTitle(old)
           await sc.rename({ sessionId: created.sessionId, title: next })
           trace(`renamed "${old}" -> "${next}"`)
         } else trace('source has no title; not renaming')
@@ -489,7 +520,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         content: [{ type: 'text', text: text.value.trimEnd() + '\n\n' + previousSessionLine(agent, old) }],
       }, AbortSignal.timeout(30_000)) // the Remote method requires a caller signal
       // The remaining-work session starts by itself once its PR is merged, whatever the user answered to its question.
-      if (job.kind === 'after') { try { waitForPr?.(created.sessionId, job.prId) } catch (error) { trace(`could not register the PR wait: ${error?.message ?? error}`) } }
+      if (job.kind === 'after') { try { for (const id of job.prIds ?? [job.prId]) waitForPr?.(created.sessionId, id) } catch (error) { trace(`could not register the PR wait: ${error?.message ?? error}`) } }
       resumed.set(created.sessionId, { startedAt: Date.now(), streak: job.streak ?? 0, note: job.path })
       recordSpawn(agent.id, created.sessionId)
       ctx.logger.info(`hooks-tts: spawned ${created.sessionId} from handoff ${job.path}`)

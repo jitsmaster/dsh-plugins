@@ -47,7 +47,7 @@ const POLL_MARKER = /^PR-POLL:[ \t]*(\d+)(?:[ \t]+seen=([\w:,]*))?(?:[ \t]+resum
 /** Printed by the agent (`echo PR-RESUME-APPROVED: <id>`) after the user answered Yes to the merged-PR suggestion. */
 const RESUME_MARKER = /^PR-RESUME-APPROVED:[ \t]*(\d+)[ \t\r]*$/m
 /** Printed by the remaining-work session (`echo PR-WAIT: <id>`) after the user chose to wait for the PR. */
-const RESUME_WAIT = /^PR-WAIT:[ \t]*(\d+)[ \t\r]*$/m
+const RESUME_WAIT = /^PR-WAIT:[ \t]*(\d+)[ \t\r]*$/gm
 
 /** The message that starts a follow-up ("... - after PR n") session once PR `prId` is merged. */
 export function mergedStartText(prId) {
@@ -492,9 +492,9 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         }
       }
       // `echo PR-WAIT: <id>` from a session titled "... - after PR <id>": wait for that PR to be merged/abandoned.
-      const waitId = RESUME_WAIT.exec(textOf(result?.content))?.[1]
-      const afterId = /- after PR (\d+)$/.exec(titleOf(ctx, agent) ?? '')?.[1]
-      if (waitId && afterId === waitId) addWait(agent.id, waitId)
+      const waitIds = [...textOf(result?.content).matchAll(RESUME_WAIT)].map((m) => m[1])
+      const afterIds = /- after PR (\d+(?:,\s*\d+)*)$/.exec(titleOf(ctx, agent) ?? '')?.[1]?.split(/,\s*/) ?? []
+      for (const waitId of waitIds) if (afterIds.includes(waitId)) addWait(agent.id, waitId)
     }
     return next()
   })
@@ -617,7 +617,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     const followUps = new Set([...waitMap].filter(([, p]) => p === id).map(([s]) => s))
     for (const [sid, title] of titles) {
       if (new RegExp(`^PR ${id}(?!\\d)`).test(title)) prSessions.add(sid)
-      else if (new RegExp(`\\s-\\s+after PR ${id}$`, 'i').test(title)) followUps.add(sid)
+      else if (new RegExp(`\\s-\\s+after PR (?:\\d+,\\s*)*${id}(?:,\\s*\\d+)*$`, 'i').test(title)) followUps.add(sid)
     }
     for (const [eid, e] of [...entries]) if (e.prId === id) prSessions.add(eid)
     const started = []
@@ -738,7 +738,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         void checkApproval(sessionId, String(prId))
       },
       onTitleAway: (sessionId) => dropApprovalTasks(sessionId),
-      isPrTitle: (title) => /\s-\s+after PR \d+$/i.test(stripHold(typeof title === 'string' ? title : '') ?? ''),
+      isPrTitle: (title) => /\s-\s+after PR \d+(?:,\s*\d+)*$/i.test(stripHold(typeof title === 'string' ? title : '') ?? ''),
     }],
     trace: (line) => trace(scrub(line)),
   })

@@ -219,6 +219,12 @@ test('applyMove answers 500 when the change could not be saved', () => {
   assert.equal(res.status, 500)
 })
 
+test('afterPrTitle: several PRs are listed in one suffix and replaced as a whole', () => {
+  assert.equal(afterPrTitle('batch', [6587, 6588]), 'batch - after PR 6587, 6588')
+  assert.equal(afterPrTitle('batch - after PR 6587, 6588', 6590), 'batch - after PR 6590')
+  assert.equal(afterPrTitle('batch', ['42']), 'batch - after PR 42')
+})
+
 test('afterPrTitle: a follow-up title refers to exactly one PR', () => {
   assert.equal(afterPrTitle('Sonar fixes', 6507), 'Sonar fixes - after PR 6507')
   assert.equal(afterPrTitle('Sonar fixes - after PR 6503', 6507), 'Sonar fixes - after PR 6507')

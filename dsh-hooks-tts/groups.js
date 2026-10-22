@@ -57,14 +57,15 @@ export function isMeaningfulTitle(title) {
 
 /** Strip numbering/after-PR suffixes the plugin itself appends to continuation titles: "x - after PR 5" -> "x". */
 function baseTitle(title) {
-  return String(title).replace(/(?:\s+-\s+after PR \d+)+$/i, '').replace(NUMBER_SUFFIX, '').trim()
+  return String(title).replace(/(?:\s+-\s+after PR \d+(?:,\s*\d+)*)+$/i, '').replace(NUMBER_SUFFIX, '').trim()
 }
 
 /** Title of the "after PR" follow-up session: the base title plus exactly one suffix, for the PR just created. */
-export function afterPrTitle(title, prId) {
+export function afterPrTitle(title, prIds) {
+  const AFTER = /\s+-\s+after PR \d+(?:,\s*\d+)*$/i
   let base = String(title).trim()
-  while (/\s+-\s+after PR \d+$/i.test(base)) base = base.replace(/\s+-\s+after PR \d+$/i, '').trim()
-  return `${base} - after PR ${prId}`
+  while (AFTER.test(base)) base = base.replace(AFTER, '').trim()
+  return `${base} - after PR ${[prIds].flat().join(', ')}`
 }
 
 /** First real user request of the session, as a one-line summary; undefined when there is none. */
