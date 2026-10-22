@@ -75,6 +75,10 @@ test('an Archive answer to the asked question archives the session, a Continue a
   assert.deepEqual(await r.asker.archiveAnswered(), [])
 })
 
+test('the prompt tells a model that wraps the question in run_code to raise that call\'s own timeout and to re-ask once when it still times out', () => {
+  for (const needle of ['run_code', 'timeoutMs 600000', 'ask it once more']) assert.ok(ASK_PROMPT.includes(needle), needle)
+})
+
 test('the prompt asks with ask_user_question, recommends only for unfinished work, and waits forever otherwise', () => {
   for (const needle of ['ask_user_question', 'Continue', 'Archive', '(Recommended)', 'timeout 600', 'no timeout']) assert.ok(ASK_PROMPT.includes(needle), needle)
 })

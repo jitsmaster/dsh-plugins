@@ -26,6 +26,7 @@ const NOT_FOUND = 'session/not-found'
 export const ASK_PROMPT = 'This session has been idle for more than an hour. Call ask_user_question once and ask me whether to continue this session or archive it, with the options '
   + '"Continue" and "Archive". Put "Continue" first and add "(Recommended)" to its label ONLY if your work here is unfinished and needs nobody\'s answer; in that case pass timeout 600. '
   + 'If the work is finished or you are waiting for me, recommend nothing and pass no timeout, so the question waits for me. '
+  + 'If you call it from inside run_code, give that run_code call timeoutMs 600000, because its default deadline of 2 minutes would kill the question; if the run still times out, ask it once more. '
   + 'If I pick Continue, check git status and the last tool calls and carry on with the task; start nothing new. If I pick Archive, reply with one line that the session is being archived and stop.'
 
 /** Tracks the time the machine slept: beat() is called often; a long gap between two beats is a sleep. */
