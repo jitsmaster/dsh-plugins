@@ -237,6 +237,13 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     const callId = guard(() => claimAsk(agent.id, req.wait?.callId)) ?? req.wait?.callId
     const startedAt = now()
     const seconds = callId === undefined ? undefined : timeouts.get(callId)
+    // A session asks one live question at a time: an older open question of this session (its request ended without an answer, detached) can never
+    // reach the assistant now, so it leaves the list and the new question is the one to answer.
+    guard(() => {
+      for (const old of openOf(agent.id)) {
+        if (old.type === 'question' && old.detached && old.key !== callId && !detachedInFlight.has(old.id)) store.resolve(old.id, { kind: 'expired', assumed: (old.payload?.questions ?? []).map(recommendedOf).filter(Boolean) })
+      }
+    })
     let item
     try {
       item = store.add({

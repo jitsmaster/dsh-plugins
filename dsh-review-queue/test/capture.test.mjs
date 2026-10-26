@@ -782,3 +782,19 @@ test('the session ending closes a detached question as session-ended', async () 
   x.fire('agent/disposed', { agent: x.agent() })
   assert.equal(x.store.get(x.id).resolution.kind, 'session-ended')
 })
+
+test('a new question in a session removes that session\'s older detached question from the open list', async () => {
+  const { store, fire, agent } = setup()
+  const ac = new AbortController()
+  const p = fire('user-questions/request', { agent: agent(), questions: QUESTIONS, wait: { callId: 'old' }, signal: ac.signal }, never)
+  ac.abort()
+  await assert.rejects(p)
+  const other = fire('user-questions/request', { agent: agent('a2'), questions: QUESTIONS, wait: { callId: 'x' } }, never)
+  assert.equal(store.snapshot().open.filter((i) => i.sessionId === 'a1' && i.detached).length, 1)
+  fire('user-questions/request', { agent: agent(), questions: QUESTIONS, wait: { callId: 'new' } }, never)
+  const open = store.snapshot().open
+  assert.deepEqual(open.filter((i) => i.sessionId === 'a1').map((i) => i.key), ['new'])
+  assert.equal(open.filter((i) => i.sessionId === 'a2').length, 1)
+  assert.equal(store.snapshot().resolved.find((i) => i.key === 'old').resolution.kind, 'expired')
+  void other
+})
