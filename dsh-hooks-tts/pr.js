@@ -365,7 +365,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       entry.restored = false
       void quiet
       if (pr?.status === 'completed') { finish(id, 'PR completed'); void serial(() => handleMerged(entry.prId, [id])); void checkWaits(); return } // start the waiting "... - after PR n" session now and offer to archive the PR session
-      if (pr?.status === 'abandoned') { finish(id, 'PR abandoned'); void checkWaits(); return }
+      if (pr?.status === 'abandoned') { finish(id, 'PR abandoned'); void serial(() => handleAbandoned(entry.prId, [id])); void checkWaits(); return }
       const data = await getJson(`${base}/threads?api-version=7.1`, pat)
       const found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
       for (const t of found.filter((f) => !f.notify)) entry.seen.set(t.threadId, t.lastCommentId)
@@ -603,6 +603,41 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   }
 
   /**
+   * A PR that is over (merged or abandoned) has no use for its "PR <n>" sessions any more: they are archived, which also drops their poll tasks.
+   * The sessions are the known ones plus every non-archived session titled "PR <n>". Returns { archived, failed } (session ids); a host without
+   * an archiveSession (or one that throws) leaves the session in `failed`, so the caller can fall back to an archive offer in the task list.
+   */
+  async function archivePrSessions(prId, knownIds = []) {
+    const id = String(prId)
+    const ids = new Set(knownIds)
+    for (const [sid, title] of await sessionTitles()) if (new RegExp(`^PR ${id}(?!\\d)`).test(title)) ids.add(sid)
+    for (const [eid, e] of [...entries]) if (e.prId === id) ids.add(eid)
+    const archived = []
+    const failed = []
+    for (const sid of ids) {
+      try {
+        const registry = ctx.get('workspaceRegistry')
+        if (typeof registry?.archiveSession !== 'function') throw new Error('no archiveSession')
+        await registry.archiveSession(sid, { stopActivity: true })
+        archived.push(sid)
+        trace(`PR ${id} is over: archived session ${sid}`)
+      } catch (error) {
+        failed.push(sid)
+        trace(`could not archive session ${sid} of PR ${id}: ${scrub(error)}`)
+      }
+    }
+    return { archived, failed, titles: ids }
+  }
+  /** Abandoned PR: its sessions are archived (no merge report: there is no follow-up to start from here, the waiting sessions are re-asked separately). */
+  const abandonedDone = new Set()
+  async function handleAbandoned(prId, knownIds = []) {
+    const id = String(prId)
+    if (abandonedDone.has(id)) return
+    abandonedDone.add(id)
+    await archivePrSessions(id, knownIds)
+  }
+
+  /**
    * PR `prId` is merged. 1) The follow-up ("... - after PR n") session is located (its recorded wait, plus any session
    * titled that way whose wait was lost) and told to start; it says what to do if it already started. 2) The PR session
    * ("PR n") is reported through `onPrMerged` so the task list can offer to archive it. A follow-up that could not be
@@ -639,7 +674,10 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     mergedDone.add(id)
     saveMerged()
     const named = (sid) => ({ id: sid, title: titles.get(sid) ?? '' })
-    try { await onPrMerged?.({ prId: id, prSessions: [...prSessions].map(named), followUps: started.map(named) }) } catch (error) { trace(`merged report for PR ${id} failed: ${scrub(error)}`) }
+    // The PR sessions are archived at once; only a session that could not be archived is reported, so the task list offers its archive button.
+    const { archived: gone, failed: notArchived } = await archivePrSessions(id, [...prSessions])
+    if (gone.length && !notArchived.length) return
+    try { await onPrMerged?.({ prId: id, prSessions: notArchived.map(named), followUps: started.map(named) }) } catch (error) { trace(`merged report for PR ${id} failed: ${scrub(error)}`) }
   }
 
   /** The PR is approved: tell the waiting session to start, once. Recorded only after the queue accepted the message, so a failed hand-over is retried. */
@@ -686,6 +724,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         const prSessionIds = []
         for (const [eid, e] of [...entries]) if (e.prId === String(prId)) { prSessionIds.push(eid); stop(eid, merged ? 'PR merged (wait check)' : 'PR abandoned (wait check)'); dropTasks(eid) }
         if (merged) { await handleMerged(prId, prSessionIds); continue }
+        await handleAbandoned(prId, prSessionIds)
         const text = [
           `PR ${prId} was abandoned.`,
           `Use the \`ask_user_question\` tool now to ask the user: "PR ${prId} was abandoned. Continue anyway?" with exactly two options: Yes / No.`,

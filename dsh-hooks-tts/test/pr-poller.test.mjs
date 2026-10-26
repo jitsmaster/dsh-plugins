@@ -28,7 +28,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
     get: (name) => {
       if (name === 'sessionTitle') return { get: () => (state.title === undefined ? undefined : { title: state.title }) }
       if (name === 'sessionController') return controller
-      if (name === 'workspaceRegistry' && state.known) return { list: () => [{ sessionIds: Object.keys(state.known) }] }
+      if (name === 'workspaceRegistry' && state.known) return { list: () => [{ sessionIds: Object.keys(state.known) }], ...(state.archives ? { archiveSession: async (id, opts) => { if (state.archiveFails?.has(id)) throw new Error('archive broke'); state.archives.push([id, opts]) } } : {}) }
       if (name === 'sessionQuery' && state.known) {
         return { readTitleSnapshots: async (ids) => ids.map((id) => (state.known[id] === 'REJECT'
           ? { status: 'rejected', reason: new Error('x') }
@@ -851,6 +851,48 @@ test('merged PR: seen by the wait check alone, the PR session is found by its ti
   await h.poller.checkWaits()
   assert.equal(h.calls.prompt.length, 1)
   assert.deepEqual(h.merged[0].prSessions.map((s) => s.id), ['p1'])
+})
+
+test('merged PR: its PR sessions are archived at once and no archive offer is left in the task list', async () => {
+  const h = harness()
+  h.state.known = { p1: 'PR 5', f1: 'feature - after PR 5', unrelated: 'PR 55' }
+  h.state.archives = []
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'completed'
+  await h.poller.poll('a1')
+  await new Promise((r) => setTimeout(r, 30))
+  assert.deepEqual(h.state.archives.map(([id]) => id).sort(), ['a1', 'p1'])
+  assert.ok(h.state.archives.every(([, opts]) => opts?.stopActivity === true))
+  assert.deepEqual(h.calls.prompt.map((p) => p.sessionId), ['f1'], 'the follow-up session is started, not archived')
+  assert.equal(h.merged.length, 0)
+})
+
+test('merged PR: a session that cannot be archived is reported so the task list offers the archive button', async () => {
+  const h = harness()
+  h.state.known = { p1: 'PR 5' }
+  h.state.archives = []
+  h.state.archiveFails = new Set(['p1'])
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'completed'
+  await h.poller.poll('a1')
+  await new Promise((r) => setTimeout(r, 30))
+  assert.deepEqual(h.state.archives.map(([id]) => id), ['a1'])
+  assert.deepEqual(h.merged[0].prSessions.map((s) => s.id), ['p1'])
+})
+
+test('abandoned PR: its PR sessions are archived once, nothing is reported as merged', async () => {
+  const h = harness()
+  h.state.known = { p1: 'PR 5', unrelated: 'PR 55' }
+  h.state.archives = []
+  h.poller.register(h.agent, '5')
+  h.state.prStatus = 'abandoned'
+  await h.poller.poll('a1')
+  await h.poller.checkWaits()
+  await new Promise((r) => setTimeout(r, 30))
+  assert.deepEqual(h.state.archives.map(([id]) => id).sort(), ['a1', 'p1'])
+  await h.poller.poll('a1')
+  assert.equal(h.state.archives.length, 2, 'archived once')
+  assert.equal(h.merged.length, 0)
 })
 
 test('abandoned PR: no archive offer is made', async () => {
