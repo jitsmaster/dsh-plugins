@@ -46,6 +46,13 @@ export function dictationError(code, { ios } = {}) {
   return 'Dictation failed (' + code + ').'
 }
 
+/**
+ * The engine ends a recognition on its own after a few seconds of silence (Chrome: about 5-8 s), which cut the text off while the user was thinking.
+ * So an ended recognition is started again with the text so far as its base, until the user presses stop, a real error happens, or nothing was
+ * heard for this long (the microphone does not stay open for ever).
+ */
+export const KEEP_LISTENING_MS = 30_000
+
 /** Halts the dictation that is running right now, if any: only one recognition may use the microphone at a time. */
 let haltRunning = null
 
@@ -55,11 +62,13 @@ let haltRunning = null
  *   onError?: (message: string | null) => void, lang?: string, ios?: boolean }} opts
  * @returns {{ start: (base?: string) => void, stop: () => void, halt: () => void, readonly listening: boolean } | null} null without speech recognition
  */
-export function createDictation({ win, onText, onState, onError, lang, ios } = {}) {
+export function createDictation({ win, onText, onState, onError, lang, ios, keepListeningMs = KEEP_LISTENING_MS, now = Date.now } = {}) {
   const Recognition = dictationSupport(win)
   if (!Recognition) return null
   let session = null // the recognition in flight: { rec, base, ended }
   let listening = false
+  let startedAt = 0
+  let wantOn = false // the user has not pressed stop (nor halted): an ended recognition is restarted
 
   const setListening = (on) => { if (listening === on) return; listening = on; if (onState) onState(on) }
   /** Closes a session once: later events of its recognition (a late result) are ignored. */
@@ -75,6 +84,7 @@ export function createDictation({ win, onText, onState, onError, lang, ios } = {
    * what was not recognised yet, and nothing the engine reports afterwards (a late result, an error, onend) reaches onText or onError.
    */
   function halt() {
+    wantOn = false
     const s = session
     if (!s || s.ended) return
     finish(s)
@@ -90,36 +100,58 @@ export function createDictation({ win, onText, onState, onError, lang, ios } = {
       transcript += (list[i] && list[i][0] && list[i][0].transcript) || ''
       if (!(list[i] && list[i].isFinal)) final = false
     }
-    if (onText) onText(mergeDictation(s.base, transcript), final)
+    const text = mergeDictation(s.base, transcript)
+    if (String(transcript).trim()) { s.last = text; s.heardAt = now() }
+    if (onText) onText(text, final)
   }
   function onFail(s, event) {
     if (s.ended) return
-    const message = dictationError(event && event.error, { ios })
+    const code = event && event.error
+    if (wantOn && (code === 'aborted' || (code === 'no-speech' && now() - s.heardAt < keepListeningMs))) return // silence: onend restarts it
+    s.fatal = true
+    const message = dictationError(code, { ios })
     if (message && onError) onError(message)
   }
 
-  function start(base) {
+  function start(base, again) {
     if (session && !session.ended) return // already running: a second recognition would fight for the microphone
-    if (haltRunning && haltRunning !== halt) haltRunning()
-    if (onError) onError(null)
+    if (!again) {
+      if (haltRunning && haltRunning !== halt) haltRunning()
+      if (onError) onError(null)
+      wantOn = true
+      startedAt = now()
+    }
     const rec = new Recognition()
-    const s = { rec, base: base == null ? '' : String(base), ended: false }
+    const s = { rec, base: base == null ? '' : String(base), ended: false, last: base == null ? '' : String(base), heardAt: again ? again.heardAt : now() }
     rec.lang = lang || (win.navigator && win.navigator.language) || 'en-US'
     rec.interimResults = true // the box shows the text live while it refines
     rec.continuous = false // Chrome on Android is unreliable with continuous recognition
     rec.onstart = () => { if (!s.ended) setListening(true) }
     rec.onresult = (event) => onResult(s, event)
     rec.onerror = (event) => onFail(s, event)
-    rec.onend = () => finish(s)
+    rec.onend = () => {
+      if (s.ended) return
+      // The engine gave up on silence while the user did not press stop: listen again, keeping the text, unless it was a real error or nobody has spoken for too long.
+      if (wantOn && !s.fatal && now() - s.heardAt < keepListeningMs) {
+        s.ended = true
+        if (session === s) session = null
+        start(s.last, { heardAt: s.heardAt })
+        return
+      }
+      wantOn = false
+      finish(s)
+    }
     session = s
     haltRunning = halt
     try { rec.start() } catch {
+      wantOn = false
       finish(s)
       if (onError) onError('Could not start dictation.')
     }
   }
   /** Asks the engine to stop: the last result still arrives, and onend turns the listening state off (halt() is the one that drops it). */
   function stop() {
+    wantOn = false
     if (!session || session.ended) return
     try { session.rec.stop() } catch { /* already stopped */ }
   }
