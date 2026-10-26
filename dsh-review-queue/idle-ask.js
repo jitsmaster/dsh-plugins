@@ -1,15 +1,19 @@
 /**
  * Idle-session ask: every check (default 10 minutes) looks at the sessions that are NOT working and have been idle for more than an hour of
  * awake time, and asks the user, inside that session, whether to continue it or archive it.
- *   - Idle means: top-level, no turn running, no child session running, not blank, not archived, not on hold, no open question or permission card.
+ *   - Idle means: top-level, no turn running, no child session (agent) running, no background job left (when readLog is given; a log that cannot be read
+ *     counts as busy), not blank, not archived, not on hold, no open question or permission card.
  *   - Awake time: the time the laptop slept is not counted. A heartbeat (every BEAT_MS) that finds a gap longer than SLEEP_GAP_MS records the gap as sleep.
  *   - The session is prompted (queued) with ASK_PROMPT: it asks with ask_user_question. Continue marked recommended (only when its work is unfinished) is
  *     asked with a timeout, so the existing auto-answer takes the recommended option; no recommended option means no timeout: the question waits forever.
+ *   - A session whose title names a pull request ("PR 6554", "... - after PR 6554") is never asked: its poller automation tasks (comment poll, approval wait) are the
+ *     reason it is idle, and the PR poller archives it itself once the PR is merged or abandoned.
  *   - An answered question that contains "archive" archives the session (registry.archiveSession); "continue" needs nothing, the session carries on itself.
  * Every idle state (session id + updatedAt) is asked once; the asks are saved through io, so a restart asks nothing twice.
  */
 import { randomUUID } from 'node:crypto'
 import { isTopLevel } from './userpause.js'
+import { liveBackgroundJobs } from './idle-resume.js'
 
 export const ASK_IDLE_MS = 60 * 60_000
 export const ASK_CHECK_MS = 10 * 60_000
@@ -54,10 +58,14 @@ export function createSleepTracker({ now = Date.now, gapMs = SLEEP_GAP_MS, io } 
   }
 }
 
+/** A session title that names a pull request: "PR 6554", "PR 6554 - Fix: ...", "... - after PR 6554". Such a session belongs to the PR poller. */
+export const isPrTitle = (title) => /\bPR\s*#?\d+/i.test(String(title ?? ''))
+const rowTitleOf = (item) => { const v = item?.projections?.values?.title; return typeof v === 'string' ? v : (typeof item?.title === 'string' ? item.title : '') }
+
 const archiveWanted = (item) => (item?.resolution?.answers ?? []).some((a) => [...(Array.isArray(a?.selected) ? a.selected : []), a?.custom].some((s) => typeof s === 'string' && /archive/i.test(s)))
 
 export function createIdleAsker({ controllerOf, registryOf = () => undefined, store, sleep, heldIds = () => new Set(), now = Date.now, idleMs = ASK_IDLE_MS, maxAgeMs = MAX_AGE_MS,
-  maxPerPass = MAX_PER_PASS, io, log = () => {} }) {
+  maxPerPass = MAX_PER_PASS, io, log = () => {}, readLog, startedAt = 0, titlesOf }) {
   let state = {} // sessionId -> { updatedAt, at, archived? }
   try {
     const d = JSON.parse(io?.read?.() ?? 'null')
@@ -73,6 +81,23 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, st
   /** Awake idle time of a session: wall time since its last update minus the machine's sleep. */
   const awakeIdle = (updatedAt) => now() - updatedAt - (sleep?.sleptBetween(updatedAt, now()) ?? 0)
 
+  // A background job (run_in_background, not collected or killed since the app started) is work still running: no ask. An unreadable log is treated as busy.
+  async function hasBackgroundJobs(sessionId) {
+    try {
+      const log1 = await readLog(sessionId)
+      return !log1 || liveBackgroundJobs(log1.records, { startedAt }).length > 0
+    } catch { return true }
+  }
+
+  /** The sessions whose title does not name a pull request. A row without a title of its own is looked up by titlesOf; a failing lookup keeps the session (it is asked). */
+  async function withoutPrSessions(list) {
+    const own = new Map(list.map((i) => [i.sessionId, rowTitleOf(i)]))
+    const missing = list.map((i) => i.sessionId).filter((id) => !own.get(id))
+    let read = new Map()
+    if (missing.length && typeof titlesOf === 'function') { try { const got = await titlesOf(missing); if (got instanceof Map) read = got } catch (error) { log('idle-ask: titles unavailable: ' + reasonOf(error)) } }
+    return list.filter((i) => !isPrTitle(own.get(i.sessionId) || read.get(i.sessionId)))
+  }
+
   async function run() {
     const controller = controllerOf()
     if (typeof controller?.list !== 'function' || typeof controller?.prompt !== 'function') return { ok: false, error: 'no-controller' }
@@ -83,13 +108,14 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, st
     const busyParents = new Set(items.filter((i) => i?.running === true && i.parentSessionId).map((i) => String(i.parentSessionId)))
     const held = heldIds()
     const t = now()
-    const candidates = items
+    const idle = items
       .filter((i) => i && typeof i.sessionId === 'string' && isTopLevel(i) && i.running !== true && i.blank !== true && !archived.has(i.sessionId) && !held.has(i.sessionId) && !busyParents.has(i.sessionId)
         && Number.isFinite(i.updatedAt) && t - i.updatedAt <= maxAgeMs && awakeIdle(i.updatedAt) >= idleMs && state[i.sessionId]?.updatedAt !== i.updatedAt && !waiting(i.sessionId))
       .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, maxPerPass)
-    const result = { ok: true, asked: [] }
+    const candidates = (await withoutPrSessions(idle)).slice(0, maxPerPass)
+    const result = { ok: true, asked: [], skipped: [] }
     for (const item of candidates) {
+      if (readLog && await hasBackgroundJobs(item.sessionId)) { result.skipped.push(item.sessionId); continue }
       try {
         await controller.prompt({ requestId: 'idle-ask-' + randomUUID(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: ASK_PROMPT }] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS))
       } catch (error) {

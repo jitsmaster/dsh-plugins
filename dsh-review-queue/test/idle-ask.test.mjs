@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
-import { createIdleAsker, createSleepTracker, ASK_PROMPT } from '../idle-ask.js'
+import { createIdleAsker, createSleepTracker, ASK_PROMPT, isPrTitle } from '../idle-ask.js'
 
 const H = 3600_000
 const memIo = () => { const io = { text: undefined, read: () => io.text, write: (t) => { io.text = t } }; return io }
@@ -33,6 +33,17 @@ test('never asks a working session, one with a running child, a blank, an archiv
     registryOf: () => ({ archivedSessionIds: ['arch'] }), heldIds: () => new Set(['held']),
   })
   assert.deepEqual((await r.asker.check()).asked, [])
+})
+
+test('does not ask a session with a background job still running, nor one whose log cannot be read', async () => {
+  const started = { type: 'tool/result', time: 5, data: { content: 'started background job job-1' } }
+  const logs = { busy: [started], done: [started, { type: 'tool/ptc-dispatch', time: 6, data: { name: 'job_kill', arguments: { job_id: 'job-1' } } }], free: [] }
+  const r = rig([S('busy', 1 * H), S('done', 1 * H), S('free', 1 * H), S('gone', 1 * H)], {
+    readLog: async (id) => (logs[id] ? { records: logs[id] } : undefined),
+  })
+  const res = await r.asker.check()
+  assert.deepEqual(res.asked.sort(), ['done', 'free'])
+  assert.deepEqual(res.skipped.sort(), ['busy', 'gone'])
 })
 
 test('does not ask a session that already has an open question or permission card', async () => {
@@ -81,4 +92,31 @@ test('the prompt tells a model that wraps the question in run_code to raise that
 
 test('the prompt asks with ask_user_question, recommends only for unfinished work, and waits forever otherwise', () => {
   for (const needle of ['ask_user_question', 'Continue', 'Archive', '(Recommended)', 'timeout 600', 'no timeout']) assert.ok(ASK_PROMPT.includes(needle), needle)
+})
+
+test('isPrTitle: sessions that name a pull request, and only those', () => {
+  for (const title of ['PR 6554', 'PR 6568 - Fix: Widget - 25719', 'Grab 4 tickets - after PR 6578', 'use all-4-1 skill ... - after PR 6602, 66', 'Continue PR 12']) assert.equal(isPrTitle(title), true, title)
+  for (const title of ['Fix: Widget - 25719', 'Improve the PRODUCT page', 'spring cleaning', '', undefined]) assert.equal(isPrTitle(title), false, String(title))
+})
+
+test('never asks a session titled with a PR (its poller automation is why it is idle), by row title or by the title reader', async () => {
+  const old = 1 * H
+  const row = (id, title, extra = {}) => S(id, old, { projections: { values: { title } }, ...extra })
+  const r = rig([row('pr', 'PR 6554'), row('wait', 'Grab 4 tickets - after PR 6578'), row('plain', 'Fix: Widget - 25719'), S('read', old), S('readplain', old)], {
+    titlesOf: async (ids) => new Map(ids.map((id) => [id, id === 'read' ? 'PR 77 - Fix: x' : 'Just work'])),
+  })
+  assert.deepEqual((await r.asker.check()).asked.sort(), ['plain', 'readplain'])
+})
+
+test('PR-titled sessions do not use up the per-pass limit of the others', async () => {
+  const items = []
+  for (let i = 0; i < 6; i++) items.push(S('pr' + i, 1 * H + i, { projections: { values: { title: 'PR ' + (100 + i) } } }))
+  items.push(S('free', 1 * H, { projections: { values: { title: 'free work' } } }))
+  const r = rig(items)
+  assert.deepEqual((await r.asker.check()).asked, ['free'])
+})
+
+test('a failing title reader does not stop the others from being asked', async () => {
+  const r = rig([S('a', 1 * H)], { titlesOf: async () => { throw new Error('boom') } })
+  assert.deepEqual((await r.asker.check()).asked, ['a'])
 })

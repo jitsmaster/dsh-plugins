@@ -35,6 +35,7 @@ import { hubPortOf } from './agent/launcher.js'
 import { createStoreAdapter } from './agent/store-adapter.js'
 import { wireHub } from './agent/wire.js'
 import { createStore } from './store.js'
+import { createAutoClear } from './auto-clear.js'
 import { createSummarizer } from './summary.js'
 import { createTitleReader } from './titles.js'
 import { createTuner } from './todo-tune.js'
@@ -258,7 +259,8 @@ const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, 
   if (askWanted) {
     const sleep = createSleepTracker({ io: stateDir ? fileIo(join(stateDir, 'sleep.json')) : undefined })
     const asker = createIdleAsker({
-      controllerOf, registryOf, store, sleep, heldIds, log,
+      controllerOf, registryOf, store, sleep, heldIds, log, startedAt, titlesOf,
+      readLog: config.idleDeps?.readLog ?? createLogReader({ root: sessionsRoot }),
       idleMs: Number.isFinite(config.idleAskMinutes) && config.idleAskMinutes > 0 ? config.idleAskMinutes * 60_000 : ASK_IDLE_MS,
       io: stateDir ? fileIo(join(stateDir, 'idle-ask.json')) : undefined,
     })
@@ -281,13 +283,18 @@ const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, 
     holdTimers.push(first, t)
   }
 
+  // Expired questions and done messages with nothing to do leave the list by themselves (auto-clear.js); every autoClearMs (default 2 s; 0 = off, and off in node --test runs unless set).
+  const autoClearEvery = Number.isFinite(config.autoClearMs) ? config.autoClearMs : (process.env.NODE_TEST_CONTEXT === undefined ? 2000 : 0)
+  const autoClear = createAutoClear({ store, log })
+  const autoClearTimer = autoClearEvery > 0 ? setInterval(() => autoClear.sweep(), autoClearEvery) : undefined
+  autoClearTimer?.unref?.()
   const pruneTimer = setInterval(() => { store.prune(); try { todoImages?.prune() } catch { /* next hour */ } }, 3600_000)
   pruneTimer.unref?.()
   // The session numbers are looked at every few seconds, so a change reaches the open screens by itself (the counter caches and rate limits the events).
   const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
   sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.

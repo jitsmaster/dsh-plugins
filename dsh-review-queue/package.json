@@ -25,6 +25,7 @@
     "service.js",
     "todo.js",
     "todo-images.js",
+    "auto-clear.js",
     "idle-ask.js",
     "archive-offer.js",
     "server.js",
