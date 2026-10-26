@@ -106,12 +106,15 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     if (body.length > MAX_REPLY) return { ok: false, error: 'too-long' }
     const controller = controllerOf()
     if (!controller?.prompt) return { ok: false, error: 'no-controller' }
+    const startedAt = now()
+    const trace = (outcome) => log?.('post: item ' + String(item.id).slice(0, 40) + ' session ' + String(item.sessionId).replace(/[^A-Za-z0-9_-]/g, '?').slice(0, 60) + ' chars ' + body.length + ' ' + outcome + ' after ' + (now() - startedAt) + ' ms') // never the text
     try {
-      await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: body }] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
+      const ack = await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: body }] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
+      trace(ack?.accepted === true ? 'accepted by DSH' : 'answered without accepted=true: ' + String(JSON.stringify(ack)).slice(0, 80))
     } catch (error) {
+      trace('failed: ' + String(error?.code ?? error?.name ?? 'error').slice(0, 40))
       // The controller of this app does not know the session: the card says so in words, and the item stays for an app that does.
       if (error?.code === 'session/not-found') return { ok: false, error: 'no-session' }
-      log?.('post: ' + String(error?.code ?? error?.name ?? 'error').slice(0, 40))
       return { ok: false, error: 'post-failed' }
     }
     return undefined

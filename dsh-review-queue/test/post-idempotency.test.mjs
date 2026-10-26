@@ -160,3 +160,21 @@ test('the hub routing hands a valid key to the owner and drops an invalid one', 
   assert.deepEqual(await viaAgent({ id: a.itemId(1), text: 'hi', key: 5 }), { text: 'hi' })
   assert.deepEqual(await viaAgent({ id: a.itemId(1), text: 'hi' }), { text: 'hi' })
 })
+
+test('every post leaves one log line with the item, session, length and DSH\'s answer, never the text', async () => {
+  let n = 0
+  const store = createStore({ now: () => 1000 + n, uuid: () => 'i' + ++n })
+  const logs = []
+  let accept = true
+  const controller = { prompt: async () => { if (!accept) throw Object.assign(new Error('secret path C:/x'), { code: 'session/writer-held' }); return { accepted: true } } }
+  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => controller, log: (l) => logs.push(l) })
+  const c = store.add({ type: 'completed', sessionId: 's1', sessionTitle: 'T', summary: 'x', payload: { reply: 'r' } })
+  await queue.post(c.id, 'private words', {})
+  accept = false
+  await queue.post(c.id, 'private words', {})
+  const lines = logs.filter((l) => l.startsWith('post:'))
+  assert.equal(lines.length, 2)
+  assert.match(lines[0], /session s1 chars 13 accepted by DSH after \d+ ms/)
+  assert.match(lines[1], /failed: session\/writer-held/)
+  assert.ok(!logs.join('\n').includes('private words') && !logs.join('\n').includes('secret path'))
+})
