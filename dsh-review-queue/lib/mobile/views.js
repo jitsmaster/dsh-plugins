@@ -1,6 +1,6 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
-import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow } from './api.js'
+import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow } from './api.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
@@ -565,6 +565,7 @@ function NewTodoView() {
   const follow = isFollowUpDraft(draft) // Follow up: the text goes to an existing session described in words (no workspace, no SPARC)
   const [message, setMessage] = useState(null)
   useEffect(() => { if (!follow && !state.workspaces) loadWorkspaces() }, [follow]) // a follow-up never needs the workspaces
+  useEffect(() => { if (follow) loadFollowSessions() }, [follow]) // the dropdown of sessions
   useEffect(() => { if (!follow) loadEfforts() }, [follow]) // nor the efforts; asked again each time the form is shown (the default model may have changed)
   const edit = (patch) => set({ todoDraft: typeof patch === 'function' ? patch(state.todoDraft) : { ...state.todoDraft, ...patch } })
   const note = follow ? null : workspacesNote(st.workspaces, st.workspacesError)
@@ -585,11 +586,12 @@ function NewTodoView() {
     <textarea class="input ta" placeholder=${follow ? FOLLOWUP_TEXT_PLACEHOLDER : 'What should the new session do?'} maxlength=${TODO_MAX} value=${draft.text} disabled=${busy}
       onInput=${(e) => edit({ text: e.target.value })}></textarea>
     <div class="row"><${Mic} text=${draft.text} disabled=${busy} onText=${(t) => edit({ text: t })} /></div>
-    ${follow ? html`<div class="inwrap followup-query">
-      <input class="input" type="text" required aria-label="Which session" placeholder=${FOLLOWUP_QUERY_PLACEHOLDER} maxlength=${FOLLOWUP_MAX} value=${draft.followUp || ''} disabled=${busy}
-        onInput=${(e) => edit({ followUp: e.target.value })} />
-      <${Mic} text=${draft.followUp || ''} disabled=${busy} onText=${(t) => edit({ followUp: t })} />
-    </div>` : null}
+    ${follow ? html`<label class="field followup-query">Session
+      <select class="input" required aria-label="Which session" value=${draft.followUp || ''} disabled=${busy} onChange=${(e) => edit({ followUp: e.target.value })}>
+        <option value="">${st.followSessionsError || (st.followSessions === null ? 'Loading sessions…' : st.followSessions.length ? 'Pick the session…' : 'No sessions found')}</option>
+        ${(st.followSessions || []).map((x) => html`<option key=${x.sessionId} value=${x.sessionId} selected=${x.sessionId === draft.followUp}>${(x.title || x.sessionId) + (x.workspaceTitle ? ' · ' + x.workspaceTitle : '') + (x.running ? ' (running)' : '')}</option>`)}
+      </select>
+    </label>` : null}
     ${follow ? null : html`<label class="field">Workspace
       <select class="input" value=${draft.workspaceId} disabled=${busy} onChange=${(e) => edit({ workspaceId: e.target.value })}>
         ${workspaceChoices(st.workspaces).map((o) => html`<option key=${o.value} value=${o.value} selected=${o.value === draft.workspaceId}>${o.label}</option>`)}

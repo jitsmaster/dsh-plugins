@@ -151,20 +151,20 @@ test('the form has a New session | Follow up switch of two toggle buttons (aria-
   assert.match(v, /isFollowUpDraft\(/)
 })
 
-test('in Follow up mode the textarea has the follow-up placeholder and the description input has its own (max 300, saved in the draft)', () => {
+test('in Follow up mode the textarea has the follow-up placeholder and the session is picked in a dropdown of the loaded sessions (saved in the draft)', () => {
   const v = body('NewTodoView')
   assert.match(v, /FOLLOWUP_TEXT_PLACEHOLDER/)
-  assert.match(v, /FOLLOWUP_QUERY_PLACEHOLDER/)
-  assert.match(v, /maxlength=\$\{FOLLOWUP_MAX\}/)
+  assert.match(v, /<select[^>]*aria-label="Which session"/)
+  assert.match(v, /followSessions/)
+  assert.match(v, /loadFollowSessions\(\)/)
   assert.match(v, /value=\$\{draft\.followUp/)
   assert.match(v, /edit\(\{\s*followUp:/)
 })
 
-test('the description input is dictation-capable like the text box: its own Mic filling draft.followUp, never sending', () => {
+test('only the task text has a Mic (the session is picked, not spoken), and it never sends', () => {
   const v = body('NewTodoView')
   const mics = [...v.matchAll(/<\$\{Mic\}[^]*?\/>/g)].map((x) => x[0])
-  assert.equal(mics.length, 2, 'the task text and the description each have a Mic')
-  assert.ok(mics.some((t) => /text=\$\{draft\.followUp/.test(t) && /onText=\$\{[^}]*followUp/.test(t)), 'one fills followUp')
+  assert.equal(mics.length, 1, 'only the task text has a Mic')
   assert.ok(mics.some((t) => /text=\$\{draft\.text\}/.test(t) && /onText=\$\{[^}]*\btext:/.test(t)), 'one still fills the text')
   for (const tag of mics) assert.doesNotMatch(tag, /\bact\s*\(|\bsend\w*\s*\(|\bsubmit\w*\s*\(|\bstartTodo\s*\(/)
 })

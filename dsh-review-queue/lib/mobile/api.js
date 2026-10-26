@@ -34,7 +34,7 @@ export const state = {
   ready: false, snap: null, error: null, auth: false, needsPairing: false, pairMessage: null, skew: 0,
   drafts: {}, replies: {}, busy: {}, errors: {}, filter: { type: 'all', query: '' }, version: 0,
   // The "+ New todo" form: the draft survives moving between screens, a reload and a crash (saved on every change, cleared after a successful start); the workspace dropdown's list.
-  todoDraft: loadTodoDraft(storage), workspaces: null, workspacesError: null, efforts: null,
+  todoDraft: loadTodoDraft(storage), workspaces: null, workspacesError: null, efforts: null, followSessions: null, followSessionsError: null,
   // The chat thread of each session item that was opened: { messages, hasMore, cursor, loading, loadingEarlier, error, offline }.
   threads: {},
 }
@@ -166,6 +166,19 @@ export async function loadEfforts() {
     const draft = dropStaleEffort(state.todoDraft, body)
     set({ efforts: body, ...(draft !== state.todoDraft ? { todoDraft: draft } : {}) })
   } catch { /* keep what we have */ }
+}
+
+/** The sessions of the Follow up dropdown (GET /v1/follow-up-sessions: sessionId, title, workspaceTitle?, running?); asked again each time the mode is shown. A picked session that is gone is dropped from the draft. */
+export async function loadFollowSessions() {
+  try {
+    const res = await call(API + '/v1/follow-up-sessions')
+    const body = await res.json().catch(() => null)
+    if (handleAuthFailure(res.status, body)) return
+    if (!res.ok || !body || !Array.isArray(body.sessions)) { set({ followSessionsError: 'Could not load the sessions. Reopen the form to try again.' }); return }
+    const list = body.sessions.filter((x) => x && typeof x.sessionId === 'string')
+    const draft = state.todoDraft
+    set({ followSessions: list, followSessionsError: null, ...(list.length && draft.followUp && !list.some((x) => x.sessionId === draft.followUp) ? { todoDraft: { ...draft, followUp: '' } } : {}) })
+  } catch { set({ followSessionsError: 'Could not load the sessions. Reopen the form to try again.' }) }
 }
 
 /** The unsent "+ New todo" form is thrown away, in state and on disk (after a successful start). */

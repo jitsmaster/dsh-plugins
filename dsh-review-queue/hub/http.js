@@ -119,7 +119,7 @@ export function createHttp({ hub, log = () => {} }) {
     }
     if (path === '/v1/follow-up-sessions') {
       if (req.method !== 'GET') return send(res, 405, { error: 'method' })
-      if (who.role === 'device') return send(res, 403, { error: 'desktop-only' }) // the titles of every session of every app are for the desktop's form, not a phone
+      // A paired phone may read it too: it already prompts any session (post, follow-up todo), and its Follow up form picks the session in this dropdown.
       return send(res, 200, await hub.followUpSessions(caller))
     }
     if (path.startsWith('/v1/push/')) {
