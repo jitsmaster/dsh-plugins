@@ -119,7 +119,7 @@ State lives in `~/.dsh/tts/`: `settings.json`, `config.local.json`, `spawn.log`,
 ### Security notes
 
 - The status service listens on `127.0.0.1:3081` only; settings writes are accepted only from the DSH web page origin.
-- Claude plan usage reads Claude Code's own OAuth token from `~/.claude/.credentials.json` (read-only, sent only to `api.anthropic.com`). Set `claudeUsage: false` to disable.
+- Claude plan usage makes no network call and reads no token: it shows the five-hour and weekly readings that the `claude-code` LLM provider (`@deepseek-ai/dsh-llm-claude-code`, option `rateLimitFile`) saves after each Claude call, read from `~/.dsh/tts/claude-rate-limit.json` (override with `claudeRateLimitFile`). Without that provider the bars stay empty. Set `claudeUsage: false` to disable.
 - *Always allow full access* disables the sandbox and approval prompts for every new session. Leave it off unless you trust everything you run.
 
 ### Troubleshooting

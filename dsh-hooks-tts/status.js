@@ -6,8 +6,8 @@
  */
 import { execFile } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { limitsFromReading } from './claude-limits.js'
 import { applyMove, buildGroupsView } from './groups.js'
 import { listSpawned } from './spawned.js'
 import { applyFollowUp } from './handoffs.js'
@@ -80,61 +80,25 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
 
   const retained = new Map() // id -> { entry, seenAt }
 
-  // ---- Claude plan limits (same numbers as Claude Code's /usage) ----
-  // Reads Claude Code's own OAuth token (read-only; Claude Code refreshes it) and asks the
-  // plan usage endpoint. On failure the last good reading is kept and `error` is set.
-  const credPath = config.claudeCredentialsPath ?? join(homedir(), '.claude', '.credentials.json')
+  // ---- Claude plan limits (five-hour and weekly windows, the numbers of Claude Code's /usage) ----
+  // DSH never calls Anthropic for these. The claude-code LLM provider (option `rateLimitFile`) saves the reading
+  // Claude Code reports with every run; this only reads that file (default <stateDir>/claude-rate-limit.json), so the
+  // figures are as fresh as the last Claude call and nothing here can be rate limited or spend a token.
+  const rateLimitPath = config.claudeRateLimitFile ?? join(stateDir, 'claude-rate-limit.json')
   const claudeEnabled = config.claudeUsage ?? true
-  let claude = { enabled: claudeEnabled, limits: [], updatedAt: null, error: claudeEnabled ? 'not fetched yet' : 'disabled' }
-  const limitLabel = (l) => {
-    if (l.kind === 'session') return 'Current session'
-    if (l.kind === 'weekly_all') return 'Current week (all models)'
-    if (l.kind === 'weekly_scoped') return `Current week (${l.scope?.model?.display_name ?? l.scope?.surface ?? 'scoped'})`
-    return l.kind
-  }
-  // The usage endpoint rate-limits hard (HTTP 429, even for one call per half minute), and the web server and the
-  // Desktop app each run this service on the same profile. So the last good reading and the back-off live in one
-  // shared file: whichever process is due fetches, the others reuse it, and a 429 pauses everybody (5 min, doubling
-  // up to 30 min). The last good limits stay on screen, marked with the error, until a fetch succeeds again.
-  const cachePath = join(stateDir, 'claude-usage.json')
-  const FRESH_MS = config.claudeUsageIntervalMs ?? 300_000
-  const readCache = () => { try { return JSON.parse(readFileSync(cachePath, 'utf8')) } catch { return {} } }
-  const writeCache = (c) => { try { writeFileSync(cachePath, JSON.stringify(c)) } catch { /* best effort */ } }
-  async function refreshClaude() {
+  let claude = { enabled: claudeEnabled, limits: [], updatedAt: null, error: claudeEnabled ? 'no reading yet (appears after the next Claude Code call)' : 'disabled' }
+  function refreshClaude() {
     if (!claudeEnabled) return
-    const cache = readCache()
-    const now = Date.now()
-    const show = (error) => {
-      claude = { enabled: true, limits: cache.limits ?? claude.limits, updatedAt: cache.updatedAt ?? claude.updatedAt, error }
-      snapshot = { ...snapshot, claude }
-    }
-    if (cache.backoffUntil > now) return show(`rate limited, retrying at ${new Date(cache.backoffUntil).toLocaleTimeString()}`)
-    if (cache.updatedAt && now - Date.parse(cache.updatedAt) < FRESH_MS) return show(null)
     try {
-      const token = JSON.parse(readFileSync(credPath, 'utf8'))?.claudeAiOauth?.accessToken
-      if (!token) throw new Error('no Claude Code login found')
-      const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
-        headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
-        signal: AbortSignal.timeout(15_000),
-      })
-      if (res.status === 429) {
-        const wait = Math.min(1_800_000, Math.max(300_000, (cache.backoffMs ?? 150_000) * 2))
-        writeCache({ ...cache, backoffMs: wait, backoffUntil: now + wait })
-        cache.backoffUntil = now + wait
-        return show(`rate limited (HTTP 429), retrying at ${new Date(now + wait).toLocaleTimeString()}`)
-      }
-      if (!res.ok) throw new Error(res.status === 401 ? 'Claude token expired (open Claude Code to refresh)' : `HTTP ${res.status}`)
-      const data = await res.json()
-      const limits = (data.limits ?? []).map(l => ({
-        kind: l.kind, label: limitLabel(l), percent: l.percent, resetsAt: l.resets_at, severity: l.severity,
-      }))
-      const updatedAt = new Date().toISOString()
-      writeCache({ limits, updatedAt })
-      claude = { enabled: true, limits, updatedAt, error: null }
-      snapshot = { ...snapshot, claude }
+      const data = JSON.parse(readFileSync(rateLimitPath, 'utf8'))
+      const limits = limitsFromReading(data)
+      claude = limits.length > 0
+        ? { enabled: true, limits, updatedAt: data.updatedAt ?? null, error: null }
+        : { ...claude, error: 'the saved reading has no usable window' }
     } catch (error) {
-      show(String(error?.message ?? error))
+      claude = { ...claude, error: error?.code === 'ENOENT' ? 'no reading yet (appears after the next Claude Code call)' : String(error?.message ?? error) }
     }
+    snapshot = { ...snapshot, claude }
   }
 
   async function sample() {
