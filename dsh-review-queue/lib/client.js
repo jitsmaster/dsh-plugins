@@ -190,12 +190,12 @@ window.__ModuleLoader__.load({
 			return ((item.payload && item.payload.reply) || "").length < 1500;
 		}
 
-		/** Expand / "Full reply" choices worth keeping: booleans for items still in the queue (open or resolved). */
+		/** Expand / "Full reply" / "Answer now (late)" choices worth keeping: booleans for items still in the queue (open or resolved). */
 		function pruneToggles(saved, snap) {
 			const live = new Set([...(snap ? snap.open : []), ...(snap ? snap.resolved : [])].map((i) => i.id));
 			const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
 			const keep = (src) => { const out = {}; for (const [id, v] of Object.entries(obj(src))) if (live.has(id) && typeof v === "boolean") out[id] = v; return out; };
-			return { expanded: keep(saved && saved.expanded), reply: keep(saved && saved.reply) };
+			return { expanded: keep(saved && saved.expanded), reply: keep(saved && saved.reply), late: keep(saved && saved.late) };
 		}
 
 		// An action item (what the user must do or answer) is written <u>**text**</u>. The tags are only a transport: the screens show the words bold and
@@ -611,8 +611,8 @@ function imageFilesOf(data) {
 			try {
 				const j = JSON.parse(storage.get(LS.toggles) || "null");
 				const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
-				return { expanded: obj(j && j.expanded), reply: obj(j && j.reply) };
-			} catch (_e) { return { expanded: {}, reply: {} }; }
+				return { expanded: obj(j && j.expanded), reply: obj(j && j.reply), late: obj(j && j.late) };
+			} catch (_e) { return { expanded: {}, reply: {}, late: {} }; }
 		}
 		/** The unsent todo form (text, workspace, SPARC, open, the text before a tune) is restored after a reload or a crash; busy, error and tuning never are. */
 		function loadTodoForm() {
@@ -628,7 +628,7 @@ function imageFilesOf(data) {
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
-			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, lateOpen: {}, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
+			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, lateOpen: savedToggles.late, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipTopic: "", tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
@@ -645,7 +645,7 @@ function imageFilesOf(data) {
 		let toggleTimer;
 		function scheduleToggleSave() {
 			clearTimeout(toggleTimer);
-			toggleTimer = setTimeout(() => storage.set(LS.toggles, JSON.stringify({ expanded: state.expanded, reply: state.replyOpen })), 300);
+			toggleTimer = setTimeout(() => storage.set(LS.toggles, JSON.stringify({ expanded: state.expanded, reply: state.replyOpen, late: state.lateOpen })), 300);
 		}
 		/** Writes the todo form draft NOW (no timer: a crash right after a keystroke must not lose it). The text is never shortened. */
 		function saveTodoForm() {
@@ -664,7 +664,7 @@ function imageFilesOf(data) {
 			Object.assign(state, patch);
 			if ("todoForm" in patch) saveTodoForm();
 			if ("drafts" in patch || "replies" in patch) scheduleSave();
-			if ("expanded" in patch || "replyOpen" in patch) scheduleToggleSave();
+			if ("expanded" in patch || "replyOpen" in patch || "lateOpen" in patch) scheduleToggleSave();
 			version++;
 			listeners.forEach((l) => l());
 		}
@@ -680,8 +680,8 @@ function imageFilesOf(data) {
 		/** Takes a fresh snapshot into the store. */
 		function applySnapshot(body) {
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now() });
-			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen }, body);
-			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply))) set({ expanded: tog.expanded, replyOpen: tog.reply });
+			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen, late: state.lateOpen }, body);
+			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply)) || Object.keys(state.lateOpen).some((k) => !(k in tog.late))) set({ expanded: tog.expanded, replyOpen: tog.reply, lateOpen: tog.late });
 		}
 
 		/** Whether somebody can see this page now: the hub's presence (is the desktop looked at?) counts only polls that say so. */
@@ -897,7 +897,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		function openTodoForm() { if (!state.todoForm.open) tuneSeq++; patchForm({ open: true, error: undefined }); if (isFollowUpForm(state.todoForm)) loadFollowSessions(); else { loadWorkspaces(); loadEfforts(); } }
 		/** The switch of the form: New session (the dropdown needs the workspaces) or Follow up (its dropdown needs the sessions, never the workspaces). */
 		function setTodoMode(mode) { patchForm({ mode: mode === "followup" ? "followup" : "new", error: undefined }); if (mode === "followup") loadFollowSessions(); else { ensureWorkspaces(); loadEfforts(); } }
-		function closeTodoForm() { tuneSeq++; patchForm({ open: false, error: undefined, tuning: false, questions: undefined }); }
+		/** Hides the form. Does nothing while an add is in flight (the Cancel button is disabled then too): a refusal must find the form open to show its reason. */
+		function closeTodoForm() { if (state.todoForm.busy) return; tuneSeq++; patchForm({ open: false, error: undefined, tuning: false, questions: undefined }); }
 		// ---- Pasted images of the New session form (never part of the saved draft: the files live on the PC until the todo starts) ----
 		let imageEpoch = 0; // a new number whenever the images are cleared: an upload that was on its way then is dropped
 		const revokeUrl = (im) => { try { if (im && im.url) window.URL.revokeObjectURL(im.url); } catch (_e) { /* no object URLs here */ } };
@@ -958,10 +959,10 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			if (f.uploading > 0) { patchForm({ error: "Wait for the image to finish uploading." }); return false; }
 			const problem = todoFormProblem(f.text, follow ? f.followUp || "" : undefined);
 			if (problem) { patchForm({ error: problem }); return false; }
-			// A follow-up add answers only after the server has read the sessions (seconds), so the form closes at once, like a new todo; busy stays set, and a refusal brings the form back with the text.
-			patchForm({ busy: true, error: undefined, ...(follow ? { open: false } : {}) });
+			// The form stays open with its text and shows "Adding…" until the server accepts (a follow-up waits seconds while it reads the sessions); a refusal leaves it as it is, with the error.
+			patchForm({ busy: true, error: undefined });
 			const error = await post("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim(), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.effort ? { effort: f.effort } : {}), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
-			if (error) { patchForm({ busy: false, error, ...(follow ? { open: true } : {}) }); return false; }
+			if (error) { patchForm({ busy: false, error }); return false; }
 			clearImages();
 			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, effort: "", busy: false, error: undefined } });
 			return true;

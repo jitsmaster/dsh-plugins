@@ -250,29 +250,46 @@ test('detailsOpen: an explicit choice wins, else short replies start open and lo
 
 test('pruneToggles keeps boolean choices for items still in the queue only', () => {
   const snap = { open: [{ id: 'a' }], resolved: [{ id: 'b' }] }
-  assert.deepEqual(T.pruneToggles({ expanded: { a: true, gone: true, b: 'x' }, reply: { b: false, gone: false, a: 1 } }, snap), { expanded: { a: true }, reply: { b: false } })
-  assert.deepEqual(T.pruneToggles(undefined, snap), { expanded: {}, reply: {} })
-  assert.deepEqual(T.pruneToggles({ expanded: 5, reply: null }, snap), { expanded: {}, reply: {} })
+  assert.deepEqual(T.pruneToggles({ expanded: { a: true, gone: true, b: 'x' }, reply: { b: false, gone: false, a: 1 }, late: { a: true, b: false, gone: true, x: 'y' } }, snap), { expanded: { a: true }, reply: { b: false }, late: { a: true, b: false } })
+  assert.deepEqual(T.pruneToggles(undefined, snap), { expanded: {}, reply: {}, late: {} })
+  assert.deepEqual(T.pruneToggles({ expanded: 5, reply: null, late: [true] }, snap), { expanded: {}, reply: {}, late: {} })
+  assert.deepEqual(T.pruneToggles({ expanded: { a: true } }, snap), { expanded: { a: true }, reply: {}, late: {} }, 'data saved before the late key existed still works')
 })
 
 test('toggle choices are saved to localStorage and loaded again on the next start', () => {
   const first = loadWithTimers(false)
-  first.m.__test.set({ replyOpen: { a: false }, expanded: { a: true } })
+  first.m.__test.set({ replyOpen: { a: false }, expanded: { a: true }, lateOpen: { a: true } })
   const save = first.timers.filter((t) => !t.cancelled && t.ms === 300)
   assert.ok(save.length >= 1, 'a debounced save is scheduled')
   for (const t of save) t.fn()
-  assert.deepEqual(JSON.parse(first.store['dsh-review-queue.toggles']), { expanded: { a: true }, reply: { a: false } })
+  assert.deepEqual(JSON.parse(first.store['dsh-review-queue.toggles']), { expanded: { a: true }, reply: { a: false }, late: { a: true } })
 
   const second = loadWithTimers(false, { 'dsh-review-queue.toggles': first.store['dsh-review-queue.toggles'] })
   assert.deepEqual({ ...second.m.__test.state.replyOpen }, { a: false })
   assert.deepEqual({ ...second.m.__test.state.expanded }, { a: true })
+  assert.deepEqual({ ...second.m.__test.state.lateOpen }, { a: true }, '"Answer now (late)" is remembered too')
+})
+
+test('toggle data saved before the late key existed loads with no late choices', () => {
+  const { m } = loadWithTimers(false, { 'dsh-review-queue.toggles': JSON.stringify({ expanded: { a: true }, reply: { a: false } }) })
+  assert.deepEqual({ ...m.__test.state.expanded }, { a: true })
+  assert.deepEqual({ ...m.__test.state.replyOpen }, { a: false })
+  assert.deepEqual({ ...m.__test.state.lateOpen }, {})
 })
 
 test('a snapshot drops toggle choices of items that left the queue', () => {
-  const { m } = loadWithTimers(false, { 'dsh-review-queue.toggles': JSON.stringify({ expanded: { a: true, gone: true }, reply: { a: false, gone: true } }) })
+  const { m } = loadWithTimers(false, { 'dsh-review-queue.toggles': JSON.stringify({ expanded: { a: true, gone: true }, reply: { a: false, gone: true }, late: { a: true, gone: false } }) })
   m.__test.applySnapshot({ snapshotId: 's', open: [{ id: 'a' }], resolved: [] })
   assert.deepEqual({ ...m.__test.state.expanded }, { a: true })
   assert.deepEqual({ ...m.__test.state.replyOpen }, { a: false })
+  assert.deepEqual({ ...m.__test.state.lateOpen }, { a: true })
+})
+
+test('the screens (showResolved, showHeld, showPhone, holdOpen) are not remembered with the toggles', () => {
+  const first = loadWithTimers(false)
+  first.m.__test.set({ showResolved: true, showHeld: true, showPhone: true, holdOpen: { a: true } })
+  for (const t of first.timers.filter((x) => !x.cancelled)) t.fn()
+  assert.equal(first.store['dsh-review-queue.toggles'], undefined, 'no toggle write for them')
 })
 
 test('resolutionText says what the session did to a question, and what was hidden as no-action', () => {

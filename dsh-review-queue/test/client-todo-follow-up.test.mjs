@@ -450,7 +450,7 @@ test('submit, Follow up: POST /v1/todo with the trimmed text and followUp only (
   assert.equal(f.busy, false)
 })
 
-test('submit, Follow up: the form closes as soon as the add is sent (the server reads the sessions first, which takes seconds), like a new todo', async () => {
+test('submit, Follow up: while the add is in flight (the server reads the sessions, which takes seconds) the form stays open with its text and busy; the server accepting it clears and closes it', async () => {
   let release
   const gate = new Promise((resolve) => { release = resolve })
   const { T, calls } = render({ answer: async () => { await gate; return okJson({ ok: true }) } })
@@ -458,24 +458,33 @@ test('submit, Follow up: the form closes as soon as the add is sent (the server 
   const done = T.submitTodo()
   await tick()
   assert.equal(calls.length, 1)
-  assert.equal(T.state.todoForm.open, false, 'closed while the request is still on its way')
-  assert.equal(T.state.todoForm.busy, true, 'a second add of the same text is still refused')
-  assert.equal(T.TodoForm(), null)
+  const flying = T.state.todoForm
+  assert.equal(flying.open, true, 'still open while the request is on its way')
+  assert.equal(flying.text, 'Reply to it', 'the text is still there')
+  assert.equal(flying.followUp, 'the PR 6563 session')
+  assert.equal(flying.mode, 'followup')
+  assert.equal(flying.busy, true, 'a second add of the same text is still refused')
+  const shown = T.TodoForm()
+  assert.ok(shown, 'the form is on screen')
+  assert.equal(findAll(shown, (n) => n.type === 'textarea')[0].props.value, 'Reply to it')
+  assert.equal(findAll(shown, (n) => n.type === 'textarea')[0].props.disabled, true)
+  assert.equal(button(shown, 'Adding…').props.disabled, true)
   release()
   assert.equal(await done, true)
   assert.equal(T.state.todoForm.open, false)
   assert.equal(T.state.todoForm.text, '')
   assert.equal(T.state.todoForm.busy, false)
+  assert.equal(T.TodoForm(), null)
 })
 
-test('submit, Follow up: a refusal after the form closed brings the form back with the text, the description and the reason', async () => {
+test('submit, Follow up: a refusal leaves the form open with the text, the description, the mode and the reason', async () => {
   let release
   const gate = new Promise((resolve) => { release = resolve })
   const { T } = render({ answer: async () => { await gate; return okJson({ ok: false, error: 'unknown-session' }, 400) } })
   T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 'that one' }) })
   const done = T.submitTodo()
   await tick()
-  assert.equal(T.state.todoForm.open, false)
+  assert.equal(T.state.todoForm.open, true, 'open while in flight')
   release()
   assert.equal(await done, false)
   const form = T.state.todoForm
@@ -487,7 +496,29 @@ test('submit, Follow up: a refusal after the form closed brings the form back wi
   assert.match(form.error, /session/i)
 })
 
-test('submit, New session: the form still stays open and busy until the add is answered (only a follow-up closes early)', async () => {
+test('submit, Follow up: closing the form (Esc goes through closeTodoForm) while the add is in flight does nothing, so a refusal is still shown with the text', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const { T } = render({ answer: async () => { await gate; return okJson({ ok: false, error: 'unknown-session' }, 400) } })
+  T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 'that one' }) })
+  const done = T.submitTodo()
+  await tick()
+  T.closeTodoForm()
+  assert.equal(T.state.todoForm.open, true, 'the disabled Cancel cannot be bypassed by the key')
+  assert.equal(T.state.todoForm.busy, true)
+  assert.equal(T.state.todoForm.text, 'Do it')
+  release()
+  assert.equal(await done, false)
+  const form = T.state.todoForm
+  assert.equal(form.open, true)
+  assert.equal(form.text, 'Do it')
+  assert.match(form.error, /session/i)
+  assert.ok(findAll(T.TodoForm(), (n) => n.props?.className === 'rq-err').length >= 1, 'the refusal is on screen')
+  T.closeTodoForm()
+  assert.equal(T.state.todoForm.open, false, 'once the add is answered the form closes as before')
+})
+
+test('submit, New session: the form stays open and busy until the add is answered (as a follow-up does)', async () => {
   let release
   const gate = new Promise((resolve) => { release = resolve })
   const { T } = render({ answer: async () => { await gate; return okJson({ ok: true }) } })
