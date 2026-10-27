@@ -31,7 +31,7 @@ const needsUser = (item) => item.type !== 'paused' && item.type !== 'onhold' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, defaultModelOf, paused, onHold, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, defaultModelOf, paused, onHold, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
@@ -90,6 +90,14 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const openItem = (id) => {
     const item = store.get(id)
     return item?.status === 'open' ? item : undefined
+  }
+
+  /** The refusal for the poll session of a PR that is still open (asked of dsh-hooks-tts's prArchiveGuard; without that plugin nothing is refused), else undefined. */
+  const prOpenRefusal = async (sessionId) => {
+    try {
+      const verdict = await prGuardOf()?.check(sessionId)
+      return verdict?.protected ? { ok: false, error: 'pr-open', message: `PR ${verdict.prId} is still open: its session keeps polling for review comments until the PR is merged or abandoned.` } : undefined
+    } catch { return undefined }
   }
 
   /** A todo has no session of its own yet, whatever its sessionId says; only a follow-up that was sent has (the session it went to). */
@@ -289,6 +297,8 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       if (item.type !== 'pr-merged' && item.type !== 'archive') return { ok: false, error: 'not-pr-merged' }
       const registry = registryOf()
       if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'no-registry' }
+      const refusal = await prOpenRefusal(item.sessionId)
+      if (refusal) return refusal
       try {
         await registry.archiveSession(item.sessionId, { stopActivity: true })
       } catch (error) {
@@ -309,6 +319,8 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const registry = registryOf()
       if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'no-registry' }
       const closable = (i) => i.sessionId === item.sessionId && (i.type === 'completed' || i.type === 'pr-merged' || i.type === 'archive')
+      const refusal = await prOpenRefusal(item.sessionId)
+      if (refusal) return refusal
       try {
         await registry.archiveSession(item.sessionId, { stopActivity: true })
       } catch (error) {

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installContextCap } from '../cap.js'
@@ -8,7 +8,7 @@ import { createSettings } from '../settings.js'
 import { createGroups, deriveGroupName } from '../groups.js'
 import { createHandoffTracker } from '../handoffs.js'
 
-function harness({ cap = 400_000, prLines, archiveFails = false, noArchive = false, ...extra } = {}) {
+function harness({ cap = 400_000, prLines, archiveFails = false, noArchive = false, archiveGuard, ...extra } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cap-'))
   const settings = createSettings(dir, { contextCapTokens: cap, ...extra })
   const state = { tokens: 0, title: undefined, events: [], workspace: undefined, messages: [] }
@@ -36,7 +36,7 @@ function harness({ cap = 400_000, prLines, archiveFails = false, noArchive = fal
   }
   const groups = createGroups(dir)
   const handoffs = createHandoffTracker(dir)
-  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md'), archiveDelayMs: 0 }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined, groups, handoffs })
+  const cap_ = installContextCap(ctx, { handoffDir: dir, sparcCommandPath: join(dir, 'sparc.md'), archiveDelayMs: 0 }, { skip: () => false, makeMessage: (text) => ({ text }), settings, prHandoff: prLines ? () => prLines : undefined, groups, handoffs, archiveGuard })
   const steered = []
   const agent = { id: 'a', session: { header: { cwd: 'C:/proj' }, snapshotEvents: () => state.events, deriveMessages: () => state.messages }, steer: (m) => steered.push(m) }
   const step = async (tokens) => {
@@ -802,4 +802,36 @@ test('archive: the setting is a validated boolean, on by default', () => {
   assert.equal(settings.get().archiveAfterHandoff, true)
   assert.throws(() => settings.set({ archiveAfterHandoff: 'yes' }))
   assert.equal(settings.set({ archiveAfterHandoff: false }).archiveAfterHandoff, false)
+})
+
+test('archive: a source session that polls a still-open PR is not archived, and the reason is traced', async () => {
+  const asked = []
+  const h = harness({ archiveGuard: async (id) => { asked.push(id); return { protected: true, prId: '5', status: 'active' } } })
+  h.state.title = 'feature'
+  const [msg] = await h.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], '# note\nMode: plain\n')
+  await h.stop(450_000)
+  await h.settled()
+  assert.equal(h.calls.create, 1, 'the new session is still spawned')
+  assert.deepEqual(asked, ['a'])
+  assert.deepEqual(h.archives, [])
+  assert.match(readFileSync(join(h.dir, 'spawn.log'), 'utf8'), /not archived a after its handoff: PR 5 is still open/)
+})
+
+test('archive: a source session that is not protected, or whose guard throws, is handled safely', async () => {
+  const free = harness({ archiveGuard: async () => ({ protected: false }) })
+  free.state.title = 'feature'
+  const [msg] = await free.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg.text)[1], '# note\nMode: plain\n')
+  await free.stop(450_000)
+  await free.settled()
+  assert.deepEqual(free.archives, [['a', { stopActivity: true }]])
+  const broken = harness({ archiveGuard: async () => { throw new Error('guard broke') } })
+  broken.state.title = 'feature'
+  const [msg2] = await broken.stepFull(450_000)
+  writeFileSync(/Write a handoff note NOW to: (.+)/.exec(msg2.text)[1], '# note\nMode: plain\n')
+  await broken.stop(450_000)
+  await broken.settled()
+  assert.equal(broken.calls.create, 1)
+  assert.deepEqual(broken.archives, [], 'an unreadable verdict keeps the session')
 })

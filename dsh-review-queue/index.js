@@ -170,6 +170,8 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   }
   const agentsOf = () => { try { return ctx.get?.('agents') ?? ctx.agents } catch { return undefined } }
   const registryOf = () => { try { return ctx.get?.('workspaceRegistry') ?? ctx.workspaceRegistry } catch { return undefined } }
+  // dsh-hooks-tts provides the guard that knows which sessions poll a still-open PR; it is looked up per call, so the plugin load order does not matter and a missing plugin refuses nothing.
+  const prGuardOf = () => { try { return ctx.get?.('prArchiveGuard') ?? undefined } catch { return undefined } }
   // Todo: recent session titles help the model pick a workspace (best effort), and a SPARC todo inlines the modes:sparc text like dsh-hooks-tts does.
   const titlesOf = createTitleReader(() => ctx.get?.('sessionQuery'), { log })
   const sparcText = () => {
@@ -213,7 +215,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   installOnHoldCommand(ctx, { onHoldOf: () => onHold, log, enabled: () => config.onHoldCommands !== false })
   // A session asks the user to archive it by "/archive-offer <reason>" typed in it or an ARCHIVE-OFFER marker line it prints itself: an archive card (desktop and phone), nothing is archived before the user presses it (off with archiveOfferCommands: false).
 installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.archiveOfferCommands !== false })
-const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, onHold, instanceId, registryOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
+const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }
@@ -259,7 +261,7 @@ const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, 
   if (askWanted) {
     const sleep = createSleepTracker({ io: stateDir ? fileIo(join(stateDir, 'sleep.json')) : undefined })
     const asker = createIdleAsker({
-      controllerOf, registryOf, store, sleep, heldIds, log, startedAt, titlesOf,
+      controllerOf, registryOf, prGuardOf, store, sleep, heldIds, log, startedAt, titlesOf,
       readLog: config.idleDeps?.readLog ?? createLogReader({ root: sessionsRoot }),
       idleMs: Number.isFinite(config.idleAskMinutes) && config.idleAskMinutes > 0 ? config.idleAskMinutes * 60_000 : ASK_IDLE_MS,
       io: stateDir ? fileIo(join(stateDir, 'idle-ask.json')) : undefined,

@@ -8,7 +8,7 @@
  *     asked with a timeout, so the existing auto-answer takes the recommended option; no recommended option means no timeout: the question waits forever.
  *   - A session whose title names a pull request ("PR 6554", "... - after PR 6554") is never asked: its poller automation tasks (comment poll, approval wait) are the
  *     reason it is idle, and the PR poller archives it itself once the PR is merged or abandoned.
- *   - An answered question that contains "archive" archives the session (registry.archiveSession); "continue" needs nothing, the session carries on itself.
+ *   - An answered question that contains "archive" archives the session (registry.archiveSession), unless it polls a PR that is still open (the guard answers); "continue" needs nothing, the session carries on itself.
  * Every idle state (session id + updatedAt) is asked once; the asks are saved through io, so a restart asks nothing twice.
  */
 import { randomUUID } from 'node:crypto'
@@ -64,7 +64,7 @@ const rowTitleOf = (item) => { const v = item?.projections?.values?.title; retur
 
 const archiveWanted = (item) => (item?.resolution?.answers ?? []).some((a) => [...(Array.isArray(a?.selected) ? a.selected : []), a?.custom].some((s) => typeof s === 'string' && /archive/i.test(s)))
 
-export function createIdleAsker({ controllerOf, registryOf = () => undefined, store, sleep, heldIds = () => new Set(), now = Date.now, idleMs = ASK_IDLE_MS, maxAgeMs = MAX_AGE_MS,
+export function createIdleAsker({ controllerOf, registryOf = () => undefined, prGuardOf = () => undefined, store, sleep, heldIds = () => new Set(), now = Date.now, idleMs = ASK_IDLE_MS, maxAgeMs = MAX_AGE_MS,
   maxPerPass = MAX_PER_PASS, io, log = () => {}, readLog, startedAt = 0, titlesOf }) {
   let state = {} // sessionId -> { updatedAt, at, archived? }
   try {
@@ -131,6 +131,9 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, st
     return result
   }
 
+  /** The guard's verdict when the session polls a PR that is still open (dsh-hooks-tts's prArchiveGuard; without that plugin, or when it throws, undefined). */
+  const prOpenOf = async (sessionId) => { try { const v = await prGuardOf()?.check(sessionId); return v?.protected ? v : undefined } catch { return undefined } }
+
   /** Archives the asked sessions whose question the user answered with Archive (once per ask). */
   async function archiveAnswered() {
     const done = []
@@ -141,6 +144,8 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, st
       if (typeof registry?.archiveSession !== 'function') continue
       rec.archived = true
       save()
+      const open = await prOpenOf(item.sessionId)
+      if (open) { log('idle-ask: not archived ' + item.sessionId + ': PR ' + open.prId + ' is still open'); continue }
       try { await registry.archiveSession(item.sessionId, { stopActivity: true }); done.push(item.sessionId); log('idle-ask: archived ' + item.sessionId + ' on your answer') } catch (error) { log('idle-ask: archiving ' + item.sessionId + ' failed: ' + reasonOf(error)) }
     }
     return done

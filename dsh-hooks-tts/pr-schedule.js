@@ -285,6 +285,8 @@ export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, inte
     /** Task ids of ours for a session (synchronous, from the registry). */
     taskIdsOf: (sessionId) => idsOf(String(sessionId)),
     hasTasks: (sessionId) => idsOf(String(sessionId)).length > 0,
+    /** The PR a session has a task of ours for (persisted in the registry file), else undefined. */
+    prIdOf: (sessionId) => [...registry.values()].find((t) => t.sessionId === String(sessionId))?.prId,
     /** Every session that has a task of ours. */
     sessionIds: () => [...new Set([...registry.values()].map((t) => t.sessionId))],
     /** `sessionId`: the session that received the tick; enables recognising stale ticks of ours (see isStale). */
@@ -338,8 +340,9 @@ function applyPlan(touched, messages) {
  * @param {(sessionId: string) => void} [deps.onArchived] - the session was just archived: drop its in-memory poll entry (no deletes; the tasks are deleted here).
  * @param {(title: unknown) => boolean} deps.isPrTitle
  * @param {() => unknown} [deps.archivedIds] - the currently archived session ids, when the registry is reachable.
+ * @param {(sessionId: string) => unknown} [deps.afterArchived] - runs once per newly archived session, after its poll was stopped and its tasks dropped (fire-and-forget).
  */
-export function installPrScheduleHooks(ctx, { schedule, onTick, onTitleAway, onArchived, isPrTitle, archivedIds, also = [], trace = () => {} }) {
+export function installPrScheduleHooks(ctx, { schedule, onTick, onTitleAway, onArchived, isPrTitle, archivedIds, afterArchived, also = [], trace = () => {} }) {
   const problem = (what) => (error) => trace(`${what}: ${error?.message ?? error}`)
   /** Every kind of task this wiring serves: the comment poll, and (`also`) further kinds with the same shape, e.g. the approval wait. They share ONE interceptor. */
   const kinds = [{ schedule, onTick, onTitleAway, onArchived, isPrTitle }, ...also]
@@ -423,6 +426,7 @@ export function installPrScheduleHooks(ctx, { schedule, onTick, onTitleAway, onA
         try { kind.onArchived?.(id) } catch (error) { problem(`could not stop the poll of ${id}`)(error) }
         if (kind.schedule.hasTasks(id)) dropTasksOf(kind, id, 'session archived')
       }
+      try { void Promise.resolve(afterArchived?.(id)).catch(problem(`archive follow-up of ${id} failed`)) } catch (error) { problem(`archive follow-up of ${id} failed`)(error) }
     }
   })
 

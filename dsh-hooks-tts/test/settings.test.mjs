@@ -30,3 +30,11 @@ test('ST2 decideChime defaults to true, a config default or a saved boolean over
   assert.equal(createSettings(dir, { decideChime: true }).get().decideChime, false, 'a saved value wins over the config default')
   assert.throws(() => s.set({ decideChime: 'no' }), /decideChime must be true or false/)
 })
+
+test('protectPrSessions defaults to true, is a validated boolean and can be switched off', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'settings-'))
+  const s = createSettings(dir, {})
+  assert.equal(s.get().protectPrSessions, true)
+  assert.throws(() => s.set({ protectPrSessions: 'no' }))
+  assert.equal(s.set({ protectPrSessions: false }).protectPrSessions, false)
+})

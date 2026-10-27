@@ -120,3 +120,29 @@ test('a failing title reader does not stop the others from being asked', async (
   const r = rig([S('a', 1 * H)], { titlesOf: async () => { throw new Error('boom') } })
   assert.deepEqual((await r.asker.check()).asked, ['a'])
 })
+
+test('an Archive answer does not archive the poll session of a still-open PR (once per ask, logged)', async () => {
+  const logs = []
+  const guard = { check: async (id) => (id === 'a' ? { protected: true, prId: '5', status: 'active' } : { protected: false }) }
+  const r = rig([S('a', 1 * H), S('c', 1 * H)], { prGuardOf: () => guard, log: (line) => logs.push(line) })
+  await r.asker.check()
+  r.setNow(10 * H + 5000)
+  for (const session of ['a', 'c']) {
+    const q = r.store.add({ type: 'question', sessionId: session, questions: [] })
+    r.store.resolve(q.id ?? q, { kind: 'answered', by: 'card', answers: [{ id: 'q', selected: ['Archive'] }] })
+  }
+  assert.deepEqual(await r.asker.archiveAnswered(), ['c'])
+  assert.deepEqual(r.archived, [['c', { stopActivity: true }]])
+  assert.ok(logs.some((l) => /not archived a: PR 5 is still open/.test(l)))
+  assert.deepEqual(await r.asker.archiveAnswered(), [], 'not asked about again')
+  assert.equal(r.archived.length, 1)
+})
+
+test('a guard that throws does not stop a requested archive from being handled', async () => {
+  const r = rig([S('a', 1 * H)], { prGuardOf: () => ({ check: async () => { throw new Error('guard broke') } }) })
+  await r.asker.check()
+  r.setNow(10 * H + 5000)
+  const q = r.store.add({ type: 'question', sessionId: 'a', questions: [] })
+  r.store.resolve(q.id ?? q, { kind: 'answered', by: 'card', answers: [{ id: 'q', selected: ['Archive'] }] })
+  assert.deepEqual(await r.asker.archiveAnswered(), ['a'])
+})

@@ -118,7 +118,7 @@ export function continuationTitle(old) {
   return m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
 }
 
-export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups, waitForPr, handoffs }) {
+export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups, waitForPr, handoffs, archiveGuard }) {
   const dir = config.handoffDir ?? DEFAULT_HANDOFF_DIR
   const instructed = new Set()
   const warned = new Set()
@@ -330,6 +330,9 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const run = new Promise((resolve) => {
       const timer = setTimeout(async () => {
         try {
+          // A session that polls a PR which is still open keeps its poll: it stays. A verdict that cannot be read keeps it as well (the throw lands below).
+          const verdict = await archiveGuard?.(agent.id)
+          if (verdict?.protected) { trace(`not archived ${agent.id} after its handoff: PR ${verdict.prId} is still open`); return resolve() }
           await ctx.get('workspaceRegistry').archiveSession(agent.id, { stopActivity: true })
           trace(`archived ${agent.id} after its handoff`)
         } catch (error) { trace(`archive of ${agent.id} failed: ${error?.stack ?? error}`) }

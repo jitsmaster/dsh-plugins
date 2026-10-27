@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { stripHold } from './hold.js'
+import { createPrArchiveGuard } from './pr-archive-guard.js'
 import { APPROVAL_SPEC, createPrSchedule, installPrScheduleHooks, taskTitle, textOf } from './pr-schedule.js'
 
 export const PR_TITLE = /^PR \d+/
@@ -176,7 +177,7 @@ function queuedMessage(prId, threadIds, ciBuilds = [], conflict = '') {
  * @param {{ get(): object, path: string }} deps.settings - runtime settings (pollPrComments is re-read per poll).
  * @param {typeof fetch} [deps.fetchImpl] - injectable for tests.
  */
-export function installPrPoller(ctx, _config, { settings, skip = () => false, fetchImpl = globalThis.fetch, intervalMs = POLL_INTERVAL_MS, env = process.env, signal, onResumeApproved, onPrCreated, onPrMerged } = {}) {
+export function installPrPoller(ctx, _config, { settings, skip = () => false, fetchImpl = globalThis.fetch, intervalMs = POLL_INTERVAL_MS, env = process.env, signal, restoreDelayMs = 2000, onResumeApproved, onPrCreated, onPrMerged } = {}) {
   /** agent.id -> { agent, prId, seen: Map<threadId, lastCommentId|null>, timer, inFlight }. */
   const entries = new Map()
   /** agent.id -> { prId, seen, suggested, spawned }: survives stop(), so a merged PR's suggestion is never re-sent. */
@@ -209,6 +210,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   function markFinished(prId) {
     if (finishedPrs.has(String(prId))) return
     finishedPrs.add(String(prId))
+    for (const [sessionId, state] of states) if (String(state.prId) === String(prId)) restored.delete(sessionId)
     try { writeFileSync(finishedFile, JSON.stringify([...finishedPrs].slice(-500))) } catch (error) { trace(`could not save finished PRs: ${scrub(error)}`) }
   }
   // The 10-minute trigger: one Automation task per PR session (absent Schedule service: the setInterval fallback below).
@@ -429,6 +431,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     const id = payload?.agent?.id ?? payload?.id
     stop(id, 'session disposed')
     states.delete(id)
+    restored.delete(id)
   })
 
   /**
@@ -615,6 +618,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     const archived = []
     const failed = []
     for (const sid of ids) {
+      archivingOnPurpose.add(sid) // before the call: the archived-set change it causes must not be restored
       try {
         const registry = ctx.get('workspaceRegistry')
         if (typeof registry?.archiveSession !== 'function') throw new Error('no archiveSession')
@@ -624,7 +628,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       } catch (error) {
         failed.push(sid)
         trace(`could not archive session ${sid} of PR ${id}: ${scrub(error)}`)
-      }
+      } finally { archivingOnPurpose.delete(sid) }
     }
     return { archived, failed, titles: ids }
   }
@@ -750,6 +754,60 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       return Array.isArray(ids) ? ids.map(String).includes(String(sessionId)) : (ids?.has?.(String(sessionId)) ?? false)
     } catch { return false }
   }
+
+  // ---- a session of an open PR is not archived: the guard vetoes the plugin-owned archive paths, restoreArchived undoes the ones nobody can veto (the sidebar) ----
+  /** Session ids archivePrSessions is archiving because their PR is over: never restored. */
+  const archivingOnPurpose = new Set()
+  /** The PR a session polls: its live entry, the state kept after a stop, a persisted task, else a "PR <n>" title (a title can drift, so it comes last). */
+  async function prIdOfSession(sessionId) {
+    const known = entries.get(sessionId)?.prId ?? states.get(sessionId)?.prId ?? prSchedule.prIdOf(sessionId)
+    if (known) return known
+    try {
+      const [read] = await ctx.get('sessionQuery').readTitleSnapshots([sessionId])
+      const title = read?.status === 'fulfilled' ? stripHold(typeof read.value?.title?.title === 'string' ? read.value.title.title : '') : ''
+      const m = PR_TITLE.exec(title ?? '')
+      return m ? /\d+/.exec(m[0])[0] : undefined
+    } catch { return undefined }
+  }
+  const archiveGuard = createPrArchiveGuard({
+    enabled: () => settings.get().protectPrSessions !== false,
+    prIdOf: prIdOfSession,
+    statusOf: async (prId) => {
+      const pat = env.AZURE_DEVOPS_EXT_PAT
+      if (!pat) throw new Error('no AZURE_DEVOPS_EXT_PAT')
+      try { return (await getJson(`${ADO_REPO}/pullRequests/${encodeURIComponent(prId)}?api-version=7.1`, pat))?.status } catch (error) { if (/^HTTP 404 /.test(error?.message)) return 'notFound'; throw error }
+    },
+    finished: (prId) => finishedPrs.has(String(prId)),
+  })
+  /** Sessions restored once already: archiving one of them again is deliberate and sticks (no unarchive loop). Cleared when the PR ends or the session is deleted. */
+  const restored = new Set()
+  /** Sessions whose restore is under way (the pause or the unarchive): a second archive event does not start another. */
+  const restoring = new Set()
+  /**
+   * A session this process polled was archived by someone else while its PR is open (the host sidebar cannot be vetoed): unarchive it
+   * and register its poll again (the archive stopped it and dropped its tasks). Sessions this process never polled are left alone.
+   */
+  async function restoreArchived(sessionId) {
+    const prId = states.get(sessionId)?.prId
+    if (!prId || archivingOnPurpose.has(sessionId)) return
+    if (!(await archiveGuard.check(sessionId)).protected) return
+    // Checked again after the lookup: pr.js may have archived it for a finished PR meanwhile, or the user unarchived it.
+    if (archivingOnPurpose.has(sessionId) || finishedPrs.has(prId) || !isArchived(sessionId)) return
+    if (restored.has(sessionId)) { trace(`PR ${prId} is still open but ${sessionId} was archived again after its restore; leaving it archived`); return }
+    if (restoring.has(sessionId)) return
+    restoring.add(sessionId)
+    try {
+      // A short pause lets the archive that is still stopping the session's work finish before it is undone.
+      if (restoreDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, restoreDelayMs).unref?.())
+      if (signal?.aborted || !isArchived(sessionId) || finishedPrs.has(prId)) return
+      const registry = ctx.get('workspaceRegistry')
+      if (typeof registry?.unarchiveSession !== 'function') { trace(`PR ${prId} is still open but the host cannot unarchive ${sessionId}`); return }
+      try { await registry.unarchiveSession(sessionId) } catch (error) { trace(`could not unarchive ${sessionId}: ${scrub(error)}`); return }
+      restored.add(sessionId)
+      trace(`PR ${prId} is still open: unarchived session ${sessionId}`)
+      register({ id: sessionId }, prId, [], undefined, true)
+    } finally { restoring.delete(sessionId) }
+  }
   /** A tick of our task: poll now. A finished PR or the setting being off deletes the task instead; a session that is not registered yet (e.g. after a restart) is registered first. */
   function onScheduleTick(sessionId, prId, agent) {
     // The interceptor runs before the archived-session gate, so an archived session's leftover tick is dropped here: no
@@ -764,10 +822,11 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   installPrScheduleHooks(ctx, {
     schedule: prSchedule,
     onTick: onScheduleTick,
-    onTitleAway: (sessionId) => { stop(sessionId, 'title is no longer a PR title'); dropTasks(sessionId) },
+    onTitleAway: (sessionId) => { stop(sessionId, 'title is no longer a PR title'); states.delete(sessionId); restored.delete(sessionId); dropTasks(sessionId) },
     onArchived: (sessionId) => stop(sessionId, 'session archived'),
     isPrTitle: (title) => PR_TITLE.test(stripHold(typeof title === 'string' ? title : '') ?? ''),
     archivedIds: () => ctx.get('workspaceRegistry')?.archivedSessionIds,
+    afterArchived: restoreArchived,
     also: [{
       schedule: approvalSchedule,
       onTick: (sessionId, prId, agent) => {
@@ -812,6 +871,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     poll,
     stopAll,
     has: (id) => entries.has(id),
+    /** `check(sessionId)` -> { protected, prId?, status? }: whether the session polls a PR that is still open (archiving it would end the poll). */
+    archiveGuard,
     /** Lines a handoff note carries so a resumed session can re-register the poll. */
     handoffLines(id) {
       // Still available after the poll stopped (merged PR), so the suggested/spawned state travels in the handoff.

@@ -4,11 +4,11 @@ import { createStore } from '../store.js'
 import { createReviewQueue } from '../service.js'
 
 // The Archive button of the phone's session history: archives the session of any item that has one, open or resolved.
-function setup({ archive } = {}) {
+function setup({ archive, prGuard } = {}) {
   const calls = []
   const store = createStore()
   const registry = { archivedSessionIds: [], archiveSession: archive ?? (async (id, options) => { calls.push([id, options]) }) }
-  const queue = createReviewQueue({ store, capture: {}, log: () => {}, registryOf: () => registry })
+  const queue = createReviewQueue({ store, capture: {}, log: () => {}, registryOf: () => registry, prGuardOf: prGuard ? () => prGuard : undefined })
   return { store, queue, calls }
 }
 
@@ -53,4 +53,37 @@ test('the Resolved list rows carry the same Archive button, outside the link', a
   const views = readFileSync(new URL('../lib/mobile/views.js', import.meta.url), 'utf8')
   const list = views.slice(views.indexOf('function ResolvedList'), views.indexOf('function NewTodoView'))
   assert.match(list, /class="resolved-row"[\s\S]*<\/a>[\s\S]*<\$\{ArchiveSessionButton\} item=\$\{i\} \/>/)
+})
+
+// A session that polls a still-open PR keeps its poll: the plugin's own Archive buttons answer pr-open instead of archiving it.
+const openPr = { check: async (id) => (id === 'pr-session' ? { protected: true, prId: '5', status: 'active' } : { protected: false }) }
+
+test('archiveSession and archive refuse the poll session of an open PR and leave every item open', async () => {
+  const { store, queue, calls } = setup({ prGuard: openPr })
+  const done = store.add({ type: 'completed', sessionId: 'pr-session', sessionTitle: 'PR 5' })
+  const offer = store.add({ type: 'archive', sessionId: 'pr-session', sessionTitle: 'PR 5' })
+  const viaSession = await queue.archiveSession(done.id)
+  assert.equal(viaSession.ok, false)
+  assert.equal(viaSession.error, 'pr-open')
+  assert.match(viaSession.message, /PR 5 is still open/)
+  const viaCard = await queue.archive(offer.id)
+  assert.equal(viaCard.error, 'pr-open')
+  assert.deepEqual(calls, [])
+  assert.equal(store.get(done.id).status, 'open')
+  assert.equal(store.get(offer.id).status, 'open')
+})
+
+test('archiveSession and archive still archive a session the guard does not protect, and tolerate a missing or throwing guard', async () => {
+  const free = setup({ prGuard: openPr })
+  const item = free.store.add({ type: 'completed', sessionId: 's1' })
+  assert.deepEqual(await free.queue.archiveSession(item.id), { ok: true })
+  assert.deepEqual(free.calls, [['s1', { stopActivity: true }]])
+  const throwing = setup({ prGuard: { check: async () => { throw new Error('guard broke') } } })
+  const t = throwing.store.add({ type: 'archive', sessionId: 's2' })
+  assert.deepEqual(await throwing.queue.archive(t.id), { ok: true })
+})
+
+test('the card and the phone word the pr-open refusal', async () => {
+  const { readFileSync } = await import('node:fs')
+  assert.match(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8'), /"pr-open": "[^"]*pull request[^"]*"/)
 })
