@@ -9,6 +9,7 @@ import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
 import { pollWaitMs } from './model.js'
 import { bindDraftFlush, dropStaleEffort, dropStaleWorkspace, emptyTodoDraft, loadTodoDraft, saveTodoDraft } from './todo-form.js'
+import { detailOpen, loadToggles, pruneToggles, saveToggles, setDetail } from './toggles.js'
 import {
   POST_TIMEOUT_MS, THREAD_TIMEOUT_MS, applyEarlier, applyNewest, expirePending, markSent, mergeMessages, pendingMessage, pollDelay, postErrorText, postKeyFor, postPayload, removeMessage,
   sameThread, shouldPoll, threadErrorText, threadPayload, touchThreads, trimThread,
@@ -37,6 +38,8 @@ export const state = {
   todoDraft: loadTodoDraft(storage), workspaces: null, workspacesError: null, efforts: null, followSessions: null, followSessionsError: null,
   // The chat thread of each session item that was opened: { messages, hasMore, cursor, loading, loadingEarlier, error, offline }.
   threads: {},
+  // The open/closed choice of the details sections (conversation, full reply, late answer) per item: kept across screens, reloads and restarts (toggles.js).
+  toggles: loadToggles(storage),
 }
 const listeners = new Set()
 export const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l) } }
@@ -47,6 +50,7 @@ export function set(patch) {
   if ('drafts' in patch || 'replies' in patch) { clearTimeout(saveTimer); saveTimer = setTimeout(save, 300) }
   if ('filter' in patch) storage.set(LS_FILTER, JSON.stringify(state.filter))
   if ('todoDraft' in patch) saveTodoDraft(storage, state.todoDraft) // at once, no timer: a crash right after a keystroke loses nothing
+  if ('toggles' in patch) saveToggles(storage, state.toggles)
   for (const l of [...listeners]) l()
 }
 /** Writes the drafts to the page storage now (the page is going away: the 300 ms timer of set() may never run). */
@@ -119,7 +123,8 @@ async function pollLoop() {
       since = core.sinceOf(body)
       const kept = core.pruneSaved({ drafts: state.drafts, replies: state.replies }, body)
       const gone = Object.keys(state.drafts).some((k) => !(k in kept.drafts)) || Object.keys(state.replies).some((k) => !(k in kept.replies))
-      set({ snap: body, error: null, auth: false, ready: true, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? kept : {}) })
+      const toggles = pruneToggles(state.toggles, body) // the choices of items that left the queue go; the same object when none did
+      set({ snap: body, error: null, auth: false, ready: true, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? kept : {}), ...(toggles !== state.toggles ? { toggles } : {}) })
     } catch (e) {
       if (e && e.name === 'AbortError' && !timedOut) continue // the page woke up or came back online: ask again at once
       fails++
@@ -128,6 +133,12 @@ async function pollLoop() {
     } finally { clearTimeout(timeout) }
   }
   polling = false
+}
+
+/** The user opened or closed a details section: remembered only when that differs from what is shown now (fallback = its default), so the echo of a controlled <details> changes nothing. */
+export function rememberDetail(itemId, kind, open, fallback) {
+  if (open === detailOpen(state.toggles, itemId, kind, fallback)) return
+  set({ toggles: setDetail(state.toggles, itemId, kind, open) })
 }
 
 /** Posts an action; true on success, else the card shows the error text. */

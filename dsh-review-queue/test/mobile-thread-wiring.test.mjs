@@ -115,10 +115,10 @@ test('the thread screen is mounted, loads and polls only while the Conversation 
   assert.doesNotMatch(t, /\[open\]/, 'nothing in ThreadView reacts to the details toggle: the mount does')
 })
 
-test('the open state of the section is the details toggle, so polling starts when it opens and stops when it closes', () => {
+test('the open state of the section is the details toggle (remembered per item: toggles.js), so polling starts when it opens and stops when it closes', () => {
   const c = body(views, 'Conversation')
-  assert.match(c, /useState\(defaultOpen\)/)
-  assert.match(c, /onToggle=\$\{\(e\)\s*=>\s*setOpen\(e\.currentTarget\.open\)\}/)
+  assert.match(c, /const open = detailOpen\(st\.toggles, item\.id, 'conversation', firstDefault\)/)
+  assert.match(c, /onToggle=\$\{\(e\)\s*=>\s*rememberDetail\(item\.id, 'conversation', e\.currentTarget\.open, firstDefault\)\}/)
   assert.match(c, /<details[^>]*open=\$\{open\}/)
   const t = body(views, 'ThreadView')
   assert.match(t, /startThreadPolling\(id\)/)

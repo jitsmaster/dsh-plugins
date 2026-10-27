@@ -1,6 +1,7 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
-import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow } from './api.js'
+import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail } from './api.js'
+import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
@@ -210,10 +211,11 @@ function PermissionBody({ item }) {
 function CompletedBody({ item }) {
   const st = useStore()
   const busy = st.busy[item.id]
+  const replyDefault = ((item.payload && item.payload.reply) || '').length < 1500 // a short reply starts open, a long one closed, until the user chooses
   // Writing back to the session is the composer under the card (ItemView): this body keeps the summary, the full reply and Reviewed.
   return html`<div>
     <div class="text" style="white-space:pre-line">${item.summary ? inlineNodes(item.summary) : 'Finished.'}</div>
-    ${item.payload && item.payload.reply ? html`<details open=${(item.payload.reply || '').length < 1500}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
+    ${item.payload && item.payload.reply ? html`<details open=${detailOpen(st.toggles, item.id, 'reply', replyDefault)} onToggle=${(e) => rememberDetail(item.id, 'reply', e.currentTarget.open, replyDefault)}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>
       <${OnHoldButton} item=${item} />
@@ -415,10 +417,11 @@ function ThreadView({ item }) {
 /** The conversation as a collapsible section below the card's actions: open for done and resolved items, closed where the buttons matter. */
 function Conversation({ item, defaultOpen }) {
   const st = useStore()
-  const [open, setOpen] = useState(defaultOpen)
+  const [firstDefault] = useState(defaultOpen) // frozen at the first mount: an item that turns resolved (or reopens) must not open or close the section by itself
+  const open = detailOpen(st.toggles, item.id, 'conversation', firstDefault)
   const t = st.threads[item.id]
   const n = t ? t.messages.filter((m) => !m.pending).length : 0
-  return html`<details class="conversation" open=${open} onToggle=${(e) => setOpen(e.currentTarget.open)}>
+  return html`<details class="conversation" open=${open} onToggle=${(e) => rememberDetail(item.id, 'conversation', e.currentTarget.open, firstDefault)}>
     <summary>Conversation${n ? ' (' + n + (t.hasMore ? '+' : '') + ')' : ''}</summary>
     ${open ? html`<${ThreadView} item=${item} />` : null}
     <${ArchiveSessionButton} item=${item} onDone=${() => go(backHref(item))} />
@@ -622,6 +625,7 @@ function ItemView({ id }) {
   const item = open || resolved
   if (!item) return html`<div class="empty">${st.snap ? 'That item is no longer here.' : 'Loading…'}<div class="row"><a class="btn" href="#/">Back to the list</a></div></div>`
   const late = resolved && item.type === 'question' && item.resolution && item.resolution.kind === 'expired'
+  const lateDefault = false // the late answer starts closed until the user chooses
   const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'archive' ? ArchiveBody : item.type === 'todo' ? TodoBody : item.type === 'paused' ? PausedBody : item.type === 'onhold' ? HeldBody : CompletedBody
   const chat = hasThread(item) // every item with a session (not a todo): its conversation below the actions
   const writable = canPost(item) // and a composer at the bottom, except for a paused one (it is resumed at the PC)
@@ -631,7 +635,7 @@ function ItemView({ id }) {
     ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}${item.workspace ? ' · ' + item.workspace : ''}</div>` : null}
     ${open ? html`<${Body} item=${item} />` : html`<div>
       <div class="resolution">${c.resolutionText(item)}</div>
-      ${late ? html`<details><summary class="sub">Answer now (late)</summary><${QuestionBody} item=${item} path="/v1/late-answer" sendLabel="Send late answer" /></details>` : null}
+      ${late ? html`<details open=${detailOpen(st.toggles, item.id, 'late', lateDefault)} onToggle=${(e) => rememberDetail(item.id, 'late', e.currentTarget.open, lateDefault)}><summary class="sub">Answer now (late)</summary><${QuestionBody} item=${item} path="/v1/late-answer" sendLabel="Send late answer" /></details>` : null}
       ${c.isReopenable(item) ? html`<div class="row"><button class="btn" disabled=${st.busy[item.id]} onClick=${async () => { if (await act('/v1/reopen', { id: item.id }, item.id)) go('/') }}>Reopen</button></div>` : null}
     </div>`}
     ${chat ? html`<${Conversation} key=${item.id} item=${item} defaultOpen=${!!resolved || item.type === 'completed'} />` : null}
