@@ -430,14 +430,14 @@ function Conversation({ item, defaultOpen }) {
 
 /**
  * The Archive button of the session history (under the conversation): archives the item's session (POST /v1/archive-session; running work is stopped), after a confirm sheet.
- * Not on the archive-offer and merged-PR cards while they are open: those have their own Archive session button.
+ * Not on the archive-offer and merged-PR cards while they are open (those have their own Archive session button), and on an open item only while the server flags it archivable (no turn running, no open PR).
  */
 function ArchiveSessionButton({ item, onDone }) {
   const st = useStore()
   const [ask, setAsk] = useState(false)
   const busy = st.busy[item.id]
   const open = item.status === 'open'
-  if (open && (item.type === 'archive' || item.type === 'pr-merged')) return null
+  if (open && (item.type === 'archive' || item.type === 'pr-merged' || item.archivable !== true)) return null // an open item's session is archivable only when the server says so: nothing running, no open PR
   if (!hasThread(item) || (item.resolution && (item.resolution.kind === 'archived' || item.resolution.kind === 'session-ended'))) return null // no session, or already archived
   return html`<div class="row">
     <button class="btn" disabled=${busy} onClick=${() => setAsk(true)}>${busy ? 'Archiving…' : 'Archive session…'}</button>

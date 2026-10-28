@@ -189,7 +189,9 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     const empty = r.json.open.length === 0
     lastFull = { id: r.json.snapshotId, empty }
     const tip = empty && want.tip ? tipOf() : undefined
-    return send(res, 200, { ...r.json, focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}) })
+    // The hub's items carry no archivable flag: this app adds it to its own (it knows which of its sessions run), and the other apps' items get none.
+    const open = typeof queue.markArchivable === 'function' ? queue.markArchivable(r.json.open, instanceId()) : r.json.open
+    return send(res, 200, { ...r.json, open, focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}) })
   }
 
   async function snapshot(req, res, url) {

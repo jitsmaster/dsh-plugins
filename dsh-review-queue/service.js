@@ -19,6 +19,7 @@ const MAX_REPLY = 4000
 export const TIP_READING = 'tip:'
 const MAX_POST_KEYS = 200 // idempotency keys of accepted phone posts that are remembered
 const POST_KEY_TTL_MS = 10 * 60_000
+const PR_VERDICT_TTL_MS = 30_000 // how long a PR guard verdict is trusted by the snapshot's archivable flag (the guard has its own cache)
 const RUNNING_POLL_LIST_MS = 5_000 // the session list call of runningSessions (Resume all asks every 3 s)
 const RUNNING_SHARE_MS = 1_500 // an answer of runningSessions is reused this long after it completed (several lanes or windows ask on the same rhythm)
 const RUNNING_LIST_LIMIT_MS = RUNNING_POLL_LIST_MS + 1_000 // a list call that has not answered by then fails for every caller sharing it
@@ -100,6 +101,24 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     } catch { return undefined }
   }
 
+  // Per-session verdict of the PR guard, kept so the synchronous snapshot() can tell whether the Archive session button is allowed: sessionId -> { open, at }. Unknown = not archivable.
+  const prVerdicts = new Map()
+  const prAsking = new Set()
+  const askPrGuard = (sessionId) => {
+    if (prAsking.has(sessionId)) return
+    prAsking.add(sessionId)
+    Promise.resolve().then(() => prGuardOf()?.check(sessionId)).then((v) => ({ open: v?.protected === true }), () => ({ open: false })) // no guard (plugin missing) or a throw: nothing is protected, as prOpenRefusal
+      .then((verdict) => { prVerdicts.set(sessionId, { ...verdict, at: now() }); while (prVerdicts.size > 500) prVerdicts.delete(prVerdicts.keys().next().value) })
+      .finally(() => prAsking.delete(sessionId))
+  }
+  /** Whether the open item's session may be archived with one click: it has a session, is no todo, no turn of it is running and its PR (if it polls one) is not open. Never waits; unknown is false. */
+  const archivableOf = (item, running) => {
+    if (item.type === 'todo' || typeof item.sessionId !== 'string' || item.sessionId === '' || running?.has(item.sessionId)) return false
+    const v = prVerdicts.get(item.sessionId)
+    if (!v || now() - v.at >= PR_VERDICT_TTL_MS) askPrGuard(item.sessionId) // asked even while the running list is unknown, so both answers arrive together
+    return !!running && !!v && !v.open
+  }
+
   /** A todo has no session of its own yet, whatever its sessionId says; only a follow-up that was sent has (the session it went to). */
   const hasSession = (item) => isSentFollowUp(item) || (item.type !== 'todo' && typeof item.sessionId === 'string' && item.sessionId !== '')
 
@@ -172,6 +191,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       if (opts?.watch || opts?.tip === true) sessions?.touch()
       const tip = snap.open.length || opts?.tip !== true ? undefined : tipNow() // the tip exists only while nothing is open: nothing is generated for a busy list
       const counts = sessions?.current()
+      const running = sessions?.runningIds?.()
       return {
         ...snap,
         ...(counts ? { sessions: counts } : {}),
@@ -180,9 +200,17 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
         focusId,
         reading,
         ui: { seq: ui.seq, cmd: ui.cmd },
-        open: snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position), ...(item.type === 'permission' ? { risks: risksOf(item) } : {}) })),
+        open: snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position), ...(archivableOf(item, running) ? { archivable: true } : {}), ...(item.type === 'permission' ? { risks: risksOf(item) } : {}) })),
         resolved: snap.resolved.map((item) => ({ ...item, title: titleFor(item) })),
       }
+    },
+    /**
+     * Hub mode: the open items of the hub's snapshot with the archivable flag of THIS app's own items (this app knows its running sessions and asks its PR guard); the items
+     * of other apps lose any flag: this app cannot tell whether their sessions run, so their Archive button stays hidden.
+     */
+    markArchivable(open, ownerId) {
+      const running = sessions?.runningIds?.()
+      return open.map(({ archivable, ...item }) => (item.owner === ownerId && archivableOf(item, running) ? { ...item, archivable: true } : item))
     },
     /** Reads the whole message of an item aloud (not its summary). */
     read(id) {

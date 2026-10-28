@@ -70,6 +70,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
       return local.tipTodo(id, workspaceId, typeof listed?.title === 'string' ? { title: listed.title } : undefined)
     },
     stopTip: () => local.stopTip?.(),
+    markArchivable: (open, ownerId) => local.markArchivable?.(open, ownerId) ?? open, // the running sessions and the PR guard are this app's own
     watchSessions: () => local.watchSessions?.(),
     count: () => active().count(),
     first: () => active().first(),

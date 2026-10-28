@@ -30,10 +30,11 @@ export const sessionsKey = (v) => (Number.isFinite(v?.working) && Number.isFinit
 
 /**
  * @param {{ controllerOf: () => any, registryOf?: () => any, now?: () => number, ttlMs?: number, minEmitMs?: number, timeoutMs?: number, log?: (line: string) => void }} deps
- * @returns {{ current: () => { working: number, open: number } | undefined, refresh: () => Promise<void>, onChange: (l: () => void) => () => void }}
+ * @returns {{ current: () => { working: number, open: number } | undefined, runningIds: () => Set<string> | undefined, refresh: () => Promise<void>, onChange: (l: () => void) => () => void }}
  */
 export function createSessionCounter({ controllerOf, registryOf = () => undefined, now = Date.now, ttlMs = SESSIONS_TTL_MS, minEmitMs = SESSIONS_MIN_EMIT_MS, interestMs = SESSIONS_INTEREST_MS, timeoutMs = LIST_TIMEOUT_MS, graceMs = SESSIONS_LIST_GRACE_MS, log = () => {} }) {
   let value
+  let running // the ids of the sessions with a turn running at the last answer (undefined while unknown)
   let startedAt = -Infinity
   let touchedAt = -Infinity // when somebody last looked
   let inflight
@@ -50,12 +51,12 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
 
   async function load() {
     const controller = safe(controllerOf)
-    if (typeof controller?.list !== 'function') { value = undefined; return }
+    if (typeof controller?.list !== 'function') { value = undefined; running = undefined; return }
     const listed = await controller.list({}, AbortSignal.timeout(timeoutMs))
     const archived = new Set((safe(() => registryOf()?.archivedSessionIds) ?? []).map(String))
     const open = openSessionItems(listed, archived)
     if (!open) return undefined
-    return { working: open.filter((i) => i.running === true).length, open: open.length }
+    return { working: open.filter((i) => i.running === true).length, open: open.length, ids: new Set(open.filter((i) => i.running === true).map((i) => i.sessionId)) }
   }
 
   async function run(mine) {
@@ -63,7 +64,7 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
     try {
       const next = await load()
       if (mine !== generation) return
-      if (next) value = next
+      if (next) { value = { working: next.working, open: next.open }; running = next.ids }
     } catch (error) {
       if (mine !== generation) return
       // The code only: an error message can carry a path or content. The last known numbers stay.
@@ -94,6 +95,11 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
     current() {
       void refresh()
       return value
+    },
+    /** The ids of the top-level sessions with a turn running (a Set; undefined while unknown). Like current(), never waits. */
+    runningIds() {
+      void refresh()
+      return running
     },
     refresh,
     onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },

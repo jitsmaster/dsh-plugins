@@ -1449,6 +1449,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				st.errors[item.id] ? h("div", { className: "rq-err" }, st.errors[item.id]) : null,
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn rq-play", disabled: st.busy[item.id], title: reading ? "Stop reading" : "Read the whole message aloud", "aria-pressed": reading, onClick: () => (reading ? act("/v1/stop", {}, item.id) : act("/v1/read", { id: item.id }, item.id)) }, reading ? "■ Stop reading" : "▶ Read aloud"),
+					item.archivable === true && item.type !== "todo" && item.type !== "archive" && item.type !== "pr-merged" ? h("button", { className: "rq-btn", disabled: st.busy[item.id], title: "Archive this session now (stops anything it is still running)", onClick: () => act("/v1/archive-session", { id: item.id }, item.id, { advance: true }) }, st.busy[item.id] ? "Archiving…" : "Archive session") : null,
 					hostApi.openSession && item.type !== "todo" ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
 		}
 
