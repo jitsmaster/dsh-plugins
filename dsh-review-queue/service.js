@@ -128,17 +128,31 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
    * does not know is no-session; any other controller failure is the fixed code post-failed (its text can carry a path or content and goes to a
    * phone): only its code or name is logged.
    */
-  const promptSession = async (item, text) => {
+  const promptSession = async (item, text, images) => {
     const body = typeof text === 'string' ? text.trim() : ''
-    if (!body) return { ok: false, error: 'empty' }
+    // Pasted images (ids of todo-images.js, as the new-todo form) follow the text as image parts; a message may be images alone.
+    let imageIds = []
+    if (images !== undefined && images !== null) {
+      if (!todoImages) { if (!Array.isArray(images) || images.length) return { ok: false, error: 'bad-images' } } else {
+        const checked = todoImages.check(images)
+        if (!checked.ok) return { ok: false, error: checked.error }
+        imageIds = checked.ids
+      }
+    }
+    if (!body && !imageIds.length) return { ok: false, error: 'empty' }
     if (body.length > MAX_REPLY) return { ok: false, error: 'too-long' }
     const controller = controllerOf()
     if (!controller?.prompt) return { ok: false, error: 'no-controller' }
+    let imageParts = []
+    if (imageIds.length) {
+      try { imageParts = todoImages.load(imageIds) } catch { return { ok: false, error: 'unknown-image' } } // a picture that is gone fails the send before anything is delivered
+    }
     const startedAt = now()
     const trace = (outcome) => log?.('post: item ' + String(item.id).slice(0, 40) + ' session ' + String(item.sessionId).replace(/[^A-Za-z0-9_-]/g, '?').slice(0, 60) + ' chars ' + body.length + ' ' + outcome + ' after ' + (now() - startedAt) + ' ms') // never the text
     try {
-      const ack = await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: body }] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
+      const ack = await controller.prompt({ requestId: 'review-' + uuid(), sessionId: item.sessionId, mode: 'queue', content: [...(body ? [{ type: 'text', text: body }] : []), ...imageParts] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
       trace(ack?.accepted === true ? 'accepted by DSH' : 'answered without accepted=true: ' + String(JSON.stringify(ack)).slice(0, 80))
+      if (imageIds.length) try { todoImages.remove(imageIds) } catch { /* the weekly prune gets it */ } // the session has them now
     } catch (error) {
       trace('failed: ' + String(error?.code ?? error?.name ?? 'error').slice(0, 40))
       // The controller of this app does not know the session: the card says so in words, and the item stays for an app that does.
@@ -587,11 +601,11 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       if (item.type !== 'completed' && item.type !== 'pr-merged' && item.type !== 'archive') return { ok: false, error: 'not-completed' }
       return store.resolve(id, { kind: 'reviewed', by: 'card' }) ? { ok: true } : { ok: false, error: 'not-open' }
     },
-    async reply(id, text) {
+    async reply(id, text, { images } = {}) {
       const item = openItem(id)
       if (!item) return { ok: false, error: 'not-open' }
       if (item.type !== 'completed') return { ok: false, error: 'not-completed' }
-      const refused = await promptSession(item, text)
+      const refused = await promptSession(item, text, images)
       if (refused) return refused
       store.resolve(id, { kind: 'replied', by: 'card' })
       return { ok: true }

@@ -4,7 +4,7 @@
  * and, as a net, when they are older than a week. The root is shared by every app and the hub of this PC, so whichever app starts the todo finds them.
  * Only png, jpeg, gif and webp are accepted, judged by the first bytes, never by what the caller says the file is.
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -61,7 +61,17 @@ export function createTodoImages({ root, now = Date.now, uuid = randomUUID }) {
       if (ids.length > MAX_IMAGES) return { ok: false, error: 'too-many-images' }
       const unique = [...new Set(ids)]
       if (unique.some((id) => !find(id))) return { ok: false, error: 'unknown-image' }
-      return { ok: true, ids: unique }
+      // The same picture uploaded twice (two ids, identical bytes) goes to the session once.
+      const seen = new Set()
+      const distinct = []
+      for (const id of unique) {
+        let digest
+        try { digest = createHash('sha256').update(readFileSync(find(id).path)).digest('hex') } catch { return { ok: false, error: 'unknown-image' } }
+        if (seen.has(digest)) continue
+        seen.add(digest)
+        distinct.push(id)
+      }
+      return { ok: true, ids: distinct }
     },
     /** The prompt parts of the ids, in order: [{ type: 'image', mediaType, data: <raw base64> }]. Throws when a file is gone (the todo then fails and says so). */
     load(ids) {

@@ -60,7 +60,8 @@ export function createRouting({ store, queue, instances, commands, log = () => {
   const argsFor = (kind, body, via, item) => ({
     answer: { answers: body.answers }, 'late-answer': { answers: body.answers },
     approve: { via, confirmed: body.confirmed === true, held: body.held === true }, 'approve-similar': { via, confirmed: body.confirmed === true },
-    reply: { text: body.text }, hold: { reason: body.reason }, 'open-session': { sessionId: item.sessionId }, thread: { before: body.before, limit: body.limit, after: body.after, sessionId: item.sessionId }, post: { text: body.text, ...(postKeyOf(body.key) === undefined ? {} : { key: body.key }) },
+    // Pasted images are the desktop's (files on this PC): a phone's are dropped, as for a todo.
+    reply: { text: body.text, ...(via !== 'phone' && body.images !== undefined && body.images !== null ? { images: body.images } : {}) }, hold: { reason: body.reason }, 'open-session': { sessionId: item.sessionId }, thread: { before: body.before, limit: body.limit, after: body.after, sessionId: item.sessionId }, post: { text: body.text, ...(postKeyOf(body.key) === undefined ? {} : { key: body.key }) },
   })[kind] ?? {}
 
   /**

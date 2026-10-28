@@ -25,7 +25,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     approve: (c) => queue.approve(c.itemId, c.args),
     'approve-similar': (c) => queue.approveSimilar(c.itemId, c.args),
     deny: (c) => queue.deny(c.itemId),
-    reply: (c) => queue.reply(c.itemId, c.args.text),
+    reply: (c) => (c.args.images !== undefined ? queue.reply(c.itemId, c.args.text, { images: c.args.images }) : queue.reply(c.itemId, c.args.text)),
     thread: (c) => queue.thread(c.itemId, c.args),
     post: (c) => queue.post(c.itemId, c.args.text, { key: c.args.key }),
     archive: (c) => queue.archive(c.itemId),

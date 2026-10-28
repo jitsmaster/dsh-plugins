@@ -627,7 +627,7 @@ function imageFilesOf(data) {
 		const saved = loadSaved();
 		const savedToggles = loadToggles();
 		const state = {
-			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyOpen: savedToggles.reply, busy: {}, errors: {},
+			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyImages: {}, replyOpen: savedToggles.reply, busy: {}, errors: {},
 			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, lateOpen: savedToggles.late, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipTopic: "", tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false,
@@ -933,14 +933,71 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				if ((f.images || []).length + (f.uploading || 0) >= IMAGE_MAX) { patchForm({ error: "At most " + IMAGE_MAX + " images can be attached." }); return false; }
 				if (file.size > IMAGE_BYTES) { patchForm({ error: "That image is over 8 MB." }); all = false; continue; }
 				const epoch = imageEpoch;
-				patchForm({ uploading: (f.uploading || 0) + 1, error: undefined });
+				const fp = await fingerprint(file);
+				if (epoch !== imageEpoch) return false;
+				if ((state.todoForm.images || []).some((im) => im.fp === fp)) { patchForm({ error: "That image is already attached." }); continue; } // the same picture pasted again
+				patchForm({ uploading: (state.todoForm.uploading || 0) + 1, error: undefined });
 				const result = await uploadImage(file);
 				if (epoch !== imageEpoch) return false; // the images were cleared meanwhile: the file waits for the weekly clean-up
 				const now = state.todoForm;
 				if (!result.ok) { patchForm({ uploading: Math.max(0, (now.uploading || 1) - 1), error: result.error }); all = false; continue; }
-				patchForm({ uploading: Math.max(0, (now.uploading || 1) - 1), images: (now.images || []).concat([{ id: result.id, name: file.name || "image", url: objectUrl(file) }]) });
+				if ((now.images || []).some((im) => im.fp === fp)) { patchForm({ uploading: Math.max(0, (now.uploading || 1) - 1) }); continue; } // an identical paste finished first
+				patchForm({ uploading: Math.max(0, (now.uploading || 1) - 1), images: (now.images || []).concat([{ id: result.id, name: file.name || "image", fp, url: objectUrl(file) }]) });
 			}
 			return all;
+		}
+		/** A fingerprint of the picture's bytes (SHA-256; size, type and name when the browser has no digest), so the same image pasted twice is attached once. */
+		async function fingerprint(file) {
+			try {
+				const digest = await window.crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+				return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+			} catch (_e) { return file.type + ":" + file.size + ":" + (file.name || ""); }
+		}
+		// ---- Pasted images of a done card's reply box: state.replyImages[itemId] = { list: [{ id, name, fp, url }], uploading, error? } ----
+		const replyEpochs = {};
+		const replyImg = (id) => state.replyImages[id] || { list: [], uploading: 0 };
+		const patchReplyImg = (id, p) => set({ replyImages: { ...state.replyImages, [id]: { ...replyImg(id), ...p } } });
+		/** Drops the pictures of one reply box (thumbnails, and the uploads still on their way). */
+		function clearReplyImages(id) {
+			replyEpochs[id] = (replyEpochs[id] || 0) + 1;
+			replyImg(id).list.forEach(revokeUrl);
+			const rest = { ...state.replyImages }; delete rest[id];
+			set({ replyImages: rest });
+		}
+		function removeReplyImage(id, imageId) {
+			const cur = replyImg(id);
+			cur.list.filter((im) => im.id === imageId).forEach(revokeUrl);
+			patchReplyImg(id, { list: cur.list.filter((im) => im.id !== imageId), error: undefined });
+		}
+		/** Attaches the files to the reply box of an item, one upload after the other; the same picture twice is attached once. */
+		async function addReplyImages(id, files) {
+			if (state.busy[id]) return false;
+			let all = true;
+			for (const file of files) {
+				const epoch = replyEpochs[id] || 0;
+				if (replyImg(id).list.length + replyImg(id).uploading >= IMAGE_MAX) { patchReplyImg(id, { error: "At most " + IMAGE_MAX + " images can be attached." }); return false; }
+				if (file.size > IMAGE_BYTES) { patchReplyImg(id, { error: "That image is over 8 MB." }); all = false; continue; }
+				const fp = await fingerprint(file);
+				if (epoch !== (replyEpochs[id] || 0)) return false;
+				if (replyImg(id).list.some((im) => im.fp === fp)) { patchReplyImg(id, { error: "That image is already attached." }); continue; }
+				patchReplyImg(id, { uploading: replyImg(id).uploading + 1, error: undefined });
+				const result = await uploadImage(file);
+				if (epoch !== (replyEpochs[id] || 0)) return false; // cleared meanwhile: the file waits for the weekly clean-up
+				const now = replyImg(id);
+				if (!result.ok) { patchReplyImg(id, { uploading: Math.max(0, now.uploading - 1), error: result.error }); all = false; continue; }
+				if (now.list.some((im) => im.fp === fp)) { patchReplyImg(id, { uploading: Math.max(0, now.uploading - 1) }); continue; }
+				patchReplyImg(id, { uploading: Math.max(0, now.uploading - 1), list: now.list.concat([{ id: result.id, name: file.name || "image", fp, url: objectUrl(file) }]) });
+			}
+			return all;
+		}
+		/** The paste handler of a reply box: image files are attached; a paste that also has text pastes the text as usual. */
+		function onPasteReplyImages(id, e) {
+			const data = e && e.clipboardData;
+			const files = imageFilesOf(data);
+			if (!files.length) return;
+			const hasText = data && data.items ? Array.from(data.items).some((it) => it && it.kind === "string" && it.type === "text/plain") : false;
+			if (!hasText && typeof e.preventDefault === "function") e.preventDefault();
+			addReplyImages(id, files);
 		}
 		/** The paste handler of the task box: image files are attached (and the browser is kept from pasting their name); a paste that also has text pastes the text as usual. */
 		function onPasteImages(e) {
@@ -1329,14 +1386,27 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const st = useStore();
 			const busy = st.busy[item.id];
 			const reply = st.replies[item.id] || "";
-			const send = async () => { if (await act("/v1/reply", { id: item.id, text: reply }, item.id, { advance: true })) set({ replies: { ...state.replies, [item.id]: "" } }); };
+			const pics = (st.replyImages && st.replyImages[item.id]) || { list: [], uploading: 0 };
+			const canSend = (!!reply.trim() || pics.list.length > 0) && pics.uploading === 0;
+			const send = async () => {
+				const cur = replyImg(item.id);
+				if (cur.uploading > 0) { patchReplyImg(item.id, { error: "Wait for the image to finish uploading." }); return; }
+				const body = { id: item.id, text: reply, ...(cur.list.length ? { images: cur.list.map((im) => im.id) } : {}) };
+				if (await act("/v1/reply", body, item.id, { advance: true })) { clearReplyImages(item.id); set({ replies: { ...state.replies, [item.id]: "" } }); }
+			};
 			return h(React.Fragment, null,
 				h("div", { className: "rq-text" + (full ? "" : " rq-clamp"), style: { whiteSpace: "pre-line" } }, item.summary ? mdNodes(item.summary) : "Finished."), // pre-line: the action items sit in a paragraph of their own
 				full ? h(React.Fragment, null,
 					item.payload && item.payload.reply ? h("details", { open: detailsOpen(st.replyOpen, item), onToggle: (e) => { const now = !!e.currentTarget.open; if (now !== detailsOpen(state.replyOpen, item)) set({ replyOpen: { ...state.replyOpen, [item.id]: now } }); } }, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-replybox" }, h(Md, { text: item.payload.reply }))) : null,
-					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (reply.trim() && !busy) send(); } } })) : null,
+					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (canSend && !busy) send(); } }, onPaste: (e) => onPasteReplyImages(item.id, e) }),
+					(pics.list.length || pics.uploading > 0) ? h("div", { className: "rq-thumbs" },
+						pics.list.map((im) => h("span", { key: im.id, className: "rq-thumb" },
+							im.url ? h("img", { src: im.url, alt: im.name || "Pasted image", title: im.name || "" }) : h("span", { className: "rq-sub" }, im.name || "image"),
+							h("button", { className: "rq-thumb-x", type: "button", title: "Remove this image", "aria-label": "Remove image " + (im.name || ""), disabled: busy, onClick: () => removeReplyImage(item.id, im.id) }, "✕"))),
+						pics.uploading > 0 ? h("span", { className: "rq-sub" }, "Uploading…") : null) : null,
+					pics.error ? h("div", { className: "rq-err" }, pics.error) : null) : null,
 				h("div", { className: "rq-row" },
-					full ? h("button", { className: "rq-btn pri", disabled: busy || !reply.trim(), onClick: send }, "Send reply") : null,
+					full ? h("button", { className: "rq-btn pri", disabled: busy || !canSend, onClick: send }, "Send reply") : null,
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Reviewed"),
 					full ? h(HoldButton, { item }) : null),
 				full ? h(HoldForm, { item }) : null);

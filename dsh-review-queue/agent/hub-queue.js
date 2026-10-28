@@ -93,7 +93,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     deny: (id) => action('deny', { id }, () => local.deny(id)),
     markReviewed: (id) => action('reviewed', { id }, () => local.markReviewed(id)),
     reopen: (id) => action('reopen', { id }, () => local.reopen(id)),
-    reply: (id, text) => action('reply', { id, text }, () => local.reply(id, text)),
+    reply: (id, text, opts = {}) => action('reply', { id, text, ...only(opts.images !== undefined && opts.images !== null, { images: opts.images }) }, () => local.reply(id, text, opts)),
     archive: (id) => action('archive', { id }, () => local.archive(id)),
     archiveSession: (id) => action('archive-session', { id }, () => local.archiveSession(id)),
     thread: (id, opts = {}) => action('thread', { id, ...only(opts.before !== undefined, { before: opts.before }), ...only(opts.limit !== undefined, { limit: opts.limit }), ...only(opts.after !== undefined, { after: opts.after }) }, () => local.thread(id, opts)),
