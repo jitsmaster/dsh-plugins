@@ -5,7 +5,7 @@
  */
 import { serveMobile } from './mobile.js'
 import { serveTipWindow } from './tip-window.js'
-import { sessionsKey } from './sessions.js'
+import { sessionsKey, archKeyOf } from './sessions.js'
 import { MAX_IMAGE_BYTES } from './todo-images.js'
 
 export const PREFIX = '/review-queue'
@@ -61,21 +61,23 @@ export const outcome = (res, result, alsoBad) => {
 /**
  * The long-poll token. The four old parts are "<snapshotId>|<focusId>|<readingId>|<uiSeq>" (missing parts mean "none", ui seq 0; a token from before the
  * ui part existed matches only while no ui command has been given, else it gets a full snapshot). A client that knows the session numbers and the tip
- * adds two more: "...|<working>/<open>|<tipId>". Only the parts the client sent are compared (stampMatches), so an older page never gets a full
+ * adds two more: "...|<working>/<open>|<tipId>", and a newer one a seventh, the archKey (which open items may be archived with one click). Only the parts the client sent are compared (stampMatches), so an older page never gets a full
  * snapshot for a part it cannot know about, while a newer one wakes when the numbers or the tip change. None of them touches the snapshotId.
  */
 export const parseSince = (raw) => {
   if (raw === undefined) return undefined
   const parts = raw.split('|')
   const head = [0, 1, 2, 3].map((i) => (i === 3 && !parts[i] ? '0' : parts[i] ?? ''))
-  return head.concat(parts.slice(4, 6)).join('|')
+  return head.concat(parts.slice(4, 7)).join('|')
 }
 export const stampOf = (s) => s.snapshotId + '|' + (s.focusId ?? '') + '|' + (s.reading ?? '') + '|' + (s.ui?.seq ?? 0)
-export const fullStampOf = (s) => stampOf(s) + '|' + sessionsKey(s.sessions) + '|' + (s.tip?.id ?? '')
+export { archKeyOf }
+export const fullStampOf = (s) => stampOf(s) + '|' + sessionsKey(s.sessions) + '|' + (s.tip?.id ?? '') + '|' + (s.archKey ?? '')
 /** True when the snapshot is what the client (a parseSince token) has already seen, judged on the parts the client sent. */
 export const stampMatches = (s, since) => {
   const want = fullStampOf(s).split('|')
-  return since.split('|').every((p, i) => p === want[i])
+  // A snapshot without a key (the hub's own, which does not know the flags) is not held to the 7th part.
+  return since.split('|').every((p, i) => (i === 6 && s.archKey === undefined) || p === want[i])
 }
 
 const workspaceOf = (b) => (b.workspaceId === undefined || b.workspaceId === null || b.workspaceId === '' ? undefined : String(b.workspaceId))

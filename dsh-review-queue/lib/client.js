@@ -343,7 +343,7 @@ window.__ModuleLoader__.load({
 		const sessionsTitle = "Sessions in DSH: how many have a turn running (working) / how many are open (not archived, no subagents). With the hub on, summed over every running DSH app.";
 		/** The long-poll token: what this tab has already seen. The server answers "unchanged" only while the parts it knows still match; the last two (session numbers, tip id) are for a server that has them. */
 		// (the numbers part is sessionsKey of sessions.js, this file being one self-contained script)
-		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0) + "|" + (b.sessions && Number.isFinite(b.sessions.working) && Number.isFinite(b.sessions.open) ? b.sessions.working + "/" + b.sessions.open : "") + "|" + ((b.tip && b.tip.id) || "");
+		const sinceOf = (b) => b.snapshotId + "|" + (b.focusId || "") + "|" + (b.reading || "") + "|" + ((b.ui && b.ui.seq) || 0) + "|" + (b.sessions && Number.isFinite(b.sessions.working) && Number.isFinite(b.sessions.open) ? b.sessions.working + "/" + b.sessions.open : "") + "|" + ((b.tip && b.tip.id) || "") + "|" + (b.archKey || "");
 
 		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", archive: "Archive", todo: "Todo", paused: "Paused", onhold: "On hold" };
 		const typeLabel = (t) => TYPE[t] || t;

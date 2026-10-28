@@ -333,6 +333,8 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       const onAbort = () => finish(() => { cancel('the request was aborted'); resolve('cancelled') })
       pending.set(item.id, {
         type: 'permission',
+        // Its session was archived: the card leaves now; the request itself is settled by the session's own abort (finish then finds nothing left to resolve).
+        handledElsewhere: (resolution) => { pending.delete(item.id); return guard(() => store.resolve(item.id, resolution), false) },
         decide: (decision) => finish(() => {
           guard(() => store.resolve(item.id, { kind: decision === 'approve' ? 'approved' : 'denied', by: 'card' }))
           resolve(decision === 'approve' ? 'allowed-once' : 'rejected')
@@ -424,11 +426,11 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     })
   }, { global: true })
 
-  /** Close an open question item from outside its request: through its pending entry when it has one, else (detached) directly. */
+  /** Close an open question or permission item from outside its request: through its pending entry when it has one, else (detached) directly. */
   function closeOpen(id, resolution, why) {
     const entry = pending.get(id)
     const closed = entry ? entry.handledElsewhere(resolution) : guard(() => store.resolve(id, resolution), false)
-    if (closed) log('capture: question ' + id + ' closed by session: ' + why)
+    if (closed) log('capture: question ' + id + ' closed from outside: ' + why)
     return closed
   }
 
@@ -562,6 +564,8 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       return entry.decide(decision) ? { ok: true } : { ok: false, error: 'not-pending' }
     },
     /** The sessions whose events this app has seen and that are not disposed. */
+    /** Closes an open question or permission card from outside its request (its session was archived); false when it is not open. */
+    closeOpen,
     seenSessionIds: () => [...seen],
     /** The registered event handlers by name (the dev route drives the real code path through them). */
     handlers,

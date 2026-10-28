@@ -294,8 +294,8 @@ test('a snapshot with watch or tip touches the counter, a plain snapshot does no
 test('the stamp has the four old parts first; the full stamp adds the sessions and the tip id', () => {
   const s = { snapshotId: 'e:3', focusId: 'f', reading: 'r', ui: { seq: 2 }, sessions: { working: 1, open: 4 }, tip: { id: 'tipX' } }
   assert.equal(stampOf(s), 'e:3|f|r|2')
-  assert.equal(fullStampOf(s), 'e:3|f|r|2|1/4|tipX')
-  assert.equal(fullStampOf({ snapshotId: 'e:3' }), 'e:3|||0||')
+  assert.equal(fullStampOf(s), 'e:3|f|r|2|1/4|tipX|')
+  assert.equal(fullStampOf({ snapshotId: 'e:3' }), 'e:3|||0|||')
   assert.equal(sessionsKey(undefined), '')
   assert.equal(sessionsKey({ working: 0, open: 0 }), '0/0')
   assert.equal(sessionsKey({ working: 'x', open: 1 }), '')
@@ -305,7 +305,7 @@ test('parseSince keeps the extra parts a new client sends and pads the old four'
   assert.equal(parseSince(undefined), undefined)
   assert.equal(parseSince('e:3'), 'e:3|||0')
   assert.equal(parseSince('e:3|f|r|2'), 'e:3|f|r|2')
-  assert.equal(parseSince('e:3|f|r|2|1/4|tipX'), 'e:3|f|r|2|1/4|tipX')
+  assert.equal(parseSince('e:3|f|r|2|1/4|tipX|'), 'e:3|f|r|2|1/4|tipX|')
   assert.equal(parseSince('e:3|f|r||1/4|'), 'e:3|f|r|0|1/4|')
 })
 

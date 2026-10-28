@@ -11,7 +11,7 @@
  */
 import { Readable } from 'node:stream'
 import { PROTOCOL } from '../hub/protocol.js'
-import { MAX_WAIT_MS, PREFIX, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
+import { MAX_WAIT_MS, PREFIX, archKeyOf, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
 import { spokenFor } from '../speech.js'
 
 const MODES = ['starting', 'hub', 'standalone', 'degraded']
@@ -74,6 +74,8 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
 
   /** The local service's tip (it starts a generation when the slot is over). Never throws. */
   const tipOf = () => { try { return queue.tip?.() } catch { return undefined } }
+  let lastHubOpen // the open items of the last full hub answer: what the archKey of the next poll is judged on
+  const archKeyNow = () => (lastHubOpen && typeof queue.markArchivable === 'function' ? archKeyOf(queue.markArchivable(lastHubOpen, instanceId())) : undefined)
   let lastFull // { id, empty }: what the last full answer of the hub said about its list, the one live source of "is the merged list empty"
   /**
    * The id of the tip the desktop shows for the hub snapshot with this id, '' for none: only while the hub's list is empty, as its last full answer said. The
@@ -162,7 +164,7 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     const parts = since?.split('|')
     const tipId = want.tip ? tipIdFor(parts?.[0]) : ''
     // A client that knows the tip part (six parts) must have the tip that is current now; an older page is not held to it.
-    const sameLocal = parts !== undefined && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId)
+    const sameLocal = parts !== undefined && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId) && (parts.length < 7 || archKeyNow() === undefined || parts[6] === archKeyNow())
     const query = new URLSearchParams()
     if (sameLocal) { query.set('since', parts[0] + '|||0' + (parts.length > 4 ? '|' + parts[4] : '')); query.set('wait', String(remaining)) }
     if (visible) query.set('visible', '1')
@@ -191,7 +193,8 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     const tip = empty && want.tip ? tipOf() : undefined
     // The hub's items carry no archivable flag: this app adds it to its own (it knows which of its sessions run), and the other apps' items get none.
     const open = typeof queue.markArchivable === 'function' ? queue.markArchivable(r.json.open, instanceId()) : r.json.open
-    return send(res, 200, { ...r.json, open, focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}) })
+    lastHubOpen = r.json.open
+    return send(res, 200, { ...r.json, open, archKey: archKeyOf(open), focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}) })
   }
 
   async function snapshot(req, res, url) {

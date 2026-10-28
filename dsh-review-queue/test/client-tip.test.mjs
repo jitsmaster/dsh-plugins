@@ -181,10 +181,10 @@ test('sessionsText is a shared pure helper (the phone uses it)', () => {
 
 // ---- the long-poll token ---------------------------------------------------------------------------------------------------------------
 
-test('the token carries the numbers and the tip id after the four old parts, always six parts', () => {
+test('the token carries the numbers and the tip id after the four old parts, always seven parts (the last is the archKey)', () => {
   const { T } = load()
-  assert.equal(T.sinceOf({ snapshotId: 'e:3', focusId: 'f', reading: 'r', ui: { seq: 2 }, sessions: { working: 1, open: 4 }, tip: { id: 'tipX' } }), 'e:3|f|r|2|1/4|tipX')
-  assert.equal(T.sinceOf({ snapshotId: 'e:3' }), 'e:3|||0||')
+  assert.equal(T.sinceOf({ snapshotId: 'e:3', focusId: 'f', reading: 'r', ui: { seq: 2 }, sessions: { working: 1, open: 4 }, tip: { id: 'tipX' } }), 'e:3|f|r|2|1/4|tipX|')
+  assert.equal(T.sinceOf({ snapshotId: 'e:3' }), 'e:3|||0|||')
 })
 
 // ---- the poll asks for the tip only while the overlay is open --------------------------------------------------------------------------

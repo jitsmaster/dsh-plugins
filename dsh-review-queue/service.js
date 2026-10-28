@@ -13,6 +13,7 @@ import { RESUME_PROMPT } from './paused.js'
 import { listRunningSessions } from './userpause.js'
 import { isSessionId } from './thread.js'
 import { postKeyOf } from './post-key.js'
+import { archKeyOf } from './sessions.js'
 
 const MAX_REPLY = 4000
 /** reading === 'tip:<id>' while the tip of the day is read aloud (lib/client.js keeps its own copy of the string: it is one self-contained script). */
@@ -108,7 +109,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     if (prAsking.has(sessionId)) return
     prAsking.add(sessionId)
     Promise.resolve().then(() => prGuardOf()?.check(sessionId)).then((v) => ({ open: v?.protected === true }), () => ({ open: false })) // no guard (plugin missing) or a throw: nothing is protected, as prOpenRefusal
-      .then((verdict) => { prVerdicts.set(sessionId, { ...verdict, at: now() }); while (prVerdicts.size > 500) prVerdicts.delete(prVerdicts.keys().next().value) })
+      .then((verdict) => { const was = prVerdicts.get(sessionId); prVerdicts.set(sessionId, { ...verdict, at: now() }); if (was?.open !== verdict.open) emit(); while (prVerdicts.size > 500) prVerdicts.delete(prVerdicts.keys().next().value) })
       .finally(() => prAsking.delete(sessionId))
   }
   /** Whether the open item's session may be archived with one click: it has a session, is no todo, no turn of it is running and its PR (if it polls one) is not open. Never waits; unknown is false. */
@@ -192,15 +193,17 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const tip = snap.open.length || opts?.tip !== true ? undefined : tipNow() // the tip exists only while nothing is open: nothing is generated for a busy list
       const counts = sessions?.current()
       const running = sessions?.runningIds?.()
+      const open = snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position), ...(archivableOf(item, running) ? { archivable: true } : {}), ...(item.type === 'permission' ? { risks: risksOf(item) } : {}) }))
       return {
         ...snap,
+        archKey: archKeyOf(open), // part of the long-poll token: a flag that appears or goes is seen at once
         ...(counts ? { sessions: counts } : {}),
         ...(tip ? { tip } : {}),
         serverNow: now(),
         focusId,
         reading,
         ui: { seq: ui.seq, cmd: ui.cmd },
-        open: snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position), ...(archivableOf(item, running) ? { archivable: true } : {}), ...(item.type === 'permission' ? { risks: risksOf(item) } : {}) })),
+        open,
         resolved: snap.resolved.map((item) => ({ ...item, title: titleFor(item) })),
       }
     },
@@ -338,7 +341,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     },
     /**
      * Archives the session of ANY item that has one (open or resolved; the chat view's Archive button), running work is stopped. The open done / merged-PR / archive-offer items of
-     * that session are then closed as archived (they have nothing left to offer); other open items (a question, a permission) are left to DSH, which drops them with the session.
+     * that session are then closed as archived (they have nothing left to offer); its open question and permission cards are closed too (through capture, which settles the pending request), so they leave at once.
      */
     async archiveSession(id) {
       const item = store.get(id)
@@ -347,6 +350,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const registry = registryOf()
       if (typeof registry?.archiveSession !== 'function') return { ok: false, error: 'no-registry' }
       const closable = (i) => i.sessionId === item.sessionId && (i.type === 'completed' || i.type === 'pr-merged' || i.type === 'archive')
+      const askingOf = (i) => i.sessionId === item.sessionId && (i.type === 'question' || i.type === 'permission')
       const refusal = await prOpenRefusal(item.sessionId)
       if (refusal) return refusal
       try {
@@ -359,7 +363,15 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
         }
         return { ok: false, error: String(error?.message ?? error) }
       }
-      for (const open of store.snapshot().open) if (closable(open)) store.resolve(open.id, { kind: 'archived', by: 'card' })
+      const archived = { kind: 'archived', by: 'card' }
+      for (const open of store.snapshot().open) {
+        if (closable(open)) store.resolve(open.id, archived)
+        else if (askingOf(open)) { // the session is gone: its question or permission card goes with it, through capture when that holds the pending request (so none is left waiting)
+          let closed = false
+          try { closed = capture?.closeOpen?.(open.id, archived, 'its session was archived') === true } catch { /* the store below decides */ }
+          if (!closed) store.resolve(open.id, archived)
+        }
+      }
       return { ok: true }
     },
     /**

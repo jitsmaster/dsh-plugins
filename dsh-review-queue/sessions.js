@@ -26,6 +26,15 @@ export function openSessionItems(listed, archived) {
   return listed.items.filter((i) => i && typeof i === 'object' && typeof i.sessionId === 'string' && isTopLevel(i) && i.blank !== true && !archived.has(i.sessionId))
 }
 /** "<working>/<open>" of the numbers, '' while they are unknown: the one form of them that long-poll tokens, the agent and the hub compare. */
+/** A short key of which open items carry the archivable flag (empty when none does): it is the 7th part of the token, so a flag that appears or goes wakes the poll. */
+export const archKeyOf = (open) => {
+  const ids = (Array.isArray(open) ? open : []).filter((i) => i && i.archivable === true).map((i) => String(i.id)).sort()
+  if (!ids.length) return ''
+  let h = 5381
+  for (const ch of ids.join(',')) h = (Math.imul(h, 33) + ch.charCodeAt(0)) >>> 0
+  return h.toString(36)
+}
+const sameIds = (a, b) => !!a === !!b && (!a || (a.size === b.size && [...a].every((x) => b.has(x))))
 export const sessionsKey = (v) => (Number.isFinite(v?.working) && Number.isFinite(v?.open) ? v.working + '/' + v.open : '')
 
 /**
@@ -64,7 +73,7 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
     try {
       const next = await load()
       if (mine !== generation) return
-      if (next) { value = { working: next.working, open: next.open }; running = next.ids }
+      if (next) { if (!sameIds(running, next.ids)) dirty = true; value = { working: next.working, open: next.open }; running = next.ids }
     } catch (error) {
       if (mine !== generation) return
       // The code only: an error message can carry a path or content. The last known numbers stay.
