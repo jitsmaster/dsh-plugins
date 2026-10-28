@@ -253,6 +253,11 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       })
     } catch (error) { log('capture: ' + error); return next() }
     if (callId !== undefined) timeouts.delete(callId)
+    // The request's own signal (DSH's timeout and cancel). The handlers below this one, the session's question card among them, get a signal that
+    // also fires when the queue answers (or auto-answers) first: the card ends its wait on that signal, so it closes instead of staying open
+    // for a question that was already answered.
+    const requestSignal = req.signal
+    const answeredHere = new AbortController()
     return new Promise((resolve, reject) => {
       let done = false
       let timer
@@ -262,7 +267,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
         done = true
         pending.delete(item.id)
         clearAuto()
-        req.signal?.removeEventListener('abort', onAbort)
+        requestSignal?.removeEventListener('abort', onAbort)
         fn()
         return true
       }
@@ -275,15 +280,17 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
         else if (verdict.kind === 'cancelled') store.resolve(item.id, { kind: 'cancelled' })
         else store.update(item.id, { detached: true })
       })
-      const onAbort = () => finish(() => { const reason = req.signal.reason; closeOut(reason, 'abort'); reject(reason ?? new Error('aborted')) })
+      const onAbort = () => finish(() => { const reason = requestSignal.reason; closeOut(reason, 'abort'); reject(reason ?? new Error('aborted')) })
       pending.set(item.id, {
         type: 'question', questions: req.questions ?? [],
-        answer: (answers, by = 'card') => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by, answers })); resolve({ answers }) }),
+        // Resolve first, then end the card's wait: its ASK_ABORTED rejection reaches a request that already has its answer and is ignored.
+        answer: (answers, by = 'card') => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by, answers })); resolve({ answers }); answeredHere.abort() }),
         // The session handled it (a reply there, the call returned): the item leaves now, the request itself is still DSH's to settle.
         handledElsewhere: (resolution) => { pending.delete(item.id); clearAuto(); return guard(() => store.resolve(item.id, resolution), false) },
       })
-      if (req.signal?.aborted) return void onAbort()
-      req.signal?.addEventListener('abort', onAbort, { once: true })
+      if (requestSignal?.aborted) return void onAbort()
+      requestSignal?.addEventListener('abort', onAbort, { once: true })
+      try { req.signal = requestSignal === undefined ? answeredHere.signal : AbortSignal.any([requestSignal, answeredHere.signal]) } catch { /* a request that cannot be changed keeps its own signal: the card then stays until the session ends the call */ }
       // Shortly before the question would time out, the recommended options are taken for the user (like a card answer), and a done card says so.
       const windowMs = autoAnswer && autoAnswerLeadMs > 0 ? answerWindowMs(req, seconds, defaultWindowMs) : undefined
       const delay = windowMs === undefined ? 0 : startedAt + windowMs - autoAnswerLeadMs - now()
@@ -297,7 +304,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
         (error) => finish(() => { closeOut(error, 'rejection'); reject(error) }),
       )
     })
-  })
+  }, { prepend: true }) // outermost: after a plugin reload the web client's answerer is already registered and never calls next()
 
   on('approval/request', (req, next) => {
     const agent = req?.agent
@@ -338,7 +345,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
         (error) => finish(() => { cancel('the request failed: ' + oneLine(messageOf(error))); reject(error) }),
       )
     })
-  })
+  }, { prepend: true })
 
   on('agent/turn-stopping', async ({ agent } = {}) => {
     if (!agent || children.has(agent.id)) return

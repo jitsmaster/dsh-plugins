@@ -203,15 +203,18 @@ test('a controller error never reaches the phone as text: post and reply answer 
     assert.deepEqual(await s.queue.reply(c.id, 'hi'), { ok: false, error: 'post-failed' }, 'reply shares the helper')
     assert.equal(s.store.get(c.id).status, 'open')
   }
-  assert.deepEqual(lines, ['post: EPIPE', 'post: EPIPE', 'post: RangeError', 'post: RangeError', 'post: error', 'post: error'])
+  // Every post is traced (item, session, text length, outcome, duration) since "Logs every post to a session"; a failure names the code or name only.
+  const outcomes = lines.map((l) => /^post: item \S+ session \S+ chars 2 failed: (\S+) after \d+ ms$/.exec(l)?.[1])
+  assert.deepEqual(outcomes, ['EPIPE', 'EPIPE', 'RangeError', 'RangeError', 'error', 'error'])
   assert.equal(lines.join('\n').includes('SECRET'), false)
 })
 
-test('session/not-found stays no-session and is not logged as a failure', async () => {
+test('session/not-found answers no-session and the trace names only its code', async () => {
   const lines = []
   const s = setup({ log: (l) => lines.push(l), prompt: async () => { throw Object.assign(new Error('x'), { code: 'session/not-found' }) } })
   assert.deepEqual(await s.queue.post(s.store.add(item('completed')).id, 'hi'), { ok: false, error: 'no-session' })
-  assert.deepEqual(lines, [])
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /^post: item \S+ session \S+ chars 2 failed: session\/not-found after \d+ ms$/)
 })
 
 test('thread of an unknown item reads a carried session id only when it is a valid one (the validator of thread.js): no path, no dot at the end', async () => {

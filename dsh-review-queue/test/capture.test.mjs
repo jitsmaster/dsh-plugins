@@ -57,6 +57,66 @@ test('answering from the card settles the request and resolves the item', async 
   assert.equal(store.get(item.id).resolution.by, 'card')
 })
 
+/** A handler below the capture: it waits like the session's question card and ends with ASK_ABORTED when the signal it was given aborts. */
+function cardBelow(req, seen) {
+  return () => new Promise((_resolve, reject) => {
+    seen.signal = req.signal
+    seen.signal.addEventListener('abort', () => reject(Object.assign(new Error('ask_user_question was aborted before the user answered'), { code: 'ASK_ABORTED' })), { once: true })
+  })
+}
+const nextTick = () => new Promise((resolve) => setImmediate(resolve))
+
+test('answering from the queue ends the wait of the session card below it, and the item stays answered by the card', async () => {
+  const { store, fire, agent, capture } = setup()
+  const req = { agent: agent(), questions: QUESTIONS, signal: new AbortController().signal, wait: { callId: 'c1' } }
+  const seen = {}
+  const p = fire('user-questions/request', req, cardBelow(req, seen))
+  await nextTick()
+  const [item] = store.snapshot().open
+  assert.equal(seen.signal.aborted, false, 'the card waits while nobody has answered')
+  assert.equal(capture.answerQuestion(item.id, [{ id: 'q1', selected: ['B'] }]).ok, true)
+  assert.deepEqual(await p, { answers: [{ id: 'q1', selected: ['B'] }] })
+  assert.equal(seen.signal.aborted, true, 'the card was told the question is over, so it closes')
+  await nextTick()
+  assert.equal(store.get(item.id).resolution.kind, 'answered', 'the card\'s own abort does not turn the answer into an expiry')
+  assert.equal(store.get(item.id).resolution.by, 'card')
+})
+
+test('a request without its own signal still gives the card one that the queue answer ends', async () => {
+  const { store, fire, agent, capture } = setup()
+  const req = { agent: agent(), questions: QUESTIONS, wait: { callId: 'c1' } }
+  const seen = {}
+  const p = fire('user-questions/request', req, cardBelow(req, seen))
+  await nextTick()
+  const [item] = store.snapshot().open
+  capture.answerQuestion(item.id, [{ id: 'q1', selected: ['A (Recommended)'] }])
+  await p
+  assert.equal(seen.signal.aborted, true)
+})
+
+test('DSH ending the request (timeout or cancel) still reaches the card through the signal it was given', async () => {
+  const { fire, agent } = setup()
+  const ac = new AbortController()
+  const req = { agent: agent(), questions: QUESTIONS, signal: ac.signal, wait: { callId: 'c1', timed: true } }
+  const seen = {}
+  const p = fire('user-questions/request', req, cardBelow(req, seen))
+  await nextTick()
+  const reason = Object.assign(new Error('timed out'), { code: 'ASK_TIMED_OUT' })
+  ac.abort(reason)
+  await assert.rejects(p, (e) => e === reason)
+  assert.equal(seen.signal.aborted, true)
+})
+
+test('an answer on the session card resolves the queue item (the other direction)', async () => {
+  const { store, fire, agent } = setup()
+  const req = { agent: agent(), questions: QUESTIONS, signal: new AbortController().signal, wait: { callId: 'c1' } }
+  const answers = { answers: [{ id: 'q1', selected: ['B'] }] }
+  const result = await fire('user-questions/request', req, async () => answers)
+  assert.equal(result, answers)
+  assert.equal(store.snapshot().open.length, 0, 'the question left the open list')
+  assert.equal(store.snapshot().resolved[0].resolution.by, 'screen')
+})
+
 test('an answer that names an unknown option or a missing question is refused and nothing changes', async () => {
   const { store, fire, agent, capture } = setup()
   fire('user-questions/request', { agent: agent(), questions: QUESTIONS, wait: { callId: 'c1' } }, never)
