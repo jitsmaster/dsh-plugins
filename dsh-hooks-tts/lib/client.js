@@ -375,6 +375,59 @@ window.__ModuleLoader__.load({
 				h("div", { style: { marginTop: 8 } }, btn("Listen", "listen", !(v && v.running && v.connection === "connected")), btn("Finish", "finish", !(v && v.busy)), btn("Cancel", "cancel", !(v && v.busy))),
 				err ? h("div", { style: { color: "#e5484d", marginTop: 6, fontSize: 12 } }, err) : null);
 		}
+		// Token chart: chartModel is pure (all geometry), ClaudeChart only draws it.
+		const CHART_LINES = [["all", "All", "#8b5cf6"], ["input", "Input", "#3b82f6"], ["context", "Context (right axis)", "#f59e0b"], ["output", "Output", "#22c55e"], ["reasoning", "Reasoning", "#ec4899"]];
+		function niceMax(v) {
+			if (!(v > 1)) return 1;
+			const p = Math.pow(10, Math.floor(Math.log10(v))), f = v / p;
+			return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+		}
+		function chartModel(chart, width, height) {
+			if (!chart || chart.enabled === false || !chart.window || !chart.points || !chart.points.length) return null;
+			const plot = { x: 40, y: 8, w: width - 80, h: height - 28 };
+			const t0 = Date.parse(chart.window.start), span = Math.max(1, Date.parse(chart.window.end) - t0);
+			const xs = chart.points.map((p) => Math.min(plot.x + plot.w, Math.max(plot.x, plot.x + (Date.parse(p.t) - t0) / span * plot.w)));
+			const axis = (max) => ({ max, ticks: [1, 2, 3, 4].map((i) => ({ value: max * i / 4, label: fmt(max * i / 4), y: plot.y + plot.h * (1 - i / 4) })) });
+			const left = axis(niceMax(Math.max(0, ...chart.points.map((p) => Math.max(p.all, p.input, p.output, p.reasoning)))));
+			const right = axis(niceMax(Math.max(0, ...chart.points.map((p) => p.context || 0))));
+			const pt = (i, v, max) => xs[i].toFixed(1) + "," + (plot.y + plot.h * (1 - Math.min(v, max) / max)).toFixed(1);
+			const line = (k) => { const s = chart.points.map((p, i) => pt(i, p[k], left.max)); return (s.length === 1 ? [s[0], s[0]] : s).join(" "); };
+			const segments = [];
+			chart.points.forEach((p, i) => {
+				if (p.context === null || p.context === undefined) { segments.push(null); return; }
+				if (!segments.length || segments[segments.length - 1] === null) segments.push([]);
+				segments[segments.length - 1].push(pt(i, p.context, right.max));
+			});
+			const context = segments.filter(Boolean).map((s) => (s.length === 1 ? [s[0], s[0]] : s).join(" "));
+			const hm = (ms) => { const d = new Date(ms); return d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0"); };
+			const xLabels = [0, 0.5, 1].map((f) => ({ x: plot.x + f * plot.w, label: hm(t0 + f * span) }));
+			const series = { all: line("all"), input: line("input"), output: line("output"), reasoning: line("reasoning"), context };
+			const legend = CHART_LINES.map(([key, label, color]) => ({ key, label, color, dashed: key === "context", axis: key === "context" ? "right" : "left" }));
+			return { plot, left, right, xs, series, xLabels, legend };
+		}
+		function ClaudeChart({ chart }) {
+			if (chart && chart.enabled === false) return null;
+			const m = chartModel(chart, 480, 180);
+			const muted = { fontSize: 12, opacity: 0.6, marginTop: 8 };
+			if (!m) return h("div", { style: muted }, (chart && chart.note) || "Token chart unavailable");
+			const { plot: p } = m;
+			const faint = { stroke: "currentColor", strokeOpacity: 0.2 };
+			const tick = (axis, anchor, x) => axis.ticks.map((t) => h("text", { key: anchor + t.value, x, y: t.y + 3, textAnchor: anchor, fontSize: 9, fill: "currentColor", fillOpacity: 0.6 }, t.label));
+			const poly = (key, points, color, dashed) => h("polyline", { key, points, fill: "none", stroke: color, strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: dashed ? "4 3" : undefined });
+			const lines = m.legend.flatMap((l) => (l.key === "context" ? m.series.context : [m.series[l.key]]).map((pts, i) => poly(l.key + i, pts, l.color, l.dashed)));
+			return h("div", { style: { marginTop: 16 } },
+				h("div", { style: { fontSize: 13, fontWeight: 600 } }, "Tokens this session window"),
+				h("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 } }, "DSH sessions only, per 5 min"),
+				h("svg", { viewBox: "0 0 480 180", width: "100%", role: "img", "aria-label": "Token usage per 5 minutes in the current Claude session window: " + m.legend.map((l) => l.label).join(", ") },
+					m.left.ticks.map((t) => h("line", { key: "g" + t.value, x1: p.x, x2: p.x + p.w, y1: t.y, y2: t.y, ...faint })),
+					h("line", { x1: p.x, x2: p.x + p.w, y1: p.y + p.h, y2: p.y + p.h, ...faint }),
+					tick(m.left, "end", p.x - 4), tick(m.right, "start", p.x + p.w + 4),
+					m.xLabels.map((l, i) => h("text", { key: "x" + i, x: l.x, y: p.y + p.h + 13, textAnchor: i === 0 ? "start" : i === 2 ? "end" : "middle", fontSize: 9, fill: "currentColor", fillOpacity: 0.6 }, l.label)),
+					lines),
+				h("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px 12px", fontSize: 11, marginTop: 4 } },
+					m.legend.map((l) => h("span", { key: l.key, style: { display: "inline-flex", alignItems: "center", gap: 4 } },
+						h("span", { style: { width: 14, height: 0, borderTop: "2px " + (l.dashed ? "dashed " : "solid ") + l.color } }), l.label))));
+		}
 		function UsagePage() {
 			const { status: s, failed: bad } = useStatus();
 			const u = s && s.usage;
@@ -388,6 +441,7 @@ window.__ModuleLoader__.load({
 				bad ? h("div", { style: { color: "#e5484d", marginBottom: 12 } }, "Status service unreachable (is dsh-hooks-tts loaded?)") : null,
 				c && c.error ? h("div", { style: { color: "#f5a524", marginBottom: 12, fontSize: 12 } }, "Claude usage: " + c.error + (limits.length ? " (showing last reading)" : "")) : null,
 				limits.map((l) => h(Bar, { key: l.kind + l.label, label: l.label, data: { pct: l.percent }, sub: fmtReset(l.resetsAt) })),
+				h(ClaudeChart, { chart: s && s.claudeChart }),
 				u ? h("div", { style: { fontSize: 12, opacity: 0.6, marginTop: 8 } },
 					`DSH tokens (local): ${fmt(u.fiveHour.tokens)} in the last 5h · ${fmt(u.weekly.tokens)} in the last 7 days`) : null,
 				h("div", { style: { marginTop: 24, paddingTop: 16, borderTop: "1px solid rgba(128,128,128,.25)" } },
@@ -906,7 +960,7 @@ window.__ModuleLoader__.load({
 
 		exports.inject = inject;
 		exports.apply = apply;
-		exports.__test = { gtApply, sidebarStyleText, ensureSidebarStyle, removeGroupTree, planGroupTree };
+		exports.__test = { gtApply, sidebarStyleText, ensureSidebarStyle, removeGroupTree, planGroupTree, chartModel, ClaudeChart, UsagePage, Bar, poll };
 		return module.exports;
 	}
 });
