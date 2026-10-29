@@ -781,7 +781,7 @@ function imageFilesOf(data) {
 		}
 
 		// Host capabilities captured in apply(); absent on a DSH without the workspace API, which just hides the button.
-		const hostApi = { openSession: undefined };
+		const hostApi = { openSession: undefined, sidebar: undefined }; // sidebar: () => ctx.sidebarRight (the right panel), undefined on a DSH without it
 		/** Reading aloud ends with the overlay: whoever closes it or jumps to a session does not want to keep listening. */
 		function stopReading() {
 			if (state.snap && state.snap.reading) fetch(API + "/v1/stop", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
@@ -821,14 +821,34 @@ function imageFilesOf(data) {
 		}
 		/** Go to the item's session and close the overlay. The host can refuse (the session is gone): then the overlay stays open
 		 *  and the card says so. The host call may be sync (throws) or async (rejects). */
-		function openSession(item) {
+		function openSession(item, after) {
 			if (!hostApi.openSession) return;
 			const failed = () => set({ errors: { ...state.errors, [item.id]: "That session no longer exists." } });
-			const done = () => { stopReading(); set({ overlay: false }); storage.set(LS.overlay, "0"); revealSessionRow(item.sessionId); };
+			const done = () => { stopReading(); set({ overlay: false }); storage.set(LS.overlay, "0"); revealSessionRow(item.sessionId); if (typeof after === "function") after(); };
 			let result;
 			try { result = hostApi.openSession(item.sessionId); } catch (e) { failed(); return; }
 			if (result && typeof result.then === "function") result.then(done, failed); else done();
 		}
+		const GIT_TAB_DELAYS_MS = [0, 150, 400, 900, 1800, 3000]; // the right panel acts on the session on screen, which may take a moment after openSession
+		/** Opens the Git tab (dsh-git-view, kind "git") in the right panel of a session once that session is the one on screen; a missing right panel or git tab type is skipped quietly.
+		 *  The panel keeps one Git page per pane, so an already open Git tab is just revealed. opts: { sidebar, later } for tests. */
+		function openGitTab(sessionId, opts) {
+			const sidebar = opts && "sidebar" in opts ? opts.sidebar : hostApi.sidebar ? hostApi.sidebar() : undefined;
+			const later = (opts && opts.later) || ((fn, ms) => setTimeout(fn, ms));
+			if (!sidebar || !sessionId) return;
+			let i = 0;
+			const attempt = () => {
+				let mounted;
+				try { mounted = sidebar.mounted.getSnapshot(); } catch (_e) { return; }
+				if (mounted === sessionId) { try { sidebar.openTab("git"); } catch (_e) { /* no git tab type: nothing to show */ } return; }
+				if (i < GIT_TAB_DELAYS_MS.length - 1) { i++; later(attempt, GIT_TAB_DELAYS_MS[i]); }
+			};
+			attempt();
+		}
+		/** The View Changes button: Open session, then the Git tab of that session in the right panel. */
+		function viewChanges(item) { openSession(item, () => openGitTab(item.sessionId)); }
+		/** View Changes needs the host to open sessions and the right panel service. */
+		function canViewChanges() { return !!(hostApi.openSession && hostApi.sidebar); }
 		let uiSeen; // the last ui command seq this tab has seen; undefined until its first snapshot
 		/** A show/hide command from the server (voice): goes through setOverlay, like the header button, so it is stored too. */
 		function applyUi(ui) {
@@ -1460,7 +1480,9 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					h("select", { className: "rq-input rq-sel", value: sel.value, disabled: busy, "aria-label": "Change workspace", onChange: (e) => set({ todoPick: { ...state.todoPick, [item.id]: e.target.value } }) },
 						sel.placeholder ? h("option", { value: "" }, sel.placeholder) : null, sel.options.map((w) => h("option", { key: w.id, value: w.id }, w.title))),
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => cancelTodo(item) }, "Cancel")) : null,
-				(s === "starting" || s === "started") && item.sessionId && hostApi.openSession ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", onClick: () => openSession(item) }, "Open session")) : null);
+				(s === "starting" || s === "started") && item.sessionId && hostApi.openSession ? h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn", onClick: () => openSession(item) }, "Open session"),
+					canViewChanges() ? h("button", { className: "rq-btn", title: "Open the session and show its changes in the Git tab of the right panel", onClick: () => viewChanges(item) }, "View Changes") : null) : null);
 		}
 
 		/** A follow-up: confirm the session the text goes to (nothing is sent before), watch it go, retry a failure. Never asks for workspaces; no key is bound. */
@@ -1520,7 +1542,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn rq-play", disabled: st.busy[item.id], title: reading ? "Stop reading" : "Read the whole message aloud", "aria-pressed": reading, onClick: () => (reading ? act("/v1/stop", {}, item.id) : act("/v1/read", { id: item.id }, item.id)) }, reading ? "■ Stop reading" : "▶ Read aloud"),
 					item.archivable === true && item.type !== "todo" && item.type !== "archive" && item.type !== "pr-merged" ? h("button", { className: "rq-btn", disabled: st.busy[item.id], title: "Archive this session now (stops anything it is still running)", onClick: () => act("/v1/archive-session", { id: item.id }, item.id, { advance: true }) }, st.busy[item.id] ? "Archiving…" : "Archive session") : null,
-					hostApi.openSession && item.type !== "todo" ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null));
+					hostApi.openSession && item.type !== "todo" ? h("button", { className: "rq-link", onClick: () => openSession(item) }, "Open session ↗") : null,
+					hostApi.openSession && item.type !== "todo" && canViewChanges() ? h("button", { className: "rq-link", title: "Open the session and show its changes in the Git tab of the right panel", onClick: () => viewChanges(item) }, "View Changes") : null));
 		}
 
 		/** The Hold button of a Done or Paused card: it opens the reason line (HoldForm) under the row. */
@@ -1572,7 +1595,9 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return h("div", { className: "rq-card rq-res" },
 				h("div", { className: "rq-card-h", title: canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : "default" }, onClick: canOpen ? (e) => { if (!isButtonClick(e && e.target)) openSession(it); } : undefined }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: canOpen ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
 				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? plainAction(it.summary) : undefined }, resolutionText(it)),
-				canOpen ? h("div", { className: "rq-row" }, h("button", { className: asButton ? "rq-btn pri" : "rq-link", onClick: () => openSession(it) }, asButton ? "Open session" : "Open session ↗")) : null,
+				canOpen ? h("div", { className: "rq-row" },
+					h("button", { className: asButton ? "rq-btn pri" : "rq-link", onClick: () => openSession(it) }, asButton ? "Open session" : "Open session ↗"),
+					canViewChanges() ? h("button", { className: asButton ? "rq-btn" : "rq-link", title: "Open the session and show its changes in the Git tab of the right panel", onClick: () => viewChanges(it) }, "View Changes") : null) : null,
 				reopenable ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/reopen", { id: it.id }, it.id) }, "Reopen")) : null,
 				it.type === "todo" ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn rq-play", disabled: st.busy[it.id], title: reading ? "Stop reading" : "Read the whole todo aloud", "aria-pressed": reading, onClick: () => (reading ? act("/v1/stop", {}, it.id) : act("/v1/read", { id: it.id }, it.id)) }, reading ? "■ Stop reading" : "▶ Read aloud")) : null,
 				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
@@ -1850,6 +1875,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 
 		function apply(ctx) {
 			hostApi.openSession = ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function" ? (id) => ctx.uiWorkspace.openSession(id) : undefined;
+			// The right panel service is read when the button is used, not injected: a DSH without it must not keep this plugin from loading.
+			hostApi.sidebar = typeof ctx.get === "function" ? () => { try { const s = ctx.get("sidebarRight"); return s && typeof s.openTab === "function" ? s : undefined; } catch (_e) { return undefined; } } : undefined;
 			stopped = false;
 			if (state.todoForm.open) { if (isFollowUpForm(state.todoForm)) loadFollowSessions(); else { ensureWorkspaces(); loadEfforts(); } } // a draft restored open needs its dropdown (the workspaces, or for a follow-up the sessions)
 			ctx.effect(() => { pollLoop(); return () => { stopped = true; if (pollCtl) pollCtl.abort(); }; }, "review-queue: polling");
@@ -1872,7 +1899,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldForm, HoldButton, PausedBody, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
-		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });
+		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;
 	}
