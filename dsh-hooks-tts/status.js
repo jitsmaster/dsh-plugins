@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { limitsFromReading } from './claude-limits.js'
+import { NO_WINDOW, addObservation, chartFor, emptyChart, isClaudeProvider, loadBuckets, saveBuckets } from './usage-chart.js'
 import { applyMove, buildGroupsView } from './groups.js'
 import { listSpawned } from './spawned.js'
 import { applyFollowUp } from './handoffs.js'
@@ -67,11 +68,13 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
   // v2: first-sight baselining. Drop v1 events, which included whole-session history as one delta.
   if (ledger.v !== 2) ledger = { v: 2, sessions: ledger.sessions ?? {}, events: [] }
 
+  const claudeEnabled = config.claudeUsage ?? true
   const agents = new Map()
   ctx.on('agent/created', ({ agent }) => { agents.set(agent.id, agent) })
   ctx.on('agent/disposed', (payload) => { agents.delete(payload?.agent?.id ?? payload?.id) })
 
-  let snapshot = { updatedAt: null, sessions: {}, usage: { fiveHour: { tokens: 0, budget: sessionBudget, pct: 0 }, weekly: { tokens: 0, budget: weeklyBudget, pct: 0 } } }
+  const disabledChart = () => emptyChart('disabled', false)
+  let snapshot = { updatedAt: null, sessions: {}, claudeChart: claudeEnabled ? emptyChart(NO_WINDOW) : disabledChart(), usage: { fiveHour: { tokens: 0, budget: sessionBudget, pct: 0 }, weekly: { tokens: 0, budget: weeklyBudget, pct: 0 } } }
 
   const projection = (agent, key) => {
     // snapshot() returns the schema-validated client views; stateOf() would return raw fold state.
@@ -85,8 +88,26 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
   // Claude Code reports with every run; this only reads that file (default <stateDir>/claude-rate-limit.json), so the
   // figures are as fresh as the last Claude call and nothing here can be rate limited or spend a token.
   const rateLimitPath = config.claudeRateLimitFile ?? join(stateDir, 'claude-rate-limit.json')
-  const claudeEnabled = config.claudeUsage ?? true
   let claude = { enabled: claudeEnabled, limits: [], updatedAt: null, error: claudeEnabled ? 'no reading yet (appears after the next Claude Code call)' : 'disabled' }
+
+  // ---- Claude session token chart (docs/usage-chart.md): 5-minute buckets from Claude-provider assistant messages ----
+  const bucketsPath = join(stateDir, 'usage-buckets.json')
+  const buckets = loadBuckets(bucketsPath)
+  let bucketsDirty = false
+  ctx.on('session/event', (_session, event) => {
+    try {
+      if (!claudeEnabled || event?.type !== 'assistant/message' || !event.data?.usage) return
+      if (!isClaudeProvider(event.data.message?.source?.provider, config.claudeProviderIds)) return
+      const at = Number.isFinite(event.time) ? event.time : Date.now()
+      if (addObservation(buckets, { at, usage: event.data.usage }, Date.now())) bucketsDirty = true
+    } catch { /* an odd event must never reach the host */ }
+  })
+  const chartNow = () => {
+    if (!claudeEnabled) return disabledChart()
+    const resetsAt = Date.parse(claude.limits?.find(l => l.kind === 'session')?.resetsAt)
+    return chartFor(buckets, resetsAt, Date.now())
+  }
+
   function refreshClaude() {
     if (!claudeEnabled) return
     try {
@@ -98,7 +119,7 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     } catch (error) {
       claude = { ...claude, error: error?.code === 'ENOENT' ? 'no reading yet (appears after the next Claude Code call)' : String(error?.message ?? error) }
     }
-    snapshot = { ...snapshot, claude }
+    snapshot = { ...snapshot, claude, claudeChart: chartNow() }
   }
 
   async function sample() {
@@ -152,12 +173,14 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
       updatedAt: new Date(now).toISOString(),
       sessions,
       claude,
+      claudeChart: chartNow(),
       usage: {
         fiveHour: { tokens: fiveHour, budget: sessionBudget, pct: pct(fiveHour, sessionBudget) },
         weekly: { tokens: weekly, budget: weeklyBudget, pct: pct(weekly, weeklyBudget) },
       },
     }
     try { writeFileSync(ledgerPath, JSON.stringify(ledger)) } catch { /* non-fatal */ }
+    if (bucketsDirty) { bucketsDirty = false; saveBuckets(bucketsPath, buckets) }
   }
 
   // One sample at a time: the 30s timer and the event-driven requests share this, so two samples can
@@ -341,6 +364,10 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     }), 'hooks-tts: status routes')
   })
 
-  const stop = () => { clearInterval(timer); clearTimeout(sampleTimer) }
+  const stop = () => {
+    clearInterval(timer); clearTimeout(sampleTimer)
+    // Flush buckets observed since the last sample so a shutdown loses nothing (best-effort).
+    try { if (bucketsDirty) { bucketsDirty = false; saveBuckets(bucketsPath, buckets) } } catch { /* non-fatal */ }
+  }
   signal.addEventListener('abort', stop, { once: true })
 }
