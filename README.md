@@ -4,6 +4,7 @@ Plugins for DeepSeek Harness (DSH):
 
 - [dsh-hooks-tts](#dsh-hooks-tts)
 - [dsh-git-view](dsh-git-view/README.md): read-only Git tab (branch/worktree, changes, diffs) in the right sidebar; local only, port 3082.
+- [dsh-api-call-tab](dsh-api-call-tab/README.md): **API Call** tab in the Trajectory details panel (command line, env names, system prompt, tools, stdin of the recorded request).
 - [dsh-review-queue](dsh-review-queue/README.md): **the main feature, DSH multitasking.** One oldest-first list (the Coding Boss Review Queue) of finished work, open questions and permission requests from every session, so you can run many sessions at once and only watch the list; full-screen overlay opened from a button in the session header, also as a phone app. See [Multitasking with the Review Queue](#multitasking-with-the-review-queue).
 - dsh-remote-access: moved to its own private repo, `jitsmaster/dsh-remote-access`.
 

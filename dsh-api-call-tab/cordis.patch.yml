@@ -1,0 +1,5 @@
+- insert:
+    - id: api-call-tab
+      name: dsh-api-call-tab
+      # Read-only tab in the Trajectory details panel. No settings.
+      config: {}

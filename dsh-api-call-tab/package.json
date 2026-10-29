@@ -1,0 +1,25 @@
+{
+  "name": "dsh-api-call-tab",
+  "version": "0.1.0",
+  "description": "Adds an \"API Call\" tab to the details panel of the DSH Trajectory view: the recorded command line, environment variable names, system prompt, tools and stdin of the request behind an assistant message.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "lib", "cordis.patch.yml"],
+  "scripts": {
+    "test": "node --test test/client.test.mjs"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-trajectory"
+      ],
+      "platform": "web"
+    }
+  }
+}
