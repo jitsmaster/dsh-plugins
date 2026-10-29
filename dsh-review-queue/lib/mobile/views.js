@@ -218,6 +218,7 @@ function CompletedBody({ item }) {
     ${item.payload && item.payload.reply ? html`<details open=${detailOpen(st.toggles, item.id, 'reply', replyDefault)} onToggle=${(e) => rememberDetail(item.id, 'reply', e.currentTarget.open, replyDefault)}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>
+      <${ArchiveSessionButton} item=${item} inline onDone=${() => go('/')} />
       <${OnHoldButton} item=${item} />
     </div>
     <${OnHoldForm} item=${item} />
@@ -424,7 +425,7 @@ function Conversation({ item, defaultOpen }) {
   return html`<details class="conversation" open=${open} onToggle=${(e) => rememberDetail(item.id, 'conversation', e.currentTarget.open, firstDefault)}>
     <summary>Conversation${n ? ' (' + n + (t.hasMore ? '+' : '') + ')' : ''}</summary>
     ${open ? html`<${ThreadView} item=${item} />` : null}
-    <${ArchiveSessionButton} item=${item} onDone=${() => go(backHref(item))} />
+    ${item.status === 'open' && item.type === 'completed' ? null : html`<${ArchiveSessionButton} item=${item} onDone=${() => go(backHref(item))} />`}
   </details>`
 }
 
@@ -432,19 +433,19 @@ function Conversation({ item, defaultOpen }) {
  * The Archive button of the session history (under the conversation): archives the item's session (POST /v1/archive-session; running work is stopped), after a confirm sheet.
  * Not on the archive-offer and merged-PR cards while they are open (those have their own Archive session button), and on an open item only while the server flags it archivable (no turn running, no open PR).
  */
-function ArchiveSessionButton({ item, onDone }) {
+function ArchiveSessionButton({ item, onDone, inline }) {
   const st = useStore()
   const [ask, setAsk] = useState(false)
   const busy = st.busy[item.id]
   const open = item.status === 'open'
   if (open && (item.type === 'archive' || item.type === 'pr-merged' || item.archivable !== true)) return null // an open item's session is archivable only when the server says so: nothing running, no open PR
   if (!hasThread(item) || (item.resolution && (item.resolution.kind === 'archived' || item.resolution.kind === 'session-ended'))) return null // no session, or already archived
-  return html`<div class="row">
-    <button class="btn" disabled=${busy} onClick=${() => setAsk(true)}>${busy ? 'Archiving…' : 'Archive session…'}</button>
+  const parts = html`<button class="btn" disabled=${busy} onClick=${() => setAsk(true)}>${busy ? 'Archiving…' : 'Archive session…'}</button>
     ${ask ? html`<${Sheet} title="Archive this session?" lines=${[item.sessionTitle || 'This session', 'Anything it is still running is stopped.']} confirmLabel="Archive"
       onConfirm=${async () => { setAsk(false); if (await act('/v1/archive-session', { id: item.id }, item.id) && onDone) onDone() }} onCancel=${() => setAsk(false)} />` : null}
-    ${st.errors[item.id] && !open ? html`<div class="err">${st.errors[item.id]}</div>` : null}
-  </div>`
+    ${st.errors[item.id] && !open ? html`<div class="err">${st.errors[item.id]}</div>` : null}`
+  // inline: the buttons go straight into the caller's action row (an open Done card); otherwise they get a row of their own.
+  return inline ? parts : html`<div class="row">${parts}</div>`
 }
 
 /** Grows the box with its text; the style caps it at about five lines (then it scrolls). */
