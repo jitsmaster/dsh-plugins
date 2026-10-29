@@ -4,10 +4,22 @@ Plugins for DeepSeek Harness (DSH):
 
 - [dsh-hooks-tts](#dsh-hooks-tts)
 - [dsh-git-view](dsh-git-view/README.md): read-only Git tab (branch/worktree, changes, diffs) in the right sidebar; local only, port 3082.
-- [dsh-review-queue](dsh-review-queue/README.md): oldest-first review queue of finished work, open questions and permission requests from every session; full-screen overlay opened from a button in the session header.
+- [dsh-review-queue](dsh-review-queue/README.md): **the main feature, DSH multitasking.** One oldest-first list (the Coding Boss Review Queue) of finished work, open questions and permission requests from every session, so you can run many sessions at once and only watch the list; full-screen overlay opened from a button in the session header, also as a phone app. See [Multitasking with the Review Queue](#multitasking-with-the-review-queue).
 - dsh-remote-access: moved to its own private repo, `jitsmaster/dsh-remote-access`.
 
 Branches: `main` holds stable, release-ready code only; day-to-day work happens on `develop`.
+
+## Multitasking with the Review Queue
+
+The main feature of this repo is `dsh-review-queue` (called **Coding Boss Review Queue** on screen). It turns DSH into a multitasking tool: start many sessions, then work from one list instead of switching between them.
+
+- **One list for every session.** Finished work (Done), open questions, permission requests, merged PRs and parked sessions (On hold) from all sessions land in one oldest-first queue. Done messages with nothing for you are filtered out, and a question you answer in its own session leaves the list by itself.
+- **Start work without watching it.** *+ New todo* creates a session in the background from a task text, in a workspace you pick or one the plugin suggests (it always waits for your confirmation when it chose). *Use SPARC* adds the SPARC flow. A task that names an Azure DevOps ticket gives the session a `Fix:`, `Task:` or `Feat:` title. *Follow up* sends a message to an existing session you describe in words.
+- **Answer in place.** Reply to a Done card, answer a question, approve or deny a permission (risky commands are flagged), or put a session *On hold* until its ticket changes. Timed questions with a recommended option are answered automatically shortly before they time out. Keyboard: `j`/`k`, `r`, `e`, `Shift+A`, `Shift+D`; `Ctrl+Alt+L` opens or closes the list.
+- **Keep sessions moving.** Sessions that stopped before their work was done are resumed, idle sessions can ask whether to continue or be archived, and a session with an open PR is protected from archiving (with `dsh-hooks-tts`). *Archive session* and *View Changes* (opens the session's Git tab) are on the cards.
+- **Everywhere.** Every DSH app shares one list through a small local hub, the phone gets the same list as an installable web app with push notifications, and the Windows taskbar shows the waiting count.
+
+Details, settings and the HTTP API: [dsh-review-queue/README.md](dsh-review-queue/README.md).
 
 ## dsh-hooks-tts
 
@@ -86,6 +98,7 @@ Defaults live in [`dsh-hooks-tts/cordis.patch.yml`](dsh-hooks-tts/cordis.patch.y
 | `handoffAhead` | With auto-resume on, hand off at the start of a turn when the next chunk of work (the largest growth of the last three finished turns, needs two) would not fit under the cap or the model window | true |
 | `skipSubagents` | Don't run hooks for subagents | `true` |
 | `refreshIntervalMs`, `sessionBudgetTokens`, `weeklyBudgetTokens` | Status widget sampling and budgets | 30 s / 30M / 200M |
+| `claudeProviderIds` | Provider ids whose sessions count in the Claude session token chart | `["claude-code"]` (default lives in code, not `cordis.patch.yml`) |
 
 Runtime settings (editable from the *Hooks and Usage* page, stored in `~/.dsh/tts/settings.json`, re-read on every step): `contextCapTokens`, `warnPercent`, `ttsEnabled`, `autoResumeHandoff`, `archiveAfterHandoff`, `handoffAhead`, `pollPrComments`, `protectPrSessions`, `alwaysFullAccess`, `decideChime` (voice control: singing bowl while the LLM decides, default on). A saved value wins over the config default.
 
@@ -116,7 +129,7 @@ A change made through the settings API (`POST` to the status service's `/setting
 
 ### Files and state
 
-State lives in `~/.dsh/tts/`: `settings.json`, `config.local.json`, `spawn.log`, `worktrees.json`, `handoffs.json`, `usage-ledger.json`, `tts-failures.log`. Nothing is written outside that folder and `handoffDir`.
+State lives in `~/.dsh/tts/`: `settings.json`, `config.local.json`, `spawn.log`, `worktrees.json`, `handoffs.json`, `usage-ledger.json`, `usage-buckets.json`, `tts-failures.log`. Nothing is written outside that folder and `handoffDir`.
 
 ### Security notes
 
