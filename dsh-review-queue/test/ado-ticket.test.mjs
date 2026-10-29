@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { findTicket, fetchTicketTitle, ticketTitleFor, DEFAULT_ADO_BASE } from '../ado-ticket.js'
+import { findTicket, fetchTicketTitle, fetchTicketInfo, ticketTitleFor, DEFAULT_ADO_BASE } from '../ado-ticket.js'
 import { createStore } from '../store.js'
 import { createReviewQueue } from '../service.js'
 
@@ -51,6 +51,30 @@ test('ticketTitleFor: "Fix: <ticket title> - <number>", the number kept when the
   assert.equal(await ticketTitleFor(text, { env: {} }), 'Fix: Work on and keep it small - 4711')
   assert.equal(await ticketTitleFor('https://dev.azure.com/acme/Proj/_workitems/edit/4711', { env: {} }), 'Fix: ticket 4711 - 4711')
   assert.equal(await ticketTitleFor('Fix the login redirect', { env: ENV, fetchImpl: reply('never asked') }), undefined)
+})
+
+const replyTyped = (title, type) => async () => ({ ok: true, status: 200, json: async () => ({ fields: { 'System.Title': title, ...(type === undefined ? {} : { 'System.WorkItemType': type }) } }) })
+
+test('ticketTitleFor: the prefix follows the work item type (Bug "Fix: ", Task "Task: ", Feature / User Story "Feat: "), unknown or unreadable type keeps "Fix: "', async () => {
+  const text = 'Work on AB#4711'
+  const titleFor = (type) => ticketTitleFor(text, { env: ENV, fetchImpl: replyTyped('Menu is broken', type) })
+  assert.equal(await titleFor('Bug'), 'Fix: Menu is broken - 4711')
+  assert.equal(await titleFor('Task'), 'Task: Menu is broken - 4711')
+  assert.equal(await titleFor('task'), 'Task: Menu is broken - 4711')
+  assert.equal(await titleFor('Feature'), 'Feat: Menu is broken - 4711')
+  assert.equal(await titleFor('User Story'), 'Feat: Menu is broken - 4711')
+  assert.equal(await titleFor('Product Backlog Item'), 'Feat: Menu is broken - 4711')
+  assert.equal(await titleFor('Epic'), 'Feat: Menu is broken - 4711')
+  assert.equal(await titleFor('Issue'), 'Fix: Menu is broken - 4711')
+  assert.equal(await titleFor(undefined), 'Fix: Menu is broken - 4711')
+  assert.equal(await ticketTitleFor(text, { env: {} }), 'Fix: Work on - 4711', 'no PAT: the type is unknown')
+})
+
+test('fetchTicketInfo asks for the title and the work item type in one call', async () => {
+  let seen
+  const info = await fetchTicketInfo({ id: '4711', base: 'https://dev.azure.com/acme/Proj' }, { env: ENV, fetchImpl: async (url) => { seen = String(url); return replyTyped('Login loops', 'Task')() } })
+  assert.deepEqual(info, { title: 'Login loops', type: 'Task' })
+  assert.match(seen, /fields=System\.Title,System\.WorkItemType/)
 })
 
 test('a todo that mentions a ticket starts a session titled "Fix: <title> - <number>"; one that does not keeps the first-line title', async () => {

@@ -11,8 +11,8 @@ import { isHumanMessage } from './signals.js'
 
 const HOLD_PREFIX_RE = /^\u23f8\ufe0f?\s*/
 const PR_TITLE_RE = /^(?:Continue )?PR \d+/
-/** "Fix: <title> - <number>" with anything after the number ("- 2", "- after PR 5"). */
-const TICKET_TITLE_RE = /^Fix: .+ - \d{3,9}(?:\s+-\s+.*)?$/
+/** "<Fix|Task|Feat>: <title> - <number>" with anything after the number ("- 2", "- after PR 5"); also behind a "PR <n> - " prefix. */
+const TICKET_TITLE_RE = /^(?:Fix|Task|Feat): .+ - \d{3,9}(?:\s+-\s+.*)?$/
 
 const textOf = (content) => (typeof content === 'string' ? content : Array.isArray(content) ? content.map((p) => (typeof p === 'string' ? p : p?.type === 'text' && typeof p.text === 'string' ? p.text : '')).join('') : '')
 const withoutReminders = (text) => text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')

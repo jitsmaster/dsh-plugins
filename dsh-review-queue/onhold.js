@@ -10,8 +10,8 @@ import { randomUUID } from 'node:crypto'
 import { DEFAULT_ADO_BASE, diffTicket, findTicket } from './ado-ticket.js'
 import { PROMPT_TIMEOUT_MS } from './follow-up-shared.js'
 
-/** A session title "Fix: <ticket title> - <number>" (ticket-session.js) names its ticket; a hold prefix is ignored. */
-const TITLE_TICKET_RE = /^(?:\u23f8\ufe0f?\s*)?Fix: .+ - (\d{3,9})(?:\s+-\s+.*)?$/u
+/** A session title "<Fix|Task|Feat>: <ticket title> - <number>" (ticket-session.js) names its ticket; a hold prefix is ignored. */
+const TITLE_TICKET_RE = /^(?:\u23f8\ufe0f?\s*)?(?:Fix|Task|Feat): .+ - (\d{3,9})(?:\s+-\s+.*)?$/u
 const MAX_REASON = 300
 
 const clean = (text, max) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, max)

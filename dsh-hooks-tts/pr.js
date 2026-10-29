@@ -23,10 +23,10 @@ import { APPROVAL_SPEC, createPrSchedule, installPrScheduleHooks, taskTitle, tex
 
 export const PR_TITLE = /^PR \d+/
 /**
- * The title the Task list (dsh-review-queue) gives a session started from an Azure DevOps ticket: "Fix: <ticket title> - <ticket number>",
- * with the numbered-continuation suffix (" - 2") the plugin may have added. The ticket number has 3 or more digits, a counter at most 2.
+ * The title the Task list (dsh-review-queue) gives a session started from an Azure DevOps ticket: "<Fix|Task|Feat>: <ticket title> - <ticket number>"
+ * (Bug, Task, Feature / User Story), with the numbered-continuation suffix (" - 2") the plugin may have added. The ticket number has 3 or more digits, a counter at most 2.
  */
-export const TICKET_TITLE = /^(Fix: .+ - \d{3,9})(?: - (\d{1,2}))?$/
+export const TICKET_TITLE = /^((?:Fix|Task|Feat): .+ - \d{3,9})(?: - (\d{1,2}))?$/
 
 /**
  * The title of the session that continues a PR: "PR <id>"; for ticket work ("Fix: <title> - <number>") the PR number is put in front of

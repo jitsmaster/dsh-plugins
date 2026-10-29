@@ -1,6 +1,6 @@
 /**
  * Azure DevOps ticket in a todo: when the task text mentions a work item, the session it starts is titled
- * "Fix: <title of the ticket> - <number of the ticket>" instead of the first line of the text. (dsh-hooks-tts adds "PR <n> - " in
+ * "<Fix|Task|Feat>: <title of the ticket> - <number of the ticket>" (by work item type) instead of the first line of the text. (dsh-hooks-tts adds "PR <n> - " in
  * front of such a title when the PR for this work is created.)
  *
  * A mention is, first one wins:
@@ -51,22 +51,28 @@ export function findTicket(text, { defaultBase = DEFAULT_ADO_BASE } = {}) {
   return undefined
 }
 
-/** The ticket's title from Azure DevOps; undefined when it cannot be read. Never throws. */
-export async function fetchTicketTitle(ref, { env = process.env, fetchImpl = globalThis.fetch, timeoutMs = FETCH_TIMEOUT_MS, log = () => {} } = {}) {
+/** The ticket's { title, type } (System.Title, System.WorkItemType) from Azure DevOps; undefined when it cannot be read. Never throws. */
+export async function fetchTicketInfo(ref, { env = process.env, fetchImpl = globalThis.fetch, timeoutMs = FETCH_TIMEOUT_MS, log = () => {} } = {}) {
   const pat = env?.AZURE_DEVOPS_EXT_PAT
   if (!pat) { log('ado-ticket: AZURE_DEVOPS_EXT_PAT is not set; the title of ticket ' + ref.id + ' is not looked up'); return undefined }
   let url
-  try { url = new URL(ref.base + '/_apis/wit/workitems/' + ref.id + '?fields=System.Title&api-version=' + API_VERSION) } catch { return undefined }
+  try { url = new URL(ref.base + '/_apis/wit/workitems/' + ref.id + '?fields=System.Title,System.WorkItemType&api-version=' + API_VERSION) } catch { return undefined }
   if (url.protocol !== 'https:' || !trustedHost(url.hostname.toLowerCase())) { log('ado-ticket: not asking ' + url.hostname + ' (the PAT only goes to dev.azure.com and visualstudio.com)'); return undefined }
   const scrub = (value) => String(value?.message ?? value).split(pat).join('***').split(Buffer.from(':' + pat).toString('base64')).join('***')
   try {
     const res = await fetchImpl(url, { headers: { Authorization: 'Basic ' + Buffer.from(':' + pat).toString('base64'), Accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) })
     if (!res.ok) { log('ado-ticket: ticket ' + ref.id + ' answered HTTP ' + res.status); return undefined }
-    const title = (await res.json())?.fields?.['System.Title']
+    const fields = (await res.json())?.fields
+    const title = fields?.['System.Title']
     const clean = typeof title === 'string' ? cleanText(title, { maxChars: MAX_TICKET_TITLE }) : ''
-    return clean || undefined
+    if (!clean) return undefined
+    const type = fields?.['System.WorkItemType']
+    return { title: clean, type: typeof type === 'string' ? type : undefined }
   } catch (error) { log('ado-ticket: ticket ' + ref.id + ' lookup failed: ' + scrub(error)); return undefined }
 }
+
+/** The ticket's title from Azure DevOps; undefined when it cannot be read. Never throws. */
+export async function fetchTicketTitle(ref, deps = {}) { return (await fetchTicketInfo(ref, deps))?.title }
 
 /** The task text without its URLs and ticket words, first line only: the fallback wording when the ticket title is unknown. */
 function fallbackTitle(text) {
@@ -74,19 +80,30 @@ function fallbackTitle(text) {
   return line.length > MAX_TICKET_TITLE ? cleanText(line, { maxChars: MAX_TICKET_TITLE }) : line
 }
 
-/** "Fix: <title> - <number>". */
-export const ticketSessionTitle = (title, id) => 'Fix: ' + title + ' - ' + id
+/**
+ * The session title prefix for a work item type: a Bug is "Fix: ", a Task "Task: ", a feature request or user story (Feature, User Story, Product
+ * Backlog Item, Epic) "Feat: ". An unknown or unreadable type keeps "Fix: " (the original wording).
+ */
+export function ticketPrefix(type) {
+  const t = String(type ?? '').trim().toLowerCase()
+  if (t === 'task') return 'Task: '
+  if (t === 'feature' || t === 'user story' || t === 'product backlog item' || t === 'epic') return 'Feat: '
+  return 'Fix: '
+}
+
+/** "<Fix|Task|Feat>: <title> - <number>". */
+export const ticketSessionTitle = (title, id, type) => ticketPrefix(type) + title + ' - ' + id
 
 /**
- * The session title for a text that mentions an ADO ticket ("Fix: <ticket title> - <number>"), or undefined when it mentions none.
+ * The session title for a text that mentions an ADO ticket ("<Fix|Task|Feat>: <ticket title> - <number>"), or undefined when it mentions none.
  * @param {string} text
  * @param {{ env?: object, fetchImpl?: typeof fetch, timeoutMs?: number, defaultBase?: string, log?: (line: string) => void }} [deps]
  */
 export async function ticketTitleFor(text, deps = {}) {
   const ref = findTicket(text, deps)
   if (!ref) return undefined
-  const title = (await fetchTicketTitle(ref, deps)) ?? (fallbackTitle(text) || 'ticket ' + ref.id)
-  return ticketSessionTitle(title, ref.id)
+  const info = await fetchTicketInfo(ref, deps)
+  return ticketSessionTitle(info?.title ?? (fallbackTitle(text) || 'ticket ' + ref.id), ref.id, info?.type)
 }
 
 const STATE_FIELDS = ['System.State', 'System.AssignedTo', 'System.Description', 'System.CommentCount']

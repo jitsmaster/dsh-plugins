@@ -31,6 +31,14 @@ test('hold adds one open onhold item with the reason, the time and the ticket fo
   assert.equal(calls.state.length, 1)
 })
 
+test('hold finds the ticket in a Task: or Feat: session title too', async () => {
+  for (const title of ['Task: Clean up logs - 25751', 'Feat: Dark mode - 25751 - 2', '\u23f8\ufe0f Task: x - 25751']) {
+    const { store, hold } = setup()
+    await hold.hold({ ...SESSION, sessionTitle: title })
+    assert.equal(open(store)[0].payload.ticket?.id, '25751', title)
+  }
+})
+
 test('the ticket can come from the words typed with the command (AB#n, a work item URL) and wins over the title', async () => {
   const { store, hold } = setup()
   await hold.hold({ ...SESSION, text: 'on hold until AB#30001 is answered' })

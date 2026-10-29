@@ -78,6 +78,10 @@ test('a title that cannot be found, or the setting off, renames nothing', async 
 test('keepsTitle', () => {
   assert.ok(keepsTitle('PR 9'))
   assert.ok(keepsTitle('Fix: a - b - 12345'))
+  assert.ok(keepsTitle('Task: a - 12345'))
+  assert.ok(keepsTitle('\u23f8\ufe0f Feat: a - 12345 - 2'))
+  assert.ok(keepsTitle('PR 42 - Task: a - 12345'))
+  assert.ok(!keepsTitle('Chore: a - 12345'))
   assert.ok(!keepsTitle('Fix the menu'))
   assert.ok(!keepsTitle(undefined))
 })
