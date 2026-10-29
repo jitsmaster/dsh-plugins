@@ -81,7 +81,14 @@ export function createRouting({ store, queue, instances, commands, log = () => {
 
   /** The coordinator takes an ownerless open item (it is handed a copy first, commands of one app run in order), runs the action and keeps it on success. */
   /** A paused card whose owner is gone: nobody can run resume / dismiss there, any online app can (it has the session log on the same machine). */
-  const goneOwnedPaused = (kind, item) => item.type === 'paused' && PAUSED_ACTIONS.includes(kind) && (instances.get(item.owner)?.state ?? 'gone') === 'gone'
+  const ownerGone = (item) => (instances.get(item.owner)?.state ?? 'gone') === 'gone'
+  /** A held card whose owner is gone: Continue is run by the coordinator (it adopts the item, like a paused one); Release is settled by the hub itself (releaseOrphanHold). */
+  const goneOwnedPaused = (kind, item) => ownerGone(item) && ((item.type === 'paused' && PAUSED_ACTIONS.includes(kind)) || (item.type === 'onhold' && kind === 'hold-continue'))
+
+  /** Release of a held card whose app is gone: nothing to run there, so the hub takes the session off hold itself (resolved as released, shown under Resolved). */
+  function releaseOrphanHold(item) {
+    return store.resolve(item.id, { kind: 'released', by: 'card' }) ? { ok: true } : { ok: false, error: 'not-open' }
+  }
 
   async function actOnOrphan(kind, item, body, via, caller) {
     // A post resolves only a done item (as replied), so only that one is worth taking: any other type would be adopted without anything to show for it.
@@ -165,6 +172,7 @@ export function createRouting({ store, queue, instances, commands, log = () => {
       const via = role === 'device' ? 'phone' : 'desktop'
       const refused = guard(kind, item, body, via)
       if (refused) return refused
+      if (kind === 'hold-release' && item.type === 'onhold' && ownerGone(item)) return releaseOrphanHold(item)
       if (item.status === 'open' && (item.owner === undefined || goneOwnedPaused(kind, item))) return actOnOrphan(kind, item, body, via, caller)
       return runOwned(kind, item, body, via)
     },
