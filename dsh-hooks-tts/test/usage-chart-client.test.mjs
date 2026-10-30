@@ -145,6 +145,17 @@ test('ClaudeChart renders heading, caption, svg, legend and aria-label from the 
   for (const s of ['Tokens this session window', 'DSH sessions only, per 5 min', 'All', 'Input', 'Context (right axis)', 'Output', 'Reasoning']) assert.ok(t.includes(s), s)
 })
 
+test('All is drawn as a wide translucent band behind Input, so it stays visible where the two coincide', () => {
+  const pts = [point(0, { all: 1000, input: 995, output: 5, context: 100 }), point(1, { all: 2000, input: 1990, output: 10, context: 200 })]
+  const lines = walk(T.ClaudeChart({ chart: chart(pts) })).filter((n) => n.type === 'polyline')
+  const at = (k) => lines.findIndex((n) => n.props.stroke === { all: '#8b5cf6', input: '#3b82f6' }[k])
+  const all = lines[at('all')], input = lines[at('input')]
+  assert.ok(all && input)
+  assert.ok(at('all') < at('input'), 'All is drawn first, Input on top')
+  assert.ok(all.props.strokeWidth >= 2 * input.props.strokeWidth, 'All is much wider than Input')
+  assert.ok(all.props.strokeOpacity < 1, 'All is translucent')
+})
+
 test('ClaudeChart without a window shows only the note; disabled renders nothing', () => {
   const noWin = T.ClaudeChart({ chart: chart([], { window: null, note: 'no current Claude session window' }) })
   assert.equal(walk(noWin).some((n) => n.type === 'svg'), false)

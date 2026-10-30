@@ -420,10 +420,11 @@ window.__ModuleLoader__.load({
 			const out = chartModel(chart, 480, 110, OUTPUT_PANEL);
 			const faint = { stroke: "currentColor", strokeOpacity: 0.2 };
 			const tick = (axis, anchor, x) => axis.ticks.map((t) => h("text", { key: anchor + t.value, x, y: t.y + 3, textAnchor: anchor, fontSize: 9, fill: "currentColor", fillOpacity: 0.6 }, t.label));
-			const poly = (key, points, color, dashed) => h("polyline", { key, points, fill: "none", stroke: color, strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: dashed ? "4 3" : undefined });
+			// All = input + output, and output is ~0.5% of input, so All lies exactly under Input: a wide translucent band (drawn first) keeps it visible.
+			const poly = (key, points, color, dashed, wide) => h("polyline", { key, points, fill: "none", stroke: color, strokeWidth: wide ? 6 : 1.5, strokeOpacity: wide ? 0.45 : 1, strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: dashed ? "4 3" : undefined });
 			const panel = (m, height, name) => {
 				const { plot: p } = m;
-				const lines = m.legend.flatMap((l) => (l.key === "context" ? m.series.context : [m.series[l.key]]).map((pts, i) => poly(l.key + i, pts, l.color, l.dashed)));
+				const lines = m.legend.flatMap((l) => (l.key === "context" ? m.series.context : [m.series[l.key]]).map((pts, i) => poly(l.key + i, pts, l.color, l.dashed, l.key === "all")));
 				return h("div", { key: name },
 					h("svg", { viewBox: "0 0 480 " + height, width: "100%", role: "img", "aria-label": name + " per 5 minutes in the current Claude session window: " + m.legend.map((l) => l.label).join(", ") },
 						m.left.ticks.map((t) => h("line", { key: "g" + t.value, x1: p.x, x2: p.x + p.w, y1: t.y, y2: t.y, ...faint })),
@@ -433,7 +434,7 @@ window.__ModuleLoader__.load({
 						lines),
 					h("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px 12px", fontSize: 11, marginTop: 4 } },
 						m.legend.map((l) => h("span", { key: l.key, style: { display: "inline-flex", alignItems: "center", gap: 4 } },
-							h("span", { style: { width: 14, height: 0, borderTop: "2px " + (l.dashed ? "dashed " : "solid ") + l.color } }), l.label))));
+							h("span", { style: { width: 14, height: 0, borderTop: (l.key === "all" ? "5px" : "2px") + " " + (l.dashed ? "dashed " : "solid ") + l.color, opacity: l.key === "all" ? 0.6 : 1 } }), l.label))));
 			};
 			return h("div", { style: { marginTop: 16 } },
 				h("div", { style: { fontSize: 13, fontWeight: 600 } }, "Tokens this session window"),
