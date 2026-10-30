@@ -376,16 +376,25 @@ window.__ModuleLoader__.load({
 				err ? h("div", { style: { color: "#e5484d", marginTop: 6, fontSize: 12 } }, err) : null);
 		}
 		// Token chart: chartModel is pure (all geometry), ClaudeChart only draws it.
-		const CHART_LINES = [["all", "All", "#8b5cf6"], ["input", "Input", "#3b82f6"], ["context", "Context (right axis)", "#f59e0b"], ["output", "Output", "#22c55e"], ["reasoning", "Reasoning", "#ec4899"]];
+		// The prompt (input) is shown by what it is made of: cache read dominates, so it gets the main panel with Context;
+		// cache write and fresh input (the part actually typed this step) are small and share the second panel with Output and Reasoning.
+		const CHART_LINES = [["cacheRead", "Cache read", "#3b82f6"], ["context", "Context (right axis)", "#f59e0b"], ["cacheWrite", "Cache write", "#8b5cf6"], ["fresh", "Fresh input", "#14b8a6"], ["output", "Output", "#22c55e"], ["reasoning", "Reasoning", "#ec4899"]];
 		function niceMax(v) {
 			if (!(v > 1)) return 1;
 			const p = Math.pow(10, Math.floor(Math.log10(v))), f = v / p;
 			return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
 		}
-		// Two panels, each with its own scale: cache traffic makes All/Input a thousand times larger than Output/Reasoning,
-		// which would otherwise sit flat on the baseline.
-		const MAIN_PANEL = { flows: ["all", "input"], context: true };
-		const OUTPUT_PANEL = { flows: ["output", "reasoning"], context: false };
+		// Two panels, each with its own scale: cache read is a thousand times larger than the rest, which would otherwise sit flat on the baseline.
+		const MAIN_PANEL = { flows: ["cacheRead"], context: true };
+		const OUTPUT_PANEL = { flows: ["cacheWrite", "fresh", "output", "reasoning"], context: false };
+		// Share of the prompt over the whole window: raw percentages of cache read, cache write and fresh input; null with no input.
+		function inputMix(chart) {
+			if (!chart || !chart.points) return null;
+			const sum = (k) => chart.points.reduce((a, p) => a + (p[k] || 0), 0);
+			const cacheRead = sum("cacheRead"), cacheWrite = sum("cacheWrite"), fresh = sum("fresh"), total = cacheRead + cacheWrite + fresh;
+			if (!(total > 0)) return null;
+			return { cacheRead: cacheRead * 100 / total, cacheWrite: cacheWrite * 100 / total, fresh: fresh * 100 / total };
+		}
 		function chartModel(chart, width, height, panel) {
 			if (!chart || chart.enabled === false || !chart.window || !chart.points || !chart.points.length) return null;
 			const pn = panel || MAIN_PANEL;
@@ -420,11 +429,12 @@ window.__ModuleLoader__.load({
 			const out = chartModel(chart, 480, 110, OUTPUT_PANEL);
 			const faint = { stroke: "currentColor", strokeOpacity: 0.2 };
 			const tick = (axis, anchor, x) => axis.ticks.map((t) => h("text", { key: anchor + t.value, x, y: t.y + 3, textAnchor: anchor, fontSize: 9, fill: "currentColor", fillOpacity: 0.6 }, t.label));
-			// All = input + output, and output is ~0.5% of input, so All lies exactly under Input: a wide translucent band (drawn first) keeps it visible.
-			const poly = (key, points, color, dashed, wide) => h("polyline", { key, points, fill: "none", stroke: color, strokeWidth: wide ? 6 : 1.5, strokeOpacity: wide ? 0.45 : 1, strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: dashed ? "4 3" : undefined });
+			const poly = (key, points, color, dashed) => h("polyline", { key, points, fill: "none", stroke: color, strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", strokeDasharray: dashed ? "4 3" : undefined });
+			const mix = inputMix(chart);
+			const share = (v) => { const r = v.toFixed(1); return r === "0.0" && v > 0 ? "<0.1%" : r + "%"; };
 			const panel = (m, height, name) => {
 				const { plot: p } = m;
-				const lines = m.legend.flatMap((l) => (l.key === "context" ? m.series.context : [m.series[l.key]]).map((pts, i) => poly(l.key + i, pts, l.color, l.dashed, l.key === "all")));
+				const lines = m.legend.flatMap((l) => (l.key === "context" ? m.series.context : [m.series[l.key]]).map((pts, i) => poly(l.key + i, pts, l.color, l.dashed)));
 				return h("div", { key: name },
 					h("svg", { viewBox: "0 0 480 " + height, width: "100%", role: "img", "aria-label": name + " per 5 minutes in the current Claude session window: " + m.legend.map((l) => l.label).join(", ") },
 						m.left.ticks.map((t) => h("line", { key: "g" + t.value, x1: p.x, x2: p.x + p.w, y1: t.y, y2: t.y, ...faint })),
@@ -434,14 +444,15 @@ window.__ModuleLoader__.load({
 						lines),
 					h("div", { style: { display: "flex", flexWrap: "wrap", gap: "2px 12px", fontSize: 11, marginTop: 4 } },
 						m.legend.map((l) => h("span", { key: l.key, style: { display: "inline-flex", alignItems: "center", gap: 4 } },
-							h("span", { style: { width: 14, height: 0, borderTop: (l.key === "all" ? "5px" : "2px") + " " + (l.dashed ? "dashed " : "solid ") + l.color, opacity: l.key === "all" ? 0.6 : 1 } }), l.label))));
+							h("span", { style: { width: 14, height: 0, borderTop: "2px " + (l.dashed ? "dashed " : "solid ") + l.color } }), l.label))));
 			};
 			return h("div", { style: { marginTop: 16 } },
 				h("div", { style: { fontSize: 13, fontWeight: 600 } }, "Tokens this session window"),
 				h("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 } }, "DSH sessions only, per 5 min"),
 				panel(main, 180, "Token usage"),
-				out ? h("div", { style: { fontSize: 11, opacity: 0.6, margin: "8px 0 4px" } }, "Output and reasoning (own scale)") : null,
-				out ? panel(out, 110, "Output and reasoning") : null);
+				out ? h("div", { style: { fontSize: 11, opacity: 0.6, margin: "8px 0 4px" } }, "Small parts of the prompt, and output (own scale)") : null,
+				out ? panel(out, 110, "Cache write, fresh input, output and reasoning") : null,
+				mix ? h("div", { style: { fontSize: 11, opacity: 0.8, marginTop: 8 } }, "Input mix: cache read " + share(mix.cacheRead) + " \u00b7 cache write " + share(mix.cacheWrite) + " \u00b7 fresh input " + share(mix.fresh)) : null);
 		}
 		function UsagePage() {
 			const { status: s, failed: bad } = useStatus();
@@ -975,7 +986,7 @@ window.__ModuleLoader__.load({
 
 		exports.inject = inject;
 		exports.apply = apply;
-		exports.__test = { gtApply, sidebarStyleText, ensureSidebarStyle, removeGroupTree, planGroupTree, chartModel, ClaudeChart, UsagePage, Bar, poll };
+		exports.__test = { gtApply, sidebarStyleText, ensureSidebarStyle, removeGroupTree, planGroupTree, chartModel, inputMix, OUTPUT_PANEL, ClaudeChart, UsagePage, Bar, poll };
 		return module.exports;
 	}
 });

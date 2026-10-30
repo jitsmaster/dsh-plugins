@@ -1,7 +1,8 @@
 /**
  * Token buckets for the Claude session chart on the Hooks and Usage page.
  * Pure bucketing and slicing, plus two small file helpers; see docs/usage-chart.md.
- * A bucket is { t, input, output, reasoning, ctx } keyed by its 5-minute start time.
+ * A bucket is { t, input, output, reasoning, ctx, fresh, cacheRead, cacheWrite } keyed by its 5-minute start time;
+ * input = fresh + cacheRead + cacheWrite.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 
@@ -37,10 +38,13 @@ export function addObservation(buckets, { at, usage } = {}, now = Date.now()) {
   const t = bucketStart(at)
   let bucket = buckets.find(b => b.t === t)
   if (!bucket) {
-    bucket = { t, input: 0, output: 0, reasoning: 0, ctx: 0 }
+    bucket = { t, input: 0, output: 0, reasoning: 0, ctx: 0, fresh: 0, cacheRead: 0, cacheWrite: 0 }
     buckets.push(bucket)
     buckets.sort((a, b) => a.t - b.t)
   }
+  bucket.fresh += usage.inputTokens
+  bucket.cacheRead += count(usage.cacheReadTokens)
+  bucket.cacheWrite += count(usage.cacheWriteTokens)
   bucket.input += prompt
   bucket.output += usage.outputTokens
   bucket.reasoning += count(usage.reasoningTokens)
@@ -70,6 +74,9 @@ export function chartFor(buckets, windowEndMs, now = Date.now()) {
       input: b?.input ?? 0,
       output: b?.output ?? 0,
       reasoning: b?.reasoning ?? 0,
+      fresh: b?.fresh ?? 0,
+      cacheRead: b?.cacheRead ?? 0,
+      cacheWrite: b?.cacheWrite ?? 0,
       context: b ? b.ctx : null,
     })
   }
@@ -83,14 +90,17 @@ export function chartFor(buckets, windowEndMs, now = Date.now()) {
 }
 
 const valid = (b) => b && required(b.t) && [b.input, b.output, b.reasoning, b.ctx].every(v => required(v) && v <= MAX_STORED)
+// The prompt split arrived after the first buckets were saved: a missing value is 0, a present one must be sane.
+const SPLIT = ['fresh', 'cacheRead', 'cacheWrite']
+const validSplit = (b) => SPLIT.every(k => b[k] === undefined || (required(b[k]) && b[k] <= MAX_STORED))
 
 export function loadBuckets(path, now = Date.now()) {
   try {
     const data = JSON.parse(readFileSync(path, 'utf8'))
     if (data?.v !== 1 || !Array.isArray(data.buckets)) return []
     return data.buckets
-      .filter(b => valid(b) && b.t >= now - RETAIN_MS && b.t <= now + BUCKET_MS)
-      .map(b => ({ t: b.t, input: b.input, output: b.output, reasoning: b.reasoning, ctx: b.ctx }))
+      .filter(b => valid(b) && validSplit(b) && b.t >= now - RETAIN_MS && b.t <= now + BUCKET_MS)
+      .map(b => ({ t: b.t, input: b.input, output: b.output, reasoning: b.reasoning, ctx: b.ctx, fresh: b.fresh ?? 0, cacheRead: b.cacheRead ?? 0, cacheWrite: b.cacheWrite ?? 0 }))
       .sort((a, b) => a.t - b.t)
       .slice(-MAX_BUCKETS)
   } catch { return [] }

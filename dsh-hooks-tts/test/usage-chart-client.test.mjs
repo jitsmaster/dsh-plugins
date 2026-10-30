@@ -27,7 +27,7 @@ const T = load()
 
 const START = Date.parse('2026-10-29T10:00:00.000Z')
 const iso = (ms) => new Date(ms).toISOString()
-const point = (i, over = {}) => ({ t: iso(START + i * 300000), all: 0, input: 0, output: 0, reasoning: 0, context: null, ...over })
+const point = (i, over = {}) => ({ t: iso(START + i * 300000), all: 0, input: 0, output: 0, reasoning: 0, fresh: 0, cacheRead: 0, cacheWrite: 0, context: null, ...over })
 const chart = (points, over = {}) => ({ enabled: true, window: { start: iso(START), end: iso(START + 5 * 3600000) }, bucketMs: 300000, points, note: null, ...over })
 const full = () => chart(Array.from({ length: 61 }, (_, i) => point(i)))
 
@@ -45,32 +45,33 @@ test('chartModel returns null for missing, disabled, window-less and empty chart
   assert.equal(T.chartModel(chart([]), 480, 180), null)
 })
 
-const OUT = { flows: ['output', 'reasoning'], context: false }
+const OUT = T.OUTPUT_PANEL
 
-test('legend: the main panel has All, Input and Context (dashed, right axis); the output panel has Output and Reasoning', () => {
+test('legend: the main panel has Cache read and Context (dashed, right axis); the second panel has the small series', () => {
   const m = T.chartModel(full(), 480, 180)
   assert.deepEqual(JSON.parse(JSON.stringify(m.legend)), [
-    { key: 'all', label: 'All', color: '#8b5cf6', dashed: false, axis: 'left' },
-    { key: 'input', label: 'Input', color: '#3b82f6', dashed: false, axis: 'left' },
+    { key: 'cacheRead', label: 'Cache read', color: '#3b82f6', dashed: false, axis: 'left' },
     { key: 'context', label: 'Context (right axis)', color: '#f59e0b', dashed: true, axis: 'right' },
   ])
-  for (const k of ['all', 'input']) assert.equal(typeof m.series[k], 'string')
+  assert.equal(typeof m.series.cacheRead, 'string')
   assert.ok(Array.isArray(m.series.context))
   const o = T.chartModel(full(), 480, 110, OUT)
   assert.deepEqual(JSON.parse(JSON.stringify(o.legend)), [
+    { key: 'cacheWrite', label: 'Cache write', color: '#8b5cf6', dashed: false, axis: 'left' },
+    { key: 'fresh', label: 'Fresh input', color: '#14b8a6', dashed: false, axis: 'left' },
     { key: 'output', label: 'Output', color: '#22c55e', dashed: false, axis: 'left' },
     { key: 'reasoning', label: 'Reasoning', color: '#ec4899', dashed: false, axis: 'left' },
   ])
-  for (const k of ['output', 'reasoning']) assert.equal(typeof o.series[k], 'string')
+  for (const k of ['cacheWrite', 'fresh', 'output', 'reasoning']) assert.equal(typeof o.series[k], 'string')
   assert.equal(o.right, null)
   assert.deepEqual([...o.series.context], [])
 })
 
 test('reasoning is scaled on its own axis, not on the cache-heavy All/Input axis', () => {
-  const pts = [point(0, { all: 3000000, input: 2990000, output: 10000, reasoning: 2000, context: 270000 }), point(1, { all: 800000, input: 796000, output: 3000, reasoning: 900, context: 140000 })]
+  const pts = [point(0, { cacheRead: 3000000, cacheWrite: 5000, fresh: 20, output: 10000, reasoning: 2000, context: 270000 }), point(1, { cacheRead: 800000, cacheWrite: 1000, fresh: 5, output: 3000, reasoning: 900, context: 140000 })]
   const main = T.chartModel(chart(pts), 480, 180)
   const out = T.chartModel(chart(pts), 480, 110, OUT)
-  assert.equal(main.left.max, 5000000, 'main axis ignores output and reasoning')
+  assert.equal(main.left.max, 5000000, 'main axis is sized by cache read only')
   assert.equal(out.left.max, 10000, 'output panel is sized by output')
   const y = (s, i) => Number(s.split(' ')[i].split(',')[1])
   const base = out.plot.y + out.plot.h
@@ -99,10 +100,10 @@ test('an unaligned window start clamps the first point to the left edge of the p
 })
 
 test('a single point still draws all four flow lines', () => {
-  const m = T.chartModel(chart([point(0, { all: 5 })]), 480, 180)
-  const o = T.chartModel(chart([point(0, { all: 5 })]), 480, 110, OUT)
-  for (const k of ['all', 'input']) assert.equal(m.series[k].split(' ').length, 2, k)
-  for (const k of ['output', 'reasoning']) assert.equal(o.series[k].split(' ').length, 2, k)
+  const m = T.chartModel(chart([point(0, { cacheRead: 5 })]), 480, 180)
+  const o = T.chartModel(chart([point(0, { cacheRead: 5 })]), 480, 110, OUT)
+  assert.equal(m.series.cacheRead.split(' ').length, 2)
+  for (const k of ['cacheWrite', 'fresh', 'output', 'reasoning']) assert.equal(o.series[k].split(' ').length, 2, k)
 })
 
 test('x labels are start, middle and end as local h:mm', () => {
@@ -118,11 +119,11 @@ test('context null buckets split the context polyline into segments', () => {
   assert.equal(m.series.context.length, 2)
   assert.equal(m.series.context[0].split(' ').length, 2)
   assert.equal(m.series.context[1].split(' ').length, 3)
-  assert.equal(m.series.all.split(' ').length, 6, 'flow lines keep every bucket')
+  assert.equal(m.series.cacheRead.split(' ').length, 6, 'flow lines keep every bucket')
 })
 
 test('left axis ignores context, right axis ignores flows, both get a rounded top and 4 ticks', () => {
-  const m = T.chartModel(chart([point(0, { all: 700, input: 600, output: 100, reasoning: 20, context: 90000 }), point(1, { all: 300, input: 250, output: 50, context: 40000 })]), 480, 180)
+  const m = T.chartModel(chart([point(0, { cacheRead: 700, output: 5000, reasoning: 20, context: 90000 }), point(1, { cacheRead: 300, output: 50, context: 40000 })]), 480, 180)
   assert.equal(m.left.max, 1000)
   assert.equal(m.right.max, 100000)
   assert.equal(m.left.ticks.length, 4)
@@ -142,18 +143,26 @@ test('ClaudeChart renders heading, caption, svg, legend and aria-label from the 
   assert.equal(svg.props.role, 'img')
   assert.ok(svg.props['aria-label'])
   const t = text(root)
-  for (const s of ['Tokens this session window', 'DSH sessions only, per 5 min', 'All', 'Input', 'Context (right axis)', 'Output', 'Reasoning']) assert.ok(t.includes(s), s)
+  for (const s of ['Tokens this session window', 'DSH sessions only, per 5 min', 'Cache read', 'Context (right axis)', 'Cache write', 'Fresh input', 'Output', 'Reasoning']) assert.ok(t.includes(s), s)
 })
 
-test('All is drawn as a wide translucent band behind Input, so it stays visible where the two coincide', () => {
-  const pts = [point(0, { all: 1000, input: 995, output: 5, context: 100 }), point(1, { all: 2000, input: 1990, output: 10, context: 200 })]
-  const lines = walk(T.ClaudeChart({ chart: chart(pts) })).filter((n) => n.type === 'polyline')
-  const at = (k) => lines.findIndex((n) => n.props.stroke === { all: '#8b5cf6', input: '#3b82f6' }[k])
-  const all = lines[at('all')], input = lines[at('input')]
-  assert.ok(all && input)
-  assert.ok(at('all') < at('input'), 'All is drawn first, Input on top')
-  assert.ok(all.props.strokeWidth >= 2 * input.props.strokeWidth, 'All is much wider than Input')
-  assert.ok(all.props.strokeOpacity < 1, 'All is translucent')
+test('inputMix gives the share of cache read, cache write and fresh input over the window', () => {
+  const pts = [point(0, { cacheRead: 600, cacheWrite: 60, fresh: 4 }), point(1, { cacheRead: 300, cacheWrite: 30, fresh: 6 })]
+  const mix = T.inputMix(chart(pts))
+  assert.equal(mix.cacheRead, 90)
+  assert.equal(mix.cacheWrite, 9)
+  assert.equal(mix.fresh, 1)
+  assert.equal(T.inputMix(full()), null, 'no input at all: no mix')
+  assert.equal(T.inputMix(undefined), null)
+})
+
+test('ClaudeChart states the input mix under the chart when there is input', () => {
+  const pts = [point(0, { cacheRead: 99900, cacheWrite: 90, fresh: 10, context: 100000 })]
+  const t = text(T.ClaudeChart({ chart: chart(pts) }))
+  assert.ok(t.includes('cache read 99.9%'), t)
+  assert.ok(t.includes('cache write 0.1%'), t)
+  assert.ok(t.includes('fresh input <0.1%'), t)
+  assert.equal(text(T.ClaudeChart({ chart: full() })).includes('Input mix'), false)
 })
 
 test('ClaudeChart without a window shows only the note; disabled renders nothing', () => {

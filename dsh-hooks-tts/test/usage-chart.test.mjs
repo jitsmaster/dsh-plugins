@@ -35,7 +35,24 @@ test('observations land in buckets; All = input + output, reasoning kept out', (
   assert.equal(buckets.length, 1)
   const chart = chartFor(buckets, NOW + 4 * HOUR, NOW + 10 * 60_000)
   const point = chart.points.find(p => p.t === new Date(NOW).toISOString())
-  assert.deepEqual(point, { t: new Date(NOW).toISOString(), all: 510 + 50 + 20 + 5, input: 530, output: 55, reasoning: 30, context: 510 })
+  assert.deepEqual(point, { t: new Date(NOW).toISOString(), all: 510 + 50 + 20 + 5, input: 530, output: 55, reasoning: 30, context: 510, fresh: 120, cacheRead: 400, cacheWrite: 10 })
+})
+
+test('the prompt is split into fresh input, cache read and cache write, summing to input', () => {
+  const buckets = []
+  addObservation(buckets, { at: NOW, usage: usage(2, 900, { cacheReadTokens: 109678, cacheWriteTokens: 1469 }) }, NOW)
+  addObservation(buckets, { at: NOW + 1, usage: usage(3, 10, { cacheReadTokens: 100, cacheWriteTokens: 7 }) }, NOW)
+  const p = chartFor(buckets, NOW + 4 * HOUR, NOW + 1).points.find(x => x.context !== null)
+  assert.deepEqual([p.fresh, p.cacheRead, p.cacheWrite], [5, 109778, 1476])
+  assert.equal(p.fresh + p.cacheRead + p.cacheWrite, p.input)
+})
+
+test('buckets saved before the split load with a zero split; a bad split value drops the bucket', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'usage-chart-split-'))
+  const path = join(dir, 'usage-buckets.json')
+  const old = { t: NOW, input: 10, output: 2, reasoning: 0, ctx: 10 }
+  writeFileSync(path, JSON.stringify({ v: 1, buckets: [old, { ...old, t: NOW + 1, cacheRead: -4 }, { ...old, t: NOW + 2, fresh: 'x' }] }))
+  assert.deepEqual(loadBuckets(path, NOW), [{ ...old, fresh: 0, cacheRead: 0, cacheWrite: 0 }])
 })
 
 test('context is the max prompt size in the bucket', () => {
@@ -62,7 +79,7 @@ test('unusable usage is ignored', () => {
   assert.deepEqual(buckets, [])
   // bad optional fields count as 0
   assert.equal(addObservation(buckets, { at: NOW, usage: usage(10, 5, { cacheReadTokens: -3, cacheWriteTokens: NaN, reasoningTokens: 'x' }) }, NOW), true)
-  assert.deepEqual(chartFor(buckets, NOW + HOUR, NOW).points.find(p => p.context !== null), { t: new Date(NOW).toISOString(), all: 15, input: 10, output: 5, reasoning: 0, context: 10 })
+  assert.deepEqual(chartFor(buckets, NOW + HOUR, NOW).points.find(p => p.context !== null), { t: new Date(NOW).toISOString(), all: 15, input: 10, output: 5, reasoning: 0, context: 10, fresh: 10, cacheRead: 0, cacheWrite: 0 })
 })
 
 test('window slicing: start = end - 5h, points up to now, max 61', () => {
@@ -126,7 +143,7 @@ test('isClaudeProvider falls back to claude-code for a non-array or non-string i
 test('loading drops buckets with a negative value', () => {
   const dir = mkdtempSync(join(tmpdir(), 'usage-chart-neg-'))
   const path = join(dir, 'usage-buckets.json')
-  const ok = { t: NOW, input: 1, output: 2, reasoning: 0, ctx: 1 }
+  const ok = { t: NOW, input: 1, output: 2, reasoning: 0, ctx: 1, fresh: 1, cacheRead: 0, cacheWrite: 0 }
   writeFileSync(path, JSON.stringify({ v: 1, buckets: [ok, { ...ok, t: NOW + 1, input: -1 }, { ...ok, t: NOW + 2, ctx: -5 }] }))
   assert.deepEqual(loadBuckets(path, NOW), [ok])
 })
@@ -163,7 +180,7 @@ test('bucket array is capped at 100, oldest dropped', () => {
 test('loading cleans future, stale, huge and extra-key buckets and caps length', () => {
   const dir = mkdtempSync(join(tmpdir(), 'usage-chart-clean-'))
   const path = join(dir, 'usage-buckets.json')
-  const ok = { t: NOW, input: 1, output: 2, reasoning: 0, ctx: 1 }
+  const ok = { t: NOW, input: 1, output: 2, reasoning: 0, ctx: 1, fresh: 1, cacheRead: 0, cacheWrite: 0 }
   writeFileSync(path, JSON.stringify({ v: 1, buckets: [
     { ...ok, t: NOW + 2 * BUCKET_MS },
     { ...ok, t: NOW - RETAIN_MS - 1 },
@@ -174,7 +191,7 @@ test('loading cleans future, stale, huge and extra-key buckets and caps length',
   ] }))
   const got = loadBuckets(path, NOW)
   assert.deepEqual(got, [ok, { ...ok, t: NOW + 3 }])
-  assert.deepEqual(Object.keys(got[1]), ['t', 'input', 'output', 'reasoning', 'ctx'])
+  assert.deepEqual(Object.keys(got[1]), ['t', 'input', 'output', 'reasoning', 'ctx', 'fresh', 'cacheRead', 'cacheWrite'])
   const many = Array.from({ length: 150 }, (_, i) => ({ ...ok, t: NOW - 1 - i }))
   writeFileSync(path, JSON.stringify({ v: 1, buckets: many }))
   const capped = loadBuckets(path, NOW)
