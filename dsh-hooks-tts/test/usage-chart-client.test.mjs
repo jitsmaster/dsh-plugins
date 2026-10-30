@@ -45,17 +45,37 @@ test('chartModel returns null for missing, disabled, window-less and empty chart
   assert.equal(T.chartModel(chart([]), 480, 180), null)
 })
 
-test('legend: five series in order with the specified colours, Context dashed on the right axis', () => {
+const OUT = { flows: ['output', 'reasoning'], context: false }
+
+test('legend: the main panel has All, Input and Context (dashed, right axis); the output panel has Output and Reasoning', () => {
   const m = T.chartModel(full(), 480, 180)
   assert.deepEqual(JSON.parse(JSON.stringify(m.legend)), [
     { key: 'all', label: 'All', color: '#8b5cf6', dashed: false, axis: 'left' },
     { key: 'input', label: 'Input', color: '#3b82f6', dashed: false, axis: 'left' },
     { key: 'context', label: 'Context (right axis)', color: '#f59e0b', dashed: true, axis: 'right' },
+  ])
+  for (const k of ['all', 'input']) assert.equal(typeof m.series[k], 'string')
+  assert.ok(Array.isArray(m.series.context))
+  const o = T.chartModel(full(), 480, 110, OUT)
+  assert.deepEqual(JSON.parse(JSON.stringify(o.legend)), [
     { key: 'output', label: 'Output', color: '#22c55e', dashed: false, axis: 'left' },
     { key: 'reasoning', label: 'Reasoning', color: '#ec4899', dashed: false, axis: 'left' },
   ])
-  for (const k of ['all', 'input', 'output', 'reasoning']) assert.equal(typeof m.series[k], 'string')
-  assert.ok(Array.isArray(m.series.context))
+  for (const k of ['output', 'reasoning']) assert.equal(typeof o.series[k], 'string')
+  assert.equal(o.right, null)
+  assert.deepEqual([...o.series.context], [])
+})
+
+test('reasoning is scaled on its own axis, not on the cache-heavy All/Input axis', () => {
+  const pts = [point(0, { all: 3000000, input: 2990000, output: 10000, reasoning: 2000, context: 270000 }), point(1, { all: 800000, input: 796000, output: 3000, reasoning: 900, context: 140000 })]
+  const main = T.chartModel(chart(pts), 480, 180)
+  const out = T.chartModel(chart(pts), 480, 110, OUT)
+  assert.equal(main.left.max, 5000000, 'main axis ignores output and reasoning')
+  assert.equal(out.left.max, 10000, 'output panel is sized by output')
+  const y = (s, i) => Number(s.split(' ')[i].split(',')[1])
+  const base = out.plot.y + out.plot.h
+  assert.ok(base - y(out.series.reasoning, 0) > out.plot.h * 0.05, 'a reasoning of 2k is visibly above the baseline')
+  assert.ok(y(out.series.output, 0) < y(out.series.reasoning, 0), 'output above reasoning')
 })
 
 test('a full window spans the whole plot; a half-elapsed window leaves the right half empty', () => {
@@ -80,7 +100,9 @@ test('an unaligned window start clamps the first point to the left edge of the p
 
 test('a single point still draws all four flow lines', () => {
   const m = T.chartModel(chart([point(0, { all: 5 })]), 480, 180)
-  for (const k of ['all', 'input', 'output', 'reasoning']) assert.equal(m.series[k].split(' ').length, 2, k)
+  const o = T.chartModel(chart([point(0, { all: 5 })]), 480, 110, OUT)
+  for (const k of ['all', 'input']) assert.equal(m.series[k].split(' ').length, 2, k)
+  for (const k of ['output', 'reasoning']) assert.equal(o.series[k].split(' ').length, 2, k)
 })
 
 test('x labels are start, middle and end as local h:mm', () => {

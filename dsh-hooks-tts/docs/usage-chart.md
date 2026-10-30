@@ -10,7 +10,7 @@ One chart under the five-hour and weekly bars, showing token usage of the **curr
 | All token usage | `input + output` per bucket, where Input already includes cache traffic. Reasoning is a subset of Output and is not added again. |
 | Input | uncached input + cache read + cache write. |
 | Output / Reasoning | `outputTokens` / `reasoningTokens` as reported. |
-| Context | Prompt size of a request (`inputTokens + cacheReadTokens + cacheWriteTokens`) = how full the context was. Per bucket the **largest** value over all counted sessions. A level, not a rate: drawn on a right-hand axis; the four flow lines use the left axis. |
+| Context | Prompt size of a request (`inputTokens + cacheReadTokens + cacheWriteTokens`) = how full the context was. Per bucket the **largest** value over all counted sessions. A level, not a rate: drawn on a right-hand axis; the flow lines use left axes (All and Input share one, Output and Reasoning have their own, see Client drawing). |
 | Shape | Per-interval (not cumulative), bucket = 5 minutes. |
 | Window | `resetsAt - 5h` .. `resetsAt` of the `session` limit in the Claude reading. No current window (reading missing or expired) = no chart, a note instead. After a reset the chart starts fresh because the window moves. |
 | Sessions counted | Only sessions whose assistant message `source.provider` is a Claude Code provider id: `claude-code` by default, config `claudeProviderIds` (array) overrides. DeepSeek and other providers are excluded. The chart is labelled "DSH sessions only". |
@@ -43,7 +43,7 @@ Buckets older than 6 hours are dropped. They persist in `<stateDir>/usage-bucket
 }
 ```
 
-`context` is `null` for a bucket with no observation (the client breaks the line); the four flow values are 0. At most 61 points. Recomputed on every `sample()`.
+`context` is `null` for a bucket with no observation (the client breaks the line); the four flow values (`all`, `input`, `output`, `reasoning`) are 0. At most 61 points. Recomputed on every `sample()`.
 
 ## Modules
 
@@ -55,7 +55,7 @@ Input limits (hardening): `addObservation` ignores an observation dated later th
 
 ## Client drawing
 
-Inline SVG (no chart library), width 100% of the 520px page column (viewBox 480x180). Left axis for the four flows (0..max of those, nice rounded top, labelled with `fmt`), right axis for Context (0..max context). X axis: window start to window end, labelled with local `h:mm` times at start, middle, end. One polyline per series, colours: All `#8b5cf6`, Input `#3b82f6`, Context `#f59e0b`, Output `#22c55e`, Reasoning `#ec4899`. Context is drawn dashed so it reads as the other axis. A legend with a colour swatch per line sits under the chart, with the "(right axis)" hint on Context. Heading "Tokens this session window" and a caption "DSH sessions only, per 5 min". When `window` is null or `enabled` is false, show only the note, no SVG. The first bucket starts at `bucketStart(window start)`, which can precede the window start by up to 5 minutes, so `chartModel` clamps every x to the plot area (`plot.x` .. `plot.x + plot.w`); the data is unchanged. A series with a single point is drawn as a two-point line (the point duplicated) so it still renders.
+Inline SVG (no chart library), width 100% of the 520px page column. Two stacked panels, each with its own scale, because cache traffic makes All and Input about a thousand times larger than Output and Reasoning (on one shared axis Reasoning sat flat on the baseline). Main panel (viewBox 480x180): All and Input on the left axis (0..max of those, nice rounded top, labelled with `fmt`), Context on the right axis (0..max context). Output panel (viewBox 480x110, captioned "Output and reasoning (own scale)"): Output and Reasoning on their own left axis, no right axis. `chartModel(chart, width, height, panel)` takes the panel (`{ flows, context }`), default the main one. X axis: window start to window end, labelled with local `h:mm` times at start, middle, end. One polyline per series, colours: All `#8b5cf6`, Input `#3b82f6`, Context `#f59e0b`, Output `#22c55e`, Reasoning `#ec4899`. Context is drawn dashed so it reads as the other axis. A legend with a colour swatch per line sits under the chart, with the "(right axis)" hint on Context. Heading "Tokens this session window" and a caption "DSH sessions only, per 5 min". When `window` is null or `enabled` is false, show only the note, no SVG. The first bucket starts at `bucketStart(window start)`, which can precede the window start by up to 5 minutes, so `chartModel` clamps every x to the plot area (`plot.x` .. `plot.x + plot.w`); the data is unchanged. A series with a single point is drawn as a two-point line (the point duplicated) so it still renders.
 
 On shutdown (abort signal) the status service saves the buckets once if any are unsaved, best-effort, so at most the buckets since the last sample are never lost.
 
