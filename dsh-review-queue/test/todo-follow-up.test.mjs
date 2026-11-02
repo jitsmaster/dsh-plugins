@@ -160,6 +160,58 @@ test('standalone: an early confirm of a session that is not among the loaded one
   assert.equal(item.status, 'open')
   assert.equal(item.state, 'awaiting-confirm')
   assert.ok(item.candidates.length > 0, 'the loaded sessions are on the card to pick from')
+  assert.notEqual(item.suggesting, true, 'the card does not keep saying it is suggesting')
+  assert.ok(f.logs.includes('todo: early confirm refused: unknown-session'), 'the refusal is in the log')
+})
+
+test('standalone: an early confirm makes no model pass (the pick is already made)', async () => {
+  const seen = {}
+  const f = setupFollowUp({ llm: fakeLlm({ answer: '{"select":"s-orca","reason":"r"}', seen }) })
+  const { id } = f.queue.addTodo(MSG, { followUp: 'something' })
+  f.queue.confirmTodo(id, { sessionId: 's-pr' })
+  await f.queue.todoIdle()
+  assert.equal(seen.calls, undefined, 'the model was not called')
+  assert.deepEqual(prompts(f.calls).map((c) => c[1].sessionId), ['s-pr'])
+})
+
+test('standalone: a second early confirm for another session replaces the first (the last pick wins, one send)', async () => {
+  const f = setupFollowUp()
+  const { id } = f.queue.addTodo(MSG, { followUp: 'something' })
+  assert.equal(f.queue.confirmTodo(id, { sessionId: 's-pr' }).ok, true)
+  assert.equal(f.queue.confirmTodo(id, { sessionId: 's-old' }).ok, true)
+  await f.queue.todoIdle()
+  assert.deepEqual(prompts(f.calls).map((c) => c[1].sessionId), ['s-old'])
+})
+
+test('standalone: an early confirm when the sessions cannot be listed sends nothing, and idle() still settles', async () => {
+  const f = setupFollowUp({ listError: 'boom' })
+  const { id } = f.queue.addTodo(MSG, { followUp: 'something' })
+  assert.equal(f.queue.confirmTodo(id, { sessionId: 's-pr' }).ok, true)
+  await f.queue.todoIdle()
+  assert.deepEqual(prompts(f.calls), [])
+  const item = f.store.get(id)
+  assert.equal(item.status, 'open')
+  assert.equal(item.state, 'awaiting-confirm')
+  assert.ok(f.logs.includes('todo: early confirm refused: unknown-session'), 'the refusal is in the log')
+})
+
+test('standalone: an early confirm with no session and no suggestion is no-session at once (nothing to wait for)', async () => {
+  const f = setupFollowUp()
+  const { id } = f.queue.addTodo(MSG, { followUp: 'something' })
+  assert.deepEqual(f.queue.confirmTodo(id, {}), { ok: false, error: 'no-session' })
+  await f.queue.todoIdle()
+  assert.deepEqual(prompts(f.calls), [])
+  assert.equal(f.store.get(id).state, 'awaiting-confirm')
+})
+
+test('standalone: an item cancelled while its early confirm waits is not sent', async () => {
+  const f = setupFollowUp()
+  const { id } = f.queue.addTodo(MSG, { followUp: 'something' })
+  f.queue.confirmTodo(id, { sessionId: 's-pr' })
+  f.queue.cancelTodo(id)
+  await f.queue.todoIdle()
+  assert.deepEqual(prompts(f.calls), [])
+  assert.equal(f.store.get(id).status, 'resolved')
 })
 
 test('confirm with a sessionId overrides the suggestion, and works without a suggestion', async () => {

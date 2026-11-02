@@ -179,14 +179,15 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
       if (found) { store.update(id, decidedPatch(candidates, found)); return } // the sessions and the suggestion in one write
       store.update(id, { candidates: candidates.slice(0, MAX_STORED_CANDIDATES).map(trimmed) }) // shown while the model thinks
       ready() // an early confirm only needs the list, not the model's pass
+      if (earlyConfirm.has(id)) return // the pick is made: the model pass would only be thrown away
       await suggestLater(id, query, text, candidates)
     } finally { ready() }
   }
 
   /** Items whose own session list is still being read (standalone app): id -> promise that settles once the list is on the item. */
   const loading = new Map()
-  /** An early confirm (made while the list loads) is queued once per item. */
-  const earlyConfirm = new Set()
+  /** An early confirm (made while the list loads) is queued once per item: id -> the session picked last (a later pick replaces an earlier one). */
+  const earlyConfirm = new Map()
 
   /**
    * Queues the text as a prompt of the chosen session. A failure puts a FIXED text on the card and only the error's code or name in the log (the controller's message can
@@ -249,12 +250,20 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
     confirm(item, sessionId) {
       const pending = loading.get(item.id)
       if (pending && !(item.candidates ?? []).length && item.state === 'awaiting-confirm') {
-        if (earlyConfirm.has(item.id)) return { ok: true, state: 'starting' }
-        earlyConfirm.add(item.id)
+        if (!(typeof sessionId === 'string' && sessionId) && !item.suggested?.sessionId) return { ok: false, error: 'no-session' } // nothing to wait for
+        const queued = earlyConfirm.has(item.id)
+        earlyConfirm.set(item.id, sessionId)
+        if (queued) return { ok: true, state: 'starting' }
         track(pending.then(() => {
+          const picked = earlyConfirm.get(item.id)
           earlyConfirm.delete(item.id)
           const current = store.get(item.id)
-          if (isAwaitingConfirm(current)) confirmNow(current, sessionId)
+          if (!isAwaitingConfirm(current)) return
+          const result = confirmNow(current, picked)
+          if (!result.ok) { // the card stays waiting with the list; the model pass was skipped, so it is not "suggesting" any more
+            log('todo: early confirm refused: ' + result.error)
+            if (current.suggesting) store.update(item.id, { suggesting: false })
+          }
         }))
         return { ok: true, state: 'starting' }
       }
