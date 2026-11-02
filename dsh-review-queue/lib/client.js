@@ -390,7 +390,7 @@ function imageFilesOf(data) {
 		}
 		/** The workspace id Start would use: the user's pick, else the one given before, else the suggestion. */
 		function todoTarget(item, pick) { if (isFollowUp(item)) return sessionPick(item, pick) || item.targetSessionId || (item.suggested && !needsOwnPick(item) ? item.suggested.sessionId : undefined) || undefined; return pick || (item && (item.workspaceId || (item.suggested && item.suggested.workspaceId))) || undefined; }
-		const canConfirm = (item, pick) => !!item && item.type === "todo" && (item.state === "awaiting-confirm" || item.state === "failed") && !!todoTarget(item, pick);
+		const canConfirm = (item, pick) => stageOf(item).canAct && !!todoTarget(item, pick);
 		/** The workspace dropdown of a todo card, as an instruction for the select: the value to show selected (the user's pick, else the one given before, else the suggestion; "" when none), the options (the loaded workspaces, plus the target when it is not in them yet) and the placeholder (only while nothing is selected). */
 		function todoSelect(item, pick, workspaces) {
 			if (isFollowUp(item)) {
@@ -443,10 +443,40 @@ function imageFilesOf(data) {
 				default: return "";
 			}
 		}
-		/** What waits on the user: a todo that is being started does not, and a session paused by a restart has its own count. */
-		const waitingCount = (open) => (open || []).filter((i) => i.type !== "paused" && i.type !== "onhold" && !(i.type === "todo" && i.state === "starting")).length;
+		/**
+		 * The stage table: ONE first-match-wins rule that says, for any item, what it waits for and whether it counts as waiting on the user.
+		 * waitingCount, pausedCount, heldCount and the todo card's canAct all read it, so the rule exists once (and the phone shares it through exports.shared).
+		 * Returns { stage, label, waitsFor: "user" | "session" | "ticket" | "none", counts, canAct }.
+		 * Items without a status are read as open (the snapshot passes the open list). Anything unknown counts as waiting, as the old per-type rule did.
+		 */
+		function stageOf(item) {
+			const row = (stage, label, waitsFor, counts, canAct) => ({ stage, label, waitsFor, counts, canAct: !!canAct });
+			if (!item || typeof item !== "object" || typeof item.type !== "string") return row("none", "Not an item", "none", false);
+			if (item.status === "resolved") {
+				return item.resolution && item.resolution.kind === "ai-resolved" ? row("resolved-ai", "Resolved by AI", "none", false) : row("resolved", "Resolved", "none", false);
+			}
+			switch (item.type) {
+				case "question": return row("question", "Awaiting your answer", "user", true);
+				case "permission": return row("permission", "Awaiting your approval", "user", true);
+				case "completed": return row("review", "Awaiting your review", "user", true);
+				case "pr-merged": case "archive": return row("archive-offer", "Archive offer", "user", true);
+				case "paused": return row("paused", "Paused by a restart", "session", false);
+				case "onhold": return row("held", "On hold", "ticket", false);
+				case "todo":
+					switch (item.state) {
+						case "awaiting-confirm": return row("todo-confirm", "Confirm the workspace", "user", true, true);
+						case "failed": return row("todo-failed", "Failed to start", "user", true, true);
+						case "starting": return row("todo-starting", "Starting", "session", false);
+						default: return row("todo-other", "Todo", "user", true);
+					}
+				default: return row("other", "Waiting", "user", true);
+			}
+		}
+		const countStage = (open, pred) => (open || []).filter((i) => pred(stageOf(i))).length;
+		/** What waits on the user: a todo that is being started does not, and a session paused by a restart or on hold has its own count (all by the stage table). */
+		const waitingCount = (open) => countStage(open, (s) => s.counts);
 		/** How many sessions are on hold (open onhold items): their own queue, never counted as waiting. */
-		const heldCount = (open) => (open || []).filter((i) => i.type === "onhold").length;
+		const heldCount = (open) => countStage(open, (s) => s.stage === "held");
 		/** How often the plugin looks at the ticket of a held session (onHoldCheckMs, default 10 minutes; a test keeps the text honest only by this note). */
 		const HELD_CHECK_TEXT = "every 10 minutes";
 		/** The lines an on-hold card shows: why, the ticket being watched, how long it has been held, when it was last checked, and what went wrong. The phone card shows the same. */
@@ -462,7 +492,7 @@ function imageFilesOf(data) {
 			return facts;
 		}
 		/** How many sessions a restart cut off (open paused items). */
-		const pausedCount = (open) => (open || []).filter((i) => i.type === "paused").length;
+		const pausedCount = (open) => countStage(open, (s) => s.stage === "paused");
 		/** The lines a paused card shows: why, how long ago, a tool call that may be half done, the last request. The phone card shows the same. */
 		function pausedFacts(item, now) {
 			const p = (item && item.payload) || {};
@@ -1891,13 +1921,13 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
+		exports.shared = { stageOf, detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
-		Object.assign(exports.__test, { loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
+		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldForm, HoldButton, PausedBody, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });

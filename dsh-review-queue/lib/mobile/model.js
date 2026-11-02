@@ -65,7 +65,7 @@ export function todoView(core, item) {
 export function todoCardModel(core, item, workspaces, pick) {
   const select = core.todoSelect(item, pick, workspaces)
   const failed = core.todoCardState(item) === 'failed'
-  const canAct = item.state === 'awaiting-confirm' || item.state === 'failed'
+  const canAct = core.stageOf(item).canAct // the stage table (client.js stageOf): todo-confirm and todo-failed
   const followUp = isFollowUp(item)
   return {
     kind: followUp ? 'followup' : 'todo',
