@@ -185,3 +185,4 @@ body.typing .composer { bottom: 0; }
 .settings .ok { color: var(--accent); }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+.ai-note { font-style: italic; border-left: 3px solid var(--dim); padding-left: 8px; margin: 6px 0; }

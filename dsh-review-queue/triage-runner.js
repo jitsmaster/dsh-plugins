@@ -105,7 +105,9 @@ export function createTriageRunner({ store, judge, triageLog, rules = DEFAULT_RU
     const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts, sources: sourcesOf(item), marks: marksOf(item) })
     const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment }
     // Re-checked after the wait: the item may have been resolved, put on hold or its rule switched off meanwhile.
-    if (outcome.verdict !== 'handle' || !stillOpen(item.id) || !enabled() || rule.mode === 'off' || marksOf(item).onHold || marksOf(item).neverAuto) { record(outcome.verdict === 'handle' ? { ...entry, verdict: 'ask', reasons: ['changed-meanwhile'] } : entry); return }
+    const fresh = store.get(item.id) // the item as it is now, not as it was when it was raised
+    const marks = fresh ? marksOf(fresh) : {}
+    if (outcome.verdict !== 'handle' || fresh?.status !== 'open' || !enabled() || rule.mode === 'off' || marks.onHold || marks.neverAuto) { record(outcome.verdict === 'handle' ? { ...entry, verdict: 'ask', reasons: ['changed-meanwhile'] } : entry); return }
     store.update(item.id, { triage: { mode: 'observe', verdict: 'handle', ruleId: rule.id, ruleName: rule.name, ruleVersion: ruleVersion(rule), score: outcome.score, threshold: outcome.threshold, would: wouldText(item), at: now() } })
     watching.add(item.id)
     record(entry)
@@ -129,6 +131,8 @@ export function createTriageRunner({ store, judge, triageLog, rules = DEFAULT_RU
     /** Starts listening (a store without onAdd, such as the hub's read-only mirror, is left alone). */
     start() {
       if (typeof store.onAdd !== 'function') return false
+      // A proposal made before a restart still gets its feedback: seed the watch list from the open items that carry one.
+      try { for (const i of store.list({ status: 'open' })) if (i.triage?.verdict === 'handle' && !i.triage.review) watching.add(i.id) } catch { /* nothing to seed */ }
       off = store.onAdd((item) => {
         if (!enabled()) return
         const p = Promise.resolve().then(() => run(item)).catch((error) => log('triage: ' + (error?.message ?? error)))

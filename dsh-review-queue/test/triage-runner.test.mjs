@@ -220,3 +220,40 @@ test('ruleVersion changes when the instruction changes and is stable otherwise',
   assert.equal(ruleVersion(r), ruleVersion({ ...r }))
   assert.notEqual(ruleVersion(r), ruleVersion({ ...r, instruction: r.instruction + ' Also x.' }))
 })
+
+test('review fix: a held session mark placed while the judge thinks vetoes the note (marks are read from the item as it is now)', async () => {
+  let held = false
+  let release
+  const gate = new Promise((r) => { release = r })
+  const { store, runner, entries } = setup({ judge: { judge: async () => { await gate; return { judgment: GOOD, raw: '' } } }, marksOf: () => ({ onHold: held }) })
+  const item = store.add(perm())
+  await Promise.resolve()
+  held = true
+  release()
+  await runner.idle()
+  assert.equal(store.get(item.id).triage, undefined)
+  assert.equal(entries.at(-1).verdict, 'ask')
+  assert.ok(entries.at(-1).reasons.includes('user-mark') || entries.at(-1).reasons.includes('changed-meanwhile'))
+})
+
+test('review fix: a proposal made before a restart still gets its feedback', () => {
+  let n = 0
+  const store = createStore({ now: () => 1000 + n, uuid: () => 'i' + ++n })
+  const item = store.add(perm())
+  store.update(item.id, { triage: { verdict: 'handle', ruleId: 'ro-permission', ruleVersion: 'abcd1234' } })
+  const entries = []
+  const runner = createTriageRunner({ store, judge: { judge: async () => ({}) }, triageLog: { append: (e) => entries.push(e) } })
+  runner.start()
+  store.resolve(item.id, { kind: 'approved', by: 'card' })
+  assert.equal(store.get(item.id).triage.review, 'matched-user')
+  assert.equal(entries.at(-1).stage, 'feedback')
+  runner.stop()
+})
+
+test('review fix: stop() detaches both listeners', async () => {
+  const { store, runner, calls } = setup()
+  runner.stop()
+  store.add(perm())
+  await runner.idle()
+  assert.equal(calls.length, 0)
+})

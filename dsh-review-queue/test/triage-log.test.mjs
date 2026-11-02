@@ -92,3 +92,10 @@ test('never throws: a missing folder, a garbled file', () => {
     assert.deepEqual(createTriageLog(file).read().map((e) => e.ok), [true])
   } finally { rmSync(d, { recursive: true, force: true }) }
 })
+
+test('review fix: a path is not a secret keyword, a real pat= credential still is', () => {
+  assert.equal(redact('cat D:/w/src/some/long/path/to/a/file/that/goes/on/and/on.js'), 'cat D:/w/src/some/long/path/to/a/file/that/goes/on/and/on.js')
+  assert.equal(redact('path: D:/w'), 'path: D:/w')
+  assert.ok(redact('pat=abcdef123456').includes('[redacted]'))
+  assert.ok(redact('AZURE_DEVOPS_PAT: abcdef123456').includes('[redacted]'))
+})

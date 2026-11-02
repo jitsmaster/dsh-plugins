@@ -230,6 +230,8 @@ const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, 
       store, log, triageLog,
       judge: config.triageDeps?.judge ?? createTriageJudge({ llm, log }),
       enabled: () => config.triage !== false,
+      // A session parked on hold is never a candidate (a user mark that vetoes triage).
+      marksOf: (item) => ({ onHold: safe(() => heldIds().has(item.sessionId)) === true }),
       // A done card is raised when a turn ends, so a session that is running again by now is one that continues; unknown means finished (a veto).
       sessionContinuesOf: (item) => safe(() => sessionCounter.runningIds?.()?.has(item.sessionId)) === true,
       ...(config.triageDeps ?? {}),
@@ -316,7 +318,7 @@ const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, 
   const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
   sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); triage?.stop(); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.
