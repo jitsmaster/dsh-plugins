@@ -612,7 +612,7 @@ function NewTodoView() {
     ${follow ? html`<div class="sub">${FOLLOWUP_HINT}</div>` : null}
     ${message ? html`<div class="err">${message}</div>` : null}
     <div class="row">
-      <button class="btn pri" type="button" disabled=${busy || !draft.text.trim()} onClick=${start}>${busy ? 'Starting…' : follow ? 'Add follow-up' : 'Start todo'}</button>
+      <button class="btn pri" type="button" disabled=${busy || !draft.text.trim() || (follow && !draft.followUp)} onClick=${start}>${busy ? 'Starting…' : follow ? 'Add follow-up' : 'Start todo'}</button>
       <a class="btn" href="#/">Back</a>
     </div>
   </form>`

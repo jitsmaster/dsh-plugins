@@ -139,7 +139,8 @@ test('a follow-up sends the pasted images with its text', async () => {
   await T.addImages([file('a.png')])
   T.patchForm({ mode: 'followup', followUp: 'the login session' })
   await T.submitTodo()
-  assert.equal(JSON.parse(calls.at(-1)[1].body).images.length, 1)
+  const add = calls.find((c) => String(c[0]).endsWith('/v1/todo'))
+  assert.equal(JSON.parse(add[1].body).images.length, 1)
 })
 
 test('submit waits while an image is still uploading', async () => {

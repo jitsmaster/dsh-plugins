@@ -106,7 +106,7 @@ test('the form wording constants are the desktop\'s', async () => {
   const t = await load()
   assert.equal(t.FOLLOWUP_TEXT_PLACEHOLDER, 'What should the existing session do next?')
   assert.equal(t.FOLLOWUP_QUERY_PLACEHOLDER, 'Which session? Describe it in your own words')
-  assert.equal(t.FOLLOWUP_HINT, 'Nothing is sent until you confirm the session.')
+  assert.equal(t.FOLLOWUP_HINT, 'Sent to the picked session at once.')
 })
 
 // ---- error texts (POST /v1/todo and todo-confirm), the desktop's words through the shared core ----------------------------------------------
@@ -184,6 +184,7 @@ test('the submit button reads "Add follow-up" in Follow up mode and keeps "Start
   assert.match(v, /newTodoPayload\(draft\)/)
   assert.match(v, /startTodo\(payload\.body\)/)
   assert.match(v, /disabled=\$\{[^}]*\.trim\(\)/, 'still disabled on an empty text')
+  assert.match(v, /disabled=\$\{[^}]*follow\s*&&\s*!draft\.followUp/, 'Add follow-up is disabled until a session is picked')
 })
 
 test('the workspaces are asked for only in New session mode (a follow-up never needs them)', () => {

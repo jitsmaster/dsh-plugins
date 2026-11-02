@@ -169,16 +169,24 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
   }
 
   /** This app's own candidates, read in the background (like the workspace suggestion), then the suggestion. The words go to the reader: a number that decides needs no snippets. */
-  async function loadLater(id, query, text) {
-    let candidates = []
-    try { candidates = normalizeCandidates(await within(Promise.resolve().then(() => sessionsOf?.({ query })), LOAD_TIMEOUT_MS)) } catch (error) { log('todo: follow-up sessions failed: ' + codeOf(error)) }
-    if (!stillWaiting(id)) return
-    if (!candidates.length) { store.update(id, { suggesting: false, suggestNote: noSessionsNote(0) }); return }
-    const found = suggestSessionByRef(query, candidates)
-    if (found) { store.update(id, decidedPatch(candidates, found)); return } // the sessions and the suggestion in one write
-    store.update(id, { candidates: candidates.slice(0, MAX_STORED_CANDIDATES).map(trimmed) }) // shown while the model thinks
-    await suggestLater(id, query, text, candidates)
+  async function loadLater(id, query, text, ready = () => {}) {
+    try {
+      let candidates = []
+      try { candidates = normalizeCandidates(await within(Promise.resolve().then(() => sessionsOf?.({ query })), LOAD_TIMEOUT_MS)) } catch (error) { log('todo: follow-up sessions failed: ' + codeOf(error)) }
+      if (!stillWaiting(id)) return
+      if (!candidates.length) { store.update(id, { suggesting: false, suggestNote: noSessionsNote(0) }); return }
+      const found = suggestSessionByRef(query, candidates)
+      if (found) { store.update(id, decidedPatch(candidates, found)); return } // the sessions and the suggestion in one write
+      store.update(id, { candidates: candidates.slice(0, MAX_STORED_CANDIDATES).map(trimmed) }) // shown while the model thinks
+      ready() // an early confirm only needs the list, not the model's pass
+      await suggestLater(id, query, text, candidates)
+    } finally { ready() }
   }
+
+  /** Items whose own session list is still being read (standalone app): id -> promise that settles once the list is on the item. */
+  const loading = new Map()
+  /** An early confirm (made while the list loads) is queued once per item. */
+  const earlyConfirm = new Set()
 
   /**
    * Queues the text as a prompt of the chosen session. A failure puts a FIXED text on the card and only the error's code or name in the log (the controller's message can
@@ -225,20 +233,44 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
         ...(imageIds.length ? { imageIds } : {}),
       })
       if (given && candidates.length && !found) track(suggestLater(item.id, query, text, candidates))
-      else if (!given) track(loadLater(item.id, query, text))
+      else if (!given) {
+        let ready
+        const loaded = new Promise((resolve) => { ready = resolve })
+        loading.set(item.id, loaded)
+        loaded.then(() => loading.delete(item.id))
+        track(loadLater(item.id, query, text, ready))
+      }
       return { ok: true, id: item.id, state: 'awaiting-confirm' }
     },
-    /** Send (or retry) the message: the session given, else the suggested one; it must be one of the candidates. */
+    /**
+     * Send (or retry) the message. A confirm made while this app's own session list is still loading (standalone, the form sends right after the add) waits for the list,
+     * then sends if the session is among them; otherwise the card stays waiting with the list to pick from.
+     */
     confirm(item, sessionId) {
-      const wanted = typeof sessionId === 'string' && sessionId ? sessionId : item.suggested?.sessionId
-      if (!wanted) return { ok: false, error: 'no-session' }
-      // A session that is running now may be in the middle of a task: a MODEL's pick of it is never sent without the user choosing a session (the deterministic number pick and an explicit session are).
-      if (wanted === item.suggested?.sessionId && !(typeof sessionId === 'string' && sessionId) && item.suggested.running === true && !isTrustedReason(item.suggested.reason)) return { ok: false, error: 'no-session' }
-      const hit = (item.candidates ?? []).find((c) => c.sessionId === wanted)
-      if (!hit) return { ok: false, error: 'unknown-session' }
-      store.update(item.id, { state: 'starting', suggesting: false, targetSessionId: hit.sessionId, sessionTitle: hit.title, error: undefined })
-      track(send(item.id, hit.sessionId))
-      return { ok: true, state: 'starting' }
+      const pending = loading.get(item.id)
+      if (pending && !(item.candidates ?? []).length && item.state === 'awaiting-confirm') {
+        if (earlyConfirm.has(item.id)) return { ok: true, state: 'starting' }
+        earlyConfirm.add(item.id)
+        track(pending.then(() => {
+          earlyConfirm.delete(item.id)
+          const current = store.get(item.id)
+          if (isAwaitingConfirm(current)) confirmNow(current, sessionId)
+        }))
+        return { ok: true, state: 'starting' }
+      }
+      return confirmNow(item, sessionId)
     },
+  }
+
+  function confirmNow(item, sessionId) {
+    const wanted = typeof sessionId === 'string' && sessionId ? sessionId : item.suggested?.sessionId
+    if (!wanted) return { ok: false, error: 'no-session' }
+    // A session that is running now may be in the middle of a task: a MODEL's pick of it is never sent without the user choosing a session (the deterministic number pick and an explicit session are).
+    if (wanted === item.suggested?.sessionId && !(typeof sessionId === 'string' && sessionId) && item.suggested.running === true && !isTrustedReason(item.suggested.reason)) return { ok: false, error: 'no-session' }
+    const hit = (item.candidates ?? []).find((c) => c.sessionId === wanted)
+    if (!hit) return { ok: false, error: 'unknown-session' }
+    store.update(item.id, { state: 'starting', suggesting: false, targetSessionId: hit.sessionId, sessionTitle: hit.title, error: undefined })
+    track(send(item.id, hit.sessionId))
+    return { ok: true, state: 'starting' }
   }
 }

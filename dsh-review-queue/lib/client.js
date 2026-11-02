@@ -1038,8 +1038,10 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			if (problem) { patchForm({ error: problem }); return false; }
 			// The form stays open with its text and shows "Adding…" until the server accepts (a follow-up waits seconds while it reads the sessions); a refusal leaves it as it is, with the error.
 			patchForm({ busy: true, error: undefined });
-			const error = await post("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim(), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.effort ? { effort: f.effort } : {}), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
-			if (error) { patchForm({ busy: false, error }); return false; }
+			const added = await postJson("/v1/todo", follow ? { text: f.text.trim(), followUp: f.followUp.trim(), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) } : { text: f.text.trim(), ...(f.workspaceId ? { workspaceId: f.workspaceId } : {}), sparc: !!f.sparc, ...(f.effort ? { effort: f.effort } : {}), ...(f.images && f.images.length ? { images: f.images.map((im) => im.id) } : {}) });
+			if (!added.ok) { patchForm({ busy: false, error: added.error }); return false; }
+			// The session was picked in this form, so there is nothing to confirm on a card: send at once. A refused send leaves the item on the list as a card (pick again / Retry).
+			if (follow && added.body && typeof added.body.id === "string" && added.body.id) await post("/v1/todo-confirm", { id: added.body.id, sessionId: f.followUp.trim() });
 			clearImages();
 			set({ todoForm: { open: false, text: "", workspaceId: "", sparc: false, effort: "", busy: false, error: undefined } });
 			return true;
@@ -1665,7 +1667,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					h("span", { className: "rq-grow" }),
 					h("button", { className: "rq-btn", title: "Rewrite the prompt with the prompt-tune rules and put the result in the box", disabled: !canTune(f), onClick: tuneTodo }, f.tuning ? "Tuning…" : "Tune prompt"),
 					f.original ? h("button", { className: "rq-link", title: "Put back the text you typed before tuning", disabled: f.busy || f.tuning, onClick: undoTune }, "Undo tune") : null,
-					h("button", { className: "rq-btn pri", disabled: f.busy || f.tuning || !f.text.trim() || f.uploading > 0, onClick: submitTodo }, f.busy ? "Adding…" : follow ? "Add follow-up" : "Add todo"),
+					h("button", { className: "rq-btn pri", disabled: f.busy || f.tuning || !f.text.trim() || f.uploading > 0 || (follow && !String(f.followUp || "").trim()), onClick: submitTodo }, f.busy ? "Adding…" : follow ? "Add follow-up" : "Add todo"),
 					h("button", { className: "rq-link", disabled: f.busy, onClick: closeTodoForm }, "Cancel")),
 				f.questions && f.questions.length ? h("div", { className: "rq-tunequestions", role: "group", "aria-label": "Questions about the prompt" },
 					h("div", { className: "rq-sub" }, "The tuned prompt has open choices. Answer what you want to decide (a blank answer leaves it out):"),
@@ -1677,7 +1679,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 						h("button", { className: "rq-link", disabled: f.busy, onClick: skipTuneQuestions }, "Skip"))) : null,
 				note ? h("div", { className: "rq-sub" }, note) : null,
 				f.error ? h("div", { className: "rq-err" }, f.error) : null,
-				h("div", { className: "rq-sub" }, follow ? "Nothing is sent until you confirm the session." : (f.workspaceId ? "Starts in the background right away." : "Nothing starts until you confirm the workspace.") + " Paste an image (Ctrl+V) to attach it to the session."));
+				h("div", { className: "rq-sub" }, follow ? "Sent to the picked session at once." : (f.workspaceId ? "Starts in the background right away." : "Nothing starts until you confirm the workspace.") + " Paste an image (Ctrl+V) to attach it to the session."));
 		}
 
 		function Head({ snap, extra }) {

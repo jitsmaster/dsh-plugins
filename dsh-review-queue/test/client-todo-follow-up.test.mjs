@@ -371,18 +371,23 @@ test('form, Follow up: its own placeholder, the "Which session" dropdown of the 
   ])
   assert.equal(findAll(tree, (n) => n.type === 'input' && n.props.type === 'checkbox').length, 0, 'Use SPARC is hidden')
   assert.doesNotMatch(textOf(tree), /SPARC|Choose for me|confirm the workspace/)
-  assert.match(textOf(tree), /Nothing is sent until you confirm the session\./)
+  assert.match(textOf(tree), /Sent to the picked session at once\./)
+  assert.doesNotMatch(textOf(tree), /confirm the session/)
   assert.ok(button(tree, 'Add follow-up'))
   assert.equal(button(tree, 'Add todo'), undefined)
   assert.ok(button(tree, 'Tune prompt'), 'Tune stays')
 })
 
-test('form: the Add button needs a text in both modes; the description is checked by the validation message, so a click can show it', () => {
+test('form: Add follow-up needs a text AND a picked session; Add todo needs only a text', () => {
   const { T } = render()
   T.set({ todoForm: FORM({ mode: 'followup', text: '', followUp: '' }) })
   assert.equal(button(T.TodoForm(), 'Add follow-up').props.disabled, true)
   T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: '' }) })
+  assert.equal(button(T.TodoForm(), 'Add follow-up').props.disabled, true, 'no session picked: disabled')
+  T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 's2' }) })
   assert.equal(button(T.TodoForm(), 'Add follow-up').props.disabled, false)
+  T.set({ todoForm: FORM({ mode: 'new', text: 'Do it', followUp: '' }) })
+  assert.equal(button(T.TodoForm(), 'Add todo').props.disabled, false)
   T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 'x', busy: true }) })
   assert.equal(button(T.TodoForm(), 'Adding…').props.disabled, true)
 })
@@ -448,6 +453,47 @@ test('submit, Follow up: POST /v1/todo with the trimmed text and followUp only (
   assert.ok(!f.followUp)
   assert.ok(f.mode !== 'followup', 'the next todo starts in New session')
   assert.equal(f.busy, false)
+})
+
+test('submit, Follow up: the picked session is confirmed at once (POST /v1/todo-confirm { id, sessionId }), no confirm card step', async () => {
+  const { T, calls } = render({ answer: (url) => okJson(url.endsWith('/v1/todo') ? { ok: true, id: 'n1', state: 'awaiting-confirm' } : { ok: true, state: 'starting' }) })
+  T.set({ todoForm: FORM({ mode: 'followup', text: 'Reply to it', followUp: 's2' }) })
+  assert.equal(await T.submitTodo(), true)
+  assert.deepEqual(calls, [
+    ['/review-queue/v1/todo', { text: 'Reply to it', followUp: 's2' }],
+    ['/review-queue/v1/todo-confirm', { id: 'n1', sessionId: 's2' }],
+  ])
+  assert.equal(T.state.todoForm.open, false)
+})
+
+test('submit, Follow up: the form stays busy until the confirm is answered too', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const { T, calls } = render({ answer: async (url) => { if (url.endsWith('/v1/todo-confirm')) await gate; return okJson(url.endsWith('/v1/todo') ? { ok: true, id: 'n1' } : { ok: true }) } })
+  T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 's2' }) })
+  const done = T.submitTodo()
+  await tick(); await tick()
+  assert.equal(calls.length, 2)
+  assert.equal(T.state.todoForm.busy, true)
+  assert.equal(T.state.todoForm.open, true)
+  release()
+  assert.equal(await done, true)
+  assert.equal(T.state.todoForm.open, false)
+})
+
+test('submit, Follow up: a confirm that is refused still closes the form: the item is on the list as a confirm card (Retry / pick again)', async () => {
+  const { T, calls } = render({ answer: (url) => (url.endsWith('/v1/todo-confirm') ? okJson({ ok: false, error: 'unknown-session' }, 409) : okJson({ ok: true, id: 'n1' })) })
+  T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 's2' }) })
+  assert.equal(await T.submitTodo(), true)
+  assert.equal(calls.length, 2)
+  assert.equal(T.state.todoForm.open, false)
+})
+
+test('submit, New session: an answer with an id is never confirmed from the form', async () => {
+  const { T, calls } = render({ answer: () => okJson({ ok: true, id: 'n1', state: 'awaiting-confirm' }) })
+  T.set({ todoForm: FORM({ mode: 'new', text: 'Fix it' }) })
+  assert.equal(await T.submitTodo(), true)
+  assert.equal(calls.length, 1)
 })
 
 test('submit, Follow up: while the add is in flight (the server reads the sessions, which takes seconds) the form stays open with its text and busy; the server accepting it clears and closes it', async () => {

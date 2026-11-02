@@ -183,8 +183,8 @@ test('a snapshot refresh never touches the form or the saved draft', () => {
 
 test('audit: the success reset of submitTodo comes after the failure return, so only a successful submit empties the form', () => {
   const submit = source.slice(source.indexOf('async function submitTodo'), source.indexOf('/** Start (or Retry) a todo'))
-  assert.ok(submit.includes('if (error)'), 'submitTodo returns on an error')
-  assert.ok(submit.indexOf('if (error)') < submit.indexOf('set({ todoForm: {'), 'the reset comes after the failure return')
+  assert.ok(submit.includes('if (!added.ok)'), 'submitTodo returns on an error')
+  assert.ok(submit.indexOf('if (!added.ok)') < submit.indexOf('set({ todoForm: {'), 'the reset comes after the failure return')
   assert.equal([...submit.matchAll(/text: ""/g)].length, 1, 'one reset in submitTodo')
 })
 

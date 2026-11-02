@@ -138,6 +138,30 @@ test('confirm sends exactly one queued prompt with the todo text to the chosen s
   assert.equal(f.store.snapshot().open.length, 0)
 })
 
+test('standalone: a confirm made right after the add (the app\'s own sessions are still loading) waits for them and then sends to the picked session', async () => {
+  const f = setupFollowUp()
+  const { id } = f.queue.addTodo(MSG, { followUp: 'something' })
+  assert.equal(f.store.get(id).candidates.length, 0, 'the sessions are not loaded yet')
+  assert.deepEqual(f.queue.confirmTodo(id, { sessionId: 's-pr' }), { ok: true, state: 'starting' })
+  await f.queue.todoIdle()
+  assert.deepEqual(prompts(f.calls).map((c) => c[1].sessionId), ['s-pr'])
+  const item = f.store.get(id)
+  assert.equal(item.status, 'resolved')
+  assert.deepEqual(item.resolution, { kind: 'followed-up', by: 'card', sessionId: 's-pr' })
+})
+
+test('standalone: an early confirm of a session that is not among the loaded ones sends nothing and leaves the card waiting', async () => {
+  const f = setupFollowUp()
+  const { id } = f.queue.addTodo(MSG, { followUp: 'something' })
+  assert.equal(f.queue.confirmTodo(id, { sessionId: 'not-a-session' }).ok, true)
+  await f.queue.todoIdle()
+  assert.deepEqual(prompts(f.calls), [])
+  const item = f.store.get(id)
+  assert.equal(item.status, 'open')
+  assert.equal(item.state, 'awaiting-confirm')
+  assert.ok(item.candidates.length > 0, 'the loaded sessions are on the card to pick from')
+})
+
 test('confirm with a sessionId overrides the suggestion, and works without a suggestion', async () => {
   const f = setupFollowUp({ llm: fakeLlm({ answer: '{"select":"s-orca"}' }) })
   const { id } = f.queue.addTodo(MSG, { followUp: 'the engine one' })

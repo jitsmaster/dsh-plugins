@@ -7,7 +7,7 @@
 import { TOKEN_KEY, authFailureText, hubBase, isAuthFailure, pairBody, pairErrorText, withAuth } from './auth.js'
 import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
-import { pollWaitMs } from './model.js'
+import { pollWaitMs, todoConfirmBody } from './model.js'
 import { bindDraftFlush, dropStaleEffort, dropStaleWorkspace, emptyTodoDraft, loadTodoDraft, saveTodoDraft } from './todo-form.js'
 import { detailOpen, loadToggles, pruneToggles, saveToggles, setDetail } from './toggles.js'
 import {
@@ -208,6 +208,13 @@ export async function startTodo(body) {
   try {
     const res = await call(API + '/v1/todo', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     if (!res.ok) { const j = await res.json().catch(() => ({})); failure = handleAuthFailure(res.status, j) ? { status: 0, body: null, text: 'Signed out: pair this phone again.' } : { status: res.status, body: j } }
+    else if (typeof body.followUp === 'string' && body.followUp) {
+      // The session was picked in the form: send at once instead of leaving a confirm card. A refused send leaves the item on the list as a card.
+      const added = await res.json().catch(() => ({}))
+      if (added && typeof added.id === 'string' && added.id) {
+        await call(API + '/v1/todo-confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(todoConfirmBody({ id: added.id, kind: 'followup' }, body.followUp)) }).catch(() => {})
+      }
+    }
   } catch (e) { failure = { status: 0, body: null, text: 'Request failed: ' + String((e && e.message) || e) } }
   set({ busy: { ...state.busy, [NEW_TODO_ID]: false } })
   if (failure) return { ok: false, ...failure }

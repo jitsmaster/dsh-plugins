@@ -1,7 +1,7 @@
 /**
  * The phone's "+ New todo" form (route #/new): pure validation, payload and wording, the same rules as the desktop form
  * (core.todoFormProblem: empty, or more than 4000 characters) and the same API (POST /v1/todo { text, workspaceId?, sparc? }, or { text, followUp }
- * in Follow up mode: the text is sent as a queued prompt to an EXISTING session found from the words in followUp, after the user confirms it on the card).
+ * in Follow up mode: followUp is the id of the session picked in the form; the text is sent to it as a queued prompt at once, with no confirm card).
  * Node-tested; views.js stays thin.
  */
 
@@ -12,7 +12,7 @@ export const TODO_MAX = 4000
 export const FOLLOWUP_MAX = 300
 export const FOLLOWUP_TEXT_PLACEHOLDER = 'What should the existing session do next?'
 export const FOLLOWUP_QUERY_PLACEHOLDER = 'Which session? Describe it in your own words'
-export const FOLLOWUP_HINT = 'Nothing is sent until you confirm the session.'
+export const FOLLOWUP_HINT = 'Sent to the picked session at once.'
 
 /**
  * A fresh draft: no text, "Choose for me", SPARC off, New session. The draft is kept in state while the user moves between screens.

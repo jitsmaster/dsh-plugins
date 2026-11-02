@@ -114,6 +114,29 @@ test('a follow-up posts through startTodo to /v1/todo with exactly { text, follo
   assert.deepEqual(saved(), { text: '', workspaceId: '', sparc: false }, 'no mode and no description left on disk')
 })
 
+test('a follow-up whose add answers with an id is confirmed at once: POST /v1/todo-confirm { id, sessionId }, then the draft is cleared', async () => {
+  const draft = { ...base, mode: 'followup', followUp: 's2' }
+  api.set({ todoDraft: draft })
+  replies.push({ status: 200, body: { ok: true, id: 'n1', state: 'awaiting-confirm' } }, { status: 200, body: { ok: true, state: 'starting' } })
+  assert.deepEqual(await api.startTodo(form.newTodoPayload(draft).body), { ok: true })
+  assert.equal(calls.length, 2)
+  assert.match(calls[1].url, /\/v1\/todo-confirm$/)
+  assert.deepEqual(calls[1].body, { id: 'n1', sessionId: 's2' })
+  assert.deepEqual({ ...api.state.todoDraft }, emptyTodoDraft())
+})
+
+test('a refused confirm still counts as added (the card is on the list) and clears the draft; a New session todo is never confirmed from the form', async () => {
+  const draft = { ...base, mode: 'followup', followUp: 's2' }
+  api.set({ todoDraft: draft })
+  replies.push({ status: 200, body: { ok: true, id: 'n1' } }, { status: 409, body: { error: 'unknown-session' } })
+  assert.deepEqual(await api.startTodo(form.newTodoPayload(draft).body), { ok: true })
+  assert.equal(calls.length, 2)
+  calls.length = 0
+  replies.push({ status: 200, body: { ok: true, id: 'n2', state: 'awaiting-confirm' } })
+  assert.deepEqual(await api.startTodo({ text: 'Fix it', sparc: false }), { ok: true })
+  assert.equal(calls.length, 1)
+})
+
 test('a refused follow-up keeps the whole draft, mode and description included', async () => {
   const draft = { ...base, mode: 'followup', followUp: 'the login bug' }
   api.set({ todoDraft: draft })
