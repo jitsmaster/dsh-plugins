@@ -65,7 +65,7 @@ export function signatureOf(item) {
   const cls = classOf(item) ?? String(item?.type ?? 'item')
   if (item?.type === 'permission') {
     const p = item.payload ?? {}
-    const t = oneLine(p.detail || p.summary).toLowerCase().split(' ')
+    const t = oneLine(redact(oneLine(p.detail || p.summary))).toLowerCase().split(' ')
     const bin = t[0] || ''
     return String(p.toolName ?? '').toLowerCase() + ':' + bin + (bin === 'git' && t[1] ? ' ' + t[1] : '')
   }
@@ -83,7 +83,11 @@ export function createTriageMemory({ io, now = Date.now, maxCases = MAX_CASES, m
   try {
     const text = io?.read()
     const parsed = text ? JSON.parse(text) : undefined
-    if (parsed && parsed.v === VERSION && Array.isArray(parsed.cases) && Array.isArray(parsed.lessons)) data = { seq: 0, ...parsed }
+    if (parsed && parsed.v === VERSION && Array.isArray(parsed.cases) && Array.isArray(parsed.lessons)) {
+      // seq is the largest id number in use, so a file without it (hand-edited) never hands out an id twice.
+      const used = [...parsed.cases, ...parsed.lessons].map((x) => Number(String(x?.id ?? '').slice(1))).filter(Number.isFinite)
+      data = { ...parsed, seq: Math.max(Number.isFinite(parsed.seq) ? parsed.seq : 0, ...used) }
+    }
   } catch { /* a missing or garbled file starts an empty memory */ }
 
   const save = () => { try { io?.write(JSON.stringify(data)) } catch { /* best effort */ } }
@@ -92,7 +96,7 @@ export function createTriageMemory({ io, now = Date.now, maxCases = MAX_CASES, m
 
   function lessonFor(item, ruleId, signature, example, tokens) {
     const sig = signature
-    const what = item.type === 'permission' ? 'the command "' + sig.split(':').slice(1).join(':') + '"' : 'a ' + (classOf(item) ?? item.type) + ' item like "' + clipText(example, 80) + '"'
+    const what = redact(item.type === 'permission' ? 'the command "' + sig.split(':').slice(1).join(':') + '"' : 'a ' + (classOf(item) ?? item.type) + ' item like "' + clipText(example, 80) + '"')
     return {
       id: 'l' + (++data.seq), ruleId, signature: sig, class: classOf(item), tokens: [...tokens],
       title: 'Keep ' + what + ' for the user',
@@ -129,11 +133,13 @@ export function createTriageMemory({ io, now = Date.now, maxCases = MAX_CASES, m
             data.lessons.push(lesson)
             while (data.lessons.length > maxLessons) data.lessons.sort((a, b) => b.lastAt - a.lastAt).pop()
           }
+          // A lesson that had retired (agreed caught up) starts again: a fresh reversal must hold the item back at once, not after as many denials as there were approvals.
+          if (lesson.overruled <= lesson.agreed) lesson.agreed = 0
           lesson.overruled++
           lesson.lastAt = now()
           lesson.tokens = [...new Set([...lesson.tokens, ...tokens])].slice(0, MAX_TOKENS)
           lesson.examples = [...lesson.examples, { at: now(), text: clipText(text, MAX_EXAMPLE), userAction: item.resolution?.kind, source }].slice(-3)
-        } else if (lesson) lesson.agreed++
+        } else if (lesson && active(lesson)) lesson.agreed++ // agreements with an already retired lesson are not piled up, so it can relearn
         save()
         return { case: c, ...(lesson && review === 'overruled' ? { lesson: { id: lesson.id, title: lesson.title } } : {}) }
       } catch { return undefined }
@@ -160,28 +166,34 @@ export function createTriageMemory({ io, now = Date.now, maxCases = MAX_CASES, m
     },
     /** The user did what the AI would have done on an item this lesson held back: the lesson was too strict (it retires when agreed catches up with overruled). */
     agree(lessonId) {
-      const l = data.lessons.find((x) => x.id === lessonId)
-      if (!l) return false
-      l.agreed++
-      save()
-      return true
+      try {
+        const l = data.lessons.find((x) => x.id === lessonId)
+        if (!l) return false
+        l.agreed++
+        save()
+        return true
+      } catch { return false }
     },
     /** The user did something else than the AI would have on an item this lesson held back: the lesson was right. */
     confirm(lessonId) {
-      const l = data.lessons.find((x) => x.id === lessonId)
-      if (!l) return false
-      l.confirmed++
-      l.lastAt = now()
-      save()
-      return true
+      try {
+        const l = data.lessons.find((x) => x.id === lessonId)
+        if (!l) return false
+        l.confirmed++
+        l.lastAt = now()
+        save()
+        return true
+      } catch { return false }
     },
     /** Deletes a lesson (the user says it is wrong); true when it existed. */
     forget(lessonId) {
-      const n = data.lessons.length
-      data.lessons = data.lessons.filter((l) => l.id !== lessonId)
-      if (data.lessons.length === n) return false
-      save()
-      return true
+      try {
+        const n = data.lessons.length
+        data.lessons = data.lessons.filter((l) => l.id !== lessonId)
+        if (data.lessons.length === n) return false
+        save()
+        return true
+      } catch { return false }
     },
     lessons: () => data.lessons.map((l) => ({ ...summary(l, undefined), description: l.description, agreed: l.agreed, confirmed: l.confirmed, active: active(l), since: day(l.firstAt) })),
     cases: () => data.cases.map((c) => ({ ...c })),

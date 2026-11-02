@@ -228,3 +228,36 @@ test('a throwing memory never stops triage', async () => {
   a.store.resolve(item.id, { kind: 'denied', by: 'card' })
   assert.equal(a.store.get(item.id).triage.review, 'overruled')
 })
+
+test('review fix: a retired lesson relearns at once after a fresh reversal, however many approvals came before', () => {
+  const m = createTriageMemory()
+  const id = m.record({ item: resolved(perm('git log'), 'denied'), review: 'overruled' }).lesson.id
+  m.agree(id) // retired: too strict
+  for (let i = 0; i < 10; i++) m.record({ item: resolved(perm('git log'), 'approved'), review: 'matched-user' })
+  assert.equal(m.lessons()[0].agreed <= 1, true, 'approvals of a retired lesson are not piled up')
+  m.record({ item: resolved(perm('git log'), 'denied'), review: 'overruled' })
+  assert.ok(m.recall(perm('git log'), ['ro-permission']).veto, 'held back again after one fresh reversal')
+})
+
+test('review fix: a secret in a command never reaches the signature, the lesson title or the stored memory', () => {
+  const { box, io } = memIo()
+  const m = createTriageMemory({ io })
+  m.record({ item: resolved(perm('TOKEN=ghp_abcdefghijklmnopqrstuvwxyz012345 ./deploy'), 'denied'), review: 'overruled' })
+  m.record({ item: resolved(perm('ghp_abcdefghijklmnopqrstuvwxyz012345 run'), 'denied'), review: 'overruled' })
+  assert.ok(!box.text.includes('ghp_abcdef'))
+  assert.ok(!JSON.stringify(m.lessons()).includes('ghp_abcdef'))
+})
+
+test('review fix: ids never collide when the file has no seq; agree, confirm and forget never throw', () => {
+  const { box, io } = memIo()
+  createTriageMemory({ io }).record({ item: resolved(perm('git log'), 'denied'), review: 'overruled' })
+  const data = JSON.parse(box.text)
+  delete data.seq
+  box.text = JSON.stringify(data)
+  const m = createTriageMemory({ io })
+  const again = m.record({ item: resolved(perm('git diff'), 'denied'), review: 'overruled' })
+  assert.notEqual(again.lesson.id, data.lessons[0].id)
+  const bad = createTriageMemory({ io: { read: () => undefined, write: () => { throw new Error('disk') } } })
+  const id = bad.record({ item: resolved(perm('ls'), 'denied'), review: 'overruled' }).lesson.id
+  assert.doesNotThrow(() => { bad.agree(id); bad.confirm(id); bad.forget(id) })
+})
