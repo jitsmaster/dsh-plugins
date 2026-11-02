@@ -634,6 +634,7 @@ function ItemView({ id }) {
     <div class="top"><${Chip} type=${item.type} /><span class="age">${resolved ? ageOf(item, 'resolvedAt') : ageOf(item)}</span></div>
     <h2>${c.cardTitle(item)}</h2>
     ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}${item.workspace ? ' · ' + item.workspace : ''}</div>` : null}
+    ${c.triageNote(item) ? html`<div class="sub ai-note">${c.triageNote(item)}</div>` : null}
     ${open ? html`<${Body} item=${item} />` : html`<div>
       <div class="resolution">${c.resolutionText(item)}</div>
       ${late ? html`<details open=${detailOpen(st.toggles, item.id, 'late', lateDefault)} onToggle=${(e) => rememberDetail(item.id, 'late', e.currentTarget.open, lateDefault)}><summary class="sub">Answer now (late)</summary><${QuestionBody} item=${item} path="/v1/late-answer" sendLabel="Send late answer" /></details>` : null}

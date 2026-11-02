@@ -26,6 +26,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
   /** @type {Map<string, any>} */
   const items = new Map()
   const listeners = new Set()
+  const addListeners = new Set()
   let seq = 0
   let version = 0
   const epoch = uuid()
@@ -105,6 +106,10 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       items.set(item.id, item)
       reindex(item)
       changed()
+      // The one place new items are announced (AI triage listens here, not in every raiser). A listener runs after the item is stored and can never break the add.
+      for (const listener of [...addListeners]) {
+        try { listener(copy(item)) } catch { /* one bad listener must not stop the others or lose the item */ }
+      }
       return copy(item)
     },
     get: (id) => copy(items.get(id)),
@@ -199,6 +204,11 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     onChange(listener) {
       listeners.add(listener)
       return () => { listeners.delete(listener) }
+    },
+    /** listener(item copy) after every add (not update, not restore); returns the unsubscribe. */
+    onAdd(listener) {
+      addListeners.add(listener)
+      return () => { addListeners.delete(listener) }
     },
   }
 }

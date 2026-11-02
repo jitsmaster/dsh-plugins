@@ -62,6 +62,9 @@ import { snippetsFromThread } from './follow-up.js'
 import { createTaskbarBadge } from './taskbar.js'
 import { CHECK_MS, IDLE_MS, createIdleJudge, createIdleResumer, createLogReader } from './idle-resume.js'
 import { ASK_CHECK_MS, ASK_IDLE_MS, BEAT_MS, createIdleAsker, createSleepTracker } from './idle-ask.js'
+import { createTriageJudge } from './triage-judge.js'
+import { createTriageLog } from './triage-log.js'
+import { createTriageRunner } from './triage-runner.js'
 
 export const name = 'review-queue'
 
@@ -216,6 +219,23 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   // A session asks the user to archive it by "/archive-offer <reason>" typed in it or an ARCHIVE-OFFER marker line it prints itself: an archive card (desktop and phone), nothing is archived before the user presses it (off with archiveOfferCommands: false).
 installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.archiveOfferCommands !== false })
 const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(config.ui ? { ui: config.ui } : {}) })
+  // AI triage, observe mode only (triage-runner.js): every new item is judged in the background and an open card that is safe to handle gets the note "AI would have handled this".
+  // Nothing is ever done to an item. Off with triage: false or env DSH_RQ_TRIAGE=0, and off in node --test runs unless triage: true; config.triageDeps replaces parts (tests).
+  const triageWanted = config.triage === true || (config.triage !== false && process.env.DSH_RQ_TRIAGE !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
+  let triage
+  if (triageWanted) {
+    const triageLog = stateDir ? createTriageLog(join(stateDir, 'triage-log.jsonl')) : undefined
+    try { triageLog?.prune() } catch { /* next start */ }
+    triage = createTriageRunner({
+      store, log, triageLog,
+      judge: config.triageDeps?.judge ?? createTriageJudge({ llm, log }),
+      enabled: () => config.triage !== false,
+      // A done card is raised when a turn ends, so a session that is running again by now is one that continues; unknown means finished (a veto).
+      sessionContinuesOf: (item) => safe(() => sessionCounter.runningIds?.()?.has(item.sessionId)) === true,
+      ...(config.triageDeps ?? {}),
+    })
+    triage.start()
+  }
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }

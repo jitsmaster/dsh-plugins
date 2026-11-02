@@ -64,6 +64,13 @@ window.__ModuleLoader__.load({
 		/** The note a detached open question shows (its live request ended, so the answer goes to the session). */
 		const detachedNote = (item) => (item && item.type === "question" && item.detached ? "The live request ended; your answer is sent to the session." : undefined);
 
+		/** The observe-mode note of an open card the AI triage would have handled (nothing was done); undefined for any other item. Shared with the phone. */
+		const triageNote = (item) => {
+			const t = item && item.status !== "resolved" ? item.triage : undefined;
+			if (!t || t.verdict !== "handle") return undefined;
+			return "AI would have handled this: " + (t.would || "handle it") + (t.ruleName ? " (rule: " + t.ruleName + (typeof t.score === "number" ? ", attention " + Math.round(t.score) : "") + ")" : "") + ". Nothing was done.";
+		};
+
 		/** Done items that left the list without the user acting on them can go back in. */
 		const isReopenable = (it) => !!(it && it.type === "completed" && it.resolution && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action" || it.resolution.kind === "trimmed"));
 
@@ -1569,6 +1576,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 						!forceFull ? h("span", { "aria-hidden": true }, full ? "▾" : "▸") : null)),
 				item.sessionTitle || (full && item.workspace) ? h("div", { className: "rq-sub" }, [item.sessionTitle, full ? item.workspace : ""].filter(Boolean).join(" · ")) : null,
 				item.earlier ? h("div", { className: "rq-sub" }, "Replaces " + item.earlier + " earlier result" + (item.earlier === 1 ? "" : "s") + " from this session (see Resolved).") : null,
+				triageNote(item) ? h("div", { className: "rq-sub rq-ai", "data-ai-note": item.id }, triageNote(item)) : null,
 				h(Body, { item, full }),
 				st.errors[item.id] ? h("div", { className: "rq-err" }, st.errors[item.id]) : null,
 				h("div", { className: "rq-row" },
@@ -1921,11 +1929,11 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { stageOf, detachedNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
+		exports.shared = { stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { detachedNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
+		exports.__test = { detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldForm, HoldButton, PausedBody, startResumeAll, askResumeAll });
