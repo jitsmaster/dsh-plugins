@@ -131,6 +131,8 @@ test('a refused confirm still counts as added (the card is on the list) and clea
   replies.push({ status: 200, body: { ok: true, id: 'n1' } }, { status: 409, body: { error: 'unknown-session' } })
   assert.deepEqual(await api.startTodo(form.newTodoPayload(draft).body), { ok: true })
   assert.equal(calls.length, 2)
+  assert.match(calls[1].url, /\/v1\/todo-confirm$/)
+  assert.deepEqual(calls[1].body, { id: 'n1', sessionId: 's2' }, 'the confirm was really sent')
   calls.length = 0
   replies.push({ status: 200, body: { ok: true, id: 'n2', state: 'awaiting-confirm' } })
   assert.deepEqual(await api.startTodo({ text: 'Fix it', sparc: false }), { ok: true })

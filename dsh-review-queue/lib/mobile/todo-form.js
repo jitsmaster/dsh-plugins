@@ -8,7 +8,7 @@
 /** The longest task text the server takes. */
 export const TODO_MAX = 4000
 
-/** The longest description of the session a follow-up is for (the server's MAX_QUERY, the desktop's FOLLOWUP_MAX). */
+/** The longest value of a follow-up's session field (the picked session id; the server's MAX_QUERY, the desktop's FOLLOWUP_MAX). */
 export const FOLLOWUP_MAX = 300
 export const FOLLOWUP_TEXT_PLACEHOLDER = 'What should the existing session do next?'
 export const FOLLOWUP_QUERY_PLACEHOLDER = 'Which session? Describe it in your own words'
@@ -16,7 +16,7 @@ export const FOLLOWUP_HINT = 'Sent to the picked session at once.'
 
 /**
  * A fresh draft: no text, "Choose for me", SPARC off, New session. The draft is kept in state while the user moves between screens.
- * Follow up mode and its description are extra keys (mode: 'followup', followUp: words) that exist only while they are set, so an old draft is a New session one.
+ * Follow up mode and its description are extra keys (mode: 'followup', followUp: the picked session id) that exist only while they are set, so an old draft is a New session one.
  */
 export const emptyTodoDraft = () => ({ text: '', workspaceId: '', sparc: false })
 

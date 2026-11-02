@@ -486,6 +486,7 @@ test('submit, Follow up: a confirm that is refused still closes the form: the it
   T.set({ todoForm: FORM({ mode: 'followup', text: 'Do it', followUp: 's2' }) })
   assert.equal(await T.submitTodo(), true)
   assert.equal(calls.length, 2)
+  assert.deepEqual(calls[1], ['/review-queue/v1/todo-confirm', { id: 'n1', sessionId: 's2' }], 'the confirm was really sent')
   assert.equal(T.state.todoForm.open, false)
 })
 
