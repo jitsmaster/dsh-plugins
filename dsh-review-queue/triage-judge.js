@@ -78,11 +78,15 @@ export function parseJudgment(out) {
 export function createTriageJudge({ llm, timeoutMs = JUDGE_TIMEOUT_MS, maxTokens = JUDGE_MAX_TOKENS, log = () => {} } = {}) {
   const run = createModelRun({ llm, timeoutMs })
   return {
-    async judge({ item, rules = [], sources = [] }) {
+    async judge({ item, rules = [], sources = [], lessons = [] }) {
       const rulesText = rules.map((r) => ({ id: r.id, class: r.class, instruction: clip(oneLine(r.instruction), 400), ...(Array.isArray(r.closedSet) ? { allowedAnswers: r.closedSet.slice(0, 20) } : {}) }))
       // Only the sources the user wrote are offered as quotable; code re-checks the quote against the same list.
       const quotable = sources.filter((s) => s?.userAuthored === true && typeof s.id === 'string').slice(0, MAX_SOURCES).map((s) => ({ id: s.id, text: clip(s.text, MAX_SOURCE_CHARS) }))
-      const text = 'Rules:\n' + JSON.stringify(rulesText) + '\n\nUSER-AUTHORED SOURCES (the only place a quote may come from):\n' + JSON.stringify(quotable) + '\n\nItem to judge:\n' + JSON.stringify(describeItem(item))
+      // Past corrections: cautionary data only. They can make the model more careful (a higher attention score), never less; code has already vetoed the strong matches.
+      const past = lessons.slice(0, 3).map((l) => ({ lesson: clip(oneLine(l.title), 200), reversedTimes: l.count }))
+      const text = 'Rules:\n' + JSON.stringify(rulesText) + '\n\nUSER-AUTHORED SOURCES (the only place a quote may come from):\n' + JSON.stringify(quotable)
+        + (past.length ? '\n\nPAST CORRECTIONS: the user reversed AI proposals like these before. If this item resembles one, raise attention and set needs_decision true:\n' + JSON.stringify(past) : '')
+        + '\n\nItem to judge:\n' + JSON.stringify(describeItem(item))
       const result = await run(async ({ model: m, signal, trace }) => {
         const prepared = await llm.prepareCall({ provider: m.provider, model: m.model, maxTokens }, signal)
         for await (const chunk of prepared.stream({ ...prepared.config, system: SYSTEM, signal, messages: [{ role: 'user', content: [{ type: 'text', text }] }] })) {

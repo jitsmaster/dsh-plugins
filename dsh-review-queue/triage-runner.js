@@ -61,22 +61,41 @@ export function wouldText(item) {
   return 'handle this'
 }
 
+/** Did the user do what the AI would have done? true | false | undefined (no comparison possible: cancelled, expired, a type triage does not judge). */
+export function userDidWhatAiWould(item) {
+  const kind = item?.resolution?.kind
+  if (item?.type === 'permission') return kind === 'approved' ? true : kind === 'denied' ? false : undefined
+  if (item?.type === 'completed') return kind === 'reviewed' || kind === 'no-action' ? true : kind === 'replied' ? false : undefined
+  return undefined
+}
+
 /** The user's action compared with the AI's proposal: 'matched-user' | 'overruled' | undefined (no comparison possible). */
 export function feedbackOf(item) {
   const t = item?.triage
   if (!t || t.verdict !== 'handle' || item.status !== 'resolved' || t.review) return undefined
-  const kind = item.resolution?.kind
-  if (item.type === 'permission') return kind === 'approved' ? 'matched-user' : kind === 'denied' ? 'overruled' : undefined
-  if (item.type === 'completed') return kind === 'reviewed' || kind === 'no-action' ? 'matched-user' : kind === 'replied' ? 'overruled' : undefined
-  return undefined
+  const same = userDidWhatAiWould(item)
+  return same === undefined ? undefined : same ? 'matched-user' : 'overruled'
 }
+
+/**
+ * A card the AI held back because of a past correction, compared with what the user then did: 'lesson-confirmed' (the user did NOT do what the AI
+ * would have: the lesson was right) | 'lesson-too-strict' (the user did what the AI would have: the lesson held back something fine) | undefined.
+ */
+export function lessonFeedbackOf(item) {
+  const t = item?.triage
+  if (!t || t.reason !== 'past-correction' || item.status !== 'resolved' || t.review) return undefined
+  const same = userDidWhatAiWould(item)
+  return same === undefined ? undefined : same ? 'lesson-too-strict' : 'lesson-confirmed'
+}
+
 
 /**
  * @param {{ store: any, judge: { judge: Function }, triageLog?: { append: Function }, rules?: object[], marksOf?: (item: object) => object,
  *   sourcesOf?: (item: object) => object[], sessionContinuesOf?: (item: object) => boolean, enabled?: () => boolean, log?: (line: string) => void,
- *   now?: () => number, maxInFlight?: number }} deps
+ *   now?: () => number, maxInFlight?: number, memory?: ReturnType<import('./triage-memory.js').createTriageMemory> }} deps
+ *   memory: the correction memory. A strong match with a past reversal is a code veto before any model call; weaker matches go to the judge as cautionary context.
  */
-export function createTriageRunner({ store, judge, triageLog, rules = DEFAULT_RULES, marksOf = () => ({}), sourcesOf = () => [], sessionContinuesOf, enabled = () => true, log = () => {}, now = Date.now, maxInFlight = MAX_IN_FLIGHT }) {
+export function createTriageRunner({ store, judge, triageLog, memory, rules = DEFAULT_RULES, marksOf = () => ({}), sourcesOf = () => [], sessionContinuesOf, enabled = () => true, log = () => {}, now = Date.now, maxInFlight = MAX_IN_FLIGHT }) {
   const running = new Set()
   let inFlight = 0
   let off = () => {}
@@ -96,10 +115,21 @@ export function createTriageRunner({ store, judge, triageLog, rules = DEFAULT_RU
     const pre = triageOutcome({ item, judgment: { needs_decision: false, attention: 0, matched_rule: mine[0].id, answer_basis: 'none' }, rule: mine[0], facts, marks: marksOf(item) })
     const hard = pre.reasons.filter((r) => r !== 'no-rule')
     if (hard.length) { record({ itemId: item.id, type: item.type, stage: 'code-veto', verdict: 'ask', reasons: hard }); return }
+    // Learning from reversals: the user reversed a similar AI proposal before. Code decides, not the model: the card stays a normal card and says why.
+    let recalled = { context: [] }
+    try { recalled = memory?.recall(item, mine.map((r) => r.id)) ?? recalled } catch { /* memory is best effort */ }
+    if (recalled.veto) {
+      const lesson = { id: recalled.veto.id, title: recalled.veto.title, count: recalled.veto.count, lastAt: recalled.veto.lastAt }
+      if (stillOpen(item.id)) store.update(item.id, { triage: { mode: 'observe', verdict: 'ask', reason: 'past-correction', lesson, at: now() } })
+      watching.add(item.id)
+      record({ itemId: item.id, type: item.type, stage: 'memory-veto', verdict: 'ask', reasons: ['past-correction'], lessonId: lesson.id, similarity: recalled.veto.similarity })
+      log('triage: held back ' + item.type + ' ' + item.id + ' (past correction ' + lesson.id + ')')
+      return
+    }
     if (inFlight >= maxInFlight) { record({ itemId: item.id, type: item.type, stage: 'skipped', verdict: 'ask', reasons: ['busy'] }); return }
     inFlight++
     let result
-    try { result = await judge.judge({ item, rules: mine, sources: sourcesOf(item) }) } catch (error) { result = { note: String(error?.message ?? error) } } finally { inFlight-- }
+    try { result = await judge.judge({ item, rules: mine, sources: sourcesOf(item), lessons: recalled.context }) } catch (error) { result = { note: String(error?.message ?? error) } } finally { inFlight-- }
     if (!result?.judgment) { record({ itemId: item.id, type: item.type, stage: 'judge', verdict: 'ask', reasons: ['no-judgment'], note: result?.note }); return }
     const rule = mine.find((r) => r.id === result.judgment.matched_rule)
     const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts, sources: sourcesOf(item), marks: marksOf(item) })
@@ -108,7 +138,7 @@ export function createTriageRunner({ store, judge, triageLog, rules = DEFAULT_RU
     const fresh = store.get(item.id) // the item as it is now, not as it was when it was raised
     const marks = fresh ? marksOf(fresh) : {}
     if (outcome.verdict !== 'handle' || fresh?.status !== 'open' || !enabled() || rule.mode === 'off' || marks.onHold || marks.neverAuto) { record(outcome.verdict === 'handle' ? { ...entry, verdict: 'ask', reasons: ['changed-meanwhile'] } : entry); return }
-    store.update(item.id, { triage: { mode: 'observe', verdict: 'handle', ruleId: rule.id, ruleName: rule.name, ruleVersion: ruleVersion(rule), score: outcome.score, threshold: outcome.threshold, would: wouldText(item), at: now() } })
+    store.update(item.id, { triage: { mode: 'observe', verdict: 'handle', ruleId: rule.id, ruleName: rule.name, ruleVersion: ruleVersion(rule), score: outcome.score, threshold: outcome.threshold, would: wouldText(item), at: now(), ...(recalled.context.length ? { considered: recalled.context.map((l) => ({ id: l.id, title: l.title, count: l.count, lastAt: l.lastAt })) } : {}) } })
     watching.add(item.id)
     record(entry)
     log('triage: would handle ' + item.type + ' ' + item.id + ' (rule ' + rule.id + ', score ' + outcome.score + ')')
@@ -120,10 +150,21 @@ export function createTriageRunner({ store, judge, triageLog, rules = DEFAULT_RU
       if (!item) { watching.delete(id); continue }
       if (item.status !== 'resolved') continue
       watching.delete(id)
+      const lessonReview = lessonFeedbackOf(item)
+      if (lessonReview) {
+        // The AI held this back because of a past correction: what the user did says whether that lesson was right.
+        try { if (lessonReview === 'lesson-confirmed') memory?.confirm(item.triage.lesson?.id); else memory?.agree(item.triage.lesson?.id) } catch { /* best effort */ }
+        store.update(id, { triage: { ...item.triage, review: lessonReview } })
+        record({ itemId: id, type: item.type, stage: 'feedback', lessonId: item.triage.lesson?.id, review: lessonReview, resolution: item.resolution?.kind })
+        continue
+      }
       const review = feedbackOf(item)
       if (!review) continue
-      store.update(id, { triage: { ...item.triage, review } })
-      record({ itemId: id, type: item.type, stage: 'feedback', ruleId: item.triage.ruleId, ruleVersion: item.triage.ruleVersion, review, resolution: item.resolution?.kind })
+      // Every comparison is a case; an overrule also distils a lesson, so the same mistake is not proposed again.
+      let learned
+      try { learned = memory?.record({ item, review, source: 'observe' }) } catch { /* best effort */ }
+      store.update(id, { triage: { ...item.triage, review, ...(learned?.lesson ? { learned: learned.lesson } : {}) } })
+      record({ itemId: id, type: item.type, stage: 'feedback', ruleId: item.triage.ruleId, ruleVersion: item.triage.ruleVersion, review, resolution: item.resolution?.kind, ...(learned?.lesson ? { lessonId: learned.lesson.id } : {}) })
     }
   }
 
@@ -132,7 +173,7 @@ export function createTriageRunner({ store, judge, triageLog, rules = DEFAULT_RU
     start() {
       if (typeof store.onAdd !== 'function') return false
       // A proposal made before a restart still gets its feedback: seed the watch list from the open items that carry one.
-      try { for (const i of store.list({ status: 'open' })) if (i.triage?.verdict === 'handle' && !i.triage.review) watching.add(i.id) } catch { /* nothing to seed */ }
+      try { for (const i of store.list({ status: 'open' })) if ((i.triage?.verdict === 'handle' || i.triage?.reason === 'past-correction') && !i.triage.review) watching.add(i.id) } catch { /* nothing to seed */ }
       off = store.onAdd((item) => {
         if (!enabled()) return
         const p = Promise.resolve().then(() => run(item)).catch((error) => log('triage: ' + (error?.message ?? error)))

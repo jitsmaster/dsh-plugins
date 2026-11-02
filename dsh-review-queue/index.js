@@ -65,6 +65,7 @@ import { ASK_CHECK_MS, ASK_IDLE_MS, BEAT_MS, createIdleAsker, createSleepTracker
 import { createTriageJudge } from './triage-judge.js'
 import { createTriageLog } from './triage-log.js'
 import { createTriageRunner } from './triage-runner.js'
+import { createTriageMemory } from './triage-memory.js'
 
 export const name = 'review-queue'
 
@@ -226,8 +227,10 @@ const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, 
   if (triageWanted) {
     const triageLog = stateDir ? createTriageLog(join(stateDir, 'triage-log.jsonl')) : undefined
     try { triageLog?.prune() } catch { /* next start */ }
+    // Correction memory (triage-memory.js): reversed AI proposals become lessons, so the same mistake is not proposed again.
+    const memory = createTriageMemory({ io: stateDir ? fileIo(join(stateDir, 'triage-memory.json')) : undefined })
     triage = createTriageRunner({
-      store, log, triageLog,
+      store, log, triageLog, memory,
       judge: config.triageDeps?.judge ?? createTriageJudge({ llm, log }),
       enabled: () => config.triage !== false,
       // A session parked on hold is never a candidate (a user mark that vetoes triage).

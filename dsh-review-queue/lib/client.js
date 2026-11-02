@@ -65,10 +65,18 @@ window.__ModuleLoader__.load({
 		const detachedNote = (item) => (item && item.type === "question" && item.detached ? "The live request ended; your answer is sent to the session." : undefined);
 
 		/** The observe-mode note of an open card the AI triage would have handled (nothing was done); undefined for any other item. Shared with the phone. */
+		const pastText = (l) => {
+			const n = l.count || 1;
+			return "based on a past correction: you reversed a similar AI proposal " + (n === 1 ? "once" : n + " times") + (typeof l.lastAt === "number" ? " (last " + new Date(l.lastAt).toISOString().slice(0, 10) + ")" : "") + (l.title ? ": " + l.title : "");
+		};
 		const triageNote = (item) => {
 			const t = item && item.status !== "resolved" ? item.triage : undefined;
-			if (!t || t.verdict !== "handle") return undefined;
-			return "AI would have handled this: " + (t.would || "handle it") + (t.ruleName ? " (rule: " + t.ruleName + (typeof t.score === "number" ? ", attention " + Math.round(t.score) : "") + ")" : "") + ". Nothing was done.";
+			if (!t) return undefined;
+			// Held back by code because of a past correction: say so plainly.
+			if (t.verdict === "ask" && t.reason === "past-correction" && t.lesson) return "AI kept this for you, " + pastText(t.lesson) + ".";
+			if (t.verdict !== "handle") return undefined;
+			const base = "AI would have handled this: " + (t.would || "handle it") + (t.ruleName ? " (rule: " + t.ruleName + (typeof t.score === "number" ? ", attention " + Math.round(t.score) : "") + ")" : "") + ". Nothing was done.";
+			return t.considered && t.considered[0] ? base + " It weighed a past correction: " + pastText(t.considered[0]) + "." : base;
 		};
 
 		/** Done items that left the list without the user acting on them can go back in. */
