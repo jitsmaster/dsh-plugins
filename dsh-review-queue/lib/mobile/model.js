@@ -20,9 +20,11 @@ export function listModel(core, snap, filter) {
     heldOpen: core.filterItems(open, { type: 'onhold', query: f.query }),
     sessions: core.sessionsText(snap && snap.sessions), // "N working / M open" like the desktop header; '' while unknown
     open: core.filterItems(open, f),
-    resolved: core.filterItems(resolved, f),
+    resolved: core.filterItems(resolved, f), // honours f.resolvedBy
     resolvedCount: resolved.length,
     barVisible: core.filterBarVisible(snap, f),
+    resolvedChips: Array.from(core.RESOLVED_BY).map((value) => ({ value, label: core.resolvedByLabel(value), on: (f.resolvedBy || 'all') === value })),
+    aiUnseen: core.aiUnseenCount(resolved), // AI-resolved items nobody has seen or reviewed, whatever the filter
     chips: core.FILTER_TYPES.map((type) => ({ type, label: type === 'all' ? 'All' : core.typeLabel(type), on: (f.type || 'all') === type })),
   }
 }

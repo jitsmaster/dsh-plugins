@@ -186,3 +186,10 @@ body.typing .composer { bottom: 0; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 .ai-note { font-style: italic; border-left: 3px solid var(--dim); padding-left: 8px; margin: 6px 0; }
+
+/* AI-resolved items */
+.chips-label { align-self: center; flex: none; }
+.ai-badge { background: var(--accent); color: var(--accent-ink); }
+.ai-detail, .ai-review, .ai-correction { margin: 8px 0; }
+.ai-review .row, .ai-correction .row { flex-wrap: wrap; }
+.banner.ai-handled { display: block; width: 100%; min-height: 48px; border: 0; border-radius: 10px; margin-bottom: 12px; text-align: left; font: inherit; font-size: 14px; }

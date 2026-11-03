@@ -1,6 +1,6 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
-import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail } from './api.js'
+import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen } from './api.js'
 import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
@@ -496,6 +496,68 @@ function Composer({ item }) {
   </div>`
 }
 
+// ---- AI-resolved items (hook-free: the screens that hold them re-render on every store change) -------------------------
+
+/** The "Resolved by" chips of the Resolved view; the AI chip carries the number of AI items nobody has looked at. */
+export function ResolvedByRow({ model }) {
+  const f = state.filter
+  return html`<div class="chips" role="group" aria-label="Resolved by"><span class="sub chips-label">Resolved by</span>
+    ${model.resolvedChips.map((c) => html`<button key=${c.value} class=${'fchip' + (c.on ? ' on' : '')} data-resolved-by=${c.value} aria-pressed=${c.on} onClick=${() => set({ filter: { ...f, resolvedBy: c.value } })}>${c.label + (c.value === 'ai' && model.aiUnseen > 0 ? ' (' + model.aiUnseen + ')' : '')}</button>`)}
+  </div>`
+}
+
+/** The small "AI" badge of a row the AI resolved. */
+export function AiBadge({ item }) {
+  return getCore().aiDetail(item) ? html`<span class="chip ai-badge" data-ai-badge=${item.id}>AI</span>` : null
+}
+
+/** What the AI relied on: the quote, the rule and the attention score. */
+export function AiDetail({ item }) {
+  const d = getCore().aiDetail(item)
+  if (!d) return null
+  return html`<div class="ai-detail" data-ai-detail=${item.id}>
+    ${d.quote ? html`<div class="ai-note">“${d.quote}”</div>` : null}
+    <div class="sub">${'Rule: ' + d.ruleName + (d.score !== undefined ? ' · attention ' + d.score : '')}</div>
+  </div>`
+}
+
+const closeKey = (key, id) => { const m = { ...state[key] }; delete m[id]; set({ [key]: m }) }
+
+/** Review of an AI decision: agree, mark it wrong with a correction, or overrule the rule. Reopen is left to the item view. */
+export function AiReview({ item }) {
+  const r = getCore().aiDetail(item) && item.resolution
+  if (!r) return null
+  const id = item.id
+  const busy = !!state.busy[id]
+  const text = state.aiCorrection[id]
+  const marking = typeof text === 'string'
+  const review = async (body) => { const ok = await act('/v1/triage-review', { id, ...body }, id); if (ok) { closeKey('aiOverrule', id); closeKey('aiCorrection', id) } return ok }
+  const canMarkWrong = item.type !== 'paused' && typeof item.sessionId === 'string' && item.sessionId !== '' // the reply path refuses the others too
+  const cannotUnsend = item.type === 'question' || item.type === 'permission'
+  return html`<div class="ai-review">
+    <div class="row">
+      ${!r.review ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => review({ review: 'agreed' })}>Looks right</button>` : null}
+      ${!r.review && canMarkWrong ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => set({ aiCorrection: { ...state.aiCorrection, [id]: marking ? text : '' } })}>Mark wrong…</button>` : null}
+      ${r.review !== 'overruled' ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => set({ aiOverrule: { ...state.aiOverrule, [id]: true } })}>Overrule rule</button>` : null}
+    </div>
+    ${marking ? html`<div class="ai-correction">
+      <textarea class="input ta" data-ai-correction=${id} rows="2" placeholder="What should it have done?" value=${text} onInput=${(e) => set({ aiCorrection: { ...state.aiCorrection, [id]: e.target.value } })}></textarea>
+      ${cannotUnsend ? html`<div class="sub">The answer already went to the session and cannot be unsent; your correction is recorded for the rule.</div>` : null}
+      <div class="row"><button class="btn pri" type="button" disabled=${busy || !text.trim()} onClick=${() => review({ review: 'mark-wrong', text: text.trim() })}>Send</button></div>
+    </div>` : null}
+    ${state.aiOverrule[id] ? html`<div class="row">
+      <button class="btn" type="button" disabled=${busy} onClick=${() => review({ review: 'overrule-rule', mode: 'observe' })}>Set rule to observe</button>
+      <button class="btn" type="button" disabled=${busy} onClick=${() => review({ review: 'overrule-rule', mode: 'off' })}>Set rule to off</button>
+    </div>` : null}
+  </div>`
+}
+
+/** "AI handled N" on the waiting list: tapping it shows those items in the Resolved view. */
+export function AiHandledBanner({ count }) {
+  if (!count) return null
+  return html`<button class="banner ai-handled" type="button" data-ai-handled onClick=${() => { set({ filter: { ...state.filter, type: 'all', query: '', resolvedBy: 'ai' } }); go('/resolved') }}>${'AI handled ' + count}</button>`
+}
+
 // ---- screens ----------------------------------------------------------------------------------------------------
 
 function ItemRow({ item }) {
@@ -527,6 +589,7 @@ function WaitingList() {
   return html`<div>
     <div class="row todo-link"><a class="btn pri" href="#/new">+ New todo</a></div>
     ${note ? html`<div class="banner paused-note" role="status">⏸ ${note} <button class="btn" type="button" onClick=${() => set({ filter: { ...st.filter, type: 'paused' } })}>Show</button></div>` : null}
+    <${AiHandledBanner} count=${model.aiUnseen} />
     ${model.barVisible ? html`<${FilterBar} model=${model} />` : null}
     ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
   </div>`
@@ -551,12 +614,13 @@ function ResolvedList() {
   const shown = model.resolved
   return html`<div>
     <${FilterBar} model=${model} />
+    <${ResolvedByRow} model=${model} />
     ${shown.length ? shown.map((i) => html`<div class="resolved-row" key=${i.id}>
       <a class="rowitem" href=${'#/item/' + i.id}>
-        <div class="top"><${Chip} type=${i.type} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
+        <div class="top"><${Chip} type=${i.type} /><${AiBadge} item=${i} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
         <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>
       <${ArchiveSessionButton} item=${i} />
-    </div>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved in the last 7 days.'}</div>`}
+    </div>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved recently.'}</div>`}
   </div>`
 }
 
@@ -624,6 +688,7 @@ function ItemView({ id }) {
   const open = st.snap && st.snap.open.find((i) => i.id === id)
   const resolved = !open && st.snap && st.snap.resolved.find((i) => i.id === id)
   const item = open || resolved
+  useEffect(() => { if (resolved) markAiSeen(resolved) }, [id, !!resolved]) // viewing an unseen AI-resolved item tells the server once (markAiSeen skips the rest)
   if (!item) return html`<div class="empty">${st.snap ? 'That item is no longer here.' : 'Loading…'}<div class="row"><a class="btn" href="#/">Back to the list</a></div></div>`
   const late = resolved && item.type === 'question' && item.resolution && item.resolution.kind === 'expired'
   const lateDefault = false // the late answer starts closed until the user chooses
@@ -637,6 +702,8 @@ function ItemView({ id }) {
     ${c.triageNote(item) ? html`<div class="sub ai-note">${c.triageNote(item)}</div>` : null}
     ${open ? html`<${Body} item=${item} />` : html`<div>
       <div class="resolution">${c.resolutionText(item)}</div>
+      <${AiDetail} item=${item} />
+      <${AiReview} item=${item} />
       ${late ? html`<details open=${detailOpen(st.toggles, item.id, 'late', lateDefault)} onToggle=${(e) => rememberDetail(item.id, 'late', e.currentTarget.open, lateDefault)}><summary class="sub">Answer now (late)</summary><${QuestionBody} item=${item} path="/v1/late-answer" sendLabel="Send late answer" /></details>` : null}
       ${c.isReopenable(item) ? html`<div class="row"><button class="btn" disabled=${st.busy[item.id]} onClick=${async () => { if (await act('/v1/reopen', { id: item.id }, item.id)) go('/') }}>Reopen</button></div>` : null}
     </div>`}
