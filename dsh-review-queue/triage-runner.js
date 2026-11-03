@@ -96,6 +96,7 @@ export function lessonFeedbackOf(item) {
  *   memory: the correction memory. A strong match with a past reversal is a code veto before any model call; weaker matches go to the judge as cautionary context.
  */
 export function createTriageRunner({ store, judge, triageLog, memory, rules = DEFAULT_RULES, marksOf = () => ({}), sourcesOf = () => [], sessionContinuesOf, enabled = () => true, log = () => {}, now = Date.now, maxInFlight = MAX_IN_FLIGHT }) {
+  const rulesNow = () => (typeof rules === 'function' ? rules() : rules) // a function is read at each use, so a mode change applies without a restart
   const running = new Set()
   let inFlight = 0
   let off = () => {}
@@ -108,7 +109,7 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
   async function run(item) {
     const cls = classOf(item)
     if (!cls) return
-    const mine = rules.filter((r) => r.class === cls && r.enabled !== false && r.mode !== 'off')
+    const mine = rulesNow().filter((r) => r.class === cls && r.enabled !== false && r.mode !== 'off')
     if (!mine.length) return
     const facts = factsOf(item, { sessionContinuesOf })
     // Step 1, code only: a veto that no model answer can lift means no model call at all.

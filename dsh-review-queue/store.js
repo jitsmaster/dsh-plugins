@@ -6,6 +6,8 @@
 import { randomUUID } from 'node:crypto'
 
 export const RETENTION_MS = 7 * 24 * 3600 * 1000
+/** Items the AI resolved (the Resolved by AI list) are kept longer, so there is time to review them. */
+export const AI_RETENTION_MS = 30 * 24 * 3600 * 1000
 const MAX_TEXT = 20000
 const VERSION = 1
 
@@ -192,10 +194,10 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     },
     isCurrent: (snapshotId) => snapshotId === epoch + ':' + version,
     prune() {
-      const limit = now() - retentionMs
+      const at = now()
       let any = false
       for (const [id, item] of items) {
-        if (item.status === 'resolved' && item.resolvedAt < limit) { items.delete(id); any = true }
+        if (item.status === 'resolved' && item.resolvedAt < at - (item.resolution?.kind === 'ai-resolved' ? AI_RETENTION_MS : retentionMs)) { items.delete(id); any = true }
       }
       if (any) changed()
     },

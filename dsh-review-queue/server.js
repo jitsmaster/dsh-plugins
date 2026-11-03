@@ -48,8 +48,11 @@ async function readImage(req, max = MAX_IMAGE_BYTES) {
 }
 
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
-const BAD_INPUT = new Set(['bad-images', 'bad-effort', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session'])
+const BAD_INPUT = new Set(['bad-images', 'bad-effort', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session', 'bad-mode', 'bad-review', 'bad-rule', 'bad-input'])
 // 'no-session' is a 409 for a reply or an archive (this app's controller does not know the session) but a 400 for a follow-up confirm with no session to send to.
+/** An id the triage routes accept: a string or a finite number (coerced with String); anything else never reaches the queue. */
+const validId = (v) => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v))
+const BAD = { ok: false, error: 'bad-input' }
 export const CONFIRM_BAD_INPUT = new Set(['no-session'])
 // The hub's answer when the owning app did not report back in time: a gateway timeout, not a refusal.
 const GATEWAY = new Set(['owner-timeout', 'unknown-outcome'])
@@ -106,6 +109,9 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/stop': () => queue.stop(),
     '/v1/ui': (b) => queue.uiCommand(b.cmd),
     '/v1/reopen': (b) => queue.reopen(String(b.id)),
+    '/v1/triage-review': (b) => !validId(b.id) ? BAD : queue.triageReview(String(b.id), { review: typeof b.review === 'string' ? b.review : undefined, text: typeof b.text === 'string' ? b.text : undefined, mode: typeof b.mode === 'string' ? b.mode : undefined }),
+    '/v1/triage-rule-mode': (b) => !validId(b.ruleId) ? BAD : queue.triageRuleMode(String(b.ruleId), typeof b.mode === 'string' ? b.mode : undefined, { confirmed: b.confirmed === true }),
+    '/v1/triage-forget': (b) => !validId(b.id) ? BAD : queue.triageForget(String(b.id)),
     '/v1/approve-similar': (b) => queue.approveSimilar(String(b.id), { via: b.via, confirmed: b.confirmed === true }),
     '/v1/paused-resume': (b) => queue.resumePaused(String(b.id)),
     '/v1/paused-dismiss': (b) => queue.dismissPaused(String(b.id)),
@@ -157,6 +163,10 @@ export function createRouter({ queue, dev, pushRoutes }) {
       if (url.pathname === '/v1/snapshot') {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })
         return await snapshot(req, res, url)
+      }
+      if (url.pathname === '/v1/triage-rules') {
+        if (req.method !== 'GET') return send(res, 405, { error: 'method' })
+        return outcome(res, queue.triageRules())
       }
       if (url.pathname === '/v1/workspaces') {
         if (req.method !== 'GET') return send(res, 405, { error: 'method' })

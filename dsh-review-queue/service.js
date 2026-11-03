@@ -14,6 +14,7 @@ import { listRunningSessions } from './userpause.js'
 import { isSessionId } from './thread.js'
 import { postKeyOf } from './post-key.js'
 import { archKeyOf } from './sessions.js'
+import { createTriageReview } from './triage-review.js'
 
 const MAX_REPLY = 4000
 /** reading === 'tip:<id>' while the tip of the day is read aloud (lib/client.js keeps its own copy of the string: it is one self-contained script). */
@@ -33,7 +34,7 @@ const needsUser = (item) => item.type !== 'paused' && item.type !== 'onhold' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, ticketTitleOf, defaultModelOf, paused, onHold, threadOf, ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, ticketTitleOf, defaultModelOf, paused, onHold, threadOf, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
@@ -41,7 +42,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const followUpSessions = (opts = {}) => listFollowUpSessions({ memory: listMemory, now, controller: attempt(controllerOf, 'controller'), registry: attempt(registryOf, 'registry'), titlesOf, snippetsOf: opts?.snippets === false ? undefined : snippetsOf, query: opts?.query, log })
   const todos = createTodos({ store, controllerOf, registryOf, defaultModelOf, images: todoImages, llm, titlesOf, sessionsOf: followUpSessions, now, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
   const resuming = new Set() // paused items whose resume prompt is on its way
-  const posting = new Set() // sessions whose phone follow-up is on its way (a second post would send the prompt twice)
+  // posting: sessions whose phone follow-up or mark-wrong correction is on its way (a second post would send the prompt twice)
   const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
   let runningCall // the last runningSessions list: { done, doneAt, promise }
   let tuning = false // a Tune prompt call is on its way: one at a time per service (each is a paid model call)
@@ -195,7 +196,9 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   /** The tip to show (asking for a new one when it is older than its slot); undefined without a generator or a tip. Never throws. */
   const tipNow = () => { try { return tips?.current() } catch { return undefined } }
 
+  const triageReview = createTriageReview({ store, triageApi, promptSession, posting, log })
   return {
+    ...triageReview,
     /**
      * opts.tip === true: the overlay is open, so the tip is wanted (and asked for when the list is empty); without it none is attached and none generated.
      * opts.watch (or tip): somebody looks at the session numbers (the phone, an open overlay), so they are kept fresh.
@@ -558,7 +561,10 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const item = store.get(id)
       if (!item) return { ok: false, error: 'not-found' }
       const kind = item.resolution?.kind
-      if (item.type !== 'completed' || item.status !== 'resolved' || (kind !== 'reviewed' && kind !== 'superseded' && kind !== 'no-action' && kind !== 'trimmed')) return { ok: false, error: 'not-reopenable' }
+      // An AI-resolved done card or paused session may come back; a question or permission was already answered for real, so it may not.
+      const aiBack = kind === 'ai-resolved' && (item.type === 'completed' || item.type === 'paused')
+      const humanBack = item.type === 'completed' && (kind === 'reviewed' || kind === 'superseded' || kind === 'no-action' || kind === 'trimmed')
+      if (item.status !== 'resolved' || !(aiBack || humanBack)) return { ok: false, error: 'not-reopenable' }
       return store.reopen(id) ? { ok: true } : { ok: false, error: 'not-reopenable' }
     },
     /** Approve this request and every identical open one of the same session; never a risky one. */
