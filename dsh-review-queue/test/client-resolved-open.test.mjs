@@ -123,7 +123,7 @@ test('ResolvedCard source has the Open session control and a heading click that 
   assert.match(card, /resolvedOpenAction\(/)
   assert.match(card, /isButtonClick\(/)
   assert.match(card, /openSession\(it\)/)
-  assert.match(card, /title: canOpen \? "Open session"/)
+  assert.match(card, /title: ai \? \(aiOpen \? "Hide details" : "Show details"\) : canOpen \? "Open session" : undefined/)
   assert.match(card, /cursor: canOpen \? "pointer"/)
 })
 
@@ -141,4 +141,16 @@ test('a refused answer to a session that is gone says the answer cannot be deliv
   const { T } = load()
   assert.match(T.errorText(409, { error: 'no-session' }), /session is not running any more/)
   assert.doesNotMatch(T.errorText(409, { error: 'no-session' }), /late answer/)
+})
+
+test('errorText: the triage review codes have friendly words, not the raw "Could not do that (code)" fallback', () => {
+  const { T } = load()
+  for (const code of ['triage-off', 'not-ai-resolved', 'already-reviewed', 'bad-review', 'bad-rule', 'bad-mode', 'bad-input']) {
+    const text = T.errorText(code.startsWith('bad-') ? 400 : 409, { error: code })
+    assert.equal(typeof text, 'string', code)
+    assert.ok(text.trim().length > 0, code + ' has text')
+    assert.ok(!text.includes('(' + code + ')'), code + ' must not fall back to the raw code: ' + text)
+    assert.ok(!text.includes(code), code + ' text does not contain the raw code: ' + text)
+  }
+  assert.match(T.errorText(409, { error: 'already-reviewed' }), /already reviewed/i)
 })

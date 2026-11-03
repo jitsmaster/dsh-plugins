@@ -80,13 +80,36 @@ window.__ModuleLoader__.load({
 		};
 
 		/** Done items that left the list without the user acting on them can go back in. */
-		const isReopenable = (it) => !!(it && it.type === "completed" && it.resolution && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action" || it.resolution.kind === "trimmed"));
+		const isReopenable = (it) => !!(it && it.resolution && ((it.resolution.kind === "ai-resolved" && (it.type === "completed" || it.type === "paused")) || it.type === "completed" && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action" || it.resolution.kind === "trimmed")));
+
+		const AI_ACTIONS = { approved: "AI approved it", cleared: "AI cleared it as handled", resumed: "AI resumed the session" };
+		/** Caps a string at n characters with an ellipsis; anything that is not a string becomes "". */
+		const capText = (v, n) => (typeof v !== "string" ? "" : v.length > n ? v.slice(0, n) + "…" : v);
+		/** What the AI did, plus how the user judged it afterwards. */
+		function aiResolvedText(r) {
+			const answer = capText(r.answer, 200);
+			const base = r.action === "answered" ? "AI answered" + (answer ? ": " + answer : "") : AI_ACTIONS[r.action] || "Resolved by AI";
+			return base + (r.review === "agreed" || r.review === "matched-user" ? " (you agreed)" : r.review === "overruled" ? " (you marked it wrong)" : "");
+		}
+		const isAiResolved = (it) => !!(it && typeof it === "object" && it.status === "resolved" && it.resolution && it.resolution.kind === "ai-resolved");
+		/**
+		 * The facts behind an AI decision for the card: quote, rule and score. Undefined for anything else.
+		 * Shape of item.resolution when kind === "ai-resolved": { quote, answer, action, ruleId, ruleVersion, score, threshold, decidedAt, seen, review }.
+		 */
+		function aiDetail(item) {
+			if (!isAiResolved(item)) return undefined;
+			const r = item.resolution;
+			return { quote: capText(r.quote, 300), ruleName: (item.triage && item.triage.ruleName) || r.ruleId, ruleId: r.ruleId, score: typeof r.score === "number" && isFinite(r.score) ? Math.round(r.score) : undefined };
+		}
+		/** AI-resolved items the user has neither seen nor reviewed. */
+		const aiUnseenCount = (resolved) => (Array.isArray(resolved) ? resolved.filter((it) => isAiResolved(it) && it.resolution.seen !== true && !it.resolution.review).length : 0);
 
 		/** One line for a resolved item: what happened to it. */
 		function resolutionText(item) {
 			const r = item.resolution || {};
 			const where = r.by === "card" ? "here" : r.by === "screen" ? "on screen" : r.by === "session" ? "in the session" : "";
 			switch (r.kind) {
+				case "ai-resolved": return aiResolvedText(r);
 				case "answered": if (r.by === "auto") return "Answered automatically with the recommended option" + (r.answers ? ": " + answerText(r.answers) : ""); return "Answered" + (where ? " " + where : "") + (r.answers ? ": " + answerText(r.answers) : "");
 				case "late-answered": return "Answered late" + (r.answers ? ": " + answerText(r.answers) : "");
 				case "confirmed": return "Confirmed the recommended option" + (r.answers ? ": " + answerText(r.answers) : "");
@@ -169,10 +192,12 @@ window.__ModuleLoader__.load({
 		/** Filter by type ("all" or an item type) and by text: every word must appear in the title, session, workspace, summary or question. */
 		function filterItems(items, f) {
 			const type = (f && f.type) || "all";
+			const resolvedBy = f && (f.resolvedBy === "me" || f.resolvedBy === "ai") ? f.resolvedBy : "all";
 			const words = ((f && f.query) || "").toLowerCase().split(/\s+/).filter(Boolean);
 			return (items || []).filter((it) => {
 				if (type !== "all" && it.type !== type) return false;
 				if (type === "all" && it.type === "onhold") return false; // the held queue is its own view ("onhold"), never part of the waiting list
+				if (resolvedBy !== "all" && it.status === "resolved" && isAiResolved(it) !== (resolvedBy === "ai")) return false;
 				if (!words.length) return true;
 				const p = it.payload || {};
 				const hay = [it.title, it.sessionTitle, it.workspace, plainAction(it.summary), it.text, p.summary, p.reason, ...(p.questions || []).map((q) => q && q.question)].filter(Boolean).join("\n").toLowerCase();
@@ -595,10 +620,14 @@ function imageFilesOf(data) {
 		}
 		/** The filter chips, in order ("all" first); the phone page draws the same set. */
 		const FILTER_TYPES = ["all", "completed", "question", "permission", "pr-merged", "todo", "paused"];
-		/** The filter bar shows from four items in all (waiting + resolved), and always while a type or a search is active. */
+		/** Who resolved an item, for the Resolved filter. */
+		const RESOLVED_BY = ["all", "me", "ai"];
+		const resolvedByLabel = (v) => (v === "me" ? "Me" : v === "ai" ? "AI" : "All");
+		/** The filter bar shows from four items in all (waiting + resolved), and always while a type, a search or a resolvedBy is active, or once an AI-resolved item exists. */
 		function filterBarVisible(snap, f) {
 			const total = snap ? snap.open.length + snap.resolved.length : 0;
-			return !(total < 4 && !(f && f.query) && !(f && f.type && f.type !== "all"));
+			if (snap && (snap.resolved || []).some(isAiResolved)) return true;
+			return !(total < 4 && !(f && f.query) && !(f && f.type && f.type !== "all") && !(f && f.resolvedBy && f.resolvedBy !== "all"));
 		}
 		/** The endpoint a keyboard action calls for an item; Shift+A, Shift+D and e only apply to the cards they belong to (never a todo). */
 		function keyRoute(action, item) {
@@ -673,7 +702,7 @@ function imageFilesOf(data) {
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyImages: {}, replyOpen: savedToggles.reply, busy: {}, errors: {},
-			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, lateOpen: savedToggles.late, filter: { type: "all", query: "" }, overlay: storage.get(LS.overlay) === "1",
+			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, showRules: false, rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, aiCorrection: {}, aiOverrule: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipTopic: "", tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
@@ -811,6 +840,7 @@ function imageFilesOf(data) {
 			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-power": "Pausing and quitting is not available in this app.",
 			"no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "empty-query": "Say which session this is for.", "unknown-session": "That session is not in the list any more. Pick another one.", "too-many-follow-ups": "Too many follow-ups are waiting: confirm or cancel one first.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.", "pr-open": "Its pull request is still open, so the session keeps polling it. Archive it once the PR is merged or abandoned.",
 			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "onhold": "That session is on hold. Continue it first (or release it).", "not-holdable": "Only finished work or a paused session can be put on hold.", "no-onhold": "Putting a session on hold is not available in this app.", "busy": "A message to that session is already on its way. Try again in a moment.",
+			"triage-off": "AI handling is switched off in this app.", "not-ai-resolved": "That item was not handled by the AI.", "already-reviewed": "That AI decision was already reviewed.", "bad-review": "That review is not valid.", "bad-rule": "That rule no longer exists.", "bad-mode": "That mode is not valid.", "bad-input": "That request was incomplete. Refresh and try again.",
 				"bad-images": "An attached image is not valid. Remove it and paste it again.", "too-many-images": "At most " + IMAGE_MAX + " images can be attached.", "unknown-image": "An attached image is no longer on the PC. Remove it and paste it again.", "bad-image": "That is not an image the session can take (png, jpeg, webp or gif).", "too-large": "That image is over 8 MB.",
 		};
 
@@ -824,6 +854,53 @@ function imageFilesOf(data) {
 			if (typeof code === "string" && Object.prototype.hasOwnProperty.call(ERRORS, code)) return ERRORS[code];
 			return "Could not do that (" + (code || "HTTP " + status) + ").";
 		}
+
+		// ---- AI rules view (desktop only; the phone does not use these helpers): formatting helpers, the loader and the actions ----
+		const countOf = (v) => (typeof v === "number" && v > 0 ? v : 0);
+		/** "agreed 18 of 20" for a { agreed, overruled } record; "no record yet" when nothing was judged (or the record is garbage). */
+		function recordText(rec) {
+			const a = countOf(rec && rec.agreed), total = a + countOf(rec && rec.overruled);
+			return total ? "agreed " + a + " of " + total : "no record yet";
+		}
+		/** The suggestion to try Auto: only for an observe rule whose current-version record has >= 10 judged and >= 90% agreed (the older record never counts). */
+		function promotionHint(rule) {
+			if (!rule || rule.mode !== "observe" || !rule.record) return undefined;
+			const a = countOf(rule.record.current && rule.record.current.agreed), total = a + countOf(rule.record.current && rule.record.current.overruled);
+			return total >= 10 && a / total >= 0.9 ? "Record is good: you could try auto." : undefined;
+		}
+		function ruleModeLabel(mode) { return mode === "observe" ? "Observe (note only)" : mode === "auto" ? "Auto" : "Off"; }
+		/** "<title> (overruled 3 times, last 2026-10-31)": the date is UTC, left out when lastAt is missing. */
+		function lessonLine(l) {
+			const x = l && typeof l === "object" ? l : {};
+			const n = countOf(x.count), when = typeof x.lastAt === "number" && isFinite(x.lastAt) ? new Date(x.lastAt).toISOString().slice(0, 10) : "";
+			return (typeof x.title === "string" ? x.title : "Untitled lesson") + " (overruled " + (n === 1 ? "once" : n + " times") + (when ? ", last " + when : "") + ")";
+		}
+		/** Loads the rules and lessons (GET /v1/triage-rules); a failure is words in triageRulesError, never a throw. */
+		async function loadTriageRules() {
+			try {
+				const res = await fetch(API + "/v1/triage-rules", { credentials: "same-origin" });
+				const j = await res.json().catch(() => ({}));
+				if (res.ok && j && j.ok !== false) set({ triageRules: j, triageRulesError: undefined });
+				else set({ triageRulesError: j && j.error === "triage-off" ? "AI triage is switched off." : errorText(res.ok ? 409 : res.status, j) });
+			} catch (e) { set({ triageRulesError: "Request failed: " + String((e && e.message) || e) }); }
+		}
+		/** The message for a failed rules change; r.error is only trusted when it is a string. */
+		function rulesErrorText(r) {
+			const err = typeof r.error === "string" ? r.error : "";
+			const code = typeof r.code === "string" ? r.code : "";
+			if (code === "needs-confirm") return "Confirm before switching a rule to Auto.";
+			return (err || code || "Request failed") + (err && code && err.indexOf(code) < 0 ? " (" + code + ")" : "");
+		}
+		/** One change of the rules view (a mode or a Forget), marked busy under `key`; the list is loaded again after a success. */
+		async function rulesAct(key, path, body) {
+			set({ rulesBusy: { ...state.rulesBusy, [key]: true }, rulesConfirm: null, rulesError: undefined });
+			const r = await postJson(path, body);
+			set({ rulesBusy: { ...state.rulesBusy, [key]: false }, rulesError: r.ok ? undefined : rulesErrorText(r) });
+			if (r.ok) await loadTriageRules();
+		}
+		/** Off and Observe at once; Auto asks first (rulesConfirm) so a rule never starts acting by accident once a later phase makes auto live. */
+		function pickRuleMode(id, mode) { if (mode === "auto") set({ rulesConfirm: id }); else rulesAct(id, "/v1/triage-rule-mode", { ruleId: id, mode }); }
+		function toggleRules() { const on = !state.showRules; set({ showRules: on, showResolved: false, showHeld: false, showPhone: false, selected: null, rulesConfirm: null, rulesError: undefined }); if (on) loadTriageRules(); }
 
 		// Host capabilities captured in apply(); absent on a DSH without the workspace API, which just hides the button.
 		const hostApi = { openSession: undefined, sidebar: undefined }; // sidebar: () => ctx.sidebarRight (the right panel), undefined on a DSH without it
@@ -1303,7 +1380,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
 			+ ".rq-text{white-space:pre-wrap;word-break:break-word}.rq-clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}"
-			+ ".rq-sub{color:var(--rq-mute);font-size:12px}.rq-ai{font-style:italic;border-left:3px solid var(--rq-mute);padding-left:8px;margin:4px 0}.rq-opts{display:flex;flex-direction:column;gap:6px}.rq-chips{display:flex;flex-wrap:wrap;gap:6px}"
+			+ ".rq-sub{color:var(--rq-mute);font-size:12px}.rq-aibadge{background:var(--rq-accent,#3b82f6);color:#fff}.rq-aid{margin:6px 0}.rq-col{display:flex;flex-direction:column;gap:6px}.rq-filter-by{display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex-basis:100%}.rq-ai{font-style:italic;border-left:3px solid var(--rq-mute);padding-left:8px;margin:4px 0}.rq-opts{display:flex;flex-direction:column;gap:6px}.rq-chips{display:flex;flex-wrap:wrap;gap:6px}"
 			+ ".rq-opt{display:flex;gap:8px;align-items:flex-start;text-align:left;border:1px solid var(--rq-border);border-radius:7px;padding:8px 10px;background:var(--rq-base)}"
 			+ ".rq-opt:hover:not(:disabled){background:var(--rq-hover)}.rq-opt.on{border-color:var(--rq-accent);background:var(--rq-layer2)}.rq-opt .d{color:var(--rq-mute);font-size:12px}"
 			+ ".rq-star{color:var(--rq-warn)}.rq-pill{border:1px solid var(--rq-border);border-radius:9px;padding:1px 8px;font-size:12px;color:var(--rq-mute)}"
@@ -1322,6 +1399,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
 			+ ".rq-filter{flex:none;display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--rq-border);flex-wrap:wrap}.rq-fchip{padding:3px 12px;border-radius:9px;border:1px solid var(--rq-border)!important;font-size:12px;color:var(--rq-mute)}"
 			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
+			+ ".rq-rules{overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-rule{border:1px solid var(--rq-border);border-radius:10px;padding:10px 12px;background:var(--rq-layer);display:flex;flex-direction:column;gap:6px}.rq-rule-h,.rq-rule-m{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.rq-warnbox{display:flex;gap:8px;align-items:center;flex-wrap:wrap;border:1px solid var(--rq-warn);border-radius:8px;padding:6px 10px}"
 			+ ".rq-sess{font-variant-numeric:tabular-nums;white-space:nowrap}.rq-emptywrap{margin:auto;display:flex;flex-direction:column;gap:16px;align-items:stretch;max-width:100%}.rq-emptywrap .rq-empty{margin:0;padding:8px}"
 			+ ".rq-tip{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;border:1px solid var(--rq-border)!important;border-radius:10px;padding:10px 12px;background:var(--rq-layer)}.rq-tip:hover{background:var(--rq-hover)}.rq-tip.on{border-color:var(--rq-accent)!important}"
 			+ ".rq-tipwrap{max-width:680px;margin:8vh auto 0}.rq-tip-t{font-weight:600;font-size:17px}.rq-tip-b{font-size:16px;line-height:1.5;display:flex;flex-direction:column;gap:10px}.rq-tip-p{display:block}.rq-tip-f{color:var(--rq-mute);font-size:13px}"
@@ -1631,6 +1709,45 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		/** True when a click landed on (or inside) a button, link or form control: those keep their own action. */
 		function isButtonClick(target) { return !!(target && typeof target.closest === "function" && target.closest("button, a, input, textarea, select, summary")); }
 
+		const aiSeenRequested = new Set();
+		/** Expands or collapses an AI card; expanding an unseen one tells the server it was seen (only requests in flight are tracked, the snapshot's seen mark does the rest). */
+		function toggleAi(it) {
+			const on = !state.aiOpen[it.id];
+			set({ aiOpen: { ...state.aiOpen, [it.id]: on } });
+			if (!on || it.resolution.seen === true || it.resolution.review || aiSeenRequested.has(it.id)) return;
+			aiSeenRequested.add(it.id);
+			postJson("/v1/triage-review", { id: it.id, review: "seen" }).finally(() => { aiSeenRequested.delete(it.id); });
+		}
+		const closeKey = (key, id) => { const m = { ...state[key] }; delete m[id]; set({ [key]: m }); };
+		/** What the AI relied on, shown when an AI-resolved card is opened. */
+		function aiDetailNode(it) {
+			const d = aiDetail(it);
+			return h("div", { className: "rq-aid", "data-ai-detail": it.id },
+				d.quote ? h("div", { className: "rq-ai" }, "“" + d.quote + "”") : null,
+				h("div", { className: "rq-sub" }, "Rule: " + d.ruleName + (d.score !== undefined ? " · attention " + d.score : "")));
+		}
+		/** Review actions of an opened AI card: agree, mark wrong with a correction, or overrule the rule. */
+		function aiReviewNode(it, st) {
+			const r = it.resolution;
+			const text = st.aiCorrection[it.id];
+			const marking = typeof text === "string";
+			const canMarkWrong = it.type !== "paused" && typeof it.sessionId === "string" && it.sessionId !== ""; // the reply path refuses the others too
+			const review = async (body) => { const ok = await act("/v1/triage-review", { id: it.id, ...body }, it.id); if (ok) { closeKey("aiOverrule", it.id); closeKey("aiCorrection", it.id); } return ok; };
+			const cannotUnsend = it.type === "question" || it.type === "permission";
+			return h("div", { className: "rq-aid" },
+				h("div", { className: "rq-row" },
+					!r.review ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => review({ review: "agreed" }) }, "Looks right") : null,
+					!r.review && canMarkWrong ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => set({ aiCorrection: { ...state.aiCorrection, [it.id]: marking ? text : "" } }) }, "Mark wrong…") : null,
+					r.review !== "overruled" ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => set({ aiOverrule: { ...state.aiOverrule, [it.id]: true } }) }, "Overrule rule") : null),
+				marking ? h("div", { className: "rq-col" },
+					h("textarea", { className: "rq-input", "data-ai-correction": it.id, rows: 2, placeholder: "What should it have done?", value: text, onChange: (e) => set({ aiCorrection: { ...state.aiCorrection, [it.id]: e.target.value } }) }),
+					cannotUnsend ? h("div", { className: "rq-sub" }, "The answer already went to the session and cannot be unsent; your correction is recorded for the rule.") : null,
+					h("div", { className: "rq-row" }, h("button", { className: "rq-btn pri", disabled: st.busy[it.id] || !text.trim(), onClick: () => review({ review: "mark-wrong", text: text.trim() }) }, "Send"))) : null,
+				st.aiOverrule[it.id] ? h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => review({ review: "overrule-rule", mode: "observe" }) }, "Set rule to observe"),
+					h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => review({ review: "overrule-rule", mode: "off" }) }, "Set rule to off")) : null);
+		}
+
 		function ResolvedCard({ it }) {
 			const st = useStore();
 			const canOpen = resolvedOpenAction(it, !!hostApi.openSession) === "open";
@@ -1638,11 +1755,15 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const late = it.type === "question" && it.resolution && it.resolution.kind === "expired";
 			const open = !!st.lateOpen[it.id];
 			const reopenable = isReopenable(it);
+			const ai = isAiResolved(it);
+			const aiOpen = ai && !!st.aiOpen[it.id];
 			// A todo that started ends up here with no other trace of its text: it can be read aloud like an open card (the service reads any item by id).
 			const reading = !!(st.snap && st.snap.reading === it.id);
 			return h("div", { className: "rq-card rq-res" },
-				h("div", { className: "rq-card-h", title: canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : "default" }, onClick: canOpen ? (e) => { if (!isButtonClick(e && e.target)) openSession(it); } : undefined }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title", title: canOpen ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
+				h("div", { className: "rq-card-h", title: ai ? (aiOpen ? "Hide details" : "Show details") : canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : ai ? "pointer" : "default" }, onClick: ai ? (e) => { if (!isButtonClick(e && e.target)) toggleAi(it); } : (e) => { if (canOpen && !isButtonClick(e && e.target)) openSession(it); } }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), ai ? h("span", { className: "rq-chip rq-aibadge", "data-ai-badge": it.id }, "AI") : null, h("span", { className: "rq-title", title: canOpen && !ai ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
 				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? plainAction(it.summary) : undefined }, resolutionText(it)),
+				aiOpen ? aiDetailNode(it) : null,
+				aiOpen ? aiReviewNode(it, st) : null,
 				canOpen ? h("div", { className: "rq-row" },
 					h("button", { className: asButton ? "rq-btn pri" : "rq-link", onClick: () => openSession(it) }, asButton ? "Open session" : "Open session ↗"),
 					canViewChanges() ? h("button", { className: asButton ? "rq-btn" : "rq-link", title: "Open the session and show its changes in the Git tab of the right panel", onClick: () => viewChanges(it) }, "View Changes") : null) : null,
@@ -1664,9 +1785,12 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const st = useStore();
 			const f = st.filter;
 			if (!filterBarVisible(snap, f)) return null;
+			const unseen = aiUnseenCount(snap && snap.resolved);
 			return h("div", { className: "rq-filter" },
 				FILTER_TYPES.map((t) => h("button", { key: t, className: "rq-fchip" + (f.type === t ? " on" : ""), "aria-pressed": f.type === t, onClick: () => set({ filter: { ...f, type: t } }) }, t === "all" ? "All" : typeLabel(t))),
-				h("input", { className: "rq-input rq-fsearch", placeholder: "Filter by title, session or workspace…", value: f.query, onChange: (e) => set({ filter: { ...f, query: e.target.value } }) }));
+				h("input", { className: "rq-input rq-fsearch", placeholder: "Filter by title, session or workspace…", value: f.query, onChange: (e) => set({ filter: { ...f, query: e.target.value } }) }),
+				st.showResolved ? h("div", { className: "rq-filter-by" }, h("span", { className: "rq-sub" }, "Resolved by:"),
+					RESOLVED_BY.map((v) => h("button", { key: v, className: "rq-fchip" + (f.resolvedBy === v ? " on" : ""), "aria-pressed": f.resolvedBy === v, "data-resolved-by": v, onClick: () => set({ filter: { ...f, resolvedBy: v } }) }, resolvedByLabel(v) + (v === "ai" && unseen > 0 ? " (" + unseen + ")" : "")))) : null);
 		}
 
 		/** One row of the left list: position, type, title, time left on a question, a warning for a risky request. */
@@ -1734,16 +1858,19 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const paused = snap ? pausedCount(snap.open) : 0;
 			const held = snap ? heldCount(snap.open) : 0;
 			const sessions = sessionsText(snap && snap.sessions);
+			const aiUnseen = snap ? aiUnseenCount(snap.resolved) : 0;
 			return h("div", { className: "rq-head" }, h("h2", null, "Coding Boss Review Queue"), h("span", { className: "rq-count" }, n),
 				sessions ? h("span", { className: "rq-count rq-sess", title: sessionsTitle }, sessions) : null,
 				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
+				aiUnseen ? h("button", { className: "rq-count", "data-ai-handled": true, title: "Items the AI resolved that you have not looked at", onClick: () => set({ showResolved: true, showHeld: false, showPhone: false, showRules: false, selected: null, filter: { ...st.filter, type: "all", query: "", resolvedBy: "ai" } }) }, "AI handled " + aiUnseen) : null,
 				h("span", { className: "rq-grow" }),
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
 				h("button", { className: "rq-btn", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"),
-				held || st.showHeld ? h("button", { className: "rq-btn", title: "Sessions parked until they can continue; a held session with a ticket is checked " + HELD_CHECK_TEXT, "aria-pressed": st.showHeld, onClick: () => set({ showHeld: !st.showHeld, showResolved: false, showPhone: false, selected: null }) }, st.showHeld ? "Waiting" : "On hold (" + held + ")") : null,
-				h("button", { className: "rq-btn", onClick: () => set({ showResolved: !st.showResolved, showHeld: false, showPhone: false, selected: null }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
+				held || st.showHeld ? h("button", { className: "rq-btn", title: "Sessions parked until they can continue; a held session with a ticket is checked " + HELD_CHECK_TEXT, "aria-pressed": st.showHeld, onClick: () => set({ showHeld: !st.showHeld, showResolved: false, showPhone: false, showRules: false, selected: null }) }, st.showHeld ? "Waiting" : "On hold (" + held + ")") : null,
+				h("button", { className: "rq-btn", onClick: () => set({ showResolved: !st.showResolved, showHeld: false, showPhone: false, showRules: false, selected: null }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
 				h("button", { className: "rq-btn", title: "Pair a phone and manage the paired phones (opens a window)", "aria-haspopup": "dialog", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
+				h("button", { className: "rq-btn", "data-ai-rules": true, title: "What the AI judges, how well it has done, and what it learned from your corrections", "aria-pressed": !!st.showRules, onClick: toggleRules }, "AI rules"),
 				extra);
 		}
 
@@ -1844,6 +1971,30 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				st.errors["tip-next"] ? h("div", { className: "rq-err" }, st.errors["tip-next"]) : null);
 		}
 
+		/** The AI rules view: each rule with its mode switch and record, then the corrections the AI learned. Hook-free (reads the store). */
+		function RulesView() {
+			const t = state.triageRules, rules = t && Array.isArray(t.rules) ? t.rules.filter((r) => r && typeof r === "object") : [], lessons = t && Array.isArray(t.lessons) ? t.lessons.filter((l) => l && typeof l === "object") : [];
+			if (state.triageRulesError) return h("div", { className: "rq-body rq-rules" }, h("div", { className: "rq-empty" }, state.triageRulesError));
+			if (!t) return h("div", { className: "rq-body rq-rules" }, h("div", { className: "rq-empty" }, "Loading AI rules…"));
+			const modeBtn = (r, mode, label) => h("button", { key: mode, className: "rq-btn" + (r.mode === mode ? " on" : ""), "aria-pressed": r.mode === mode, disabled: !!state.rulesBusy[r.id], onClick: () => pickRuleMode(r.id, mode) }, label);
+			const rec = (label, v) => h("div", { className: "rq-sub" }, label + ": " + recordText(v));
+			const older = (r) => { const o = r.record && r.record.older; return countOf(o && o.agreed) + countOf(o && o.overruled) > 0 ? rec("older versions", o) : null; };
+			const rule = (r) => h("div", { key: r.id, className: "rq-rule", "data-rule": r.id },
+				h("div", { className: "rq-rule-h" }, h("strong", null, r.name), h("span", { className: "rq-count" }, r.class), h("span", { className: "rq-sub" }, ruleModeLabel(r.mode))),
+				h("div", null, r.instruction), rec("this version", r.record && r.record.current), older(r),
+				promotionHint(r) ? h("div", { className: "rq-ok" }, promotionHint(r)) : null,
+				h("div", { className: "rq-rule-m" }, modeBtn(r, "off", "Off"), modeBtn(r, "observe", "Observe"), modeBtn(r, "auto", "Auto")),
+				state.rulesConfirm === r.id ? h("div", { className: "rq-warnbox", "data-rule-auto-confirm": r.id }, h("span", null, "Auto is not active yet: the AI only notes what it would do. Switch to Auto anyway?"),
+					h("button", { className: "rq-btn pri", disabled: !!state.rulesBusy[r.id], onClick: () => rulesAct(r.id, "/v1/triage-rule-mode", { ruleId: r.id, mode: "auto", confirmed: true }) }, "Confirm Auto"), h("button", { className: "rq-btn", onClick: () => set({ rulesConfirm: null }) }, "Cancel")) : null);
+			const lesson = (l, i) => h("div", { key: l.id || i, className: "rq-rule", "data-lesson": l.id },
+				h("div", { className: "rq-rule-h" }, h("strong", null, lessonLine(l)), l.active === false ? h("span", { className: "rq-sub" }, "retired") : null, h("span", { className: "rq-grow" }),
+					h("button", { className: "rq-btn", disabled: !!state.rulesBusy[l.id], onClick: () => rulesAct(l.id, "/v1/triage-forget", { id: l.id }) }, "Forget")),
+				h("div", { className: "rq-sub" }, l.content));
+			return h("div", { className: "rq-body rq-rules" }, state.rulesError ? h("div", { className: "rq-err" }, state.rulesError) : null,
+				rules.length ? rules.map(rule) : h("div", { className: "rq-empty" }, "No rules."),
+				h("h3", null, "Corrections the AI learned"), lessons.length ? lessons.map(lesson) : h("div", { className: "rq-empty" }, "No corrections learned yet."));
+		}
+
 		function Panel() {
 			const st = useStore();
 			const snap = st.snap;
@@ -1858,13 +2009,13 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), tip);
 			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
 			const extra = h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, st.showHeld ? null : h(FilterBar, { snap }),
-				st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, st.showHeld || st.showRules ? null : h(FilterBar, { snap }),
+				st.showRules ? h(RulesView) : st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split" },
 						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
 						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip ? h("div", { className: "rq-tipwrap" }, tip) : null),
 						h("div", { className: "rq-narrow" }, list)),
-				st.showResolved ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"));
+				st.showResolved || st.showRules ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"));
 		}
 
 		/** The full-screen overlay: mounted once, in a root on document.body (the queue is global, not per session). */
@@ -1874,7 +2025,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				if (!st.overlay) return undefined;
 				const onKey = (e) => {
 					if (e.key === "Escape") { if (state.todoForm.open) closeTodoForm(); else if (state.showPhone) set({ showPhone: false }); else setOverlay(false); return; }
-					if (state.showResolved || state.showPhone) return;
+					if (state.showResolved || state.showPhone || state.showRules) return;
 					const action = keyAction(e);
 					const cur = action ? currentItem() : undefined;
 					if (!cur) return;
@@ -1937,15 +2088,15 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget };
+		exports.shared = { stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, resolvedByLabel, aiUnseenCount, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
+		exports.__test = { detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, resolvedByLabel, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldForm, HoldButton, PausedBody, startResumeAll, askResumeAll });
-		Object.assign(exports.__test, { enterAnswers, QuestionBody });
+		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
