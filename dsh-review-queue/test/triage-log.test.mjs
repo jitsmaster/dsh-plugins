@@ -99,3 +99,48 @@ test('review fix: a path is not a secret keyword, a real pat= credential still i
   assert.ok(redact('pat=abcdef123456').includes('[redacted]'))
   assert.ok(redact('AZURE_DEVOPS_PAT: abcdef123456').includes('[redacted]'))
 })
+
+test('redact masks JSON-quoted secrets (double and single quotes, multi-word values), keeping key names', () => {
+  const cases = [
+    ['{"api_key": "abc123secret"}', 'abc123secret'],
+    ['{"password":"hunter2"}', 'hunter2'],
+    ['"token": "abcd1234"', 'abcd1234'],
+    ["'secret': 'x1y2z3'", 'x1y2z3'],
+    ['"password": "two words here"', 'two words here'],
+  ]
+  for (const [text, secret] of cases) {
+    const out = redact(text)
+    assert.ok(!out.includes(secret), text + ' -> ' + out)
+    for (const part of secret.split(' ')) assert.ok(!out.includes(part), 'fragment ' + part + ' leaked: ' + out)
+  }
+})
+
+test('redact runs in linear time on adversarial input', () => {
+  for (const input of ['a-'.repeat(50000), 'token'.repeat(20000)]) {
+    const t0 = performance.now()
+    const out = redact(input)
+    const ms = performance.now() - t0
+    assert.equal(typeof out, 'string')
+    assert.ok(ms < 500, 'redact took ' + Math.round(ms) + ' ms on ' + input.slice(0, 10) + '...')
+  }
+})
+
+test('redact masks the value even when the credential name exceeds the 40-char keyword bound', () => {
+  const cases = [
+    ['a'.repeat(50) + '_token=abc123', 'abc123'],
+    ['a'.repeat(50) + '_password: hunter2', 'hunter2'],
+  ]
+  for (const [text, secret] of cases) {
+    const out = redact(text)
+    assert.ok(!out.includes(secret), 'value leaked: ' + out.slice(-40))
+    for (let i = 3; i <= secret.length; i++) assert.ok(!out.includes(secret.slice(0, i)), 'fragment ' + secret.slice(0, i) + ' leaked: ' + out.slice(-40))
+  }
+})
+
+test('redact stays fast on a 100k-char credential name', () => {
+  const t0 = performance.now()
+  const out = redact('a'.repeat(100000) + '_token=x')
+  const ms = performance.now() - t0
+  assert.equal(typeof out, 'string')
+  assert.ok(ms < 500, 'redact took ' + Math.round(ms) + ' ms')
+})

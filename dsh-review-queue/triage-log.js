@@ -15,9 +15,9 @@ export function redact(text) {
   return String(text)
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[redacted]')
     .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '[redacted]')
-    .replace(/\b(?:[A-Za-z0-9_-]*(?:token|secret|password|passwd|pwd|key)[A-Za-z0-9_-]*|(?:[A-Za-z0-9_-]*[_-])?pat)\s*[=:]\s*\S+/gi, '[redacted]')
+    .replace(/\b(?:[A-Za-z0-9_-]{0,40}(?:token|secret|password|passwd|pwd|key)[A-Za-z0-9_-]{0,40}|(?:[A-Za-z0-9_-]{0,40}[_-])?pat)["']?\s*[=:]\s*(?:"[^"]*"|'[^']*'|\S+)/gi, '[redacted]')
     .replace(/\b(?:sk|pk|ghp|gho|ghu|ghs|xox[a-z]|AKIA)[A-Za-z0-9_-]{12,}\b/g, '[redacted]')
-    .replace(/\b[A-Za-z0-9+_-]{32,}={0,2}/g, '[redacted]')
+    .replace(/\b[A-Za-z0-9+_-]{32,}(?:\s*[=:]\s*(?:"[^"]*"|'[^']*'|\S+))?={0,2}/g, '[redacted]')
 }
 
 /** Every string anywhere in the entry redacted and capped (depth and array length bounded). */

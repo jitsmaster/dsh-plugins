@@ -73,7 +73,6 @@ test('a code veto means no model call at all (table)', async () => {
     ['path outside the workspace', perm('cat D:/other/file.txt')],
     ['not a shell tool', perm('git status', { payload: { toolName: 'write_file', detail: 'git status' } })],
     ['done card that asks something', done('All good. Should I merge it now?')],
-    ['done card of a finished session', done()], // sessionContinuesOf defaults to false
     ['a type triage never touches', { type: 'todo', text: 'x' }],
   ]
   for (const [name, input] of cases) {
@@ -256,4 +255,157 @@ test('review fix: stop() detaches both listeners', async () => {
   store.add(perm())
   await runner.idle()
   assert.equal(calls.length, 0)
+})
+
+const GREEN_DONE = { ...GOOD, matched_rule: 'green-done', read_only: undefined, reversible: undefined, touches_outside_workspace: undefined }
+
+test('observe mode now handles a done card of a finished session on paper, and the log records sessionContinues false', async () => {
+  const { store, runner, calls, entries } = setup({ judgment: { ...GREEN_DONE, attention: 5 } }) // sessionContinuesOf defaults to false
+  const item = store.add(done())
+  await runner.idle()
+  assert.equal(calls.length, 1)
+  assert.equal(store.get(item.id).triage?.verdict, 'handle')
+  assert.equal(store.get(item.id).triage?.ruleId, 'green-done')
+  assert.equal(entries.at(-1).stage, 'judge')
+  assert.equal(entries.at(-1).verdict, 'handle')
+  assert.equal(entries.at(-1).reasons.includes('session-finished'), false)
+  assert.equal(entries.at(-1).sessionContinues, false)
+})
+
+test('the judge log entry of a done card whose session continues records sessionContinues true', async () => {
+  const { store, runner, entries } = setup({ judgment: GREEN_DONE, sessionContinuesOf: () => true })
+  store.add(done())
+  await runner.idle()
+  assert.equal(entries.at(-1).stage, 'judge')
+  assert.equal(entries.at(-1).sessionContinues, true)
+})
+
+test('the judge log entry of an asked done card (high score) also carries sessionContinues', async () => {
+  const { store, runner, entries } = setup({ judgment: { ...GREEN_DONE, attention: 90 } })
+  store.add(done())
+  await runner.idle()
+  assert.equal(entries.at(-1).verdict, 'ask')
+  assert.equal(entries.at(-1).sessionContinues, false)
+})
+
+test('a code-veto record of a done card carries sessionContinues', async () => {
+  for (const continues of [false, true]) {
+    const { store, runner, calls, entries } = setup({ sessionContinuesOf: () => continues })
+    store.add(done('All good. Should I merge it now?'))
+    await runner.idle()
+    assert.equal(calls.length, 0)
+    assert.equal(entries.at(-1).stage, 'code-veto')
+    assert.ok(entries.at(-1).reasons.includes('needs-user'))
+    assert.equal(entries.at(-1).sessionContinues, continues)
+  }
+})
+
+test('auto is never relaxed: an auto done rule on a finished session is still a code veto with no model call', async () => {
+  const rules = DEFAULT_RULES.map((r) => ({ ...r, mode: 'auto' }))
+  const { store, runner, calls, entries } = setup({ rules, judgment: GREEN_DONE })
+  const item = store.add(done())
+  await runner.idle()
+  assert.equal(calls.length, 0)
+  assert.equal(store.get(item.id).triage, undefined)
+  assert.equal(entries.at(-1).stage, 'code-veto')
+  assert.ok(entries.at(-1).reasons.includes('session-finished'))
+})
+
+test('factsOf: a done card whose reply only mentions a PR, a handoff or a ticket does not need the user; a question still does', () => {
+  for (const reply of ['Tests pass.\n\nPR #123 is open.', 'Handoff written to the vault.', 'AB#25870 updated.']) {
+    assert.equal(factsOf({ type: 'completed', payload: { reply } }).needsUser, false, reply)
+  }
+  assert.equal(factsOf({ type: 'completed', payload: { reply: 'PR #123 is open. Should I merge it?' } }).needsUser, true)
+  assert.equal(factsOf({ type: 'completed', payload: { reply: '' } }).needsUser, true)
+})
+
+test('a done card that only mentions a PR is handled in observe mode, one that asks stays a normal card', async () => {
+  const a = setup({ judgment: GREEN_DONE, sessionContinuesOf: () => true })
+  const item = a.store.add(done('Merged the change.\n\nPR #123 is open.'))
+  await a.runner.idle()
+  assert.equal(a.calls.length, 1)
+  assert.equal(a.store.get(item.id).triage?.verdict, 'handle')
+  const b = setup({ judgment: GREEN_DONE, sessionContinuesOf: () => true })
+  b.store.add(done('PR #123 is open. Should I merge it?'))
+  await b.runner.idle()
+  assert.equal(b.calls.length, 0)
+})
+
+test('the no-judgment record carries raw: the model reply on one line, clipped to 2000 characters', async () => {
+  const raw = 'first line\n\n   second\tline ' + 'x '.repeat(2500)
+  const { store, runner, entries } = setup({ judge: { judge: async () => ({ note: 'bad json', raw }) } })
+  store.add(perm())
+  await runner.idle()
+  const e = entries.at(-1)
+  assert.equal(e.reasons[0], 'no-judgment')
+  assert.equal(e.note, 'bad json')
+  assert.equal(typeof e.raw, 'string')
+  assert.ok(e.raw.length <= 2000, 'raw length ' + e.raw.length)
+  assert.ok(e.raw.length > 1900, 'raw is clipped to 2000, not cut short: ' + e.raw.length)
+  assert.equal(/[\r\n\t]/.test(e.raw), false)
+  assert.ok(e.raw.startsWith('first line second line x'))
+})
+
+test('the no-judgment raw is redacted BEFORE it is clipped, so a secret straddling char 2000 does not leak', async () => {
+  const { mkdtempSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { createTriageLog } = await import('../triage-log.js')
+  const dir = mkdtempSync(join(tmpdir(), 'triage-raw-'))
+  try {
+    const file = join(dir, 'triage.jsonl')
+    const token = 'abcdefghijklmnopqrstuvwxyz0123456789SECRET'
+    const raw = 'x '.repeat(987) + 'Authorization: Bearer ' + token // the token starts at about char 1996 and runs past 2000
+    const { store, runner } = setup({ judge: { judge: async () => ({ note: 'bad json', raw }) }, triageLog: createTriageLog(file) })
+    store.add(perm())
+    await runner.idle()
+    const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean)
+    assert.equal(lines.length, 1)
+    const rec = JSON.parse(lines[0])
+    assert.equal(rec.reasons[0], 'no-judgment')
+    assert.equal(typeof rec.raw, 'string')
+    assert.ok(rec.raw.length <= 2000, 'raw length ' + rec.raw.length)
+    assert.equal(/[\r\n]/.test(rec.raw), false)
+    // a clip before redaction leaves under 8 token chars after 'Bearer', which the log's own redact cannot recognise, so check any leading fragment
+    assert.equal(rec.raw.includes('abcd'), false, 'token fragment leaked: ' + rec.raw.slice(-40))
+    assert.equal(rec.raw.includes('abcdefgh'), false)
+    assert.ok(rec.raw.includes('[redacted]'), 'the Bearer token is redacted, not just cut: ' + rec.raw.slice(-40))
+    assert.equal(rec.raw.includes(token), false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the no-judgment record has NO raw key when the reply is empty or missing, and has one when it is not', async () => {
+  const cases = [
+    ['empty raw', async () => ({ note: 'x', raw: '' })],
+    ['undefined raw', async () => ({ note: 'x', raw: undefined })],
+    ['no raw at all', async () => ({ note: 'x' })],
+    ['timeout note', async () => ({ note: 'timed out after 20 s', raw: '' })],
+    ['thrown error', async () => { throw new Error('boom') }],
+  ]
+  for (const [label, judge] of cases) {
+    const { store, runner, entries } = setup({ judge: { judge } })
+    store.add(perm())
+    await runner.idle()
+    const e = entries.at(-1)
+    assert.equal(e.reasons[0], 'no-judgment', label)
+    assert.equal('raw' in e, false, label + ': raw key present')
+  }
+  const { store, runner, entries } = setup({ judge: { judge: async () => ({ note: 'bad json', raw: 'not json at all' }) } })
+  store.add(perm())
+  await runner.idle()
+  assert.equal(entries.at(-1).raw, 'not json at all')
+})
+
+test('the no-judgment raw of a 300000-character reply is clipped to 2000 and built fast', async () => {
+  const raw = 'a-'.repeat(150000)
+  const { store, runner, entries } = setup({ judge: { judge: async () => ({ note: 'bad json', raw }) } })
+  const t0 = performance.now()
+  store.add(perm())
+  await runner.idle()
+  const ms = performance.now() - t0
+  const e = entries.at(-1)
+  assert.equal(e.reasons[0], 'no-judgment')
+  assert.equal(typeof e.raw, 'string')
+  assert.ok(e.raw.length <= 2000, 'raw length ' + e.raw.length)
+  assert.ok(ms < 500, 'record took ' + Math.round(ms) + ' ms')
 })

@@ -121,3 +121,37 @@ test('parseReadOnlyCommand: a strict allowlist, no operators, no redirects, no m
   assert.equal(typeof parseReadOnlyCommand('rm x').reason, 'string')
   assert.equal(parseReadOnlyCommand(undefined).ok, false)
 })
+
+test('relax.sessionFinished lifts the session-finished veto in observe mode only; auto is never relaxed', () => {
+	const done = { id: 'd', type: 'completed', status: 'open' }
+	const facts = { riskFlags: [], safe: true, needsUser: false, sessionContinues: false }
+	const relaxed = { sessionFinished: true }
+	const obs = run({ item: done, rule: rule({ class: 'done' }), facts, relax: relaxed })
+	assert.equal(obs.verdict, 'handle')
+	assert.equal(obs.reasons.includes('session-finished'), false)
+	// auto: the veto always applies, whatever relax says
+	const auto = run({ item: done, rule: rule({ class: 'done', mode: 'auto' }), facts, relax: relaxed })
+	assert.ok(auto.reasons.includes('session-finished'))
+	assert.deepEqual([auto.verdict, auto.act], ['ask', false])
+	// without relax, or with relax.sessionFinished not exactly true, nothing changes
+	assert.ok(run({ item: done, rule: rule({ class: 'done' }), facts }).reasons.includes('session-finished'))
+	assert.ok(run({ item: done, rule: rule({ class: 'done' }), facts, relax: {} }).reasons.includes('session-finished'))
+	assert.ok(run({ item: done, rule: rule({ class: 'done' }), facts, relax: { sessionFinished: 'yes' } }).reasons.includes('session-finished'))
+	// relax null, undefined or a non-object is the same as no relax (and does not throw)
+	for (const bad of [null, undefined, true, 'x', 0, 7])
+		assert.ok(run({ item: done, rule: rule({ class: 'done' }), facts, relax: bad }).reasons.includes('session-finished'), 'relax: ' + String(bad))
+	// relaxing the session veto does not lift the other done vetoes
+	assert.ok(run({ item: done, rule: rule({ class: 'done' }), facts: { ...facts, needsUser: true }, relax: relaxed }).reasons.includes('needs-user'))
+})
+
+test('the session-finished relax fails closed: only mode exactly "observe" is relaxed', () => {
+	const done = { id: 'd', type: 'completed', status: 'open' }
+	const facts = { riskFlags: [], safe: true, needsUser: false, sessionContinues: false }
+	const relax = { sessionFinished: true }
+	for (const mode of [undefined, 'Auto', 'x', 'OBSERVE', null, '']) {
+		const r = run({ item: done, rule: rule({ class: 'done', mode }), facts, relax })
+		assert.ok(r.reasons.includes('session-finished'), 'mode ' + String(mode) + ' was relaxed')
+	}
+	const { mode, ...noMode } = rule({ class: 'done' })
+	assert.ok(run({ item: done, rule: noMode, facts, relax }).reasons.includes('session-finished'), 'missing mode was relaxed')
+})

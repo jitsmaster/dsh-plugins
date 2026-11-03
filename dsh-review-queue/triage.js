@@ -88,11 +88,12 @@ function questionBasis(judgment, rule, sources, reasons) {
 
 /**
  * @param {{ item: object, judgment?: object, rule?: object, facts?: object, sources?: object[], marks?: object }} input
- *   facts: what CODE computed (riskFlags[], safe, readOnly?, outsideWorkspace?, reversible?, needsUser?, sessionContinues?); sources: evidence sources by id.
+ *   facts: what CODE computed (riskFlags[], safe, readOnly?, outsideWorkspace?, reversible?, needsUser?, sessionContinues?); sources: evidence sources by id;
+ *   relax: { sessionFinished?: true } lifts the session-finished veto only for an observe-mode rule (fails closed for auto or any other mode).
  * @returns {{ verdict: 'handle' | 'ask', act: boolean, score?: number, threshold: number, reasons: string[] }}
  *   act is true only for a handled item whose rule is in `auto`; `observe` handles on paper only. reasons lists EVERY veto that applied.
  */
-export function triageOutcome({ item, judgment, rule, facts, sources = [], marks = {} }) {
+export function triageOutcome({ item, judgment, rule, facts, sources = [], marks = {}, relax = {} }) {
   const reasons = []
   const threshold = thresholdOf(rule)
   const j = judgment && typeof judgment === 'object' ? judgment : undefined
@@ -121,7 +122,7 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
   }
   if (rule && rule.class === 'done' && facts) {
     if (facts.needsUser !== false) reasons.push('needs-user')
-    if (facts.sessionContinues !== true) reasons.push('session-finished')
+    if (facts.sessionContinues !== true && !(relax?.sessionFinished === true && rule.mode === 'observe')) reasons.push('session-finished')
   }
   if (score !== undefined && score > threshold) reasons.push('score-above-threshold')
   const verdict = reasons.length ? 'ask' : 'handle'

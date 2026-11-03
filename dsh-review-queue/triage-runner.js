@@ -8,8 +8,10 @@
  */
 import { createHash } from 'node:crypto'
 import { riskOf } from './risk.js'
-import { needsUser } from './actionable.js'
+import { needsUserForTriage } from './actionable.js'
+import { RAW_MAX, RAW_PRECLIP, oneLine } from './triage-judge.js'
 import { classOf, parseReadOnlyCommand, triageOutcome } from './triage.js'
+import { redact } from './triage-log.js'
 
 /** At most this many judge calls at once; an item arriving beyond that stays a normal card (and is logged), so cost and latency stay bounded. */
 export const MAX_IN_FLIGHT = 2
@@ -49,7 +51,7 @@ export function factsOf(item, { sessionContinuesOf = () => false } = {}) {
   if (item?.type === 'completed') {
     let continues = false
     try { continues = sessionContinuesOf(item) === true } catch { /* unknown means the session is treated as finished */ }
-    return { riskFlags: [], safe: true, needsUser: needsUser(p.reply), sessionContinues: continues }
+    return { riskFlags: [], safe: true, needsUser: needsUserForTriage(p.reply), sessionContinues: continues }
   }
   return { riskFlags: [], safe: false }
 }
@@ -113,9 +115,10 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     if (!mine.length) return
     const facts = factsOf(item, { sessionContinuesOf })
     // Step 1, code only: a veto that no model answer can lift means no model call at all.
-    const pre = triageOutcome({ item, judgment: { needs_decision: false, attention: 0, matched_rule: mine[0].id, answer_basis: 'none' }, rule: mine[0], facts, marks: marksOf(item) })
+    const pre = triageOutcome({ item, judgment: { needs_decision: false, attention: 0, matched_rule: mine[0].id, answer_basis: 'none' }, rule: mine[0], facts, marks: marksOf(item), relax: { sessionFinished: true } })
+    const doneExtra = cls === 'done' ? { sessionContinues: facts.sessionContinues === true } : {}
     const hard = pre.reasons.filter((r) => r !== 'no-rule')
-    if (hard.length) { record({ itemId: item.id, type: item.type, stage: 'code-veto', verdict: 'ask', reasons: hard }); return }
+    if (hard.length) { record({ itemId: item.id, type: item.type, stage: 'code-veto', verdict: 'ask', reasons: hard, ...doneExtra }); return }
     // Learning from reversals: the user reversed a similar AI proposal before. Code decides, not the model: the card stays a normal card and says why.
     let recalled = { context: [] }
     try { recalled = memory?.recall(item, mine.map((r) => r.id)) ?? recalled } catch { /* memory is best effort */ }
@@ -131,10 +134,14 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     inFlight++
     let result
     try { result = await judge.judge({ item, rules: mine, sources: sourcesOf(item), lessons: recalled.context }) } catch (error) { result = { note: String(error?.message ?? error) } } finally { inFlight-- }
-    if (!result?.judgment) { record({ itemId: item.id, type: item.type, stage: 'judge', verdict: 'ask', reasons: ['no-judgment'], note: result?.note }); return }
+    if (!result?.judgment) {
+      const raw = oneLine(redact(String(result?.raw ?? '').slice(0, RAW_PRECLIP))).slice(0, RAW_MAX)
+      record({ itemId: item.id, type: item.type, stage: 'judge', verdict: 'ask', reasons: ['no-judgment'], note: result?.note, ...(raw ? { raw } : {}) })
+      return
+    }
     const rule = mine.find((r) => r.id === result.judgment.matched_rule)
-    const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts, sources: sourcesOf(item), marks: marksOf(item) })
-    const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment }
+    const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts, sources: sourcesOf(item), marks: marksOf(item), relax: { sessionFinished: true } })
+    const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtra }
     // Re-checked after the wait: the item may have been resolved, put on hold or its rule switched off meanwhile.
     const fresh = store.get(item.id) // the item as it is now, not as it was when it was raised
     const marks = fresh ? marksOf(fresh) : {}

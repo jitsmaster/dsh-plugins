@@ -2,7 +2,7 @@
 // fields, or { note } on any failure, and never throw.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createTriageJudge, parseJudgment, describeItem, JUDGE_TIMEOUT_MS } from '../triage-judge.js'
+import { createTriageJudge, parseJudgment, describeItem, oneLine, RAW_MAX, JUDGE_TIMEOUT_MS } from '../triage-judge.js'
 
 function fakeLlm({ answer, fail, hang, noModels, seen = {} } = {}) {
   return {
@@ -123,6 +123,65 @@ test('describeItem caps long text and keeps only what the type needs', () => {
   assert.deepEqual(describeItem({ id: 'o', type: 'onhold' }), { id: 'o', type: 'onhold', session: '', workspace: '' })
 })
 
-test('the default time limit is the 10 s of the spec', () => {
-  assert.equal(JUDGE_TIMEOUT_MS, 10000)
+test('the default time limit is 20 s (raised from the 10 s of the spec after real-data timeouts)', () => {
+  assert.equal(JUDGE_TIMEOUT_MS, 20000)
+})
+
+test('the log line holds up to 2000 characters of what the model said, whitespace collapsed', async () => {
+  const reply = 'word '.repeat(300).trim()
+  assert.equal(reply.length, 1499)
+  const lines = []
+  await createTriageJudge({ llm: fakeLlm({ answer: reply }), log: (l) => lines.push(l) }).judge({ item: ITEM, rules: RULES })
+  assert.equal(lines.length, 1)
+  assert.ok(lines[0].includes('; the model said: ' + reply), 'the 1499-character reply is logged in full')
+  const long = ('abc\n').repeat(900) // 3600 characters
+  const capped = []
+  await createTriageJudge({ llm: fakeLlm({ answer: long }), log: (l) => capped.push(l) }).judge({ item: ITEM, rules: RULES })
+  const said = capped[0].split('; the model said: ')[1]
+  assert.equal(said.length, 2000)
+  assert.equal(said, 'abc '.repeat(500)) // 500 x 4 = exactly the 2000-character cap
+  assert.ok(said.startsWith('abc abc abc ') && !said.includes('\n'))
+})
+
+test('the log line redacts secrets in what the model said, and keeps the prefix and the cap', async () => {
+  const reply = '{"verdict": oops Authorization: Bearer abcdef1234567890SECRET password=hunter2 api_key: sk-abcdefghijklmnop1234 trailing'
+  const lines = []
+  await createTriageJudge({ llm: fakeLlm({ answer: reply }), log: (l) => lines.push(l) }).judge({ item: ITEM, rules: RULES })
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /^triage: no judgment/)
+  assert.match(lines[0], /; the model said: /)
+  assert.match(lines[0], /trailing/)
+  for (const secret of ['abcdef1234567890SECRET', 'hunter2', 'sk-abcdefghijklmnop1234']) assert.ok(!lines[0].includes(secret), 'secret leaked into the log line: ' + secret)
+  const long = []
+  await createTriageJudge({ llm: fakeLlm({ answer: 'Bearer abcdef1234567890SECRET ' + 'abc '.repeat(900) }), log: (l) => long.push(l) }).judge({ item: ITEM, rules: RULES })
+  assert.ok(!long[0].includes('abcdef1234567890SECRET'))
+  assert.ok(long[0].split('; the model said: ')[1].length <= 2000)
+})
+
+test('oneLine replaces ASCII and C1 control characters with a space before collapsing whitespace', () => {
+  const out = oneLine('x\u001b[2Jevil\u0007 y')
+  assert.ok(!out.includes('\u001b') && !out.includes('\u0007'), JSON.stringify(out))
+  assert.ok(!/ {2}/.test(out), 'double space in ' + JSON.stringify(out))
+  assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(oneLine('a\u0085b\u007fc\u009fd\u0000e')))
+})
+
+test('the no-judgment log line redacts the note too, not only the model reply', async () => {
+  const llm = fakeLlm({ answer: GOOD })
+  const orig = llm.prepareCall
+  llm.prepareCall = async (cfg) => { const p = await orig(cfg); return { ...p, stream: async function* () { throw new Error('boom api_key=abcdefghijklmnop1234') } } }
+  const lines = []
+  await createTriageJudge({ llm, log: (l) => lines.push(l) }).judge({ item: ITEM, rules: RULES })
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /^triage: no judgment/)
+  assert.ok(!lines[0].includes('abcdefghijklmnop1234'), 'secret in note leaked: ' + lines[0])
+})
+
+test('a 300000-character reply is clipped before redaction, so logging it is fast and bounded', async () => {
+  const lines = []
+  const t0 = performance.now()
+  await createTriageJudge({ llm: fakeLlm({ answer: 'a-'.repeat(150000) }), log: (l) => lines.push(l) }).judge({ item: ITEM, rules: RULES })
+  const ms = performance.now() - t0
+  assert.equal(lines.length, 1)
+  assert.ok(lines[0].split('; the model said: ')[1].length <= RAW_MAX)
+  assert.ok(ms < 500, 'judge + log took ' + Math.round(ms) + ' ms')
 })

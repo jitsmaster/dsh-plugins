@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { needsUser } from '../actionable.js'
+import { needsUser, needsUserForTriage } from '../actionable.js'
 
 // All replies are invented. needsUser looks only at the tail (the last two paragraphs, code removed) and can only veto a hide.
 const para = (n, word = 'Filler') => Array.from({ length: n }, (_, i) => word + ' paragraph ' + i + '.').join('\n\n')
@@ -18,6 +18,19 @@ const STATUS = [
 	['error text inside inline code', 'Renamed `onError` to `handleFailure?` and committed.'],
 	['the clean phrases', 'Ran the suite: 0 failures, no errors, zero warnings, without regressions, nothing failed.'],
 	['a bare work word without a user ask', 'Cleaned up the remaining imports and removed the partial file; the workaround is gone.'],
+]
+
+// Tails that only mention a pull request, a handoff or a ticket: needsUser keeps them, needsUserForTriage lets them through.
+const NEEDS_PR_HANDOFF_TICKET = [
+	['a handoff in the tail', 'All done. Wrote the handoff for the next session.'],
+	['a hand-off in the tail', 'Wrote the hand-off note.'],
+	['a PR in the tail', 'Opened PR 123 against develop.'],
+	['a pull request in the tail', 'The pull request is up.'],
+	['a PR-WAIT heartbeat', 'PR-WAIT: 6541'],
+	['a pr wait heartbeat after a status line', 'Nothing new on the thread.\n\npr-wait 123'],
+	['a ticket in the tail', 'Closed the ticket.'],
+	['a work item in the tail', 'Linked the work item to the change.'],
+	['an AB id in the tail', 'Updated AB#2025 with the results.'],
 ]
 
 const NEEDS = [
@@ -66,22 +79,13 @@ const NEEDS = [
 	['outstanding', 'Nothing else is outstanding except the license text.'],
 	['open question', 'An open question remains about caching.'],
 	['open issue', 'There is an open issue with the exporter.'],
-	['a handoff in the tail', 'All done. Wrote the handoff for the next session.'],
-	['a hand-off in the tail', 'Wrote the hand-off note.'],
-	['a PR in the tail', 'Opened PR 123 against develop.'],
-	['a pull request in the tail', 'The pull request is up.'],
-	['a PR-WAIT heartbeat', 'PR-WAIT: 6541'],
-	['a pr wait heartbeat after a status line', 'Nothing new on the thread.\n\npr-wait 123'],
-	['a ticket in the tail', 'Closed the ticket.'],
-	['a work item in the tail', 'Linked the work item to the change.'],
-	['an AB id in the tail', 'Updated AB#2025 with the results.'],
 	['a question in the second to last paragraph', ['Early note.', 'Is the schema final?', 'Tests pass and it is committed.'].join('\n\n')],
 	['a question that follows a code block', 'Result:\n\n```\nok\n```\n\nShould I merge it?'],
 	['still failing after the clean phrase is removed', 'Ran it: 0 failures in the first suite, but two tests are still failing in the second.'],
 ]
 
 for (const [label, reply] of STATUS) test('needsUser lets a status or finished-work reply through: ' + label, () => assert.equal(needsUser(reply), false, reply))
-for (const [label, reply] of NEEDS) test('needsUser keeps the reply that holds something for the user: ' + label, () => assert.equal(needsUser(reply), true, reply))
+for (const [label, reply] of [...NEEDS, ...NEEDS_PR_HANDOFF_TICKET]) test('needsUser keeps the reply that holds something for the user: ' + label, () => assert.equal(needsUser(reply), true, reply))
 
 test('a question mark before the last two paragraphs does not veto, in the last two it does', () => {
 	assert.equal(needsUser('Question?\n\nOne.\n\nTwo.'), false)
@@ -102,4 +106,40 @@ test('code blocks do not count as a paragraph, so the real tail is still examine
 test('empty, blank and non-string replies are kept; a reply that is only code is kept too', () => {
 	for (const reply of ['', '   \n ', undefined, null, 42, {}]) assert.equal(needsUser(reply), true)
 	assert.equal(needsUser('```\nonly code\n```'), true)
+})
+
+// needsUserForTriage: like needsUser, but a tail that only mentions a pull request, a handoff or a ticket does not veto (AI triage only).
+const forTriage = needsUserForTriage
+const ONLY_PR_HANDOFF_TICKET = [
+	['a PR number', 'Tests pass.\n\nPR #123 is open.'],
+	['a pull request', 'The pull request is up against develop.'],
+	['a PR-WAIT heartbeat', 'PR-WAIT: 6541'],
+	['a handoff','Handoff written to the vault.'],
+	['a hand-off', 'The hand-off note is saved.'],
+	['an AB id', 'AB#25870 updated with the results.'],
+	['a ticket', 'Closed the ticket.'],
+	['a work item', 'Linked the work item to the change.'],
+]
+for (const [label, reply] of ONLY_PR_HANDOFF_TICKET) test('needsUserForTriage ignores a tail that only mentions ' + label + ' (needsUser still keeps it)', () => {
+	assert.equal(needsUser(reply), true, reply)
+	assert.equal(forTriage(reply), false, reply)
+})
+
+const REAL_NEEDS_WITH_PR = [
+	['a question', 'PR #123 is open. Should I merge it?'],
+	['please', 'PR #123 is open, please review it.'],
+	['approve', 'The pull request needs your approval.'],
+	['blocked on', 'Handoff written, but I am blocked on the ticket.'],
+	['a manual step', 'AB#25870 updated. You will need to restart the server.'],
+]
+for (const [label, reply] of REAL_NEEDS_WITH_PR) test('needsUserForTriage still vetoes ' + label + ' next to a PR, handoff or ticket', () => {
+	assert.equal(needsUser(reply), true, reply)
+	assert.equal(forTriage(reply), true, reply)
+})
+
+test('needsUserForTriage keeps empty, non-string and code-only replies, and lets plain status through like needsUser', () => {
+	for (const reply of ['', '   \n ', undefined, null, 42, {}]) { assert.equal(needsUser(reply), true); assert.equal(forTriage(reply), true) }
+	assert.equal(forTriage('```\nonly code\n```'), true)
+	for (const [, reply] of STATUS) assert.equal(forTriage(reply), false, reply)
+	for (const [, reply] of NEEDS) assert.equal(forTriage(reply), true, reply)
 })

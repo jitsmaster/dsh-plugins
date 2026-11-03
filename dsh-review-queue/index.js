@@ -238,7 +238,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
       enabled: () => config.triage !== false,
       // A session parked on hold is never a candidate (a user mark that vetoes triage).
       marksOf: (item) => ({ onHold: safe(() => heldIds().has(item.sessionId)) === true }),
-      // A done card is raised when a turn ends, so a session that is running again by now is one that continues; unknown means finished (a veto).
+      // A done card is raised when a turn ends, so a session that is running again by now is one that continues; unknown means finished (a veto only for an auto rule).
       sessionContinuesOf: (item) => safe(() => sessionCounter.runningIds?.()?.has(item.sessionId)) === true,
       ...(config.triageDeps ?? {}),
     })

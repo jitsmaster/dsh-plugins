@@ -7,7 +7,7 @@
  */
 
 /** Strong signals in the tail (matched case-insensitively on the tail without code). */
-const NEEDS_USER = [
+const STRONG = [
 	/\?/, // any question
 	/\bplease\b/, /\b(could|would|can|shall|should|do|did|will) (you|we)\b/, /\bwant me\b/, /\blet me know\b/, /\byour (call|choice|decision|turn|go-?ahead)\b/, /\bup to you\b/,
 	/\byou(?:'ll| will)? (?:need|have to|must|should|can|may|might|could|want)\b/, /\bneeds? (you|your)\b/, /\bbefore you\b/, /\b(once|when|if) you\b/,
@@ -17,10 +17,17 @@ const NEEDS_USER = [
 	/\b(blocked (on|by)|stuck|waiting (on|for) (you|your|the user)|unable to|cannot|can't|couldn't|could not|wasn't able)\b/,
 	/\b(still|remaining) (failing|broken|open|unresolved|todo)\b/, /\bnot (yet )?(done|finished|fixed|working|tested)\b/,
 	/\b(unresolved|outstanding|open question|open issue)\b/,
+]
+
+/** Signals that only mention a pull request, a handoff or a ticket: a veto for the hide, but not for AI triage (see needsUserForTriage). */
+const MENTIONS = [
 	/\bhand(?:ed)?[- ]?offs?\b/, // a handoff ("hand off", "handed off", "hand-off") is for the next session: the user starts or checks it
 	/\b(pull requests?|prs?\s*#?\d+)\b|\bpr[- ]?wait\b/, // a pull request waits for a review or a merge; a PR-WAIT heartbeat is the poll for its comments
 	/\b(tickets?|work items?)\b|\bab#\d+/, // a ticket or work item to confirm or follow up
 ]
+
+/** Every signal, in one list for needsUser. */
+const NEEDS_USER = [...STRONG, ...MENTIONS]
 
 /** "0 failures", "no errors", "without errors" are the good kind of the words above. */
 const CLEAN = /\b(0|zero|no|without|none|nothing)\s+(?:test\s+|new\s+)?(?:fail\w*|errors?|warnings?|regressions?|issues?|problems?)\b/gi
@@ -36,11 +43,20 @@ function tailOf(reply) {
 	return paragraphs.slice(-TAIL_PARAGRAPHS).join('\n\n')
 }
 
-/** True when the message must stay in the list whatever the model said. */
-export function needsUser(reply) {
+function check(reply, patterns) {
 	if (typeof reply !== 'string' || !reply.trim()) return true
 	const tail = tailOf(reply)
 	if (!tail) return true // nothing but code: we cannot tell, so show it
 	const text = tail.replace(CLEAN, ' ').toLowerCase()
-	return NEEDS_USER.some((re) => re.test(text))
+	return patterns.some((re) => re.test(text))
+}
+
+/** True when the message must stay in the list whatever the model said. */
+export function needsUser(reply) {
+	return check(reply, NEEDS_USER)
+}
+
+/** Like needsUser, but a tail that only mentions a pull request, a handoff or a ticket does not count (AI triage of done cards). */
+export function needsUserForTriage(reply) {
+	return check(reply, STRONG)
 }
