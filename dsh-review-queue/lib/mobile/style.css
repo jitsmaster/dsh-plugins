@@ -22,13 +22,13 @@ pre { margin: 0; }
   padding: calc(10px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 10px calc(16px + env(safe-area-inset-left));
   background: var(--bg); border-bottom: 1px solid var(--line); }
 .app > header h1 { font-size: 20px; }
+.app > header .back + h1 { flex: 1; min-width: 0; }
 .count { color: var(--dim); font-size: 14px; }
 /* The counts stack on the right of the header: "N waiting" over "N working / M open". The second line keeps its height while the numbers are unknown, so nothing moves when they appear or change. */
 .counts { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; }
 .count.sessions { font-variant-numeric: tabular-nums; white-space: nowrap; min-height: 1.45em; }
 .banner { margin: 0; padding: 10px 16px; background: #3a2a10; color: var(--warn); font-size: 14px; border-bottom: 1px solid #5a4318; }
 .install-hint .btn { display: block; margin-top: 8px; }
-.todo-link { margin-bottom: 16px; }
 main { padding: 12px calc(12px + env(safe-area-inset-right)) 16px calc(12px + env(safe-area-inset-left)); max-width: 720px; margin: 0 auto; }
 
 nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; background: var(--panel); border-top: 1px solid var(--line);
@@ -37,6 +37,7 @@ nav a { flex: 1; min-height: var(--nav); display: flex; align-items: center; jus
 nav a.on { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
 .badge { min-width: 22px; padding: 0 6px; border-radius: 11px; background: var(--accent); color: var(--accent-ink); font-size: 13px; line-height: 22px; text-align: center; }
 .badge.dim { background: var(--line); color: var(--dim); }
+/* The Resolved badge without .dim is the accent one: AI-resolved items nobody has looked at. */
 
 /* ---- list ---- */
 .rowitem { display: block; min-height: var(--tap); margin: 0 0 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); color: var(--text); text-decoration: none; }
@@ -58,19 +59,33 @@ nav a.on { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
 .chip.archive { background: #3a2f1a; color: #f0c674; }
 .chip.paused { background: #3a2f12; color: #f0c674; }
 .chip.onhold { background: #262b33; color: #9aa7b8; }
-.holdbox { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .paused-count { color: #f0c674; }
-.banner.paused-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 10px; margin-bottom: 12px; }
+.paused-note { margin: 0 2px 10px; }
 
 .risks { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
 .risk { display: inline-block; padding: 2px 10px; border-radius: 999px; background: #4a2a12; color: var(--warn); font-size: 13px; font-weight: 600; }
 .risk.small { font-size: 12px; padding: 1px 8px; }
 
-.filter { margin-bottom: 12px; }
-.chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
-.fchip { flex: none; min-height: 48px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font: inherit; font-size: 14px; }
-.fchip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+/* ---- secondary tabs (type of the Waiting list, Resolved by, kind of todo): a scrollable tablist, 48 px tabs, counts ---- */
+.tabs { display: flex; gap: 4px; overflow-x: auto; margin: 0 0 10px; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.tab { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: var(--tap); padding: 0 14px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--dim); font: inherit; font-size: 15px; font-weight: 600; white-space: nowrap; }
+.tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.tab:disabled { opacity: .45; }
+.tab .n { min-width: 20px; padding: 0 6px; border-radius: 10px; background: var(--panel2); color: var(--dim); font-size: 12px; line-height: 20px; text-align: center; }
+.tab .n.hot { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.waiting { padding-bottom: 88px; } /* room for the floating "+ New todo" link */
+.waiting > .input { margin-bottom: 10px; }
+.fl { display: flex; gap: 8px; margin: 0 0 10px; }
+.fl .input { flex: 1; min-width: 0; }
+.fl .input.sel { flex: 0 0 auto; width: auto; max-width: 45%; }
 
+/* The floating "+ New todo" link: above the bottom nav, never under it. */
+.fab { position: fixed; right: calc(16px + env(safe-area-inset-right)); bottom: calc(var(--nav) + env(safe-area-inset-bottom) + 16px); z-index: 6; display: inline-flex; align-items: center; justify-content: center; min-height: var(--tap); padding: 0 20px;
+  border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-weight: 700; text-decoration: none; box-shadow: 0 3px 10px rgba(0, 0, 0, .5); touch-action: manipulation; }
+.fab:active { filter: brightness(1.15); }
+
+/* The back arrow of the app bar (item card, new todo): a link, 48 px. */
+.back { flex: none; align-self: center; display: inline-flex; align-items: center; justify-content: center; min-width: var(--tap); min-height: var(--tap); margin: -6px 0 -6px -10px; color: var(--text); font-size: 24px; text-decoration: none; border-radius: 10px; }
 /* ---- card ---- */
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; }
 .card .top .age { font-size: 13px; }
@@ -99,7 +114,7 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 .btn.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.bad { background: var(--bad); border-color: var(--bad); color: #fff; }
 .btn:disabled { opacity: .45; }
-.btn:focus-visible, .opt:focus-visible, .fchip:focus-visible, nav a:focus-visible, .rowitem:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.btn:focus-visible, .opt:focus-visible, .tab:focus-visible, .fab:focus-visible, .back:focus-visible, nav a:focus-visible, .rowitem:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
 /* ---- dictation (mic) and the new-todo form ---- */
 .micwrap { flex: none; }
@@ -111,7 +126,6 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 .inwrap .input { flex: 1; min-width: 0; }
 .inwrap .micwrap .sub { max-width: 40vw; }
 .newtodo .field { display: block; margin-top: 12px; color: var(--dim); font-size: 14px; }
-.newtodo .chips { margin-bottom: 4px; }
 .newtodo .followup-query { margin-top: 12px; }
 .newtodo .field .input { margin-top: 4px; color: var(--text); font-size: 16px; }
 .newtodo .switch { display: flex; align-items: center; gap: 12px; min-height: var(--tap); margin-top: 8px; }
@@ -170,6 +184,7 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 .send { flex: none; min-height: var(--tap); }
 /* A text field outside the composer has the focus (view-guard.js watchTyping): the bar gives its room to the keyboard. The composer sticks to the edge then. */
 body.typing nav { display: none; }
+body.typing .fab { display: none; }
 body.typing .app { padding-bottom: 0; }
 body.typing .composer { bottom: 0; }
 
@@ -188,8 +203,8 @@ body.typing .composer { bottom: 0; }
 .ai-note { font-style: italic; border-left: 3px solid var(--dim); padding-left: 8px; margin: 6px 0; }
 
 /* AI-resolved items */
-.chips-label { align-self: center; flex: none; }
 .ai-badge { background: var(--accent); color: var(--accent-ink); }
-.ai-detail, .ai-review, .ai-correction { margin: 8px 0; }
-.ai-review .row, .ai-correction .row { flex-wrap: wrap; }
-.banner.ai-handled { display: block; width: 100%; min-height: 48px; border: 0; border-radius: 10px; margin-bottom: 12px; text-align: left; font: inherit; font-size: 14px; }
+.ai-detail, .ai-review { margin: 8px 0; }
+.ai-review .row { flex-wrap: wrap; }
+.sheet .input { margin: 10px 0 0; }
+.sheet .err { margin: 10px 0 0; }

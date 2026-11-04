@@ -1,18 +1,15 @@
-// Slice 4 of the AI triage plan (RED): the phone UI for items the AI resolved - the "Resolved by" chips, the AI badge, the detail block,
-// the seen request, the review buttons and the "AI handled N" banner. It mirrors the desktop (test/client-ai-card.test.mjs, client-ai-filter-head).
+// The phone UI for items the AI resolved - the Resolved-by tabs, the AI badge, the detail block, the seen request and the review buttons.
+// It mirrors the desktop (test/client-ai-card.test.mjs, client-ai-filter-head). Redesign (tab-based phone): the "Resolved by" chips are the
+// By me / By AI tabs (test/mobile-tabs.test.mjs), the "AI handled N" banner button is gone (the Resolved nav badge and the By AI tab carry
+// the count), and Mark wrong… / Overrule rule open the bottom confirm sheet instead of an inline form.
 //
 // The phone views use hooks, so the new pieces are hook-free components exported from lib/mobile/views.js (read the store from api.js `state`
 // directly; the screens that contain them re-render on every store change), and the seen request is a function exported from lib/mobile/api.js:
-//   views.ResolvedByRow({ model })   the "Resolved by" chip row (model = listModel(...)); chips carry data-resolved-by, class `on`, aria-pressed
 //   views.AiBadge({ item })          the AI badge (data-ai-badge=id); null for anything not AI-resolved
 //   views.AiDetail({ item })         the detail block (data-ai-detail=id): quote, rule name, "attention <score>"; null for non-AI
-//   views.AiReview({ item })         Looks right / Mark wrong… (+ correction box data-ai-correction=id and Send) / Overrule rule (+ observe / off); null for non-AI
-//   views.AiHandledBanner({ count }) the banner (data-ai-handled): null when count is 0; its click sets filter.resolvedBy 'ai' and goes to #/resolved
+//   views.AiReview({ item })         Looks right / Mark wrong… / Overrule rule; the last two open a sheet (state.sheet = { kind, id, text }); null for non-AI
 //   api.markAiSeen(item)             POST /v1/triage-review { id, review: 'seen' } once per item (module-level set); a failed request can retry
-// Wiring in views.js: ResolvedList renders ResolvedByRow and AiBadge, WaitingList renders AiHandledBanner (count = model.aiUnseen) and NOT the
-// Resolved-by row, ItemView renders AiDetail and AiReview for a resolved item and calls markAiSeen.
-// In-memory state keys added to api.js `state` (never saved to storage): aiCorrection { [id]: string } (the correction box is open while the key
-// exists), aiOverrule { [id]: true } (the two rule choices are showing).
+// In-memory state key of api.js `state` (never saved to storage): sheet { kind: 'mark-wrong' | 'overrule' | 'hold', id, text } or null.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -59,6 +56,7 @@ const between = (from, to) => {
 function expand(n) {
   if (Array.isArray(n)) return n.map(expand)
   if (!n || typeof n !== 'object') return n
+  if (typeof n.type === 'function' && n.type.name === 'MarkWrongSheet') return { type: 'MarkWrongSheet', props: n.props, children: [] } // hooked: its text is local state, like HoldSheet's
   if (typeof n.type === 'function') return expand(n.type(n.props))
   const kids = n.props && n.props.children
   return { type: n.type, props: n.props, children: [].concat(kids === undefined ? [] : kids).flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false).map(expand) }
@@ -79,57 +77,13 @@ const aiItem = (over = {}, res = {}) => ({ id: 'a1', sessionId: 's1', type: 'per
   resolution: { kind: 'ai-resolved', by: 'ai', action: 'approved', ruleId: 'r1', quote: 'ls is read only', score: 9.6, ...res }, ...over })
 const meItem = () => ({ id: 'm1', type: 'permission', status: 'resolved', title: 'Run pwd', createdAt: 1, resolvedAt: 2, resolution: { kind: 'approved', by: 'card' } })
 const snapOf = (resolved, open = []) => ({ snapshotId: 'e:1', open, resolved })
-const fresh = () => { calls.length = 0; reply = () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }); api.set({ busy: {}, errors: {}, aiCorrection: {}, aiOverrule: {}, filter: { type: 'all', query: '', resolvedBy: 'all' } }); globalThis.location.hash = '' }
+const fresh = () => { calls.length = 0; reply = () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }); api.set({ busy: {}, errors: {}, sheet: null, filter: { type: 'all', query: '', resolvedBy: 'all' } }); globalThis.location.hash = '' }
 const URL_REVIEW = /\/v1\/triage-review$/
 
-test('the phone state starts with empty aiCorrection and aiOverrule maps', () => {
-  assert.deepEqual({ ...api.state.aiCorrection }, {})
-  assert.deepEqual({ ...api.state.aiOverrule }, {})
+test('the phone state starts with no sheet open', () => {
+  assert.equal(api.state.sheet, null)
+  assert.ok(!('aiCorrection' in api.state) && !('aiOverrule' in api.state), 'the inline-form keys are gone')
 })
-
-// ---- 1. the Resolved by chip row -----------------------------------------------------------------------------------------------------
-
-test('ResolvedByRow: a "Resolved by" row with All / Me / AI, the active chip has class on and aria-pressed', () => {
-  fresh()
-  const model = listModel(core, snapOf([aiItem({}, { seen: true }), meItem()]), api.state.filter)
-  const row = draw('ResolvedByRow', { model })
-  assert.match(textOf(row), /Resolved by/)
-  const chips = buttons(row)
-  assert.deepEqual(chips.map((c) => c.props['data-resolved-by']), ['all', 'me', 'ai'])
-  assert.deepEqual(chips.map(textOf), ['All', 'Me', 'AI'])
-  for (const c of chips) {
-    const on = c.props['data-resolved-by'] === 'all'
-    assert.equal(c.props['aria-pressed'], on)
-    assert.equal(classes(c).includes('on'), on)
-  }
-})
-
-test('ResolvedByRow: clicking a chip sets filter.resolvedBy and keeps type and query', () => {
-  fresh()
-  api.set({ filter: { type: 'permission', query: 'ls', resolvedBy: 'all' } })
-  const model = () => listModel(core, snapOf([aiItem({}, { seen: true })]), api.state.filter)
-  const chip = (v) => must(buttons(draw('ResolvedByRow', { model: model() })).find((c) => c.props['data-resolved-by'] === v), 'chip ' + v)
-  chip('ai').props.onClick()
-  assert.deepEqual({ ...api.state.filter }, { type: 'permission', query: 'ls', resolvedBy: 'ai' })
-  assert.equal(chip('ai').props['aria-pressed'], true)
-  assert.equal(chip('all').props['aria-pressed'], false)
-  chip('me').props.onClick()
-  assert.equal(api.state.filter.resolvedBy, 'me')
-})
-
-test('ResolvedByRow: the AI chip reads "AI (N)" while N unseen AI items exist, plain "AI" otherwise; Me never has a count', () => {
-  fresh()
-  const labels = (resolved) => buttons(draw('ResolvedByRow', { model: listModel(core, snapOf(resolved), api.state.filter) })).map(textOf)
-  assert.deepEqual(labels([aiItem({ id: 'u1' }), aiItem({ id: 'u2' }), aiItem({ id: 's' }, { seen: true }), aiItem({ id: 'r' }, { review: 'agreed' }), meItem()]), ['All', 'Me', 'AI (2)'])
-  assert.deepEqual(labels([aiItem({}, { seen: true })]), ['All', 'Me', 'AI'])
-})
-
-test('the Resolved-by row belongs to the Resolved view only, in both the list and the waiting view', () => {
-  assert.match(between('function ResolvedList', 'function NewTodoView'), /<\$\{ResolvedByRow\} model=\$\{model\} \/>/)
-  assert.doesNotMatch(between('function WaitingList', 'function HeldList'), /ResolvedByRow/)
-  assert.doesNotMatch(between('function HeldList', 'function ResolvedList'), /ResolvedByRow/)
-})
-
 // ---- 2. the list row badge -----------------------------------------------------------------------------------------------------------
 
 test('AiBadge: an AI-resolved item gets an "AI" badge; a non-AI item and a missing item get none', () => {
@@ -142,10 +96,10 @@ test('AiBadge: an AI-resolved item gets an "AI" badge; a non-AI item and a missi
 })
 
 test('the Resolved list shows the badge on its rows, next to the resolution line, and the waiting rows never do', () => {
-  const list = between('function ResolvedList', 'function NewTodoView')
+  const list = between('export function ResolvedBody', 'function NewTodoView')
   assert.match(list, /<\$\{AiBadge\} item=\$\{i\} \/>/)
   assert.match(list, /resolutionText\(i\)/)
-  assert.doesNotMatch(between('function ItemRow', 'function FilterBar'), /AiBadge/)
+  assert.doesNotMatch(between('function ItemRow', 'export function Tabs'), /AiBadge/)
 })
 
 // ---- 3. the detail block and the seen request ----------------------------------------------------------------------------------------
@@ -225,7 +179,11 @@ test('markAiSeen is silent: busy and errors of the item stay unset, during the r
   assert.equal(api.state.errors['seen-quiet'], undefined, 'no error text on a card that was only viewed')
 })
 
-// ---- 4. review buttons ---------------------------------------------------------------------------------------------------------------
+
+// ---- 4. review buttons and the confirm sheets -----------------------------------------------------------------------------------------------
+
+const dialog = (tree) => walk(tree).find((n) => n.props && n.props.role === 'dialog')
+const sheetBtn = (tree, re) => { const d = dialog(tree); return d && buttons(d).find((b) => re.test(textOf(b))) }
 
 test('AiReview: nothing for a non-AI item', () => {
   fresh()
@@ -250,73 +208,98 @@ test('AiReview: Looks right posts review agreed; the three buttons show only whi
   }
 })
 
-test('AiReview: Mark wrong opens a correction box; Send is disabled while the trimmed text is empty and posts the trimmed text', async () => {
+test('AiReview: no sheet until a button is pressed; Mark wrong… and Overrule rule open one and do not post anything', () => {
   fresh()
   const it = aiItem({ type: 'completed' }, { seen: true })
-  const tree = () => draw('AiReview', { item: it })
-  const box = () => must(walk(tree()).filter(attr('data-ai-correction', 'a1'))[0], 'the correction box')
-  assert.equal(walk(tree()).filter(attr('data-ai-correction', 'a1')).length, 0)
-  assert.equal(btn(tree(), /Send/), undefined, 'no Send before the box is open')
-  press(tree(), /Mark wrong/)
-  assert.equal(api.state.aiCorrection.a1, '')
-  const send = () => must(btn(tree(), /Send/), 'a Send button')
-  assert.equal(send().props.disabled, true)
-  box().props.onInput({ target: { value: '   ' } })
-  assert.equal(send().props.disabled, true, 'blank text stays disabled')
-  box().props.onInput({ target: { value: '  Use main instead  ' } })
-  assert.ok(!send().props.disabled)
-  send().props.onClick()
-  await tick()
+  assert.equal(dialog(draw('AiReview', { item: it })), undefined)
+  press(draw('AiReview', { item: it }), /Mark wrong/)
+  assert.deepEqual({ ...api.state.sheet }, { kind: 'mark-wrong', id: 'a1', text: '' })
+  assert.equal(walk(draw('AiReview', { item: it })).filter((n) => n.type === 'MarkWrongSheet').length, 1, 'the hooked Mark wrong sheet')
+  api.set({ sheet: null })
+  press(draw('AiReview', { item: it }), /Overrule rule/)
+  assert.deepEqual({ ...api.state.sheet }, { kind: 'overrule', id: 'a1', text: '' })
+  assert.ok(dialog(draw('AiReview', { item: it })))
+  assert.equal(calls.length, 0)
+})
+
+test('AiReview: a sheet of another item does not show here', () => {
+  fresh()
+  api.set({ sheet: { kind: 'mark-wrong', id: 'other', text: '' } })
+  assert.equal(dialog(draw('AiReview', { item: aiItem({}, { seen: true }) })), undefined)
+})
+
+test('confirmMarkWrong: posts the trimmed correction and closes the sheet; a failed send keeps the sheet open', async () => {
+  fresh()
+  const it = aiItem({ type: 'completed' }, { seen: true })
+  api.set({ sheet: { kind: 'mark-wrong', id: 'a1', text: '' } })
+  assert.equal(await need('confirmMarkWrong')(it, '  Use main instead  '), true)
   assert.equal(calls.length, 1)
   assert.match(calls[0][0], URL_REVIEW)
   assert.deepEqual(calls[0][1], { id: 'a1', review: 'mark-wrong', text: 'Use main instead' })
-  assert.equal(api.state.aiCorrection.a1, undefined, 'the box closes after a successful send')
+  assert.equal(api.state.sheet, null, 'the sheet closes after a successful send')
+  fresh()
+  api.set({ sheet: { kind: 'mark-wrong', id: 'a1', text: '' } })
+  reply = () => ({ ok: false, status: 500, json: async () => ({}) })
+  assert.equal(await need('confirmMarkWrong')(it, 'Use main'), false)
+  assert.equal(calls.length, 1)
+  assert.equal(api.state.sheet.kind, 'mark-wrong', 'the sheet (and the text typed in it) stays')
+  fresh()
+  assert.equal(await need('confirmMarkWrong')(it, '   '), false, 'blank text is never sent')
+  assert.equal(calls.length, 0)
 })
 
-test('AiReview: a failed send keeps the correction box and its text', async () => {
+test('the Mark wrong text is never written to state.sheet while typing: it lives in the sheet component', () => {
   fresh()
   const it = aiItem({ type: 'completed' }, { seen: true })
-  api.set({ aiCorrection: { a1: 'Use main' } })
-  reply = () => ({ ok: false, status: 500, json: async () => ({}) })
-  press(draw('AiReview', { item: it }), /Send/)
-  await tick()
-  assert.equal(api.state.aiCorrection.a1, 'Use main')
+  press(draw('AiReview', { item: it }), /Mark wrong/)
+  assert.deepEqual({ ...api.state.sheet }, { kind: 'mark-wrong', id: 'a1', text: '' })
+  const sheet = must(walk(draw('AiReview', { item: it })).find((n) => n.type === 'MarkWrongSheet'), 'the sheet component')
+  assert.equal(sheet.props.item.id, 'a1')
+  assert.deepEqual(Object.keys(sheet.props).sort(), ['item'], 'no text prop: the sheet owns it')
 })
 
-test('AiReview: only a question or permission correction says the answer cannot be unsent, and only while the box is open', () => {
-  fresh()
-  for (const [type, unsent] of [['question', true], ['permission', true], ['completed', false]]) {
-    const it = aiItem({ id: 'x-' + type, type }, { seen: true })
-    assert.doesNotMatch(textOf(draw('AiReview', { item: it })), /cannot be unsent/, type + ' with the box closed')
-    press(draw('AiReview', { item: it }), /Mark wrong/)
-    assert.equal(/cannot be unsent/.test(textOf(draw('AiReview', { item: it }))), unsent, type)
-  }
-})
-
-test('AiReview: Overrule rule offers observe and off, each posting overrule-rule with its mode', async () => {
+test('AiReview: the Overrule sheet offers observe and off, each posting overrule-rule with its mode and closing the sheet', async () => {
   fresh()
   const it = aiItem({}, { seen: true })
-  assert.equal(btn(draw('AiReview', { item: it }), /Set rule to observe/), undefined, 'the choices wait for a click')
+  assert.equal(sheetBtn(draw('AiReview', { item: it }), /Set rule to observe/), undefined, 'the choices wait for the sheet')
   press(draw('AiReview', { item: it }), /Overrule rule/)
-  assert.equal(api.state.aiOverrule.a1, true)
-  press(draw('AiReview', { item: it }), /Set rule to observe/)
+  press(dialog(draw('AiReview', { item: it })), /Set rule to observe/)
   await tick()
-  assert.equal(api.state.aiOverrule.a1, undefined, 'a successful review closes the choices')
+  assert.equal(api.state.sheet, null, 'a successful review closes the sheet')
   press(draw('AiReview', { item: it }), /Overrule rule/)
-  press(draw('AiReview', { item: it }), /Set rule to off/)
+  press(dialog(draw('AiReview', { item: it })), /Set rule to off/)
   await tick()
   assert.deepEqual(calls.map((c) => c[1]), [{ id: 'a1', review: 'overrule-rule', mode: 'observe' }, { id: 'a1', review: 'overrule-rule', mode: 'off' }])
   for (const c of calls) assert.match(c[0], URL_REVIEW)
 })
 
-test('AiReview: while busy every button is disabled, including Send and the rule choices', () => {
+test('AiReview: Cancel closes the Overrule sheet and a failed overrule keeps it open', async () => {
   fresh()
-  const it = aiItem({ type: 'completed' }, { seen: true })
-  api.set({ busy: { a1: true }, aiCorrection: { a1: 'text' }, aiOverrule: { a1: true } })
-  const tree = draw('AiReview', { item: it })
-  for (const re of [/Looks right/, /Mark wrong/, /Overrule rule/, /Send/, /Set rule to observe/, /Set rule to off/]) assert.equal(must(btn(tree, re), 'button ' + re).props.disabled, true, String(re))
+  const it = aiItem({}, { seen: true })
+  api.set({ sheet: { kind: 'overrule', id: 'a1', text: '' } })
+  press(dialog(draw('AiReview', { item: it })), /Cancel/)
+  assert.equal(api.state.sheet, null)
+  api.set({ sheet: { kind: 'overrule', id: 'a1', text: '' } })
+  reply = () => ({ ok: false, status: 500, json: async () => ({}) })
+  press(dialog(draw('AiReview', { item: it })), /Set rule to off/)
+  await tick()
+  assert.equal(api.state.sheet.kind, 'overrule')
 })
 
+test('AiReview: while busy every button is disabled, including the sheet confirm buttons', () => {
+  fresh()
+  const it = aiItem({ type: 'completed' }, { seen: true })
+  api.set({ busy: { a1: true } })
+  for (const re of [/Looks right/, /Mark wrong/, /Overrule rule/]) assert.equal(must(btn(draw('AiReview', { item: it }), re), 'button ' + re).props.disabled, true, String(re))
+  api.set({ sheet: { kind: 'overrule', id: 'a1', text: '' } })
+  for (const re of [/Set rule to observe/, /Set rule to off/]) assert.equal(must(sheetBtn(draw('AiReview', { item: it }), re), String(re)).props.disabled, true, String(re))
+})
+
+test('AiReview: an error of the item shows inside the Overrule sheet (it covers the card)', () => {
+  fresh()
+  api.set({ errors: { a1: 'Could not send' }, sheet: { kind: 'overrule', id: 'a1', text: '' } })
+  assert.match(textOf(dialog(draw('AiReview', { item: aiItem({ type: 'completed' }, { seen: true }) }))), /Could not send/)
+})
 test('Reopen stays in the item view for an AI-resolved done or paused item, never for a question or permission', () => {
   const r = (type) => ({ type, status: 'resolved', resolution: { kind: 'ai-resolved' } })
   assert.equal(core.isReopenable(r('completed')), true)
@@ -324,48 +307,7 @@ test('Reopen stays in the item view for an AI-resolved done or paused item, neve
   assert.equal(core.isReopenable(r('question')), false)
   assert.equal(core.isReopenable(r('permission')), false)
   assert.match(between('function ItemView', 'export function App'), /c\.isReopenable\(item\)/)
-  assert.doesNotMatch(between('function AiReview', 'function AiHandledBanner'), /Reopen/, 'AiReview leaves Reopen to the item view')
-})
-
-// ---- 5. the AI handled banner --------------------------------------------------------------------------------------------------------
-
-test('AiHandledBanner: nothing at zero, "AI handled N" with the count otherwise', () => {
-  fresh()
-  assert.equal(draw('AiHandledBanner', { count: 0 }), null)
-  const b = must(walk(draw('AiHandledBanner', { count: 3 })).filter((n) => n.props && 'data-ai-handled' in n.props)[0], 'the banner')
-  assert.match(textOf(b), /AI handled 3/)
-})
-
-test('AiHandledBanner: tapping it sets filter.resolvedBy to ai (resetting type and query) and opens the Resolved view', () => {
-  fresh()
-  api.set({ filter: { type: 'permission', query: 'ls', resolvedBy: 'all' } })
-  const tree = draw('AiHandledBanner', { count: 2 })
-  const target = must(walk(tree).find((n) => n.props && typeof n.props.onClick === 'function'), 'a tappable element')
-  target.props.onClick()
-  assert.deepEqual({ ...api.state.filter }, { type: 'all', query: '', resolvedBy: 'ai' })
-  assert.match(globalThis.location.hash, /^#?\/resolved$/)
-})
-
-test('the waiting list shows the banner from the unseen count and the Resolved list does not', () => {
-  assert.match(between('function WaitingList', 'function HeldList'), /<\$\{AiHandledBanner\} count=\$\{model\.aiUnseen\} \/>/)
-  assert.doesNotMatch(between('function ResolvedList', 'function NewTodoView'), /AiHandledBanner/)
-})
-
-// ---- 6. nothing of this is saved -----------------------------------------------------------------------------------------------------
-
-test('the correction text, the rule choices and the seen marks are kept in memory only: nothing about them reaches storage', async () => {
-  fresh()
-  stored.length = 0
-  const it = aiItem({ id: 'mem-1', type: 'completed' })
-  press(draw('AiReview', { item: it }), /Mark wrong/)
-  must(walk(draw('AiReview', { item: it })).filter(attr('data-ai-correction', 'mem-1'))[0], 'the box').props.onInput({ target: { value: 'secret correction' } })
-  press(draw('AiReview', { item: it }), /Overrule rule/)
-  await need('markAiSeen', api)(it)
-  await tick()
-  assert.equal(api.state.aiCorrection['mem-1'], 'secret correction')
-  for (const [k, v] of stored) {
-    assert.doesNotMatch(k + ' ' + v, /secret correction|aiCorrection|aiOverrule|mem-1/, 'storage write ' + k)
-  }
+  assert.doesNotMatch(between('export function AiReview', '// ---- screens'), /Reopen/, 'AiReview leaves Reopen to the item view')
 })
 
 test('AiReview: Mark wrong is hidden on a paused item and on an item without a session; Looks right and Overrule rule stay', () => {
@@ -377,54 +319,30 @@ test('AiReview: Mark wrong is hidden on a paused item and on an item without a s
   }
 })
 
+// ---- 5. the AI handled banner is gone ---------------------------------------------------------------------------------------------------
 
-// ---- RED: a successful review closes aiOverrule too ------------------------------------------------------------------------------------
-
-test('AiReview: a successful review (Looks right, Overrule rule, Mark wrong + Send) closes aiOverrule for the item; a failure keeps it open', async () => {
-  for (const how of ['agreed', 'overrule', 'mark-wrong']) {
-    for (const ok of [true, false]) {
-      fresh()
-      reply = () => ({ ok, status: ok ? 200 : 500, json: async () => ({ ok }) })
-      const it = aiItem({ type: 'completed' }, { seen: true })
-      api.set({ aiOverrule: { a1: true, other: true }, aiCorrection: how === 'mark-wrong' ? { a1: 'Use main' } : {} })
-      if (how === 'agreed') press(draw('AiReview', { item: it }), /Looks right/)
-      if (how === 'overrule') press(draw('AiReview', { item: it }), /Set rule to observe/)
-      if (how === 'mark-wrong') press(draw('AiReview', { item: it }), /Send/)
-      await tick()
-      assert.equal('a1' in api.state.aiOverrule, !ok, how + (ok ? ': closed on success' : ': kept on failure'))
-      assert.equal(api.state.aiOverrule.other, true, how + ': another item keeps its choices')
-    }
-  }
+test('there is no "AI handled N" banner: no component, no data-ai-handled button; the Resolved nav badge and the By AI tab carry the count', () => {
+  assert.equal(views.AiHandledBanner, undefined)
+  assert.equal(views.ResolvedByRow, undefined)
+  assert.doesNotMatch(viewsSource, /AiHandledBanner|ai-handled|data-ai-handled|AI handled/)
 })
 
-test('AiReview source: the success path closes aiOverrule through closeKey', () => {
-  assert.match(between('export function AiReview', 'export function AiHandledBanner'), /closeKey\(\s*'aiOverrule'\s*,\s*id\s*\)/)
-})
+// ---- 6. nothing of this is saved -----------------------------------------------------------------------------------------------------
 
-test('AiReview: a successful review also closes aiCorrection for the item (Looks right, Overrule rule, Mark wrong + Send); a failure keeps both', async () => {
-  for (const how of ['agreed', 'overrule', 'mark-wrong']) {
-    for (const ok of [true, false]) {
-      fresh()
-      reply = () => ({ ok, status: ok ? 200 : 500, json: async () => ({ ok }) })
-      const it = aiItem({ type: 'completed' }, { seen: true })
-      api.set({ aiOverrule: { a1: true, other: true }, aiCorrection: { a1: 'Use main', other: 'keep me' } })
-      if (how === 'agreed') press(draw('AiReview', { item: it }), /Looks right/)
-      if (how === 'overrule') press(draw('AiReview', { item: it }), /Set rule to observe/)
-      if (how === 'mark-wrong') press(draw('AiReview', { item: it }), /Send/)
-      await tick()
-      assert.equal('a1' in api.state.aiOverrule, !ok, how + ': aiOverrule[a1] ' + (ok ? 'closed' : 'kept'))
-      assert.equal('a1' in api.state.aiCorrection, !ok, how + ': aiCorrection[a1] ' + (ok ? 'closed' : 'kept'))
-      if (!ok) assert.equal(api.state.aiCorrection.a1, 'Use main', how + ': the open box keeps its text')
-      assert.equal(api.state.aiOverrule.other, true, how + ': another item keeps its choices')
-      assert.equal(api.state.aiCorrection.other, 'keep me', how + ': another item keeps its correction text')
-    }
-  }
-})
-
-test('AiHandledBanner: tapping it also resets type to all and query to empty', () => {
+test('the open sheet and the seen marks are kept in memory only: nothing about them reaches storage', async () => {
   fresh()
-  api.set({ filter: { type: 'permission', query: 'ls', resolvedBy: 'me' } })
-  const tree = draw('AiHandledBanner', { count: 2 })
-  must(walk(tree).find((n) => n.props && typeof n.props.onClick === 'function'), 'a tappable element').props.onClick()
-  assert.deepEqual({ ...api.state.filter }, { type: 'all', query: '', resolvedBy: 'ai' })
+  stored.length = 0
+  const it = aiItem({ id: 'mem-1', type: 'completed' })
+  press(draw('AiReview', { item: it }), /Mark wrong/)
+  await need('markAiSeen', api)(it)
+  await tick()
+  assert.equal(api.state.sheet.id, 'mem-1')
+  for (const [k, v] of stored) {
+    assert.doesNotMatch(k + ' ' + v, /sheet|mem-1/, 'storage write ' + k)
+  }
+})
+
+test('AiReview source: the success path closes the sheet, and no inline-form state is left in the views', () => {
+  assert.match(between('export function AiReview', '// ---- screens'), /set\(\{ sheet: null \}\)/)
+  assert.doesNotMatch(viewsSource, /aiCorrection|aiOverrule|closeKey/)
 })

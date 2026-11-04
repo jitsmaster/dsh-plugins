@@ -19,22 +19,37 @@ const aiItem = (over = {}) => ({ id: 'a' + Math.random(), type: 'permission', st
 const myItem = () => ({ id: 'm' + Math.random(), type: 'permission', status: 'resolved', title: 'me', createdAt: 1, resolution: { kind: 'approved', by: 'card' } })
 const openItem = () => ({ id: 'o' + Math.random(), type: 'permission', status: 'open', title: 'open', createdAt: 1, payload: {} })
 
-test('listModel offers the Resolved by chips, All on by default', () => {
+test('listModel offers the Resolved by tabs (All / By me / By AI), All on by default', () => {
   const m = listModel(core, { open: [], resolved: [] }, { type: 'all', query: '' })
-  assert.deepEqual(m.resolvedChips.map((c) => ({ ...c })), [
+  assert.deepEqual(m.resolvedTabs.map((c) => ({ value: c.value, label: c.label, on: c.on })), [
     { value: 'all', label: 'All', on: true },
-    { value: 'me', label: 'Me', on: false },
-    { value: 'ai', label: 'AI', on: false },
+    { value: 'me', label: 'By me', on: false },
+    { value: 'ai', label: 'By AI', on: false },
   ])
 })
 
-test('the chip of the active resolvedBy filter is on; an unknown value turns none on', () => {
-  const on = (resolvedBy) => listModel(core, { open: [], resolved: [] }, { type: 'all', query: '', resolvedBy }).resolvedChips.filter((c) => c.on).map((c) => c.value)
+test('the Resolved tabs carry counts; the AI tab counts all AI items and adds an unseen (hot) pill while any exist', () => {
+  const resolved = [aiItem(), aiItem(), aiItem({ seen: true }), myItem()]
+  const m = listModel(core, { open: [], resolved }, { type: 'all', query: '' })
+  assert.deepEqual(m.resolvedTabs.map((c) => [c.value, c.count, c.hot]), [['all', 4, false], ['me', 1, false], ['ai', 3, true]])
+  assert.equal(m.resolvedTabs[2].countText, '2 new')
+  const seen = listModel(core, { open: [], resolved: [aiItem({ seen: true }), myItem()] }, { type: 'all', query: '' })
+  assert.deepEqual(seen.resolvedTabs.map((c) => [c.value, c.count, c.hot]), [['all', 2, false], ['me', 1, false], ['ai', 1, false]])
+})
+
+test('the Resolved tab counts follow the type filter and the search, like the list under them', () => {
+  const resolved = [aiItem({ seen: true }), myItem(), { ...myItem(), type: 'question' }]
+  const m = listModel(core, { open: [], resolved }, { type: 'all', resolvedType: 'permission', query: '' })
+  assert.deepEqual(m.resolvedTabs.map((c) => [c.value, c.count]), [['all', 2], ['me', 1], ['ai', 1]])
+})
+
+test('the tab of the active resolvedBy filter is on; an unknown value turns none on', () => {
+  const on = (resolvedBy) => listModel(core, { open: [], resolved: [] }, { type: 'all', query: '', resolvedBy }).resolvedTabs.filter((c) => c.on).map((c) => c.value)
   assert.deepEqual(on('ai'), ['ai'])
   assert.deepEqual(on('me'), ['me'])
   assert.deepEqual(on('all'), ['all'])
   assert.deepEqual(on(undefined), ['all'])
-  assert.deepEqual(on('bogus'), [], 'the chips only say what is set; the filter treats an unknown value as All')
+  assert.deepEqual(on('bogus'), [], 'the tabs only say what is set; the filter treats an unknown value as All')
 })
 
 test('listModel counts the AI-resolved items nobody has seen or reviewed', () => {
@@ -61,15 +76,10 @@ test('the resolved list follows the resolvedBy filter, and the open list is left
   assert.equal(by('ai').resolvedCount, 2)
 })
 
-test('the filter bar shows for the AI filter and for any AI-resolved item', () => {
-  assert.equal(listModel(core, { open: [], resolved: [myItem()] }, { type: 'all', query: '', resolvedBy: 'ai' }).barVisible, true)
-  assert.equal(listModel(core, { open: [], resolved: [aiItem()] }, { type: 'all', query: '' }).barVisible, true)
-  assert.equal(listModel(core, { open: [], resolved: [myItem()] }, { type: 'all', query: '' }).barVisible, false)
-})
 
 test('the existing list model fields are unchanged', () => {
   const m = listModel(core, { open: [openItem()], resolved: [myItem()] }, { type: 'all', query: '' })
-  for (const k of ['waiting', 'paused', 'held', 'heldOpen', 'sessions', 'open', 'resolved', 'resolvedCount', 'barVisible', 'chips']) assert.ok(k in m, k)
+  for (const k of ['waiting', 'paused', 'held', 'heldOpen', 'sessions', 'open', 'resolved', 'resolvedCount', 'chips']) assert.ok(k in m, k)
   assert.equal(m.chips.length, core.FILTER_TYPES.length)
   assert.equal(m.resolvedCount, 1)
 })

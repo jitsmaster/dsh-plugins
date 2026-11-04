@@ -57,10 +57,11 @@ test('views.js imports the dictation and todo-form modules and uses them', () =>
   assert.match(views, /import\s*\{[^}]*\bloadWorkspaces\b[^}]*\}\s*from\s*['"]\.\/api\.js['"]/)
 })
 
-test('the Waiting screen has a "+ New todo" link to #/new', () => {
-  const waiting = body(views, 'WaitingList')
+test('the Waiting screen has a "+ New todo" floating link to #/new (the fab, not a button)', () => {
+  const waiting = body(views, 'WaitingBody') + body(views, 'NewTodoFab')
   assert.match(waiting, /href="#\/new"/)
   assert.match(waiting, /\+ New todo/)
+  assert.doesNotMatch(waiting, /<button[^>]*>\s*\+ New todo/)
 })
 
 test('the App handles the #/new route with the new-todo screen, and keeps Waiting highlighted in the nav', () => {

@@ -5,7 +5,7 @@ import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { backHref, heldView, listModel, pausedNote, pausedView, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
+import { backHref, cardError, heldView, listModel, markWrongView, navCounts, nextTabIndex, pausedNote, pausedView, resolvedNavLabel, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
@@ -27,7 +27,8 @@ export function useStore() {
 export function useRoute() {
   const read = () => location.hash.replace(/^#/, '') || '/'
   const [route, setRoute] = useState(read())
-  useEffect(() => { const f = () => setRoute(read()); window.addEventListener('hashchange', f); return () => window.removeEventListener('hashchange', f) }, [])
+  // A sheet belongs to the screen it was opened on: moving to another screen closes it.
+  useEffect(() => { const f = () => { if (state.sheet) set({ sheet: null }); setRoute(read()) }; window.addEventListener('hashchange', f); return () => window.removeEventListener('hashchange', f) }, [])
   return route
 }
 const go = (path) => { location.hash = path }
@@ -90,15 +91,43 @@ export function HoldButton({ label, onDone, disabled }) {
 }
 
 /** Bottom sheet: what is about to happen, in full, and a confirm button (a risky action asks for a hold instead of a tap). */
-function Sheet({ title, lines = [], mono, risks = [], confirmLabel, hold, onConfirm, onCancel }) {
+const FOCUSABLE = 'button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[href],[tabindex]:not([tabindex="-1"])'
+let sheetOpener = null
+/** The ref of every sheet (one stable function, so it runs only when a sheet appears or goes): the focus moves to its first control, and back to what had it when the sheet closes. */
+function sheetRef(node) {
+  if (node) {
+    sheetOpener = document.activeElement
+    const first = node.querySelectorAll(FOCUSABLE)[0]
+    if (first && first.focus) first.focus()
+  } else {
+    const back = sheetOpener
+    sheetOpener = null
+    if (back && back.focus) back.focus()
+  }
+}
+/** Keeps Tab inside the sheet (it is modal); Esc cancels it. */
+function sheetKey(e, onCancel) {
+  if (e.key === 'Escape') { e.preventDefault(); onCancel(); return }
+  if (e.key !== 'Tab' || !e.currentTarget || !e.currentTarget.querySelectorAll) return
+  const root = e.currentTarget
+  const list = Array.from(root.querySelectorAll(FOCUSABLE))
+  if (!list.length) { e.preventDefault(); return }
+  const a = document.activeElement
+  const outside = !a || !root.contains(a)
+  if (e.shiftKey ? (outside || a === list[0]) : (outside || a === list[list.length - 1])) { e.preventDefault(); list[e.shiftKey ? list.length - 1 : 0].focus() }
+}
+export function Sheet({ title, lines = [], mono, risks = [], confirmLabel, hold, onConfirm, onCancel, children, confirmDisabled, choices, error }) {
   return html`<div class="scrim" onClick=${(e) => { if (e.target === e.currentTarget) onCancel() }}>
-    <div class="sheet" role="dialog" aria-modal="true" aria-label=${title}>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label=${title} ref=${sheetRef} onKeyDown=${(e) => sheetKey(e, onCancel)}>
       <h3>${title}</h3>
       ${risks.length ? html`<div class="risks">${risks.map((r) => html`<span class="risk">⚠ ${r.label}</span>`)}</div>` : null}
       ${lines.map((l) => html`<div class="sub">${l}</div>`)}
       ${mono ? html`<pre class="mono">${mono}</pre>` : null}
+      ${children || null}
+      ${error ? html`<div class="err" role="alert">${error}</div>` : null}
       <div class="row">
-        ${hold ? html`<${HoldButton} label=${'Hold to ' + confirmLabel.toLowerCase()} onDone=${onConfirm} />` : html`<button class="btn pri" onClick=${onConfirm}>${confirmLabel}</button>`}
+        ${choices ? choices.map((c, i) => html`<button key=${c.label} class=${'btn' + (i === 0 ? ' pri' : '')} disabled=${c.disabled} onClick=${c.onClick}>${c.label}</button>`)
+          : hold ? html`<${HoldButton} label=${'Hold to ' + confirmLabel.toLowerCase()} onDone=${onConfirm} />` : html`<button class="btn pri" disabled=${confirmDisabled} onClick=${onConfirm}>${confirmLabel}</button>`}
         <button class="btn" onClick=${onCancel}>Cancel</button>
       </div>
     </div></div>`
@@ -305,27 +334,39 @@ function PausedBody({ item }) {
   </div>`
 }
 
-/** Hold (Done and Paused cards): park the session in the On hold tab. The reason is optional; OnHoldButton sits in the row, OnHoldForm (the reason line) under it. */
-const holdOpen = new Set() // item ids whose reason line is open (survives a re-render of the card)
-function OnHoldButton({ item }) {
-  const st = useStore()
-  return html`<button class="btn" disabled=${st.busy[item.id] || holdOpen.has(item.id)} onClick=${() => { holdOpen.add(item.id); set({}) }}>Hold…</button>`
+/**
+ * Hold (Done and Paused cards): park the session in the On hold tab. The reason is optional. OnHoldButton (Hold…) sits in the row and opens the Hold sheet
+ * (state.sheet = { kind: 'hold', id, text: '' }; the reason itself is local to HoldSheet); OnHoldForm, under the row, draws that sheet. Hook-free: the card re-renders on every store change.
+ */
+/** Opens a bottom sheet for an item (state.sheet = { kind, id, text: '' }; typed text stays in the sheet's own component). An old error of the item is dropped: the sheet shows only what its own action says. */
+function openSheet(kind, id) {
+  set({ sheet: { kind, id, text: '' }, errors: { ...state.errors, [id]: undefined } })
 }
-function OnHoldForm({ item }) {
-  const st = useStore()
+export function OnHoldButton({ item }) {
+  return html`<button class="btn" disabled=${!!state.busy[item.id]} onClick=${() => openSheet('hold', item.id)}>Hold…</button>`
+}
+export function OnHoldForm({ item }) {
+  const sh = state.sheet
+  if (!sh || sh.kind !== 'hold' || sh.id !== item.id) return null
+  return html`<${HoldSheet} item=${item} />`
+}
+/** Hold… confirmed: posts the hold with the reason, closes the sheet and goes to the list. False (the sheet stays) when it failed. */
+export async function confirmHold(item, reason) {
+  if (!(await act('/v1/hold', { id: item.id, reason }, item.id))) return false
+  set({ sheet: null })
+  go('/')
+  return true
+}
+/** The Hold sheet. The reason is typed into this component's own state: a keystroke must not re-render every screen through the store. */
+export function HoldSheet({ item }) {
   const [reason, setReason] = useState('')
-  const busy = st.busy[item.id]
-  if (!holdOpen.has(item.id)) return null
-  const close = () => { holdOpen.delete(item.id); set({}) }
-  return html`<div class="holdbox" data-holdbox>
-    <input class="input" placeholder="Why? (optional, e.g. waiting for the customer)" maxlength="300" value=${reason} disabled=${busy} onInput=${(e) => setReason(e.target.value)} />
-    <div class="row">
-      <button class="btn pri" disabled=${busy} onClick=${async () => { if (await act('/v1/hold', { id: item.id, reason }, item.id)) { close(); go('/') } }}>${busy ? 'Holding…' : 'Put on hold'}</button>
-      <button class="btn" disabled=${busy} onClick=${close}>Cancel</button>
-    </div>
-  </div>`
+  const busy = !!state.busy[item.id]
+  return html`<${Sheet} title="Put this session on hold?" lines=${['It moves to the On hold tab until it can continue.']} confirmLabel=${busy ? 'Holding…' : 'Put on hold'} confirmDisabled=${busy}
+    error=${state.errors[item.id]} onConfirm=${() => confirmHold(item, reason)} onCancel=${() => set({ sheet: null })}>
+    <input class="input" placeholder="Why? (optional, e.g. waiting for the customer)" maxlength="300" aria-label="Reason (optional)" value=${reason} disabled=${busy}
+      onInput=${(e) => setReason(e.target.value)} />
+  <//>`
 }
-
 /** A session on hold: why, the ticket being watched and when it was last checked; Continue prompts the session now, Release takes it off hold. */
 function HeldBody({ item }) {
   const st = useStore()
@@ -425,7 +466,7 @@ function Conversation({ item, defaultOpen }) {
   return html`<details class="conversation" open=${open} onToggle=${(e) => rememberDetail(item.id, 'conversation', e.currentTarget.open, firstDefault)}>
     <summary>Conversation${n ? ' (' + n + (t.hasMore ? '+' : '') + ')' : ''}</summary>
     ${open ? html`<${ThreadView} item=${item} />` : null}
-    ${item.status === 'open' && item.type === 'completed' ? null : html`<${ArchiveSessionButton} item=${item} onDone=${() => go(backHref(item))} />`}
+    ${item.status === 'open' && item.type === 'completed' ? null : html`<${ArchiveSessionButton} item=${item} onDone=${() => go(backHref())} />`}
   </details>`
 }
 
@@ -443,7 +484,7 @@ function ArchiveSessionButton({ item, onDone, inline }) {
   const parts = html`<button class="btn" disabled=${busy} onClick=${() => setAsk(true)}>${busy ? 'Archiving…' : 'Archive session…'}</button>
     ${ask ? html`<${Sheet} title="Archive this session?" lines=${[item.sessionTitle || 'This session', 'Anything it is still running is stopped.']} confirmLabel="Archive"
       onConfirm=${async () => { setAsk(false); if (await act('/v1/archive-session', { id: item.id }, item.id) && onDone) onDone() }} onCancel=${() => setAsk(false)} />` : null}
-    ${st.errors[item.id] && !open ? html`<div class="err">${st.errors[item.id]}</div>` : null}`
+    ${cardError(st.sheet, item.id, st.errors[item.id]) && !open ? html`<div class="err">${st.errors[item.id]}</div>` : null}`
   // inline: the buttons go straight into the caller's action row (an open Done card); otherwise they get a row of their own.
   return inline ? parts : html`<div class="row">${parts}</div>`
 }
@@ -486,7 +527,7 @@ function Composer({ item }) {
   useLayoutEffect(() => autoGrow(box.current), [draft])
   const send = async () => { if (micHalt.current) micHalt.current(); buffer.current.flush(); await postFollowUp(id, state.replies[id] || '') }
   return html`<div class="composer">
-    ${st.errors[id] ? html`<div class="err" role="alert">${st.errors[id]}</div>` : null}
+    ${cardError(st.sheet, id, st.errors[id]) ? html`<div class="err" role="alert">${st.errors[id]}</div>` : null}
     <div class="composer-row">
       <textarea class="input composer-input" ref=${box} rows="1" placeholder="Message this session…" aria-label="Message to this session" value=${draft} readOnly=${busy}
         onInput=${(e) => setDraft(e.target.value)} onBlur=${flush}></textarea>
@@ -497,14 +538,6 @@ function Composer({ item }) {
 }
 
 // ---- AI-resolved items (hook-free: the screens that hold them re-render on every store change) -------------------------
-
-/** The "Resolved by" chips of the Resolved view; the AI chip carries the number of AI items nobody has looked at. */
-export function ResolvedByRow({ model }) {
-  const f = state.filter
-  return html`<div class="chips" role="group" aria-label="Resolved by"><span class="sub chips-label">Resolved by</span>
-    ${model.resolvedChips.map((c) => html`<button key=${c.value} class=${'fchip' + (c.on ? ' on' : '')} data-resolved-by=${c.value} aria-pressed=${c.on} onClick=${() => set({ filter: { ...f, resolvedBy: c.value } })}>${c.label + (c.value === 'ai' && model.aiUnseen > 0 ? ' (' + model.aiUnseen + ')' : '')}</button>`)}
-  </div>`
-}
 
 /** The small "AI" badge of a row the AI resolved. */
 export function AiBadge({ item }) {
@@ -521,43 +554,53 @@ export function AiDetail({ item }) {
   </div>`
 }
 
-const closeKey = (key, id) => { const m = { ...state[key] }; delete m[id]; set({ [key]: m }) }
+/** Posts a review of an AI decision and, when it went through, closes this item's sheet. False (the sheet stays) when it failed. */
+async function postReview(id, body) {
+  const ok = await act('/v1/triage-review', { id, ...body }, id)
+  if (ok && state.sheet && state.sheet.id === id) set({ sheet: null })
+  return ok
+}
+/** Mark wrong confirmed: sends the trimmed correction (never a blank one) and closes the sheet. False when nothing was sent or it failed. */
+export function confirmMarkWrong(item, text) {
+  const { correction } = markWrongView(item, text, false)
+  return correction ? postReview(item.id, { review: 'mark-wrong', text: correction }) : Promise.resolve(false)
+}
+/** The Mark wrong sheet. The correction is typed into this component's own state (like the Hold reason): a keystroke must not re-render every screen through the store. */
+export function MarkWrongSheet({ item }) {
+  const [text, setText] = useState('')
+  const view = markWrongView(item, text, !!state.busy[item.id])
+  return html`<${Sheet} title="Mark this decision wrong" lines=${['What should it have done? Your note is recorded for the rule.']} confirmLabel="Send correction"
+    confirmDisabled=${view.confirmDisabled} error=${state.errors[item.id]} onConfirm=${() => confirmMarkWrong(item, text)} onCancel=${() => set({ sheet: null })}>
+    <textarea class="input ta" data-ai-correction=${item.id} rows="3" placeholder="What should it have done?" value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
+    ${view.unsent ? html`<div class="sub">The answer already went to the session and cannot be unsent; your correction is recorded for the rule.</div>` : null}
+  <//>`
+}
 
-/** Review of an AI decision: agree, mark it wrong with a correction, or overrule the rule. Reopen is left to the item view. */
+/**
+ * Review of an AI decision: agree, mark it wrong with a correction, or overrule the rule. Mark wrong… and Overrule rule… open the bottom confirm sheet
+ * (state.sheet = { kind: 'mark-wrong' | 'overrule', id, text: '' }; the correction is local to MarkWrongSheet); the sheet's button is what posts. Reopen is left to the item view.
+ */
 export function AiReview({ item }) {
   const r = getCore().aiDetail(item) && item.resolution
   if (!r) return null
   const id = item.id
   const busy = !!state.busy[id]
-  const text = state.aiCorrection[id]
-  const marking = typeof text === 'string'
-  const review = async (body) => { const ok = await act('/v1/triage-review', { id, ...body }, id); if (ok) { closeKey('aiOverrule', id); closeKey('aiCorrection', id) } return ok }
+  const sh = state.sheet && state.sheet.id === id ? state.sheet : null
+  const open = (kind) => openSheet(kind, id)
+  const close = () => set({ sheet: null })
+  const review = (body) => postReview(id, body)
   const canMarkWrong = item.type !== 'paused' && typeof item.sessionId === 'string' && item.sessionId !== '' // the reply path refuses the others too
-  const cannotUnsend = item.type === 'question' || item.type === 'permission'
   return html`<div class="ai-review">
     <div class="row">
       ${!r.review ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => review({ review: 'agreed' })}>Looks right</button>` : null}
-      ${!r.review && canMarkWrong ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => set({ aiCorrection: { ...state.aiCorrection, [id]: marking ? text : '' } })}>Mark wrong…</button>` : null}
-      ${r.review !== 'overruled' ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => set({ aiOverrule: { ...state.aiOverrule, [id]: true } })}>Overrule rule</button>` : null}
+      ${!r.review && canMarkWrong ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => open('mark-wrong')}>Mark wrong…</button>` : null}
+      ${r.review !== 'overruled' ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => open('overrule')}>Overrule rule…</button>` : null}
     </div>
-    ${marking ? html`<div class="ai-correction">
-      <textarea class="input ta" data-ai-correction=${id} rows="2" placeholder="What should it have done?" value=${text} onInput=${(e) => set({ aiCorrection: { ...state.aiCorrection, [id]: e.target.value } })}></textarea>
-      ${cannotUnsend ? html`<div class="sub">The answer already went to the session and cannot be unsent; your correction is recorded for the rule.</div>` : null}
-      <div class="row"><button class="btn pri" type="button" disabled=${busy || !text.trim()} onClick=${() => review({ review: 'mark-wrong', text: text.trim() })}>Send</button></div>
-    </div>` : null}
-    ${state.aiOverrule[id] ? html`<div class="row">
-      <button class="btn" type="button" disabled=${busy} onClick=${() => review({ review: 'overrule-rule', mode: 'observe' })}>Set rule to observe</button>
-      <button class="btn" type="button" disabled=${busy} onClick=${() => review({ review: 'overrule-rule', mode: 'off' })}>Set rule to off</button>
-    </div>` : null}
+    ${sh && sh.kind === 'mark-wrong' ? html`<${MarkWrongSheet} item=${item} />` : null}
+    ${sh && sh.kind === 'overrule' ? html`<${Sheet} title="Overrule this rule?" lines=${['What should the rule do from now on?']} error=${state.errors[id]} onCancel=${close}
+      choices=${[{ label: 'Set rule to observe', disabled: busy, onClick: () => review({ review: 'overrule-rule', mode: 'observe' }) }, { label: 'Set rule to off', disabled: busy, onClick: () => review({ review: 'overrule-rule', mode: 'off' }) }]} />` : null}
   </div>`
 }
-
-/** "AI handled N" on the waiting list: tapping it shows those items in the Resolved view. */
-export function AiHandledBanner({ count }) {
-  if (!count) return null
-  return html`<button class="banner ai-handled" type="button" data-ai-handled onClick=${() => { set({ filter: { ...state.filter, type: 'all', query: '', resolvedBy: 'ai' } }); go('/resolved') }}>${'AI handled ' + count}</button>`
-}
-
 // ---- screens ----------------------------------------------------------------------------------------------------
 
 function ItemRow({ item }) {
@@ -570,29 +613,58 @@ function ItemRow({ item }) {
   </a>`
 }
 
-function FilterBar({ model }) {
-  const st = useStore()
-  const f = st.filter
-  return html`<div class="filter">
-    <div class="chips">${model.chips.map((c) => html`<button class=${'fchip' + (c.on ? ' on' : '')} aria-pressed=${c.on} onClick=${() => set({ filter: { ...f, type: c.type } })}>${c.label}</button>`)}</div>
-    <input class="input" type="search" placeholder="Search…" value=${f.query} onInput=${(e) => set({ filter: { ...f, query: e.target.value } })} />
+/**
+ * A row of tabs (role=tablist) for what is shown: the selected tab has aria-selected and is the only tab stop (roving tabindex); Left / Right / Home / End
+ * select and focus the neighbour. tabs: [{ key, label, count?, countText?, hot?, on }]. Hook-free.
+ */
+export function Tabs({ label, tabs, onSelect, disabled, idPrefix, panelId }) {
+  const keyDown = (i) => (e) => {
+    const next = nextTabIndex(i, tabs.length, e.key)
+    if (next < 0) return
+    e.preventDefault()
+    onSelect(tabs[next].key)
+    const row = e.currentTarget && e.currentTarget.parentElement
+    const nodes = row && row.querySelectorAll ? row.querySelectorAll('[role="tab"]') : []
+    const el = nodes[next]
+    if (el && el.focus) el.focus()
+  }
+  return html`<div class="tabs" role="tablist" aria-label=${label}>
+    ${tabs.map((t, i) => html`<button key=${t.key} type="button" role="tab" class="tab" id=${idPrefix ? idPrefix + '-' + t.key : undefined} aria-selected=${!!t.on} aria-controls=${panelId} tabIndex=${t.on ? 0 : -1}
+      disabled=${disabled} onClick=${() => onSelect(t.key)} onKeyDown=${keyDown(i)}>${t.label}${t.count !== undefined ? html` <span class="n">${t.count}</span>` : null}${t.countText ? html` <span class="n hot">${t.countText}</span>` : null}</button>`)}
   </div>`
 }
 
-function WaitingList() {
+/** The type tabs of the Waiting list (All, Permission, …) with counts; they set filter.type. */
+export function WaitingTabs({ model }) {
+  return html`<${Tabs} label="Type" idPrefix="wtab" panelId="wpanel" tabs=${model.tabs.map((t) => ({ key: t.type, label: t.label, count: t.count, on: t.on }))}
+    onSelect=${(type) => set({ filter: { ...state.filter, type } })} />`
+}
+
+/** "+ New todo": a floating action link above the bottom nav (a link: it moves to the new-todo screen). */
+export function NewTodoFab() {
+  return html`<a class="fab" href="#/new">+ New todo</a>`
+}
+
+/** The Waiting list: type tabs, search, the rows, and the floating "+ New todo" link. Takes the store (the wrapper below holds the hook). */
+export function WaitingBody({ st }) {
   const c = getCore()
-  const st = useStore()
   const all = st.snap ? st.snap.open : []
-  const model = listModel(c, st.snap, st.filter)
+  const f = st.filter
+  const model = listModel(c, st.snap, f)
   const shown = model.open
-  const note = pausedNote(model.paused)
-  return html`<div>
-    <div class="row todo-link"><a class="btn pri" href="#/new">+ New todo</a></div>
-    ${note ? html`<div class="banner paused-note" role="status">⏸ ${note} <button class="btn" type="button" onClick=${() => set({ filter: { ...st.filter, type: 'paused' } })}>Show</button></div>` : null}
-    <${AiHandledBanner} count=${model.aiUnseen} />
-    ${model.barVisible ? html`<${FilterBar} model=${model} />` : null}
-    ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
+  const note = f.type === 'paused' ? pausedNote(model.paused) : undefined // Paused is a tab now: the note is plain status text
+  return html`<div class="waiting">
+    <${WaitingTabs} model=${model} />
+    <input class="input" type="search" placeholder="Search…" value=${f.query} onInput=${(e) => set({ filter: { ...state.filter, query: e.target.value } })} />
+    <div id="wpanel" role="tabpanel" aria-labelledby=${'wtab-' + (f.type || 'all')}>
+      ${note ? html`<div class="sub paused-note" role="status">⏸ ${note}</div>` : null}
+      ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
+    </div>
+    <${NewTodoFab} />
   </div>`
+}
+function WaitingList() {
+  return html`<${WaitingBody} st=${useStore()} />`
 }
 
 /** The On hold tab (#/onhold): sessions parked until they can continue, with the search box of the other lists. */
@@ -606,22 +678,55 @@ function HeldList() {
   </div>`
 }
 
-function ResolvedList() {
+/** The Resolved list: All / By me / By AI tabs (the AI tab shows the unseen count), search with a native type select beside it, and the rows. */
+export function ResolvedBody({ st }) {
   const c = getCore()
-  const st = useStore()
   const all = st.snap ? st.snap.resolved : []
-  const model = listModel(c, st.snap, st.filter)
+  const f = st.filter
+  const model = listModel(c, st.snap, f)
   const shown = model.resolved
   return html`<div>
-    <${FilterBar} model=${model} />
-    <${ResolvedByRow} model=${model} />
-    ${shown.length ? shown.map((i) => html`<div class="resolved-row" key=${i.id}>
-      <a class="rowitem" href=${'#/item/' + i.id}>
-        <div class="top"><${Chip} type=${i.type} /><${AiBadge} item=${i} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
-        <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>
-      <${ArchiveSessionButton} item=${i} />
-    </div>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved recently.'}</div>`}
+    <${Tabs} label="Resolved by" idPrefix="rtab" panelId="rpanel" tabs=${model.resolvedTabs.map((t) => ({ key: t.value, label: t.label, count: t.count, countText: t.countText, hot: t.hot, on: t.on }))}
+      onSelect=${(resolvedBy) => set({ filter: { ...state.filter, resolvedBy } })} />
+    <div class="fl">
+      <input class="input" type="search" placeholder="Search…" value=${f.query} onInput=${(e) => set({ filter: { ...state.filter, query: e.target.value } })} />
+      <select class="input sel" aria-label="Type" value=${f.resolvedType || 'all'} onChange=${(e) => set({ filter: { ...state.filter, resolvedType: e.target.value } })}>
+        ${model.chips.map((o) => html`<option key=${o.type} value=${o.type}>${o.type === 'all' ? 'All types' : o.label}</option>`)}
+      </select>
+    </div>
+    <div id="rpanel" role="tabpanel" aria-labelledby=${'rtab-' + (f.resolvedBy || 'all')}>
+      ${shown.length ? shown.map((i) => html`<div class="resolved-row" key=${i.id}>
+        <a class="rowitem" href=${'#/item/' + i.id}>
+          <div class="top"><${Chip} type=${i.type} /><${AiBadge} item=${i} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
+          <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>
+        <${ArchiveSessionButton} item=${i} />
+      </div>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved recently.'}</div>`}
+    </div>
   </div>`
+}
+function ResolvedList() {
+  return html`<${ResolvedBody} st=${useStore()} />`
+}
+
+/** The New session | Follow up tabs at the top of the new-todo form. */
+export function TodoKindTabs({ follow, disabled, onSelect }) {
+  return html`<${Tabs} label="Kind of todo" disabled=${disabled} onSelect=${onSelect} tabs=${[{ key: 'new', label: 'New session', on: !follow }, { key: 'followup', label: 'Follow up', on: !!follow }]} />`
+}
+
+/** The app-bar back arrow (a link: it moves back to the list). */
+export function BackLink({ href }) {
+  return html`<a class="back" href=${href} aria-label="Back">←</a>`
+}
+
+/** The bottom nav: the four primary views, always; count badges, the Resolved one in the accent colour with the number of AI-resolved items nobody has looked at, else dim with the total. */
+export function BottomNav({ tab, inItem, model }) {
+  const on = (name) => (tab === name && !inItem ? 'on' : '')
+  return html`<nav>
+    <a class=${on('waiting')} href="#/">Waiting${model.waiting ? html`<span class="badge">${model.waiting}</span>` : null}</a>
+    <a class=${on('onhold')} href="#/onhold">On hold${model.held ? html`<span class="badge dim">${model.held}</span>` : null}</a>
+    <a class=${on('resolved')} href="#/resolved" aria-label=${resolvedNavLabel(model)} title=${resolvedNavLabel(model)}>Resolved${model.aiUnseen > 0 ? html`<span class="badge">${model.aiUnseen}</span>` : model.resolvedCount ? html`<span class="badge dim">${model.resolvedCount}</span>` : null}</a>
+    <a class=${on('settings')} href="#/settings">Settings</a>
+  </nav>`
 }
 
 /** The "+ New todo" screen (#/new): same flow as the desktop form. The draft lives in state, so it survives a trip to another screen. */
@@ -647,10 +752,7 @@ function NewTodoView() {
   }
   return html`<form class="card newtodo" onSubmit=${(e) => e.preventDefault()}>
     <h2>New todo</h2>
-    <div class="chips" role="group" aria-label="Kind of todo">
-      ${[['new', 'New session'], ['followup', 'Follow up']].map(([mode, label]) => html`<button key=${mode} type="button" class=${'fchip' + (follow === (mode === 'followup') ? ' on' : '')} aria-pressed=${follow === (mode === 'followup')} disabled=${busy}
-        onClick=${() => { setMessage(null); edit((d) => withTodoMode(d, mode)) }}>${label}</button>`)}
-    </div>
+    <${TodoKindTabs} follow=${follow} disabled=${busy} onSelect=${(mode) => { setMessage(null); edit((d) => withTodoMode(d, mode)) }} />
     <textarea class="input ta" placeholder=${follow ? FOLLOWUP_TEXT_PLACEHOLDER : 'What should the new session do?'} maxlength=${TODO_MAX} value=${draft.text} disabled=${busy}
       onInput=${(e) => edit({ text: e.target.value })}></textarea>
     <div class="row"><${Mic} text=${draft.text} disabled=${busy} onText=${(t) => edit({ text: t })} /></div>
@@ -677,7 +779,6 @@ function NewTodoView() {
     ${message ? html`<div class="err">${message}</div>` : null}
     <div class="row">
       <button class="btn pri" type="button" disabled=${busy || !draft.text.trim() || (follow && !draft.followUp)} onClick=${start}>${busy ? 'Starting…' : follow ? 'Add follow-up' : 'Start todo'}</button>
-      <a class="btn" href="#/">Back</a>
     </div>
   </form>`
 }
@@ -689,7 +790,7 @@ function ItemView({ id }) {
   const resolved = !open && st.snap && st.snap.resolved.find((i) => i.id === id)
   const item = open || resolved
   useEffect(() => { if (resolved) markAiSeen(resolved) }, [id, !!resolved]) // viewing an unseen AI-resolved item tells the server once (markAiSeen skips the rest)
-  if (!item) return html`<div class="empty">${st.snap ? 'That item is no longer here.' : 'Loading…'}<div class="row"><a class="btn" href="#/">Back to the list</a></div></div>`
+  if (!item) return html`<div class="empty">${st.snap ? 'That item is no longer here.' : 'Loading…'}</div>`
   const late = resolved && item.type === 'question' && item.resolution && item.resolution.kind === 'expired'
   const lateDefault = false // the late answer starts closed until the user chooses
   const Body = item.type === 'question' ? QuestionBody : item.type === 'permission' ? PermissionBody : item.type === 'pr-merged' ? PrMergedBody : item.type === 'archive' ? ArchiveBody : item.type === 'todo' ? TodoBody : item.type === 'paused' ? PausedBody : item.type === 'onhold' ? HeldBody : CompletedBody
@@ -708,8 +809,8 @@ function ItemView({ id }) {
       ${c.isReopenable(item) ? html`<div class="row"><button class="btn" disabled=${st.busy[item.id]} onClick=${async () => { if (await act('/v1/reopen', { id: item.id }, item.id)) go('/') }}>Reopen</button></div>` : null}
     </div>`}
     ${chat ? html`<${Conversation} key=${item.id} item=${item} defaultOpen=${!!resolved || item.type === 'completed'} />` : null}
-    ${st.errors[item.id] && !writable ? html`<div class="err">${st.errors[item.id]}</div>` : null}
-    <div class="row"><${ReadAloud} item=${item} /><a class="btn" href=${backHref(item)}>Back</a></div>
+    ${cardError(st.sheet, item.id, st.errors[item.id]) && !writable ? html`<div class="err">${st.errors[item.id]}</div>` : null}
+    <div class="row"><${ReadAloud} item=${item} /></div>
     ${writable ? html`<${Composer} key=${item.id} item=${item} />` : null}
   </article>`
 }
@@ -732,24 +833,19 @@ export function App() {
   const item = /^\/item\/(.+)$/.exec(route)
   const isNew = route === '/new'
   const tab = route === '/resolved' ? 'resolved' : route === '/settings' ? 'settings' : route === '/onhold' ? 'onhold' : 'waiting'
-  const model = listModel(getCore(), st.snap, st.filter)
+  const model = navCounts(getCore(), st.snap) // the shell needs the counts only; each screen builds its own lists
   const count = model.waiting
   const guard = viewIssue({ userAgent: navigator.userAgent, innerWidth: window.innerWidth, maxTouchPoints: navigator.maxTouchPoints })
   // iPhone in a Safari tab: say once how to install the Home Screen app (the only place push works on iOS).
   const install = hintGone ? null : installHint(platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, standalone: isStandalone(window) }))
   return html`<div class="app">
-    <header><h1>Coding Boss Review Queue</h1><div class="counts"><span class="count">${count} waiting${model.paused ? html` · <span class="paused-count">⏸ ${model.paused} paused</span>` : null}</span><span class="count sessions" title=${getCore().sessionsTitle}>${model.sessions}</span></div></header>
+    <header>${item || isNew ? html`<${BackLink} href=${backHref()} />` : null}<h1>Coding Boss Review Queue</h1><div class="counts"><span class="count">${count} waiting${model.paused ? html` · <span class="paused-count">⏸ ${model.paused} paused</span>` : null}</span><span class="count sessions" title=${getCore().sessionsTitle}>${model.sessions}</span></div></header>
     ${guard ? html`<div class="banner view-guard">${guard.message}</div>` : null}
     ${install ? html`<div class="banner install-hint">${install} <button class="btn" type="button" onClick=${() => { dismissInstallHint(); setHintGone(true) }}>Dismiss</button></div>` : null}
     ${st.error ? html`<div class="banner">${st.error}</div>` : null}
     <main>
       ${item ? html`<${ItemView} id=${decodeURIComponent(item[1])} />` : isNew ? html`<${NewTodoView} />` : tab === 'resolved' ? html`<${ResolvedList} />` : tab === 'onhold' ? html`<${HeldList} />` : tab === 'settings' ? html`<${SettingsView} />` : html`<${WaitingList} />`}
     </main>
-    <nav>
-      <a class=${tab === 'waiting' && !item ? 'on' : ''} href="#/">Waiting${count ? html`<span class="badge">${count}</span>` : null}</a>
-      ${model.held || tab === 'onhold' ? html`<a class=${tab === 'onhold' && !item ? 'on' : ''} href="#/onhold">On hold${model.held ? html`<span class="badge dim">${model.held}</span>` : null}</a>` : null}
-      <a class=${tab === 'resolved' && !item ? 'on' : ''} href="#/resolved">Resolved${model.resolvedCount ? html`<span class="badge dim">${model.resolvedCount}</span>` : null}</a>
-      <a class=${tab === 'settings' && !item ? 'on' : ''} href="#/settings">Settings</a>
-    </nav>
+    <${BottomNav} tab=${tab} inItem=${!!item} model=${model} />
   </div>`
 }

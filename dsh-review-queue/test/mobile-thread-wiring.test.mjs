@@ -81,7 +81,7 @@ test('switching from one item to another in place resets the conversation: the s
 
 test('the composer is the last thing of the card, so it can stick to the bottom of the screen', () => {
   const v = body(views, 'ItemView')
-  assert.ok(v.indexOf('<${Composer}') > v.indexOf('Back'), 'after the Back row')
+  assert.ok(v.indexOf('<${Composer}') > v.indexOf('<${ReadAloud}'), 'after the Read aloud row')
   assert.ok(v.indexOf('<${Composer}') > v.indexOf('<${Conversation}'))
   assert.match(v.slice(v.indexOf('<${Composer}')), /^[^]*<\/article>/)
 })

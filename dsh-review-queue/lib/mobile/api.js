@@ -7,7 +7,7 @@
 import { TOKEN_KEY, authFailureText, hubBase, isAuthFailure, pairBody, pairErrorText, withAuth } from './auth.js'
 import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
-import { pollWaitMs, todoConfirmBody } from './model.js'
+import { pollWaitMs, sheetGone, todoConfirmBody } from './model.js'
 import { bindDraftFlush, dropStaleEffort, dropStaleWorkspace, emptyTodoDraft, loadTodoDraft, saveTodoDraft } from './todo-form.js'
 import { detailOpen, loadToggles, pruneToggles, saveToggles, setDetail } from './toggles.js'
 import {
@@ -33,15 +33,15 @@ const storage = {
 
 export const state = {
   ready: false, snap: null, error: null, auth: false, needsPairing: false, pairMessage: null, skew: 0,
-  drafts: {}, replies: {}, busy: {}, errors: {}, filter: { type: 'all', query: '', resolvedBy: 'all' }, version: 0,
+  drafts: {}, replies: {}, busy: {}, errors: {}, filter: { type: 'all', query: '', resolvedBy: 'all', resolvedType: 'all' }, version: 0,
   // The "+ New todo" form: the draft survives moving between screens, a reload and a crash (saved on every change, cleared after a successful start); the workspace dropdown's list.
   todoDraft: loadTodoDraft(storage), workspaces: null, workspacesError: null, efforts: null, followSessions: null, followSessionsError: null,
   // The chat thread of each session item that was opened: { messages, hasMore, cursor, loading, loadingEarlier, error, offline }.
   threads: {},
   // The open/closed choice of the details sections (conversation, full reply, late answer) per item: kept across screens, reloads and restarts (toggles.js).
   toggles: loadToggles(storage),
-  // AI-resolved review, in memory only: the correction text per item (the box is open while the key exists) and the items whose two rule choices show.
-  aiCorrection: {}, aiOverrule: {},
+  // The open bottom confirm sheet (Mark wrong…, Overrule rule, Hold…), in memory only: { kind: 'mark-wrong' | 'overrule' | 'hold', id, text } or null. One at a time; a screen change closes it.
+  sheet: null,
 }
 const listeners = new Set()
 export const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l) } }
@@ -64,7 +64,7 @@ function save() {
 function load() {
   const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
   try { const j = JSON.parse(storage.get(LS_SAVED) || 'null'); state.drafts = obj(j && j.drafts); state.replies = obj(j && j.replies) } catch { /* none */ }
-  try { const f = JSON.parse(storage.get(LS_FILTER) || 'null'); if (f && typeof f.type === 'string') state.filter = { type: f.type, query: typeof f.query === 'string' ? f.query : '', resolvedBy: ['all', 'me', 'ai'].includes(f.resolvedBy) ? f.resolvedBy : 'all' } } catch { /* none */ }
+  try { const f = JSON.parse(storage.get(LS_FILTER) || 'null'); if (f && typeof f.type === 'string') state.filter = { type: f.type, query: typeof f.query === 'string' ? f.query : '', resolvedBy: ['all', 'me', 'ai'].includes(f.resolvedBy) ? f.resolvedBy : 'all', resolvedType: typeof f.resolvedType === 'string' ? f.resolvedType : 'all' } } catch { /* none */ }
 }
 
 let current
@@ -126,7 +126,7 @@ async function pollLoop() {
       const kept = core.pruneSaved({ drafts: state.drafts, replies: state.replies }, body)
       const gone = Object.keys(state.drafts).some((k) => !(k in kept.drafts)) || Object.keys(state.replies).some((k) => !(k in kept.replies))
       const toggles = pruneToggles(state.toggles, body) // the choices of items that left the queue go; the same object when none did
-      set({ snap: body, error: null, auth: false, ready: true, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? kept : {}), ...(toggles !== state.toggles ? { toggles } : {}) })
+      set({ snap: body, error: null, auth: false, ready: true, skew: (body.serverNow || Date.now()) - Date.now(), ...(sheetGone(state.sheet, body) ? { sheet: null } : {}), ...(gone ? kept : {}), ...(toggles !== state.toggles ? { toggles } : {}) })
     } catch (e) {
       if (e && e.name === 'AbortError' && !timedOut) continue // the page woke up or came back online: ask again at once
       fails++

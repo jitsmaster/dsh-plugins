@@ -19,9 +19,10 @@ const luminance = (hex) => 0.2126 * channel(hex, 0) + 0.7152 * channel(hex, 1) +
 const contrast = (a, b) => { const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05) }
 const colour = (body, prop) => { const m = new RegExp(prop + ':\\s*(#[0-9a-f]{6}|var\\(--[a-z0-9-]+\\))', 'i').exec(body); assert.ok(m, prop); return m[1].startsWith('var(') ? variable(m[1].slice(6, -1)) : m[1] }
 
-test('the filter chips are at least 48 px tall (tap target)', () => {
-  const min = /min-height:\s*(\d+)px/.exec(rule('.fchip'))
-  assert.ok(min && Number(min[1]) >= 48, 'min-height ' + (min && min[1]))
+test('the secondary tabs are at least 48 px tall (tap target)', () => {
+  const min = /min-height:\s*(\d+)px|min-height:\s*var\(--tap\)/.exec(rule('.tab'))
+  assert.ok(min, 'min-height')
+  assert.ok(min[1] === undefined ? Number(/--tap:\s*(\d+)px/.exec(css)[1]) >= 48 : Number(min[1]) >= 48, 'min-height ' + min[0])
 })
 
 test('white text on the red buttons (Deny, Remove) has AA contrast', () => {

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
-import { listModel, todoView, pollWaitMs, screenFor, backHref } from '../lib/mobile/model.js'
+import { listModel, todoView, pollWaitMs, screenFor, backHref, nextTabIndex } from '../lib/mobile/model.js'
 import { FILES } from '../mobile.js'
 import { startDevServer } from '../scripts/dev-server.mjs'
 
@@ -49,18 +49,15 @@ test('the Todo filter lists todos of every state, in the list order, and nothing
   const states = ['awaiting-confirm', 'starting', 'failed']
   const open = [item('completed'), ...states.map((state) => todo({ state })), item('question')]
   const resolved = [todo({ state: 'started', status: 'resolved', resolution: { kind: 'started' } }), todo({ state: 'cancelled', status: 'resolved', resolution: { kind: 'cancelled' } }), item('completed')]
-  const m = listModel(core, { open, resolved }, { type: 'todo', query: '' })
+  const m = listModel(core, { open, resolved }, { type: 'todo', resolvedType: 'todo', query: '' }) // the Resolved Type select is its own choice (resolvedType)
   assert.deepEqual(m.open.map((i) => i.state), states)
   assert.deepEqual(m.resolved.map((i) => i.state), ['started', 'cancelled'])
   assert.equal(m.resolvedCount, 3, 'the Resolved count is the whole list, like the desktop "Resolved (n)"')
 })
 
-test('the filter bar is shown by the desktop rule: from four items in all, or while a filter is active', () => {
+test('the list model has no filter-bar switch: the tabs and the search are always drawn, as on the desktop', () => {
   const some = (n) => Array.from({ length: n }, () => item('completed'))
-  assert.equal(listModel(core, { open: some(2), resolved: some(1) }, { type: 'all', query: '' }).barVisible, false)
-  assert.equal(listModel(core, { open: some(2), resolved: some(2) }, { type: 'all', query: '' }).barVisible, true)
-  assert.equal(listModel(core, { open: some(1), resolved: [] }, { type: 'question', query: '' }).barVisible, true)
-  assert.equal(listModel(core, { open: some(1), resolved: [] }, { type: 'all', query: 'x' }).barVisible, true)
+  assert.equal('barVisible' in listModel(core, { open: some(2), resolved: some(1) }, { type: 'all', query: '' }), false)
   assert.equal(listModel(core, null, { type: 'all', query: '' }).waiting, 0)
 })
 
@@ -97,10 +94,10 @@ after(async () => { await dev?.stop(); rmSync(dir, { recursive: true, force: tru
 test('for every filter chip and a search the phone list is the desktop list: same ids, same order, same counts', async () => {
   const snap = await (await fetch(dev.url + '/review-queue/v1/snapshot')).json()
   assert.ok(snap.open.length > 5 && snap.resolved.length > 3)
-  const filters = [...core.FILTER_TYPES].map((type) => ({ type, query: '' })).concat([{ type: 'all', query: 'session' }, { type: 'permission', query: 'npm' }])
+  const filters = [...core.FILTER_TYPES].map((type) => ({ type, resolvedType: type, query: '' })).concat([{ type: 'all', query: 'session' }, { type: 'permission', resolvedType: 'permission', query: 'npm' }])
   for (const f of filters) {
     const desktopOpen = overlay.__test.filterItems(snap.open, f).map((i) => i.id)
-    const desktopResolved = overlay.__test.filterItems(snap.resolved, f).map((i) => i.id)
+    const desktopResolved = overlay.__test.filterItems(snap.resolved, { ...f, type: f.resolvedType || 'all' }).map((i) => i.id)
     const m = listModel(core, snap, f)
     assert.deepEqual(m.open.map((i) => i.id), desktopOpen, JSON.stringify(f) + ' open')
     assert.deepEqual(m.resolved.map((i) => i.id), desktopResolved, JSON.stringify(f) + ' resolved')
@@ -140,4 +137,39 @@ test('Back on an item card always returns to the Waiting list, whether or not th
   assert.equal(backHref({ id: 'a', status: 'open' }), '#/')
   assert.equal(backHref({ id: 'b', status: 'resolved' }), '#/')
   assert.equal(backHref(undefined), '#/')
+})
+
+// ---- the secondary tabs (docs: tab-based redesign) ---------------------------------------------------------------------------------------
+
+test('the Waiting tabs: All, Permission, Question, Done, PR merged, Todo, Paused in that order, each with its count', () => {
+  const open = [item('permission'), item('permission'), item('question'), item('completed'), item('pr-merged'), todo(), item('paused')]
+  const m = listModel(core, { open, resolved: [] }, { type: 'all', query: '' })
+  assert.deepEqual(Array.from(m.tabs, (t) => [t.type, t.label, t.count]), [['all', 'All', 7], ['permission', 'Permission', 2], ['question', 'Question', 1], ['completed', 'Done', 1], ['pr-merged', 'PR merged', 1], ['todo', 'Todo', 1], ['paused', 'Paused', 1]])
+  assert.deepEqual(Array.from(m.tabs.filter((t) => t.on), (t) => t.type), ['all'])
+})
+
+test('the Waiting tabs hide a type with no items, except All, Paused (always reachable) and the selected one', () => {
+  const open = [item('permission'), item('question')]
+  const types = (f) => Array.from(listModel(core, { open, resolved: [] }, f).tabs, (t) => t.type)
+  assert.deepEqual(types({ type: 'all', query: '' }), ['all', 'permission', 'question', 'paused'])
+  assert.deepEqual(types({ type: 'paused', query: '' }), ['all', 'permission', 'question', 'paused'])
+  assert.deepEqual(types({ type: 'paused', query: '' }).includes('todo'), false)
+})
+
+test('the Waiting tab counts follow the search, and an item on hold is in no tab', () => {
+  const open = [item('permission', { title: 'alpha' }), item('permission', { title: 'beta' }), item('onhold')]
+  const m = listModel(core, { open, resolved: [] }, { type: 'all', query: 'alpha' })
+  assert.deepEqual(Array.from(m.tabs, (t) => [t.type, t.count]), [['all', 1], ['permission', 1], ['paused', 0]])
+  assert.equal(listModel(core, { open, resolved: [] }, { type: 'all', query: '' }).tabs[0].count, 2)
+})
+
+test('nextTabIndex: Left/Right move by one and wrap, Home/End jump, anything else is not a tab key', () => {
+  assert.equal(nextTabIndex(0, 3, 'ArrowRight'), 1)
+  assert.equal(nextTabIndex(2, 3, 'ArrowRight'), 0)
+  assert.equal(nextTabIndex(0, 3, 'ArrowLeft'), 2)
+  assert.equal(nextTabIndex(1, 3, 'ArrowLeft'), 0)
+  assert.equal(nextTabIndex(1, 3, 'Home'), 0)
+  assert.equal(nextTabIndex(0, 3, 'End'), 2)
+  assert.equal(nextTabIndex(0, 3, 'Enter'), -1)
+  assert.equal(nextTabIndex(0, 0, 'ArrowRight'), -1)
 })

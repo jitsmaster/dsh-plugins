@@ -141,12 +141,13 @@ test('views.js imports the follow-up helpers from todo-form.js', () => {
   }
 })
 
-test('the form has a New session | Follow up switch of two toggle buttons (aria-pressed), changing the mode through the draft', () => {
+test('the form has a New session | Follow up tablist (TodoKindTabs: role=tablist, aria-selected), changing the mode through the draft', () => {
   const v = body('NewTodoView')
-  assert.match(v, /New session/)
-  assert.match(v, /Follow up/)
-  assert.match(v, /role="group"/)
-  assert.match(v, /aria-pressed=/)
+  assert.match(v, /<\$\{TodoKindTabs\}/)
+  assert.match(body('TodoKindTabs'), /New session/)
+  assert.match(body('TodoKindTabs'), /Follow up/)
+  assert.match(body('TodoKindTabs'), /Kind of todo/)
+  assert.doesNotMatch(v, /aria-pressed=|role="group"/)
   assert.match(v, /withTodoMode\(/)
   assert.match(v, /isFollowUpDraft\(/)
 })

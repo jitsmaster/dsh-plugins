@@ -51,7 +51,7 @@ test('the phone view has the Archive button on the conversation and posts /v1/ar
 test('the Resolved list rows carry the same Archive button, outside the link', async () => {
   const { readFileSync } = await import('node:fs')
   const views = readFileSync(new URL('../lib/mobile/views.js', import.meta.url), 'utf8')
-  const list = views.slice(views.indexOf('function ResolvedList'), views.indexOf('function NewTodoView'))
+  const list = views.slice(views.indexOf('export function ResolvedBody'), views.indexOf('function NewTodoView'))
   assert.match(list, /class="resolved-row"[\s\S]*<\/a>[\s\S]*<\$\{ArchiveSessionButton\} item=\$\{i\} \/>/)
 })
 

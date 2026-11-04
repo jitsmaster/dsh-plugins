@@ -128,14 +128,17 @@ test('the install banner puts its Dismiss button on its own line (block button b
   assert.match(rule[1], /margin(-top)?\s*:/)
 })
 
-test('the "+ New todo" button has clear space below it so it never touches the filter chips or the cards', () => {
-  assert.match(views, /<div class="row todo-link"><a class="btn pri" href="#\/new">\+ New todo<\/a><\/div>/)
-  const rule = /\.todo-link\s*\{([^}]*)\}/.exec(read('style.css'))
-  assert.ok(rule, '.todo-link rule exists')
-  const m = /margin-bottom\s*:\s*(\d+)px/.exec(rule[1])
-  assert.ok(m && Number(m[1]) >= 16, 'margin-bottom is at least 16px')
+test('the "+ New todo" floating link clears the bottom nav and the last card (safe-area aware), and is a link, not a button', () => {
+  assert.match(views, /<a class="fab" href="#\/new">\+ New todo<\/a>/)
+  assert.doesNotMatch(views, /todo-link/)
+  const rule = /\.fab\s*\{([^}]*)\}/.exec(read('style.css'))
+  assert.ok(rule, '.fab rule exists')
+  assert.match(rule[1], /bottom\s*:\s*calc\([^)]*var\(--nav\)[^)]*env\(safe-area-inset-bottom\)/)
+  const room = /\.waiting\s*\{([^}]*)\}/.exec(read('style.css'))
+  assert.ok(room, 'the Waiting list leaves room under its last card')
+  const m = /padding-bottom\s*:\s*(\d+)px/.exec(room[1])
+  assert.ok(m && Number(m[1]) >= 64, 'padding-bottom is at least 64px')
 })
-
 test('the Read aloud button is not drawn on iOS (Android speaks with the device TTS, iOS has no button)', () => {
   const body = views.slice(views.indexOf('function ReadAloud('), views.indexOf('function Mic('))
   assert.match(body, /platformInfo\([^)]*\)\.ios\s*\|\|\s*typeof speechSynthesis === 'undefined'/)

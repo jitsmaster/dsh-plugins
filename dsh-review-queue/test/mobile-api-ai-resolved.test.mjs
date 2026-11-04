@@ -31,7 +31,7 @@ async function restored(saved) {
 }
 
 test('a saved valid resolvedBy is restored with the type and query', async () => {
-  for (const resolvedBy of ['all', 'me', 'ai']) assert.deepEqual({ ...(await restored({ type: 'todo', query: 'x', resolvedBy })) }, { type: 'todo', query: 'x', resolvedBy })
+  for (const resolvedBy of ['all', 'me', 'ai']) assert.deepEqual({ ...(await restored({ type: 'todo', query: 'x', resolvedBy, resolvedType: 'all' })) }, { type: 'todo', query: 'x', resolvedBy, resolvedType: 'all' })
 })
 
 test('a saved resolvedBy that is not all / me / ai becomes all', async () => {
@@ -39,11 +39,11 @@ test('a saved resolvedBy that is not all / me / ai becomes all', async () => {
 })
 
 test('a filter saved before resolvedBy existed restores with resolvedBy all', async () => {
-  assert.deepEqual({ ...(await restored({ type: 'question', query: 'q' })) }, { type: 'question', query: 'q', resolvedBy: 'all' })
+  assert.deepEqual({ ...(await restored({ type: 'question', query: 'q' })) }, { type: 'question', query: 'q', resolvedBy: 'all', resolvedType: 'all' })
 })
 
 test('nothing saved, or garbled storage, leaves the default filter with resolvedBy all', async () => {
-  assert.deepEqual({ ...(await restored(undefined)) }, { type: 'all', query: '', resolvedBy: 'all' })
-  assert.deepEqual({ ...(await restored('{not json')) }, { type: 'all', query: '', resolvedBy: 'all' })
+  assert.deepEqual({ ...(await restored(undefined)) }, { type: 'all', query: '', resolvedBy: 'all', resolvedType: 'all' })
+  assert.deepEqual({ ...(await restored('{not json')) }, { type: 'all', query: '', resolvedBy: 'all', resolvedType: 'all' })
 })
 
