@@ -311,6 +311,8 @@ function TodoBody({ item }) {
     ${m.sparc ? html`<div class="sub">Use SPARC</div>` : null}
     ${m.effort ? html`<div class="sub">Effort: ${effortName(st.efforts, m.effort)}</div>` : null}
     ${m.line ? html`<div class=${m.failed ? 'err' : 'sub'}>${m.line}</div>` : null}
+    ${m.sourceLine ? html`<div class="sub">${m.sourceLine}</div>` : null}
+    ${m.modeLine ? html`<div class="sub">${m.modeLine}</div>` : null}
     ${m.canAct ? html`<select class="input" aria-label=${m.selectLabel} value=${m.selected} disabled=${busy} onChange=${(e) => setPick(e.target.value)}>
         ${m.placeholder ? html`<option value="" disabled selected=${!m.selected}>${m.placeholder}</option>` : null}
         ${m.options.map((o) => html`<option key=${o.id} value=${o.id} selected=${o.id === m.selected}>${o.title}</option>`)}

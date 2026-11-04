@@ -202,3 +202,13 @@ test('the heading and nothing else of the New session form changed: the text box
   assert.match(v, /value=\$\{draft\.workspaceId\}/)
   assert.match(v, /checked=\$\{draft\.sparc\}/)
 })
+
+test('todoErrorText: the link codes have words on the phone form and through the shared core', async () => {
+  const { todoErrorText } = await load()
+  for (const error of ['excluded-session', 'bad-source']) {
+    const words = todoErrorText({ errorText: () => 'CORE' }, 400, { error })
+    assert.notEqual(words, 'CORE', error)
+    assert.equal(todoErrorText(core, 400, { error }), words, error)
+    assert.equal(core.errorText(400, { error }), words, error)
+  }
+})

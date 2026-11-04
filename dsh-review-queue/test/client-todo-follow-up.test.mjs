@@ -816,3 +816,10 @@ test('form, Follow up: the session dropdown is as wide as the form and shows the
   const none = findAll(T.TodoForm(), (n) => n.type === 'select' && n.props['aria-label'] === 'Which session')[0]
   assert.equal(none.props.title, undefined, 'nothing picked: no tooltip')
 })
+
+test('errorText: excluded-session, bad-source and bad-mode have words', () => {
+  const { T } = loadClient()
+  assert.match(T.errorText(409, { error: 'excluded-session' }), /cannot be the target/)
+  assert.match(T.errorText(400, { error: 'bad-source' }), /not valid/)
+  assert.match(T.errorText(400, { error: 'bad-mode' }), /mode is not valid/)
+})

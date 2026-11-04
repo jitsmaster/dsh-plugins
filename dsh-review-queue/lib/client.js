@@ -473,8 +473,16 @@ function imageFilesOf(data) {
 			}
 			return { value, options, placeholder: value ? undefined : "Pick a workspace…" };
 		}
-		/** The sentence under the text of a follow-up. */
+		/** The sentence under the text of a follow-up, then (session link) who sent it and how it arrives. */
 		function followUpLine(item, pick) {
+			const line = followUpBase(item, pick);
+			const from = item.source && typeof item.source === "object" ? "From session " + (item.source.title || item.source.sessionId) : "";
+			const how = item.mode === "steer" ? "Will be inserted into the running turn" : "";
+			return [line, from, how].filter(Boolean).join(" — ");
+		}
+		/** The Send button of a follow-up card: Retry when failed, Send (steer) for a steer. */
+		function todoSendLabel(item) { return todoCardState(item) === "failed" ? "Retry" : item && item.mode === "steer" ? "Send (steer)" : "Send"; }
+		function followUpBase(item, pick) {
 			switch (todoCardState(item)) {
 				case "confirm": case "pick": case "suggesting": {
 					const s = item.suggested;
@@ -883,7 +891,7 @@ function imageFilesOf(data) {
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
 			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
 			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-power": "Pausing and quitting is not available in this app.",
-			"no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "empty-query": "Say which session this is for.", "unknown-session": "That session is not in the list any more. Pick another one.", "too-many-follow-ups": "Too many follow-ups are waiting: confirm or cancel one first.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.", "no-handoff": "That session has no handoff note to follow.", "not-followable": "That card has no handoff to follow.", "unavailable": "Following a handoff is not available in this app.", "follow-busy": "A follow-up is already in progress for that card.", "failed": "The follow-up session could not be started. Try again.", "pr-open": "Its pull request is still open, so the session keeps polling it. Archive it once the PR is merged or abandoned.",
+			"excluded-session": "That session sent this message, so it cannot be the target. Pick another one.", "bad-source": "The sending session is not valid, so this message was not queued.", "no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "empty-query": "Say which session this is for.", "unknown-session": "That session is not in the list any more. Pick another one.", "too-many-follow-ups": "Too many follow-ups are waiting: confirm or cancel one first.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.", "no-handoff": "That session has no handoff note to follow.", "not-followable": "That card has no handoff to follow.", "unavailable": "Following a handoff is not available in this app.", "follow-busy": "A follow-up is already in progress for that card.", "failed": "The follow-up session could not be started. Try again.", "pr-open": "Its pull request is still open, so the session keeps polling it. Archive it once the PR is merged or abandoned.",
 			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "onhold": "That session is on hold. Continue it first (or release it).", "not-holdable": "Only finished work or a paused session can be put on hold.", "no-onhold": "Putting a session on hold is not available in this app.", "busy": "A message to that session is already on its way. Try again in a moment.",
 			"triage-off": "AI handling is switched off in this app.", "not-ai-resolved": "That item was not handled by the AI.", "already-reviewed": "That AI decision was already reviewed.", "bad-review": "That review is not valid.", "bad-rule": "That rule no longer exists.", "bad-mode": "That mode is not valid.", "bad-input": "That request was incomplete. Refresh and try again.",
 				"bad-images": "An attached image is not valid. Remove it and paste it again.", "too-many-images": "At most " + IMAGE_MAX + " images can be attached.", "unknown-image": "An attached image is no longer on the PC. Remove it and paste it again.", "bad-image": "That is not an image the session can take (png, jpeg, webp or gif).", "too-large": "That image is over 8 MB.",
@@ -1707,7 +1715,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-text" + (full ? "" : " rq-clamp") }, item.text),
 				h("div", { className: s === "failed" ? "rq-err" : "rq-sub" }, todoLine(item, pick)),
 				waiting ? h("div", { className: "rq-row" },
-					h("button", { className: "rq-btn pri", disabled: busy || !canConfirm(item, pick), onClick: () => confirmTodo(item, pick) }, s === "failed" ? "Retry" : "Send"),
+					h("button", { className: "rq-btn pri", disabled: busy || !canConfirm(item, pick), onClick: () => confirmTodo(item, pick) }, todoSendLabel(item)),
 					h("select", { className: "rq-input rq-sel", value: sel.value, disabled: busy, "aria-label": "Change session", title: (sel.options.find((o) => o.id === sel.value) || {}).title, onChange: (e) => set({ todoPick: { ...state.todoPick, [item.id]: e.target.value } }) },
 						sel.placeholder ? h("option", { value: "" }, sel.placeholder) : null, sel.options.map((o) => h("option", { key: o.id, value: o.id, title: o.title }, o.title))),
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => cancelTodo(item) }, "Cancel")) : null);
@@ -2268,7 +2276,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { handoffFollowable, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
+		exports.shared = { todoSendLabel, handoffFollowable, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;

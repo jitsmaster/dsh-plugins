@@ -127,14 +127,16 @@ export function todoCardModel(core, item, workspaces, pick) {
     text: item.text,
     sparc: !!item.sparc,
     effort: typeof item.effort === 'string' ? item.effort : '',
-    line: core.todoLine(item, pick, workspaces),
+    line: core.todoLine({ ...item, source: undefined, mode: undefined }, pick, workspaces), // the sender and the mode have their own lines below
+    sourceLine: item.source && typeof item.source === 'object' ? 'From session ' + (item.source.title || item.source.sessionId) : '',
+    modeLine: item.mode === 'steer' ? 'Will be inserted into the running turn' : '',
     failed,
     canAct,
     selected: select.value,
     options: select.options,
     placeholder: select.placeholder,
     selectLabel: followUp ? 'Session' : 'Workspace',
-    startLabel: failed ? 'Retry' : followUp ? 'Send' : 'Start',
+    startLabel: failed ? 'Retry' : followUp ? (item.mode === 'steer' ? 'Send (steer)' : 'Send') : 'Start',
     canStart: canAct && !!select.value,
     needsWorkspaces: canAct && !followUp, // a follow-up lists its own candidates
   }

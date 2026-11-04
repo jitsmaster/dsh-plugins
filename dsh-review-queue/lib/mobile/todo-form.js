@@ -140,6 +140,8 @@ const FRIENDLY = {
   'empty-query': 'Say which session this is for.',
   'unknown-session': 'That session is not in the list any more. Pick another one.',
   'too-many-follow-ups': 'Too many follow-ups are waiting: confirm or cancel one first.',
+  'excluded-session': 'That session sent this message, so it cannot be the target. Pick another one.',
+  'bad-source': 'The sending session is not valid, so this message was not queued.',
 }
 
 /** The message for a failed POST /v1/todo: friendly text for the codes the phone form can cause, else the desktop's own wording. */
