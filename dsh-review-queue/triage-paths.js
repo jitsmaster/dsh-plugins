@@ -30,6 +30,8 @@ export function commandIntact(payload) {
   return payload.callId !== undefined && payload.callId !== null && payload.callId !== ''
 }
 
+// Safety note: candidates() is lexical (it splits the command on whitespace) and a path can change between the realpath check and the run (TOCTOU).
+// Safety therefore rests on the strict command parser (commandIntact) plus the fingerprint re-check in actOn, not on the realpath check alone.
 /** The path candidates of a command: the value of a --flag=value, and a plain token that has a path character, or that exists (checked by the caller). */
 function candidates(command) {
   const out = []

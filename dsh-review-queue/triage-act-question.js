@@ -3,7 +3,7 @@
  * quote the user wrote. It re-reads the card as stored NOW and refuses unless it is still the card that was judged; it never types free text, never sends
  * `custom`, and never throws.
  */
-import { clipAnswer } from './triage-runner.js'
+import { clipAnswer } from './triage-clip.js'
 
 const QUOTE_CAP = 300
 const labelsOf = (q) => (Array.isArray(q?.options) ? q.options.map((o) => o?.label) : [])

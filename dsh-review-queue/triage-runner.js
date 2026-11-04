@@ -14,6 +14,9 @@ import { hasActionItem } from './auto-clear.js'
 import { classOf, parseReadOnlyCommand, triageOutcome } from './triage.js'
 import { redact } from './triage-log.js'
 import { commandIntact, containedInWorkspace } from './triage-paths.js'
+import { clipAnswer } from './triage-clip.js'
+
+export { clipAnswer }
 
 /** At most this many judge calls at once; an item arriving beyond that stays a normal card (and is logged), so cost and latency stay bounded. */
 export const MAX_IN_FLIGHT = 2
@@ -74,14 +77,6 @@ export function factsOf(item, { sessionContinuesOf = () => false } = {}) {
     return { riskFlags: [], safe: one, questionSimple }
   }
   return { riskFlags: [], safe: false }
-}
-
-/** The proposed answer kept on the card: model text, so whitespace-collapsed and capped at 200 characters (ellipsis if cut). */
-const ANSWER_CAP = 200
-export function clipAnswer(answer) {
-  if (typeof answer !== 'string') return answer
-  const s = answer.replace(/\s+/g, ' ').trim()
-  return s.length > ANSWER_CAP ? s.slice(0, ANSWER_CAP - 1) + '\u2026' : s
 }
 
 /** What the card says the AI would have done; a question proposal quotes the answer (capped, it is model text). */
@@ -161,6 +156,8 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     const doneExtra = cls === 'done' ? { sessionContinues: facts.sessionContinues === true } : {}
     // For a question the pre-check judgment has no answer yet, so its missing basis is no veto.
     // The auto-only summary vetoes are judged after the model call: the summary usually arrives later than the card.
+    // Fail-safe: pre is judged against mine[0] only. If another rule would not carry that veto, a wasted model call is the worst case;
+    // an auto-only veto dropped here is judged again, with the real rule and judgment, before anything is acted on.
     const hard = pre.reasons.filter((r) => r !== 'no-rule' && r !== 'outside-workspace-real' && r !== 'action-item' && r !== 'summary-pending' && !(cls === 'question' && r === 'no-basis'))
     if (hard.length) { record({ itemId: item.id, type: item.type, stage: 'code-veto', verdict: 'ask', reasons: hard, ...doneExtra }); return }
     // Learning from reversals: the user reversed a similar AI proposal before. Code decides, not the model: the card stays a normal card and says why.
@@ -230,7 +227,8 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     log('triage: ' + (res.action ?? 'handled') + ' ' + item.type + ' ' + item.id + ' (rule ' + rule.id + ')')
   }
 
-  function checkFeedback() {    for (const id of [...watching]) {
+  function checkFeedback() {
+    for (const id of [...watching]) {
       const item = store.get(id)
       if (!item) { watching.delete(id); continue }
       if (item.status !== 'resolved') continue
