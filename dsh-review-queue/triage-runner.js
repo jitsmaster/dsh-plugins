@@ -160,13 +160,15 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     const facts = factsOf(item, { sessionContinuesOf })
     // Step 1, code only: a veto that no model answer can lift means no model call at all.
     const pre = triageOutcome({ item, judgment: { needs_decision: false, attention: 0, matched_rule: mine[0].id, answer_basis: 'none' }, rule: mine[0], facts, marks: marksOf(item), relax: { sessionFinished: true } })
-    const doneExtra = cls === 'done' ? { sessionContinues: facts.sessionContinues === true } : {}
+    // The log says what the verdict that entry records was based on: the raise-time facts for the pre-check, the verdict's own facts after the judge.
+    const doneExtraOf = (f) => (cls === 'done' ? { sessionContinues: f.sessionContinues === true } : {})
     // For a question the pre-check judgment has no answer yet, so its missing basis is no veto.
     // The auto-only summary vetoes are judged after the model call: the summary usually arrives later than the card.
     // Fail-safe: pre is judged against mine[0] only. If another rule would not carry that veto, a wasted model call is the worst case;
     // an auto-only veto dropped here is judged again, with the real rule and judgment, before anything is acted on.
-    const hard = pre.reasons.filter((r) => r !== 'no-rule' && r !== 'outside-workspace-real' && r !== 'action-item' && r !== 'summary-pending' && !(cls === 'question' && r === 'no-basis'))
-    if (hard.length) { record({ itemId: item.id, type: item.type, stage: 'code-veto', verdict: 'ask', reasons: hard, ...doneExtra }); return }
+    // An item that is itself marked actionable keeps the action-item veto here (no model call can lift it); the summary-derived part waits for the summary.
+    const hard = pre.reasons.filter((r) => r !== 'no-rule' && r !== 'outside-workspace-real' && !(r === 'action-item' && item.actionable !== true) && r !== 'summary-pending' && !(cls === 'question' && r === 'no-basis'))
+    if (hard.length) { record({ itemId: item.id, type: item.type, stage: 'code-veto', verdict: 'ask', reasons: hard, ...doneExtraOf(facts) }); return }
     // Learning from reversals: the user reversed a similar AI proposal before. Code decides, not the model: the card stays a normal card and says why.
     let recalled = { context: [] }
     try { recalled = memory?.recall(item, mine.map((r) => r.id)) ?? recalled } catch { /* memory is best effort */ }
@@ -182,10 +184,17 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     inFlight++
     let result
     let sources = []
-    try { sources = (await sourcesOf(item)) ?? [] } catch { /* no sources means no admissible quote */ }
-    // The switch may have gone off while the run waited: no model call then.
-    if (!enabled()) { inFlight--; record({ itemId: item.id, type: item.type, stage: 'skipped', verdict: 'ask', reasons: ['off'] }); return }
-    try { result = await judge.judge({ item, rules: mine, sources, lessons: recalled.context }) } catch (error) { result = { note: String(error?.message ?? error) } } finally { inFlight-- }
+    let switchedOff = false
+    // The slot is released in this finally whatever happens inside (a throwing switch included); nothing after the model call holds it.
+    try {
+      try { sources = (await sourcesOf(item)) ?? [] } catch { /* no sources means no admissible quote */ }
+      // The switch may have gone off while the run waited: no model call then. A check that throws counts as off.
+      let on = false
+      try { on = enabled() } catch { /* fail closed */ }
+      if (!on) switchedOff = true
+      else try { result = await judge.judge({ item, rules: mine, sources, lessons: recalled.context }) } catch (error) { result = { note: String(error?.message ?? error) } }
+    } finally { inFlight-- }
+    if (switchedOff) { record({ itemId: item.id, type: item.type, stage: 'skipped', verdict: 'ask', reasons: ['off'] }); return }
     if (!result?.judgment) {
       const raw = oneLine(redact(String(result?.raw ?? '').slice(0, RAW_PRECLIP))).slice(0, RAW_MAX)
       record({ itemId: item.id, type: item.type, stage: 'judge', verdict: 'ask', reasons: ['no-judgment'], note: result?.note, ...(raw ? { raw } : {}) })
@@ -201,7 +210,7 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
       verdictFacts = { ...verdictFacts, pathsContained: verdictFacts.readOnly === true && await containedInWorkspace(typeof p.detail === 'string' && p.detail ? p.detail : p.summary, latest.workspace) }
     }
     const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts: verdictFacts, sources, marks: marksOf(item), relax: { sessionFinished: true } })
-    const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: rule?.mode ?? 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtra }
+    const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: rule?.mode ?? 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtraOf(verdictFacts) }
     // Re-checked after the wait: the item may have been resolved, put on hold or its rule switched off meanwhile.
     const fresh = store.get(item.id) // the item as it is now, not as it was when it was raised
     const marks = fresh ? marksOf(fresh) : {}

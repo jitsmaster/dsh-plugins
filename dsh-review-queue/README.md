@@ -28,14 +28,16 @@ Each rule in the **AI rules** tab is *Off*, *Observe* or *Auto*. The shipped def
 | Rule (class) | What Auto does | Auto-only vetoes (any one keeps the card open for you) |
 | --- | --- | --- |
 | `green-done` (done) | Clears a done card while the session continues. | The session must continue; no action item in the result; the summary is settled. |
-| `ro-permission` (permission) | Approves a read-only command. Never denies. | The read-only parser accepts it; the whole command is checked (not truncated); every real path stays inside the workspace; the only action is approve. |
-| `straightforward-question` (question) | Answers with an option. | One simple option question; the exact option label; a quote from your own words backs it; when an option is marked *(Recommended)*, that one. |
+| `ro-permission` (permission) | Approves a read-only command. Never denies. | The read-only parser accepts it (Auto is stricter than Observe: no `%` or `^`, no recursive or hidden search with `rg`/`grep`, no `git` revision paths such as `HEAD:.env` or patch/pickaxe options, more secret files protected); a shell tool by its exact name and no arguments besides the command; the whole command is checked (not truncated); every path (including one glued to a short option) stays inside the workspace by real path, and UNC / device paths are never touched; the only action is approve. |
+| `straightforward-question` (question) | Answers with an option. | One simple option question; the card must mark an option *(Recommended)* and Auto answers exactly that label; a quote of at least 20 characters from your own words backs it (Observe keeps its shorter minimum and does not need a recommended option). |
 
 **Global switch:** *AI triage On / Off* at the top of the AI rules tab (the header shows an **AI off** chip while it is Off). Off means the AI makes no judgments at all, whatever the rules say.
 
 **Cards already open:** switching a rule to Auto, or the switch to On, never acts on cards that are already open; only items that arrive afterwards are handled.
 
 **Undo:** a done card cleared by the AI comes back with *Reopen* in Resolved. An answer is undone with *Mark wrong*, which also sends a correction to the session. *Revert* does not apply to an approval.
+
+**Limits:** the real-path check runs just before the decision and the command runs afterwards, so a path changed in between (TOCTOU) is not caught by it; the strict parser and the re-check of the stored command are what the safety rests on. The quote stored on a resolution and error text in the log are redacted.
 
 **Record:** each act is a line with stage `act` in `triage-log.jsonl`, next to the observe-stage lines.
 

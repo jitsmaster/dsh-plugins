@@ -73,6 +73,12 @@ export function createStoreAdapter({ instanceId, io, legacyRead, now = Date.now,
     for (const l of [...opListeners]) safe(() => l({ n, ...op }))
   }
 
+  function resolve(id, resolution) {
+    if (!inner.resolve(id, resolution)) return false
+    record({ op: 'resolve', id, resolution: inner.get(id).resolution })
+    return true
+  }
+
   return {
     ...inner,
     add(input, opts) {
@@ -87,10 +93,13 @@ export function createStoreAdapter({ instanceId, io, legacyRead, now = Date.now,
       record({ op: 'update', id, patch: Object.fromEntries(entries.filter(([, v]) => v !== undefined)), ...(unset.length ? { unset } : {}) })
       return true
     },
-    resolve(id, resolution) {
-      if (!inner.resolve(id, resolution)) return false
-      record({ op: 'resolve', id, resolution: inner.get(id).resolution })
-      return true
+    resolve,
+    /** Resolves only an open item that passes 	est (the inner store's contract); written out here so it neither depends on 	his nor skips the hub op. */
+    resolveIf(id, test, resolution) {
+      const item = inner.get(id)
+      if (!item || item.status !== 'open') return false
+      try { if (!test(item)) return false } catch { return false }
+      return resolve(id, resolution)
     },
     reopen(id) {
       if (!inner.reopen(id)) return false

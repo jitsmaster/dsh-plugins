@@ -264,7 +264,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
       judge: config.triageDeps?.judge ?? createTriageJudge({ llm, log }),
       // A question may only be answered from what the user wrote earlier in the session: its thread, user messages only.
       sourcesOf: sourcesForItem(threadOf),
-      enabled: () => config.triage !== false && triageRules.enabled(),
+      enabled: () => config.triage !== false && triageRules.enabled?.() !== false,
       // A session parked on hold is never a candidate (a user mark that vetoes triage).
       marksOf: (item) => ({ onHold: safe(() => heldIds().has(item.sessionId)) === true }),
       // A done card is raised when a turn ends, so a session that is running again by now is one that continues; unknown means finished (a veto only for an auto rule).

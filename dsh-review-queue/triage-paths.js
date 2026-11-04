@@ -34,8 +34,8 @@ export function commandIntact(payload) {
 // Safety therefore rests on the strict command parser (commandIntact) plus the fingerprint re-check in actOn, not on the realpath check alone.
 /** The path candidates of a command: the value of a --flag=value, and a plain token that has a path character, or that exists (checked by the caller). */
 function candidates(command) {
-  const out = []
-  const add = (value, certain) => out.push({ value, certain })
+  const out = new Map() // deduplicated by value
+  const add = (value, certain) => { if (!out.has(value)) out.set(value, { value, certain }) }
   for (const t of String(command ?? '').trim().split(/\s+/).slice(1)) {
     if (!t) continue
     if (t.startsWith('-')) {
@@ -46,8 +46,11 @@ function candidates(command) {
     }
     add(t, PATHISH.test(t))
   }
-  return out
+  return [...out.values()]
 }
+
+/** At most this many distinct path candidates are checked; a command with more is vetoed (fail closed). */
+export const MAX_CANDIDATES = 64
 
 /** A UNC / device / NT-namespace path: reaching it would open a network or device handle (an SMB connection leaks NTLM credentials). Never touched. */
 const UNSAFE_PATH = /^[\\/]{2}|^[\\/]\?\?[\\/]/
@@ -59,13 +62,13 @@ const defaultIo = { real }
  * A path-looking argument that does not resolve is a veto; a plain word that does not exist (a subcommand, a pattern, a number) is not a path.
  * Relative paths resolve against the workspace. A missing or unresolvable workspace is a veto. Never throws.
  * Before ANY file-system call: a UNC / device candidate is a veto (no I/O at all), and so is any candidate that lexically lies outside the workspace
- * (it is never resolved). `io.real` is the resolver (injectable for tests).
+ * (it is never resolved). More than MAX_CANDIDATES distinct candidates is a veto. `io.real` is the resolver (injectable for tests).
  */
 export async function containedInWorkspace(command, workspace, io = defaultIo) {
   try {
     if (typeof workspace !== 'string' || !workspace.trim()) return false
     const list = candidates(command)
-    if (list.some(({ value }) => UNSAFE_PATH.test(value))) return false
+    if (list.length > MAX_CANDIDATES || list.some(({ value }) => UNSAFE_PATH.test(value))) return false
     const root = await io.real(workspace)
     for (const { value, certain } of list) {
       const expanded = value === '~' || /^~[\\/]/.test(value) ? homedir() + value.slice(1) : value

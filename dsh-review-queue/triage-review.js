@@ -114,7 +114,7 @@ export function createTriageReview({ store, triageApi, promptSession, posting = 
     }),
     /** The global switch: turning it on needs no confirm. A non-boolean is bad input. */
     triageEnabled: (value) => guard(() => {
-      if (typeof value !== 'boolean' || typeof rules.setEnabled !== 'function') return { ok: false, error: 'bad-input' }
+      if (typeof value !== 'boolean' || typeof rules?.setEnabled !== 'function') return { ok: false, error: 'bad-input' }
       if (!rules.setEnabled(value)) return { ok: false, error: 'bad-input' }
       try { log?.('triage: switched ' + (value ? 'on' : 'off')) } catch { /* logging never breaks a change */ }
       onEnabled?.()

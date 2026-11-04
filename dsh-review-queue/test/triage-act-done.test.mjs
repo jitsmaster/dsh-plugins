@@ -169,7 +169,10 @@ test('e2e auto + an action item (bold summary or actionable) stays open', async 
     await runner.idle()
     assert.equal(store.get(item.id).status, 'open', JSON.stringify(over))
     assert.equal(stage(entries, 'act').length, 0)
-    assert.ok(stage(entries, 'judge').at(-1).reasons.includes('action-item'))
+    // An item that is itself actionable is a code veto before any model call; one whose summary shows the action item is judged first (the summary may arrive later).
+    const at = over.actionable === true ? stage(entries, 'code-veto') : stage(entries, 'judge')
+    assert.ok(at.at(-1).reasons.includes('action-item'), JSON.stringify(over))
+    if (over.actionable === true) assert.equal(stage(entries, 'judge').length, 0, 'no model call')
   }
 })
 
