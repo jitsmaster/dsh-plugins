@@ -36,6 +36,14 @@ test('the service lists a waiting card created by addTodo with a source', () => 
   assert.deepEqual(f.queue.todoStates({ senderId: 'someone-else' }), [])
 })
 
+test('a waiting one-match card is found by its target through suggested.sessionId', () => {
+  const waiting = item({ id: 'w', suggested: { sessionId: 's9', title: 'Nine', reason: 'picked by you' }, candidates: [{ sessionId: 's9', title: 'Nine' }, { sessionId: 's8', title: 'Eight' }] })
+  const several = item({ id: 'v', candidates: [{ sessionId: 's9', title: 'Nine' }, { sessionId: 's8', title: 'Eight' }] })
+  const s = { open: [waiting, several], resolved: [] }
+  assert.deepEqual(todoStatesOf(s, { senderId: 'me', targetSessionId: 's9' }).map((x) => x.id), ['w'])
+  assert.deepEqual(todoStatesOf(s, { senderId: 'me', targetSessionId: 's8' }), [])
+})
+
 test('todoStatesOf(null) and a missing snapshot give []', () => {
   assert.deepEqual(todoStatesOf(null), [])
   assert.deepEqual(todoStatesOf(null, { senderId: 'me' }), [])
