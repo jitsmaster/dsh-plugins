@@ -224,10 +224,11 @@ window.__ModuleLoader__.load({
 		}
 
 		/** The counts of the "Resolved by" tabs for a Type and a search (the words filterItems takes): all, by me, by AI. The one rule of both screens;
-		 *  the "N new" mark on the AI tab is separate (aiUnseenCount, whatever the filter). */
+		 *  "by AI" counts what the AI filter lists (isAiHandled: AI decisions and auto-cleared cards), so the count equals the list.
+		 *  The "N new" mark on the AI tab is separate (aiUnseenCount: unseen AI decisions only, never auto-cleared cards, whatever the filter). */
 		function resolvedCounts(items, f) {
 			const shown = filterItems(items, { type: f && f.type, query: f && f.query });
-			const ai = shown.filter(isAiResolved).length;
+			const ai = shown.filter(isAiHandled).length;
 			return { all: shown.length, me: shown.length - ai, ai };
 		}
 

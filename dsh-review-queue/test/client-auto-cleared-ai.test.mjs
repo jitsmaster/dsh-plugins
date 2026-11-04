@@ -117,22 +117,26 @@ test('aiUnseenCount table: only unseen, unreviewed kind "ai-resolved" items coun
   }
 })
 
-test('the filter result and the AI count agree: auto-cleared items are listed under AI but not counted', () => {
+test('the filter result and the AI count agree: auto-cleared items are listed under AI and counted, but never flagged new', () => {
   const items = [aiRes('u1'), auto('a'), auto('b')]
   assert.deepEqual(idsOf(S.filterItems(items, f('ai'))), ['u1', 'a', 'b'])
+  assert.deepEqual({ ...S.resolvedCounts(items, { type: 'all', query: '' }) }, { all: 3, me: 0, ai: 3 })
+  const mix = [aiRes('u1'), auto('a'), hiddenByCard('h'), answered('q'), reviewed('r')]
+  assert.deepEqual({ ...S.resolvedCounts(mix, { type: 'all', query: '' }) }, { all: 5, me: 3, ai: 2 })
+  assert.equal(S.resolvedCounts(mix, { type: 'all', query: '' }).ai, S.filterItems(mix, f('ai')).length)
   assert.equal(S.aiUnseenCount(items), 1)
 })
 
-test('the phone "AI" tab flags only unseen AI decisions as new, never auto-cleared items (which still count under the AI filter)', () => {
+test('the phone "AI" tab flags only unseen AI decisions as new, never auto-cleared items (which are still counted, as the AI filter lists them)', () => {
   const aiTab = (list) => listModel(S, snapOf(list), f('all')).resolvedTabs.find((t) => t.value === 'ai')
   const withAi = aiTab([aiRes('u1'), auto('a'), auto('b')])
   assert.equal(withAi.countText, '1 new')
   assert.equal(withAi.hot, true)
-  assert.equal(withAi.count, 1, 'count is AI decisions only (resolvedCounts uses isAiResolved), auto-cleared excluded')
+  assert.equal(withAi.count, 3, 'count equals the AI filter list: the AI decision plus the two auto-cleared')
   const onlyAuto = aiTab([auto('a'), auto('b')])
   assert.equal(onlyAuto.countText, undefined)
   assert.equal(onlyAuto.hot, false)
-  assert.equal(onlyAuto.count, 0)
+  assert.equal(onlyAuto.count, 2, 'auto-cleared items are listed under AI, so they are counted')
 })
 
 // ======================= 1 + 5. badge, desktop card =======================
