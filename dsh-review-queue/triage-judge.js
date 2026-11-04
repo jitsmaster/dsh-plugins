@@ -10,7 +10,8 @@ import { redact } from './triage-log.js'
 
 /** The time the model gets (a timeout is a veto). Proposed in the spec; not settled with the user. */
 export const JUDGE_TIMEOUT_MS = 20000
-const JUDGE_MAX_TOKENS = 500
+/** Output budget incl. hidden reasoning tokens (pi-ai maxTokens caps reasoning + text together); 500 cut ~half of the replies mid-JSON. The JSON itself is ~350 tokens. */
+const JUDGE_MAX_TOKENS = 2000
 const BASES = new Set(['closed-set', 'quoted-source', 'none'])
 const MAX_FIELD = 800
 const MAX_ITEM_CHARS = 3000
@@ -98,14 +99,16 @@ export function createTriageJudge({ llm, timeoutMs = JUDGE_TIMEOUT_MS, maxTokens
         + (past.length ? '\n\nPAST CORRECTIONS: the user reversed AI proposals like these before. If this item resembles one, raise attention and set needs_decision true:\n' + JSON.stringify(past) : '')
         + '\n\nItem to judge:\n' + JSON.stringify(describeItem(item))
       const system = rules.some((r) => r?.class === 'question') ? SYSTEM + QUESTION_GUIDANCE : SYSTEM
+      let finish
       const result = await run(async ({ model: m, signal, trace }) => {
         const prepared = await llm.prepareCall({ provider: m.provider, model: m.model, maxTokens }, signal)
         for await (const chunk of prepared.stream({ ...prepared.config, system, signal, messages: [{ role: 'user', content: [{ type: 'text', text }] }] })) {
           if (chunk.type === 'text-delta') trace.raw += chunk.text
+          else if (chunk.type === 'finish') finish = chunk.reason?.kind
         }
         return parseJudgment(trace.raw)
       })
-      if (!result.judgment) log('triage: no judgment (' + oneLine(redact(String(result.note ?? '').slice(0, RAW_PRECLIP))).slice(0, RAW_MAX) + ')' + (result.raw ? '; the model said: ' + oneLine(redact(String(result.raw).slice(0, RAW_PRECLIP))).slice(0, RAW_MAX) : ''))
+      if (!result.judgment) log('triage: no judgment (' + oneLine(redact(String(result.note ?? '').slice(0, RAW_PRECLIP))).slice(0, RAW_MAX) + ')' + (result.raw ? '; the model said: ' + oneLine(redact(String(result.raw).slice(0, RAW_PRECLIP))).slice(0, RAW_MAX) : '') + (finish ? '; finish: ' + oneLine(finish) : ''))
       return result
     },
   }

@@ -209,3 +209,29 @@ test('without a question rule the system prompt has no question guidance', async
   await j.judge({ item: ITEM, rules: RULES })
   assert.doesNotMatch(seen.req.system, /one clearly recommended option/i)
 })
+
+test('the judge leaves room for hidden reasoning: it asks for at least 1500 output tokens', async () => {
+  const seen = {}
+  await createTriageJudge({ llm: fakeLlm({ answer: GOOD, seen }) }).judge({ item: ITEM, rules: RULES })
+  assert.ok(seen.cfg.maxTokens >= 1500, 'maxTokens was ' + seen.cfg.maxTokens)
+})
+
+test('reasoning chunks before the text do not end up in the parsed raw reply', async () => {
+  const llm = fakeLlm({ answer: GOOD })
+  const orig = llm.prepareCall
+  llm.prepareCall = async (cfg) => { const p = await orig(cfg); return { ...p, stream: async function* (req) { yield { type: 'reasoning-delta', index: 0, text: 'thinking {"attention": 1} hard' }; yield* p.stream(req) } } }
+  const r = await createTriageJudge({ llm }).judge({ item: ITEM, rules: RULES })
+  assert.deepEqual(r.judgment, GOOD)
+  assert.ok(!r.raw.includes('thinking'))
+})
+
+test('a truncated reply names the finish reason in the log line', async () => {
+  const llm = fakeLlm({ answer: '{"needs_decision": true, "answer_basis": "none", "ans' })
+  const orig = llm.prepareCall
+  llm.prepareCall = async (cfg) => { const p = await orig(cfg); return { ...p, stream: async function* (req) { yield* p.stream(req); yield { type: 'finish', reason: { kind: 'max-tokens' } } } } }
+  const lines = []
+  const r = await createTriageJudge({ llm, log: (l) => lines.push(l) }).judge({ item: ITEM, rules: RULES })
+  assert.ok(!r.judgment)
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /finish: max-tokens/)
+})
