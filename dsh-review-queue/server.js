@@ -112,6 +112,7 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/reopen': (b) => queue.reopen(String(b.id)),
     '/v1/triage-review': (b) => !validId(b.id) ? BAD : queue.triageReview(String(b.id), { review: typeof b.review === 'string' ? b.review : undefined, text: typeof b.text === 'string' ? b.text : undefined, mode: typeof b.mode === 'string' ? b.mode : undefined }),
     '/v1/triage-rule-mode': (b) => !validId(b.ruleId) ? BAD : queue.triageRuleMode(String(b.ruleId), typeof b.mode === 'string' ? b.mode : undefined, { confirmed: b.confirmed === true }),
+    '/v1/triage-enabled': (b) => typeof b.enabled !== 'boolean' ? BAD : queue.triageEnabled(b.enabled),
     '/v1/triage-forget': (b) => !validId(b.id) ? BAD : queue.triageForget(String(b.id)),
     '/v1/approve-similar': (b) => queue.approveSimilar(String(b.id), { via: b.via, confirmed: b.confirmed === true }),
     '/v1/paused-resume': (b) => queue.resumePaused(String(b.id)),

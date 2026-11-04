@@ -957,6 +957,11 @@ function imageFilesOf(data) {
 			set({ rulesBusy: { ...state.rulesBusy, [key]: false }, rulesError: r.ok ? undefined : rulesErrorText(r) });
 			if (r.ok) await loadTriageRules();
 		}
+		/** The global AI-triage switch: posted like any rules change, and the header chip follows at once (the next snapshot carries the same value). */
+		async function setTriageEnabled(enabled) {
+			await rulesAct("triage-enabled", "/v1/triage-enabled", { enabled });
+			if (!state.rulesError && state.snap) set({ snap: { ...state.snap, triage: { enabled } } });
+		}
 		/** Off and Observe at once; Auto asks first (rulesConfirm) so a rule never starts acting by accident once a later phase makes auto live. */
 		function pickRuleMode(id, mode) { if (mode === "auto") set({ rulesConfirm: id }); else rulesAct(id, "/v1/triage-rule-mode", { ruleId: id, mode }); }
 		/** The view a set of flags shows: one of the five primary tabs (phone wins over rules over resolved over held; none set = waiting). Pure. */
@@ -2042,6 +2047,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-sub" }, follow ? "Sent to the picked session at once." : (f.workspaceId ? "Starts in the background right away." : "Nothing starts until you confirm the workspace.") + " Paste an image (Ctrl+V) to attach it to the session."));
 		}
 
+		const aiOffTitle = "AI triage is switched off; click to open AI rules"; // kept out of Head: a test keeps the view names out of its source
 		/** The header: the title, the counts, + New todo and the close icon. Every view lives in the tabs under it (ViewTabs). */
 		function Head({ snap }) {
 			const { waiting: n, paused } = snapCounts(snap);
@@ -2050,6 +2056,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return h("div", { className: "rq-head" }, h("h2", null, "Coding Boss Review Queue"), h("span", { className: "rq-count" }, n + " waiting"),
 				sessions ? h("span", { className: "rq-count rq-sess", title: sessionsTitle }, sessions) : null,
 				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
+				snap && snap.triage && snap.triage.enabled === false ? h("button", { type: "button", className: "rq-count", "data-ai-off": true, title: aiOffTitle, onClick: () => setView("rules") }, "AI off") : null,
 				aiChip ? h("button", { type: "button", className: "rq-count", "data-ai-report": true, title: aiChip.title, onClick: () => { set({ filter: { ...state.filter, type: "all", query: "", resolvedBy: "ai" } }); setView("resolved"); } }, aiChip.label) : null,
 				h("span", { className: "rq-grow" }),
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
@@ -2180,7 +2187,10 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-rule-h" }, h("strong", null, lessonLine(l)), l.active === false ? h("span", { className: "rq-sub" }, "retired") : null, h("span", { className: "rq-grow" }),
 					h("button", { className: "rq-btn", disabled: !!state.rulesBusy[l.id], onClick: () => rulesAct(l.id, "/v1/triage-forget", { id: l.id }) }, "Forget")),
 				h("div", { className: "rq-sub" }, l.content));
-			return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, state.rulesError ? h("div", { className: "rq-err" }, state.rulesError) : null,
+			const triageOn = t.enabled !== false, triageBusy = !!state.rulesBusy["triage-enabled"];
+			const triageBtn = (value, label) => h("button", { key: label, type: "button", role: "radio", className: "rq-segb" + (triageOn === value ? " on" : ""), "aria-checked": triageOn === value, disabled: triageBusy, onClick: () => { if (triageOn !== value) setTriageEnabled(value); } }, label);
+			const triageSwitch = h("div", { className: "rq-rule", "data-triage-enabled": triageOn }, h("div", { className: "rq-rule-h" }, h("strong", null, "AI triage"), h("span", { className: "rq-sub" }, triageOn ? "on" : "switched off: the AI makes no judgments"), h("span", { className: "rq-grow" }), h("span", { className: "rq-seg", role: "radiogroup", "aria-label": "AI triage" }, triageBtn(true, "On"), triageBtn(false, "Off"))));
+			return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, state.rulesError ? h("div", { className: "rq-err" }, state.rulesError) : null, triageSwitch,
 				rules.length ? rules.map(rule) : h("div", { className: "rq-empty" }, "No rules."),
 				h("h3", null, "Corrections the AI learned"), lessons.length ? lessons.map(lesson) : h("div", { className: "rq-empty" }, "No corrections learned yet."));
 		}

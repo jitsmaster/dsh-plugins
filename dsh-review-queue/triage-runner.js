@@ -160,6 +160,8 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     let result
     let sources = []
     try { sources = (await sourcesOf(item)) ?? [] } catch { /* no sources means no admissible quote */ }
+    // The switch may have gone off while the run waited: no model call then.
+    if (!enabled()) { inFlight--; record({ itemId: item.id, type: item.type, stage: 'skipped', verdict: 'ask', reasons: ['off'] }); return }
     try { result = await judge.judge({ item, rules: mine, sources, lessons: recalled.context }) } catch (error) { result = { note: String(error?.message ?? error) } } finally { inFlight-- }
     if (!result?.judgment) {
       const raw = oneLine(redact(String(result?.raw ?? '').slice(0, RAW_PRECLIP))).slice(0, RAW_MAX)

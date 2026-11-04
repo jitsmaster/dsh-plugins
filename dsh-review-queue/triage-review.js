@@ -31,7 +31,7 @@ function recordOf(rule, ruleCases = []) {
 }
 
 /** @param {{ store: any, triageApi?: { rules: any, memory: any }, promptSession: (item: object, text: string) => Promise<{ ok: false, error: string } | undefined>, posting?: Set<string>, log?: (line: string) => void }} deps */
-export function createTriageReview({ store, triageApi, promptSession, posting = new Set(), log }) {
+export function createTriageReview({ store, triageApi, promptSession, posting = new Set(), log, onEnabled }) {
   const rules = triageApi?.rules
   const memory = triageApi?.memory
   const sending = new Set() // ids of items whose mark-wrong correction is in flight (the check of r.review and its mark are an await apart)
@@ -100,7 +100,7 @@ export function createTriageReview({ store, triageApi, promptSession, posting = 
   return {
     triageRules: () => guard(() => {
       const grouped = byRule(memory?.cases?.() ?? [])
-      return { ok: true, rules: rules.list().map((rule) => ({ ...rule, record: recordOf(rule, grouped.get(rule.id)) })), lessons: memory?.lessons?.() ?? [] }
+      return { ok: true, enabled: rules.enabled?.() ?? true, rules: rules.list().map((rule) => ({ ...rule, record: recordOf(rule, grouped.get(rule.id)) })), lessons: memory?.lessons?.() ?? [] }
     }),
     /** Raising a rule to auto is the one change that needs the caller's explicit confirmed: true; lowering or keeping a mode never does. */
     triageRuleMode: (ruleId, mode, opts) => guard(() => {
@@ -110,6 +110,14 @@ export function createTriageReview({ store, triageApi, promptSession, posting = 
       if (mode === 'auto' && old !== 'auto' && opts?.confirmed !== true) return { ok: false, error: 'needs-confirm' }
       if (!rules.setMode(ruleId, mode)) return { ok: false, error: 'bad-rule' }
       try { log?.('triage: rule ' + String(ruleId).replace(/[^A-Za-z0-9_-]/g, '?').slice(0, 60) + ' mode ' + old + ' -> ' + mode) } catch { /* logging never breaks a change */ }
+      return { ok: true }
+    }),
+    /** The global switch: turning it on needs no confirm. A non-boolean is bad input. */
+    triageEnabled: (value) => guard(() => {
+      if (typeof value !== 'boolean' || typeof rules.setEnabled !== 'function') return { ok: false, error: 'bad-input' }
+      if (!rules.setEnabled(value)) return { ok: false, error: 'bad-input' }
+      try { log?.('triage: switched ' + (value ? 'on' : 'off')) } catch { /* logging never breaks a change */ }
+      onEnabled?.()
       return { ok: true }
     }),
     triageForget: (lessonId) => guard(() => (memory?.forget?.(lessonId) ? { ok: true } : { ok: false, error: 'not-found' })),

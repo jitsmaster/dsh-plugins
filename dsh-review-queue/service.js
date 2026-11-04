@@ -199,13 +199,17 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const tipNow = () => { try { return tips?.current() } catch { return undefined } }
 
   const handoffFollow = createHandoffFollow({ serviceOf: handoffFollowOf, store, log })
-  const triageReview = createTriageReview({ store, triageApi, promptSession, posting, log })
+  const triageReview = createTriageReview({ store, triageApi, promptSession, posting, log, onEnabled: emit })
   // The last hourly AI report for the header chip: only what the chip needs, and a failing source never breaks the snapshot.
   const aiReportPart = () => {
     try {
       const r = aiReportOf?.()
       return r ? { aiReport: { total: r.total, handled: r.handled, overruled: r.overruled, text: r.text, to: r.to } } : {}
     } catch { return {} }
+  }
+  // The global AI-triage switch for the header chip; absent without triage (or a rule set that has no switch).
+  const triagePart = () => {
+    try { const e = triageApi?.rules?.enabled?.(); return typeof e === 'boolean' ? { triage: { enabled: e } } : {} } catch { return {} }
   }
   return {
     ...triageReview,
@@ -230,6 +234,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
         ...(tip ? { tip } : {}),
         serverNow: now(),
         ...aiReportPart(),
+        ...triagePart(),
         focusId,
         reading,
         ui: { seq: ui.seq, cmd: ui.cmd },
