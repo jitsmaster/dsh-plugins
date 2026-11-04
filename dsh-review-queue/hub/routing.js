@@ -17,19 +17,19 @@
 import { riskOf } from '../risk.js'
 import { postKeyOf } from '../post-key.js'
 import { createHubFollowUps } from './follow-up.js'
-import { isSentFollowUp } from '../follow-up-shared.js'
+import { isSentFollowUp, stripLinkOptions } from '../follow-up-shared.js'
 
 const HUB_LOCAL = ['reviewed', 'reopen']
 const PAUSED_ACTIONS = ['paused-resume', 'paused-dismiss']
 /** Value: the item must still be open (an expired question can still be answered late, any session can be opened, the chat of a finished item can be read and continued). */
 const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'paused-resume': true, 'paused-dismiss': true, hold: true, 'hold-release': true, 'hold-continue': true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'archive-session': false, 'follow-handoff': true, 'open-session': false, thread: false, post: false }
-export const ACTION_KINDS = [...HUB_LOCAL, 'todo', ...Object.keys(OWNER_ACTIONS)]
+export const ACTION_KINDS = [...HUB_LOCAL, 'todo', 'todo-link', ...Object.keys(OWNER_ACTIONS)]
 
 const risksOf = (item) => (item.type === 'permission' ? riskOf({ toolName: item.payload?.toolName, detail: item.payload?.detail ?? item.payload?.summary, path: item.payload?.path, workspace: item.workspace }) : [])
 const text = (v) => (v === undefined || v === null || v === '' ? undefined : String(v))
 
-/** @param {{ store: any, queue: any, instances: any, commands: any, log?: (line: string) => void }} deps */
-export function createRouting({ store, queue, instances, commands, log = () => {}, now = Date.now }) {
+/** @param {{ store: any, queue: any, instances: any, commands: any, log?: (line: string) => void, now?: () => number, makeFollowUps?: typeof createHubFollowUps }} deps (makeFollowUps: a test seam) */
+export function createRouting({ store, queue, instances, commands, log = () => {}, now = Date.now, makeFollowUps = createHubFollowUps }) {
   /** The owner as a send target: its state decides between a command and 409 owner-offline / owner-away. */
   function reachable(owner) {
     const inst = instances.get(owner)
@@ -39,7 +39,7 @@ export function createRouting({ store, queue, instances, commands, log = () => {
   }
   const send = (inst, command) => commands.enqueue(inst.id, command)
   const tell = (owner, change) => { if (instances.live(owner)) void commands.enqueue(owner, { kind: 'apply', args: { change }, wait: false }) }
-  const followUps = createHubFollowUps({ store, instances, reachable, send, tell, log, now }) // Follow-up todos: a message for an existing session of any app (hub/follow-up.js)
+  const followUps = makeFollowUps({ store, instances, reachable, send, tell, log, now }) // Follow-up todos: a message for an existing session of any app (hub/follow-up.js)
 
   function hubLocal(kind, id) {
     const result = kind === 'reviewed' ? queue.markReviewed(id) : queue.reopen(id)
@@ -163,7 +163,9 @@ export function createRouting({ store, queue, instances, commands, log = () => {
     followUpSessions: (caller) => followUps.sessionList(caller),
     /** @param {{ role?: string, caller?: string }} [ctx] role 'device' is the phone, any other credential the desktop (D8). */
     async act(kind, body, { role, caller } = {}) {
-      if (kind === 'todo') return body.followUp !== undefined && body.followUp !== null ? followUps.add(body, caller, role) : addTodo(body, caller, role)
+      // The three link options come only through todo-link (desktop role; the plugin's own queue): every 'todo' is stripped here, once, whatever route it came by.
+      if (kind === 'todo') return body.followUp !== undefined && body.followUp !== null ? followUps.add(stripLinkOptions(body), caller, role) : addTodo(body, caller, role)
+      if (kind === 'todo-link') return followUps.add(body, caller, role, { trusted: true })
       const id = String(body.id)
       if (HUB_LOCAL.includes(kind)) return hubLocal(kind, id)
       const item = store.get(id)

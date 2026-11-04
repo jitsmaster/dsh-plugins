@@ -106,3 +106,24 @@ test('there is no session list route: the union is made inside the hub for a fol
   const res = await get(A, '/v1/followup-sessions')
   assert.deepEqual([res.status, res.json], [404, { error: 'unknown-action' }])
 })
+
+test('a todo-link through the hub keeps mode, source and excludeIds in the hub store; confirming the excluded session is refused', async (t) => {
+  const { world, A } = await twoApps(t)
+  const source = { sessionId: 'sa1', title: 'Orca engine tuning' }
+  const res = await A.hubQueue.addTodo('please check', { followUp: 'the PR 6556 one', mode: 'steer', source, excludeSessionIds: ['sa1'] })
+  assert.equal(res.ok, true, JSON.stringify(res))
+  const id = res.id
+  await waitFor(() => A.store.get(id)?.suggested, 8000, 'the suggestion')
+  const local = A.store.get(id)
+  assert.deepEqual([local.mode, local.source, local.excludeIds], ['steer', source, ['sa1']], 'the app store')
+  await waitFor(() => world.hub.store.get(id)?.suggested, 8000, 'the hub copy')
+  const hubItem = world.hub.store.get(id)
+  assert.equal(hubItem.mode, 'steer')
+  assert.deepEqual(hubItem.source, source)
+  assert.deepEqual(hubItem.excludeIds, ['sa1'])
+  await waitFor(() => A.mirrored(id), 8000, 'the mirror')
+  const states = await A.hubQueue.todoStates({ senderId: 'sa1' })
+  assert.deepEqual(states.map((s) => [s.id, s.state, s.mode]), [[id, 'awaiting-confirm', 'steer']])
+  const bad = await post(A, '/v1/todo-confirm', { id, sessionId: 'sa1' })
+  assert.deepEqual([bad.json.ok, bad.json.error], [false, 'excluded-session'])
+})

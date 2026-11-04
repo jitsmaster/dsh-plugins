@@ -14,6 +14,7 @@ import { listRunningSessions } from './userpause.js'
 import { isSessionId } from './thread.js'
 import { postKeyOf } from './post-key.js'
 import { archKeyOf } from './sessions.js'
+import { todoStatesOf } from './todo-states.js'
 import { createTriageReview } from './triage-review.js'
 import { createHandoffFollow } from './handoff-follow.js'
 
@@ -485,7 +486,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     continueHold: async (id) => (onHold ? onHold.continueNow(String(id)) : { ok: false, error: 'no-onhold' }),
     /** Looks for sessions cut off by a restart now (the agent also does at startup): { ok, added, updated, resolved, total }. */
     scanPaused: async () => (paused ? paused.scan() : { ok: false, error: 'no-scanner' }),
-    /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc?, followUp?, sessions? }) -> { ok, id, state }; confirmTodo(id, { workspaceId?, sessionId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). followUp (words) makes it a message for an existing session; sessions (the hub's union) are its candidates. */
+    /** Todo (the TODO function): addTodo(text, { workspaceId?, sparc?, followUp?, sessions?, mode? ('queue'|'steer'), excludeSessionIds?, source? ({ sessionId, title }) — these three are for trusted plugins only, never from a browser/phone body (follow-up-shared.js stripLinkOptions) }) -> { ok, id, state }; confirmTodo(id, { workspaceId?, sessionId? }) also retries a failed one; cancelTodo(id). Background work: todoIdle(). followUp (words) makes it a message for an existing session; sessions (the hub's union) are its candidates. */
     addTodo: (text, opts) => todos.add(text, opts),
     modelEfforts: () => todos.efforts(),
     /** One pasted image of the new-todo form (raw bytes): { ok, id, mediaType, bytes } | { ok: false, error }. Local files: never forwarded to the hub. */
@@ -519,6 +520,8 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       byType.onhold = all.filter((i) => i.type === 'onhold').length
       return { total: all.filter(needsUser).length, byType }
     },
+    /** The follow-up cards a session created by a link, with their states (todo-states.js). */
+    todoStates: (opts) => todoStatesOf(store.snapshot(), opts),
     /** The oldest open item (position 1), or undefined. */
     first: () => store.snapshot().open[0],
     /** Reads the open item at a 1-based queue position (what the card's play button reads) and focuses it. */

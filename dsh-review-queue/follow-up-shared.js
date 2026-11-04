@@ -111,3 +111,27 @@ export function suggestSessionByRef(query, candidates) {
   const [hit] = picked.values()
   return { sessionId: hit.sessionId, title: hit.title, reason: REF_REASON }
 }
+
+/** The options only a trusted plugin may give addTodo (dsh-session-link). Every browser, phone and proxy entry strips them before anything else sees the body. */
+export const LINK_OPTIONS = ['mode', 'excludeSessionIds', 'source']
+export function stripLinkOptions(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body
+  const copy = { ...body }
+  for (const key of LINK_OPTIONS) delete copy[key]
+  return copy
+}
+
+/**
+ * The one check of the three link options (todo.js, and the hub): { ok: false, error: 'bad-mode' | 'bad-source' } or { ok: true, mode ('steer' or undefined), source ({ sessionId, title } or undefined),
+ * exclude (the distinct string ids, at most 20) }.
+ */
+export function checkLinkOptions({ mode, source, excludeSessionIds } = {}) {
+  if (mode !== undefined && mode !== 'queue' && mode !== 'steer') return { ok: false, error: 'bad-mode' }
+  let src
+  if (source !== undefined) {
+    if (!source || typeof source !== 'object' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(String(source.sessionId))) return { ok: false, error: 'bad-source' }
+    src = { sessionId: String(source.sessionId), title: String(source.title ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) }
+  }
+  const exclude = Array.isArray(excludeSessionIds) ? [...new Set(excludeSessionIds.filter((x) => typeof x === 'string'))].slice(0, 20) : []
+  return { ok: true, mode: mode === 'steer' ? 'steer' : undefined, source: src, exclude }
+}

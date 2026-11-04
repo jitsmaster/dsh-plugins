@@ -169,10 +169,10 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
   }
 
   /** This app's own candidates, read in the background (like the workspace suggestion), then the suggestion. The words go to the reader: a number that decides needs no snippets. */
-  async function loadLater(id, query, text, ready = () => {}) {
+  async function loadLater(id, query, text, ready = () => {}, excluded = new Set()) {
     try {
       let candidates = []
-      try { candidates = normalizeCandidates(await within(Promise.resolve().then(() => sessionsOf?.({ query })), LOAD_TIMEOUT_MS)) } catch (error) { log('todo: follow-up sessions failed: ' + codeOf(error)) }
+      try { candidates = normalizeCandidates(await within(Promise.resolve().then(() => sessionsOf?.({ query })), LOAD_TIMEOUT_MS)).filter((c) => !excluded.has(c.sessionId)) } catch (error) { log('todo: follow-up sessions failed: ' + codeOf(error)) }
       if (!stillWaiting(id)) return
       if (!candidates.length) { store.update(id, { suggesting: false, suggestNote: noSessionsNote(0) }); return }
       const found = suggestSessionByRef(query, candidates)
@@ -206,7 +206,7 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
         if (typeof imageStore?.load !== 'function') throw Object.assign(new Error('image attachments are not available'), { code: NO_CONTROLLER })
         try { imageParts = imageStore.load(item.imageIds) } catch (error) { throw Object.assign(new Error(String(error?.message ?? error)), { code: NO_CONTROLLER }) }
       }
-      await sc.prompt({ requestId: 'todo-' + item.id + '-' + sessionId, sessionId, mode: 'queue', content: [{ type: 'text', text: item.text }, ...imageParts] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
+      await sc.prompt({ requestId: 'todo-' + item.id + '-' + sessionId, sessionId, mode: item.mode === 'steer' ? 'steer' : 'queue', content: [{ type: 'text', text: item.text }, ...imageParts] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS)) // the Remote method requires a caller signal
       if (store.get(id)?.status !== 'open') return
       if (item.imageIds?.length) try { imageStore?.remove(item.imageIds) } catch { /* the weekly prune gets it */ }
       store.update(id, { state: 'started', sessionId, error: undefined, candidates: undefined, imageIds: undefined }) // sent: the list of sessions is not needed any more (the suggestion and the session title stay)
@@ -219,12 +219,13 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
 
   return {
     /** The follow-up item (state awaiting-confirm) and { ok, id, state } at once. sessions: the candidates a hub gives (every app's), else this app's own are read in the background. skippedApps: how many apps the hub could not ask (kept on the item, named in the note of an empty result). */
-    add(text, query, sessions, skippedApps, imageIds = []) {
+    add(text, query, sessions, skippedApps, imageIds = [], extra = {}) {
       // The cap of the hub (hub/follow-up.js) holds for a standalone app too: this add is synchronous, so counting the waiting ones is enough.
       if (store.count((i) => i.type === 'todo' && i.kind === 'followup' && isAwaitingConfirm(i)) >= MAX_WAITING_FOLLOW_UPS) return { ok: false, error: TOO_MANY_FOLLOW_UPS }
       const skipped = skippedOf(skippedApps)
       const given = Array.isArray(sessions)
-      const candidates = given ? normalizeCandidates(sessions) : []
+      const excluded = new Set(extra.exclude ?? [])
+      const candidates = given ? normalizeCandidates(sessions).filter((c) => !excluded.has(c.sessionId)) : []
       const none = given && !candidates.length
       const found = candidates.length ? suggestSessionByRef(query, candidates) : undefined // a number of the words decides at once: the add carries the suggestion
       const item = store.add({
@@ -232,6 +233,9 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
         ...(found ? decidedPatch(candidates, found) : { candidates: candidates.slice(0, MAX_STORED_CANDIDATES).map(trimmed), ...(none ? { suggestNote: noSessionsNote(skipped) } : { suggesting: true }) }),
         ...(skipped ? { skippedApps: skipped } : {}),
         ...(imageIds.length ? { imageIds } : {}),
+        ...(extra.mode === 'steer' ? { mode: 'steer' } : {}),
+        ...(extra.source ? { source: extra.source } : {}),
+        ...(excluded.size ? { excludeIds: [...excluded] } : {}),
       })
       if (given && candidates.length && !found) track(suggestLater(item.id, query, text, candidates))
       else if (!given) {
@@ -239,7 +243,7 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
         const loaded = new Promise((resolve) => { ready = resolve })
         loading.set(item.id, loaded)
         loaded.then(() => loading.delete(item.id))
-        track(loadLater(item.id, query, text, ready))
+        track(loadLater(item.id, query, text, ready, excluded))
       }
       return { ok: true, id: item.id, state: 'awaiting-confirm' }
     },
@@ -274,6 +278,7 @@ export function createFollowUps({ store, controllerOf, sessionsOf, images: image
   function confirmNow(item, sessionId) {
     const wanted = typeof sessionId === 'string' && sessionId ? sessionId : item.suggested?.sessionId
     if (!wanted) return { ok: false, error: 'no-session' }
+    if ((item.excludeIds ?? []).includes(wanted)) return { ok: false, error: 'excluded-session' }
     // A session that is running now may be in the middle of a task: a MODEL's pick of it is never sent without the user choosing a session (the deterministic number pick and an explicit session are).
     if (wanted === item.suggested?.sessionId && !(typeof sessionId === 'string' && sessionId) && item.suggested.running === true && !isTrustedReason(item.suggested.reason)) return { ok: false, error: 'no-session' }
     const hit = (item.candidates ?? []).find((c) => c.sessionId === wanted)

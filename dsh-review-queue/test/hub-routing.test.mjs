@@ -250,3 +250,19 @@ test('actions that only the desktop can do stay 403 local-only', async (t) => {
   const { port } = await twoAgents(t)
   for (const kind of ['read', 'stop', 'ui', 'focus']) assert.equal((await act(port, kind, { id: 'x' })).status, 403, kind)
 })
+
+// ---- the link options at the routing seam -----------------------------------------------------------------------------------------
+
+test('routing: act(todo) strips the link options before followUps.add; act(todo-link) passes them with trusted:true', async () => {
+  const { createRouting } = await import('../hub/routing.js')
+  const seen = []
+  const router = createRouting({ store: {}, queue: {}, instances: {}, commands: {}, makeFollowUps: () => ({ add: async (...args) => { seen.push(args); return { ok: true } } }) })
+  const body = { text: 'x', followUp: 'engine', mode: 'steer', source: { sessionId: 'evil', title: 'E' }, excludeSessionIds: ['s1'] }
+  await router.act('todo', body, { role: 'desktop', caller: 'c1' })
+  const [plain, caller, role, opts] = seen[0]
+  for (const key of ['mode', 'source', 'excludeSessionIds']) assert.equal(key in plain, false, key)
+  assert.deepEqual([plain.text, plain.followUp, caller, role, opts], ['x', 'engine', 'c1', 'desktop', undefined])
+  await router.act('todo-link', body, { role: 'desktop', caller: 'c1' })
+  const [linked, , , linkOpts] = seen[1]
+  assert.deepEqual([linked.mode, linked.source.sessionId, linked.excludeSessionIds, linkOpts], ['steer', 'evil', ['s1'], { trusted: true }])
+})

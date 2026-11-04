@@ -7,13 +7,14 @@
  * app, or, as for a todo started in another app's workspace, the item moves there first and moves back when that fails.
  * The candidates only ever come from the apps: nothing a client puts in its body is used for them.
  */
-import { MAX_QUERY, MAX_TODO, MAX_WAITING_FOLLOW_UPS, MAY_HAVE_BEEN_SENT, SESSIONS_LIMIT, TOO_MANY_FOLLOW_UPS, cleanSessions, codeOf, isSessionIdWords, isTrustedReason, refNumbersOf, suggestSessionByRef } from '../follow-up-shared.js'
+import { checkLinkOptions, MAX_QUERY, MAX_TODO, MAX_WAITING_FOLLOW_UPS, MAY_HAVE_BEEN_SENT, SESSIONS_LIMIT, TOO_MANY_FOLLOW_UPS, cleanSessions, codeOf, isSessionIdWords, isTrustedReason, refNumbersOf, suggestSessionByRef } from '../follow-up-shared.js'
 
 export { MAX_WAITING_FOLLOW_UPS, MAY_HAVE_BEEN_SENT, SESSIONS_LIMIT, cleanSessions } // the old home of the shared cleaner: tests and callers keep importing it from here
 
 /** How long one caller's union of the apps' sessions is reused: every add would otherwise cost a session list (and log reads) on every PC. */
 export const UNION_TTL_MS = 5000
 
+const notExcluded = (list, exclude) => (exclude.length ? list.filter((s) => !exclude.includes(s.sessionId)) : list)
 const timeOf = (s) => (Number.isFinite(s.updatedAt) ? s.updatedAt : -Infinity)
 
 /** The answer of an owner that was handed the send and did not report back: the same error, plus the warning (a plain refusal or a command nobody fetched sent nothing). */
@@ -103,6 +104,7 @@ export function createHubFollowUps({ store, instances, reachable, send, tell, lo
     const given = body.sessionId
     if (given !== undefined && given !== null && given !== '' && typeof given !== 'string') return { ok: false, error: 'unknown-session' }
     const wanted = given || item.suggested?.sessionId
+    if (wanted && (item.excludeIds ?? []).includes(wanted)) return { ok: false, error: 'excluded-session' } // the session the message comes from may never be its target
     if (!wanted) return { ok: false, error: 'no-session' }
     // A session that is running now may be in the middle of a task: a MODEL's pick of it is never sent without the user choosing a session (the cards do not preselect it). The deterministic ticket / PR number pick and an explicit session are.
     if (!given && item.suggested?.running === true && !isTrustedReason(item.suggested.reason)) return { ok: false, error: 'no-session' }
@@ -134,13 +136,15 @@ export function createHubFollowUps({ store, instances, reachable, send, tell, lo
     async sessionList(caller) { return sessions(caller, false) },
 
     /** POST /v1/todo with followUp: the words and the text are checked first, then the apps are asked, then the coordinator suggests. */
-    async add(body, caller, role) {
+    async add(body, caller, role, { trusted } = {}) {
       const text = typeof body.text === 'string' ? body.text.trim() : ''
       if (!text) return { ok: false, error: 'empty' }
       if (text.length > MAX_TODO) return { ok: false, error: 'too-long' }
       const followUp = typeof body.followUp === 'string' ? body.followUp.trim() : ''
       if (!followUp) return { ok: false, error: 'empty-query' }
       if (followUp.length > MAX_QUERY) return { ok: false, error: 'too-long' }
+      const link = checkLinkOptions(trusted === true ? { mode: body.mode, excludeSessionIds: body.excludeSessionIds, source: body.source } : {}) // untrusted: nothing of the three is read
+      if (!link.ok) return { ok: false, error: link.error }
       const coordinator = instances.coordinator(caller)
       if (!coordinator) return { ok: false, error: 'no-registry' }
       if (waiting() + adding >= MAX_WAITING_FOLLOW_UPS) return { ok: false, error: TOO_MANY_FOLLOW_UPS }
@@ -149,9 +153,10 @@ export function createHubFollowUps({ store, instances, reachable, send, tell, lo
         let found
         if (refNumbersOf(followUp).size || isSessionIdWords(followUp)) {
           found = await sessions(caller, false) // a number of the words (or one session id, the form's dropdown) may decide on the titles: then no app reads a log for a snippet
-          if (!suggestSessionByRef(followUp, found.sessions)) found = await sessions(caller)
+          if (!suggestSessionByRef(followUp, notExcluded(found.sessions, link.exclude))) found = await sessions(caller)
         } else found = await sessions(caller)
-        return await send(coordinator, { kind: 'followup-suggest', args: { text, followUp, ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}), sessions: found.sessions, ...(found.skippedApps ? { skippedApps: found.skippedApps } : {}) } })
+        found = { ...found, sessions: notExcluded(found.sessions, link.exclude) }
+        return await send(coordinator, { kind: 'followup-suggest', args: { text, followUp, ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}), sessions: found.sessions, ...(found.skippedApps ? { skippedApps: found.skippedApps } : {}), ...(link.mode ? { mode: link.mode } : {}), ...(link.exclude.length ? { excludeSessionIds: link.exclude } : {}), ...(link.source ? { source: link.source } : {}) } })
       } finally { adding-- }
     },
 

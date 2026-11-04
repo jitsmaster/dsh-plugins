@@ -8,9 +8,14 @@
  * `reading` of the hub view (the mirror service cannot know it).
  */
 import { createReviewQueue, TIP_READING } from '../service.js'
+import { todoStatesOf } from '../todo-states.js'
 import { createMirrorStore } from './mirror-store.js'
 
 const only = (condition, fields) => (condition ? fields : {})
+// The session-link options: any of them sends the todo by the trusted 'todo-link' action (a plain 'todo' is stripped of them by the hub).
+const excludes = (opts) => Array.isArray(opts.excludeSessionIds) && opts.excludeSessionIds.length > 0
+const hasSource = (opts) => opts.source !== undefined && opts.source !== null
+const linkOf = (opts) => opts.mode === 'steer' || excludes(opts) || hasSource(opts)
 
 /**
  * @param {{ local: any, client: { state: string, mirror: any, onState?: Function, call: (kind: string, body: object) => Promise<any> },
@@ -72,6 +77,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     stopTip: () => local.stopTip?.(),
     markArchivable: (open, ownerId) => local.markArchivable?.(open, ownerId) ?? open, // the running sessions and the PR guard are this app's own
     watchSessions: () => local.watchSessions?.(),
+    todoStates: (opts) => todoStatesOf(active().snapshot(), opts), // the hub's mirror when connected (every app's cards), else the local store
     count: () => active().count(),
     first: () => active().first(),
     openTarget: () => active().openTarget(),
@@ -104,7 +110,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     holdItem: (id, opts = {}) => action('hold', { id, ...only(opts.reason !== undefined, { reason: opts.reason }) }, () => local.holdItem(id, opts)),
     releaseHold: (id) => action('hold-release', { id }, () => local.releaseHold(id)),
     continueHold: (id) => action('hold-continue', { id }, () => local.continueHold(id)),
-    addTodo: (text, opts = {}) => action('todo', { text, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sparc === true, { sparc: true }), ...only(typeof opts.effort === 'string' && opts.effort !== '', { effort: opts.effort }), ...only(opts.followUp !== undefined && opts.followUp !== null, { followUp: opts.followUp }), ...only(opts.images !== undefined && opts.images !== null, { images: opts.images }) }, () => local.addTodo(text, opts)), // never opts.sessions: the hub asks the apps itself
+    addTodo: (text, opts = {}) => action(linkOf(opts) ? 'todo-link' : 'todo', { text, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sparc === true, { sparc: true }), ...only(typeof opts.effort === 'string' && opts.effort !== '', { effort: opts.effort }), ...only(opts.followUp !== undefined && opts.followUp !== null, { followUp: opts.followUp }), ...only(opts.images !== undefined && opts.images !== null, { images: opts.images }), ...only(opts.mode === 'steer', { mode: 'steer' }), ...only(excludes(opts), { excludeSessionIds: opts.excludeSessionIds }), ...only(hasSource(opts), { source: opts.source }) }, () => local.addTodo(text, opts)), // never opts.sessions: the hub asks the apps itself
     confirmTodo: (id, opts = {}) => action('todo-confirm', { id, ...only(opts.workspaceId !== undefined, { workspaceId: opts.workspaceId }), ...only(opts.sessionId !== undefined, { sessionId: opts.sessionId }) }, () => local.confirmTodo(id, opts)),
     cancelTodo: (id) => action('todo-cancel', { id }, () => local.cancelTodo(id)),
 

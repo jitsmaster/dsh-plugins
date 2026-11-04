@@ -24,6 +24,7 @@
     "capture.js",
     "service.js",
     "todo.js",
+    "todo-states.js",
     "todo-images.js",
     "auto-clear.js",
     "idle-ask.js",

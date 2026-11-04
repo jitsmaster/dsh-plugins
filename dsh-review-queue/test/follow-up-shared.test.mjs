@@ -236,3 +236,8 @@ test('docs/hub.md sessions-list bullet: the session id rule clause has its subje
   assert.doesNotMatch(bullet, /; others are dropped/)
   assert.match(bullet, /[Ss]ession ids that break the rule of `isSessionId` in \[thread\.js\]\(\.\.\/thread\.js\).{0,200}are dropped\./)
 })
+
+test('checkLinkOptions stores the source session id as a string', async () => {
+  const { checkLinkOptions } = await import('../follow-up-shared.js')
+  assert.equal(checkLinkOptions({ source: { sessionId: 12345, title: 't' } }).source.sessionId, '12345')
+})

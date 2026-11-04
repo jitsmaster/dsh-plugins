@@ -15,7 +15,7 @@ import { cleanText } from './speech.js'
 import { NOTE_NO_FIT, NOTE_UNUSABLE, createModelRun, noteOf } from './summary.js'
 import { ticketTitleFor } from './ado-ticket.js'
 import { createFollowUps, suggestSessionByRef } from './todo-follow-up.js'
-import { MAX_QUERY, MAX_TODO, PROMPT_TIMEOUT_MS, isAwaitingConfirm } from './follow-up-shared.js'
+import { MAX_QUERY, MAX_TODO, PROMPT_TIMEOUT_MS, checkLinkOptions, isAwaitingConfirm } from './follow-up-shared.js'
 
 export { suggestSessionByRef }
 
@@ -272,7 +272,7 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
 
   return {
     /** { ok, id, state } at once; the session is created (or the suggestion looked for) in the background. */
-    add(text, { workspaceId, sparc, effort, workspaces, followUp, sessions, skippedApps, images } = {}) {
+    add(text, { workspaceId, sparc, effort, workspaces, followUp, sessions, skippedApps, images, mode, excludeSessionIds, source } = {}) {
       const body = typeof text === 'string' ? text.trim() : ''
       if (!body) return { ok: false, error: 'empty' }
       if (body.length > MAX_TODO) return { ok: false, error: 'too-long' }
@@ -283,7 +283,9 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
         const query = typeof followUp === 'string' ? followUp.trim() : ''
         if (!query) return { ok: false, error: 'empty-query' }
         if (query.length > MAX_QUERY) return { ok: false, error: 'too-long' }
-        return followUps.add(body, query, sessions, skippedApps, attached.ids)
+        const link = checkLinkOptions({ mode, source, excludeSessionIds })
+        if (!link.ok) return { ok: false, error: link.error }
+        return followUps.add(body, query, sessions, skippedApps, attached.ids, { mode: link.mode, source: link.source, exclude: link.exclude })
       }
       const pasted = checkImages(images)
       if (!pasted.ok) return { ok: false, error: pasted.error }

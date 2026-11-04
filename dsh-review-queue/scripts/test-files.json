@@ -269,5 +269,9 @@
   "test/client-handoff-follow.test.mjs",
   "test/handoff-regex-sync.test.mjs",
   "test/todo-effort-plumbing.test.mjs",
-  "test/run-tests-script.test.mjs"
+  "test/run-tests-script.test.mjs",
+  "test/todo-states.test.mjs",
+  "test/client-follow-up-link.test.mjs",
+  "test/follow-up-link-routes.test.mjs",
+  "test/todo-follow-up-link.test.mjs"
 ]

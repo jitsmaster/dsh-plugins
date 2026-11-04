@@ -45,7 +45,7 @@ export async function startHubApp(t, world, { label, webPort, services = {}, con
   const session = (id) => ({ id, devTitle: 'Title of ' + id, session: { header: { cwd: 'D:/w' }, deriveMessages: () => [{ role: 'user', content: 'go' }, { role: 'assistant', content: 'done' }] } })
   let calls = 0
   const app = {
-    base, label, webPort, store: adapter, queue, agent: client, proxy, stop,
+    base, label, webPort, store: adapter, queue, hubQueue, agent: client, proxy, stop,
     inState: (mode, ms = 10_000) => waitFor(() => proxy.getMode() === mode, ms, label + ' in ' + mode),
     mirrored: (id) => [...(client.mirror.snapshot()?.open ?? []), ...(client.mirror.snapshot()?.resolved ?? [])].some((i) => i.id === id),
     async permission(sessionId, command = 'ls') {
