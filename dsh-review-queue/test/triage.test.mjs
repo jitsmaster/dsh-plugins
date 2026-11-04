@@ -73,7 +73,7 @@ test('a low score never passes a veto', () => {
 
 test('act is true only for a handled item whose rule is in auto; observe handles on paper only', () => {
   assert.deepEqual([run().verdict, run().act], ['handle', false])
-  const auto = run({ rule: rule({ mode: 'auto' }) })
+  const auto = run({ rule: rule({ mode: 'auto' }), facts: { ...safe, commandIntact: true, pathsContained: true } })
   assert.deepEqual([auto.verdict, auto.act], ['handle', true])
   assert.equal(auto.score, 5)
 })

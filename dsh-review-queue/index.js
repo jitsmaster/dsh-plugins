@@ -69,6 +69,7 @@ import { createTriageJudge } from './triage-judge.js'
 import { createTriageLog } from './triage-log.js'
 import { createTriageRunner, DEFAULT_RULES } from './triage-runner.js'
 import { createDoneActor } from './triage-act-done.js'
+import { createPermissionActor } from './triage-act-permission.js'
 import { createTriageMemory } from './triage-memory.js'
 import { createTriageRules } from './triage-rules.js'
 import { createAiReporter, REPORT_INTERVAL_MS } from './ai-reporter.js'
@@ -258,7 +259,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
     try { triageLog?.prune() } catch { /* next start */ }
     triage = createTriageRunner({
       store, log, triageLog, memory: triageMemory, rules: () => triageRules.current(),
-      actors: { done: createDoneActor({ store }) }, // inert while every rule is in observe
+      actors: { done: createDoneActor({ store }), permission: createPermissionActor({ store, decide: (id, resolution) => capture.decidePermission(id, 'approve', { resolution }) }) }, // inert while every rule is in observe
       judge: config.triageDeps?.judge ?? createTriageJudge({ llm, log }),
       // A question may only be answered from what the user wrote earlier in the session: its thread, user messages only.
       sourcesOf: sourcesForItem(threadOf),

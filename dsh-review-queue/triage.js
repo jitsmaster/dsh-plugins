@@ -142,6 +142,11 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
       if (facts.summaryPending !== false) reasons.push('summary-pending')
     }
   }
+  // Auto only, permission class: the command must have been captured whole and every path argument must resolve (real path) inside the workspace. Missing facts fail closed.
+  if (rule && rule.class === 'permission' && rule.mode === 'auto') {
+    if (facts?.commandIntact !== true) reasons.push('command-truncated')
+    if (facts?.pathsContained !== true) reasons.push('outside-workspace-real')
+  }
   if (score !== undefined && score > threshold) reasons.push('score-above-threshold')
   const verdict = reasons.length ? 'ask' : 'handle'
   return { verdict, act: verdict === 'handle' && rule?.mode === 'auto', ...(score === undefined ? {} : { score }), threshold, reasons }

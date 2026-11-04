@@ -13,6 +13,7 @@ import { RAW_MAX, RAW_PRECLIP, oneLine } from './triage-judge.js'
 import { hasActionItem } from './auto-clear.js'
 import { classOf, parseReadOnlyCommand, triageOutcome } from './triage.js'
 import { redact } from './triage-log.js'
+import { commandIntact, containedInWorkspace } from './triage-paths.js'
 
 /** At most this many judge calls at once; an item arriving beyond that stays a normal card (and is logged), so cost and latency stay bounded. */
 export const MAX_IN_FLIGHT = 2
@@ -57,7 +58,7 @@ export function factsOf(item, { sessionContinuesOf = () => false } = {}) {
     const parsed = SHELL_TOOL.test(String(p.toolName ?? '')) ? parseReadOnlyCommand(command) : { ok: false, reason: 'not a shell tool' }
     const riskFlags = riskOf({ toolName: p.toolName, detail: p.detail, path: p.path, workspace: item.workspace }).map((r) => r.code)
     const inside = pathsInside(command, item.workspace)
-    return { riskFlags, safe: parsed.ok && inside && !riskFlags.length, readOnly: parsed.ok, outsideWorkspace: !inside || riskFlags.includes('outside-workspace'), reversible: parsed.ok }
+    return { riskFlags, commandIntact: commandIntact(p), safe: parsed.ok && inside && !riskFlags.length, readOnly: parsed.ok, outsideWorkspace: !inside || riskFlags.includes('outside-workspace'), reversible: parsed.ok }
   }
   if (item?.type === 'completed') {
     let continues = false
@@ -154,7 +155,7 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     const doneExtra = cls === 'done' ? { sessionContinues: facts.sessionContinues === true } : {}
     // For a question the pre-check judgment has no answer yet, so its missing basis is no veto.
     // The auto-only summary vetoes are judged after the model call: the summary usually arrives later than the card.
-    const hard = pre.reasons.filter((r) => r !== 'no-rule' && r !== 'action-item' && r !== 'summary-pending' && !(cls === 'question' && r === 'no-basis'))
+    const hard = pre.reasons.filter((r) => r !== 'no-rule' && r !== 'outside-workspace-real' && r !== 'action-item' && r !== 'summary-pending' && !(cls === 'question' && r === 'no-basis'))
     if (hard.length) { record({ itemId: item.id, type: item.type, stage: 'code-veto', verdict: 'ask', reasons: hard, ...doneExtra }); return }
     // Learning from reversals: the user reversed a similar AI proposal before. Code decides, not the model: the card stays a normal card and says why.
     let recalled = { context: [] }
@@ -183,7 +184,12 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     const rule = mine.find((r) => r.id === result.judgment.matched_rule)
     // An auto verdict reads the card as it is after the judge (its summary and session state may have arrived meanwhile); observe keeps the facts of the raise.
     const latest = store.get(item.id)
-    const verdictFacts = rule?.mode === 'auto' && latest ? factsOf(latest, { sessionContinuesOf }) : facts
+    let verdictFacts = rule?.mode === 'auto' && latest ? factsOf(latest, { sessionContinuesOf }) : facts
+    // Auto, permission: the real-path containment is async I/O, so it is computed here as one more fact (never for observe).
+    if (rule?.mode === 'auto' && latest && cls === 'permission') {
+      const p = latest.payload ?? {}
+      verdictFacts = { ...verdictFacts, pathsContained: verdictFacts.readOnly === true && await containedInWorkspace(typeof p.detail === 'string' && p.detail ? p.detail : p.summary, latest.workspace) }
+    }
     const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts: verdictFacts, sources, marks: marksOf(item), relax: { sessionFinished: true } })
     const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: rule?.mode ?? 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtra }
     // Re-checked after the wait: the item may have been resolved, put on hold or its rule switched off meanwhile.

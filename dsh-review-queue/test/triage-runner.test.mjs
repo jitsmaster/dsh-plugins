@@ -2,6 +2,7 @@
 // and only puts a "would handle" note on the card; the user's later action is compared with it automatically.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { tmpdir } from 'node:os'
 import { createStore } from '../store.js'
 import { createTriageRunner, factsOf, feedbackOf, pathsInside, ruleVersion, DEFAULT_RULES } from '../triage-runner.js'
 
@@ -58,7 +59,7 @@ test('a safe read-only permission gets the AI-would-handle note and nothing is d
 test('a rule in auto mode still only observes in phase 2 (nothing is approved)', async () => {
   const rules = DEFAULT_RULES.map((r) => ({ ...r, mode: 'auto' }))
   const { store, runner } = setup({ rules })
-  const item = store.add(perm())
+  const item = store.add(perm('git status', { workspace: tmpdir(), payload: { toolName: 'shell', detail: 'git status', summary: 'git status', callId: 'c1' } }))
   await runner.idle()
   assert.equal(store.get(item.id).status, 'open')
   assert.equal(store.get(item.id).triage.mode, 'observe')

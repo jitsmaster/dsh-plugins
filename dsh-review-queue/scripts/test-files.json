@@ -281,5 +281,7 @@
   "test/triage-enabled.test.mjs",
   "test/triage-act.test.mjs",
   "test/capture-ai-resolution.test.mjs",
-  "test/triage-act-done.test.mjs"
+  "test/triage-act-done.test.mjs",
+  "test/triage-act-permission.test.mjs",
+  "test/triage-paths.test.mjs"
 ]

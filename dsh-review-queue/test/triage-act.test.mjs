@@ -1,6 +1,7 @@
 // Slice 2 of Auto triage: the generic act plumbing in the runner. With no class actor a rule in auto mode still only observes.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { tmpdir } from 'node:os'
 import { createStore } from '../store.js'
 import { createTriageRunner, DEFAULT_RULES } from '../triage-runner.js'
 
@@ -8,7 +9,7 @@ const GOOD = {
   needs_decision: false, answer_basis: 'none', answer: null, evidence_quote: null, evidence_source: null,
   matched_rule: 'ro-permission', attention: 10, reversible: true, touches_outside_workspace: false, read_only: true,
 }
-const perm = (detail = 'git status', payload = {}) => ({ type: 'permission', sessionId: 's1', workspace: 'D:/w', payload: { toolName: 'shell', detail, summary: detail, callId: 'c1', ...payload } })
+const perm = (detail = 'git status', payload = {}) => ({ type: 'permission', sessionId: 's1', workspace: tmpdir(), payload: { toolName: 'shell', detail, summary: detail, callId: 'c1', ...payload } })
 const autoRules = () => DEFAULT_RULES.map((r) => ({ ...r, mode: 'auto' }))
 
 /** hook: runs inside the judge call (after the raise, before the act), to change the world between judge and act. */
