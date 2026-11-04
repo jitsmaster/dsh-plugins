@@ -123,10 +123,16 @@ test('the filter result and the AI count agree: auto-cleared items are listed un
   assert.equal(S.aiUnseenCount(items), 1)
 })
 
-test('the phone "AI" chip shows the count of AI decisions only, not of auto-cleared items', () => {
-  const labels = (list) => walk(draw('ResolvedByRow', { model: listModel(S, snapOf(list), f('all')) })).filter((n) => n.type === 'button').map(ptext)
-  assert.deepEqual(labels([aiRes('u1'), auto('a'), auto('b')]), ['All', 'Me', 'AI (1)'])
-  assert.deepEqual(labels([auto('a'), auto('b')]), ['All', 'Me', 'AI'])
+test('the phone "AI" tab flags only unseen AI decisions as new, never auto-cleared items (which still count under the AI filter)', () => {
+  const aiTab = (list) => listModel(S, snapOf(list), f('all')).resolvedTabs.find((t) => t.value === 'ai')
+  const withAi = aiTab([aiRes('u1'), auto('a'), auto('b')])
+  assert.equal(withAi.countText, '1 new')
+  assert.equal(withAi.hot, true)
+  assert.equal(withAi.count, 1, 'count is AI decisions only (resolvedCounts uses isAiResolved), auto-cleared excluded')
+  const onlyAuto = aiTab([auto('a'), auto('b')])
+  assert.equal(onlyAuto.countText, undefined)
+  assert.equal(onlyAuto.hot, false)
+  assert.equal(onlyAuto.count, 0)
 })
 
 // ======================= 1 + 5. badge, desktop card =======================
@@ -223,6 +229,6 @@ test('phone: viewing an auto-cleared item sends no "seen" request', async () => 
 
 test('phone: the Resolved list row wiring still draws the badge through AiBadge', () => {
   const src = readFileSync(join(root, 'lib', 'mobile', 'views.js'), 'utf8')
-  const list = src.slice(src.indexOf('function ResolvedList'), src.indexOf('function NewTodoView'))
+  const list = src.slice(src.indexOf('export function ResolvedBody'), src.indexOf('function ResolvedList'))
   assert.match(list, /<\$\{AiBadge\} item=\$\{i\} \/>/)
 })
