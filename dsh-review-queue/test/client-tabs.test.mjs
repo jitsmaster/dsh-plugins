@@ -659,6 +659,16 @@ test('the todo form kind is a tablist with two tabs (aria-selected), not toggle 
 })
 
 
+test('the New todo form sits above the tabs: header, notice, form, then the primary tabs', () => {
+  const { T } = load()
+  T.set({ todoForm: { open: true, text: '', workspaceId: '', sparc: false, busy: false } })
+  const order = T.Panel().children.map((c) => (c && typeof c.type === 'function' ? c.type.name : c && c.type)).filter(Boolean)
+  const at = (name) => order.indexOf(name)
+  assert.ok(at('TodoForm') > at('Head'), 'below the header')
+  assert.ok(at('TodoForm') < at('ViewTabs'), 'above the primary tabs, got ' + order.join(' > '))
+  assert.ok(at('TodoForm') < at('SubTabs'), 'above the secondary tabs')
+})
+
 // ---- review fixes: stale dialog, focus handling, tab panels, Esc on the phone tab, memoised visibleOpen, Resolved type ----------------------
 
 test('a dialog is closed by a tab switch, a type switch, and when its item is gone from the snapshot', () => {
