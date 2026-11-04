@@ -99,7 +99,7 @@ test('the hub bundle does not import thread.js for it: the rule is a commented c
 test('package.json lists the new module in files and this test in the test script', () => {
   const pkg = JSON.parse(source('package.json'))
   assert.ok(pkg.files.includes('follow-up-shared.js'))
-  assert.match(pkg.scripts.test, /test\/follow-up-shared\.test\.mjs/)
+  assert.match(readFileSync(join(root, 'scripts/test-files.json'), 'utf8'), /test\/follow-up-shared\.test\.mjs/)
 })
 
 // ---- the docs say what the code does ------------------------------------------------------------------------------------------------

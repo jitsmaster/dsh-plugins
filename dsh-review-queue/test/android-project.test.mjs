@@ -93,7 +93,7 @@ test('package.json "files" does not ship android/ in the installed plugin, and t
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   assert.ok(!pkg.files.some((f) => f === 'android' || f.startsWith('android/')))
   for (const t of ['android-twa-url', 'android-twa-resources', 'android-fingerprints', 'android-adb-parse', 'android-project']) {
-    assert.ok(pkg.scripts.test.includes('test/' + t + '.test.mjs'), t)
+    assert.ok(readFileSync(join(root, 'scripts/test-files.json'), 'utf8').includes('test/' + t + '.test.mjs'), t)
   }
 })
 

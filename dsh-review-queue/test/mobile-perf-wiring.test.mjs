@@ -20,7 +20,7 @@ function body(src, name) {
 }
 
 test('the new test files are in the package.json test script', () => {
-  const listed = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts.test.replace(/^node --test\s+/, '').split(/\s+/)
+  const listed = JSON.parse(readFileSync(join(ROOT, 'scripts/test-files.json'), 'utf8'))
   for (const f of ['thread-incremental', 'thread-window', 'thread-after', 'mobile-thread-perf', 'mobile-api-perf', 'mobile-perf-wiring']) assert.ok(listed.includes('test/' + f + '.test.mjs'), f + ' is listed')
 })
 

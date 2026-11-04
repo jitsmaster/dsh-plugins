@@ -35,8 +35,7 @@ test('dictation.js and todo-form.js are served by the phone router as JavaScript
 })
 
 test('the new test files are in the package.json test script', () => {
-  const script = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts.test
-  const listed = script.replace(/^node --test\s+/, '').split(/\s+/)
+  const listed = JSON.parse(readFileSync(join(ROOT, 'scripts/test-files.json'), 'utf8'))
   const added = ['test/mobile-dictation.test.mjs', 'test/mobile-todo-form.test.mjs', 'test/mobile-todo-card.test.mjs', 'test/hub-device-todo.test.mjs', 'test/mobile-todo-wiring.test.mjs']
   for (const f of added) assert.ok(listed.includes(f), f + ' is listed')
 })

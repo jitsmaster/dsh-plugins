@@ -34,7 +34,7 @@ test('thread.js is served by the phone router as JavaScript', () => {
 })
 
 test('the new test files are in the package.json test script', () => {
-  const listed = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts.test.replace(/^node --test\s+/, '').split(/\s+/)
+  const listed = JSON.parse(readFileSync(join(ROOT, 'scripts/test-files.json'), 'utf8'))
   for (const f of ['test/thread-cache.test.mjs', 'test/thread-cost.test.mjs', 'test/mobile-thread.test.mjs', 'test/mobile-api-thread.test.mjs', 'test/mobile-thread-wiring.test.mjs', 'test/thread-security.test.mjs', 'test/agent-client-thread.test.mjs']) assert.ok(listed.includes(f), f + ' is listed')
 })
 

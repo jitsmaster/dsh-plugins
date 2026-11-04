@@ -9,13 +9,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
 
 test('the new test files are in the package.json test script', () => {
-  const listed = pkg.scripts.test.replace(/^node --test\s+/, '').split(/\s+/)
+  const listed = JSON.parse(readFileSync(join(ROOT, 'scripts/test-files.json'), 'utf8'))
   for (const f of ['client-todo-draft', 'client-todo-tune', 'mobile-todo-draft', 'todo-tune', 'todo-tune-server', 'agent-proxy-tune', 'plugin-todo-tune.integration', 'todo-tune-wiring']) assert.ok(listed.includes('test/' + f + '.test.mjs'), f)
 })
 
 test('todo-tune.js is published with the package and the helpers are not test files', () => {
   assert.ok(pkg.files.includes('todo-tune.js'))
-  assert.ok(!pkg.scripts.test.includes('client-todo-helpers') && !pkg.scripts.test.includes('todo-tune-helpers'), 'helpers are imported, not run')
+  const list = readFileSync(join(ROOT, 'scripts/test-files.json'), 'utf8')
+  assert.ok(!list.includes('client-todo-helpers') && !list.includes('todo-tune-helpers'), 'helpers are imported, not run')
 })
 
 test('index.js documents and reads the promptTunePath setting', () => {

@@ -143,6 +143,6 @@ test('the tab bar is still there for an ordinary page: nothing hides it without 
 })
 
 test('this test file is in the package.json test script', () => {
-  const listed = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts.test.replace(/^node --test\s+/, '').split(/\s+/)
+  const listed = JSON.parse(readFileSync(join(ROOT, 'scripts/test-files.json'), 'utf8'))
   assert.ok(listed.includes('test/mobile-keyboard.test.mjs'))
 })
