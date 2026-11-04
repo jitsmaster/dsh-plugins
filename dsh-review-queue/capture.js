@@ -284,7 +284,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       pending.set(item.id, {
         type: 'question', questions: req.questions ?? [],
         // Resolve first, then end the card's wait: its ASK_ABORTED rejection reaches a request that already has its answer and is ignored.
-        answer: (answers, by = 'card') => finish(() => { guard(() => store.resolve(item.id, { kind: 'answered', by, answers })); resolve({ answers }); answeredHere.abort() }),
+        answer: (answers, by = 'card', { resolution } = {}) => finish(() => { guard(() => store.resolve(item.id, resolution ?? { kind: 'answered', by, answers })); resolve({ answers }); answeredHere.abort() }),
         // The session handled it (a reply there, the call returned): the item leaves now, the request itself is still DSH's to settle.
         handledElsewhere: (resolution) => { pending.delete(item.id); clearAuto(); return guard(() => store.resolve(item.id, resolution), false) },
       })
@@ -335,8 +335,8 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
         type: 'permission',
         // Its session was archived: the card leaves now; the request itself is settled by the session's own abort (finish then finds nothing left to resolve).
         handledElsewhere: (resolution) => { pending.delete(item.id); return guard(() => store.resolve(item.id, resolution), false) },
-        decide: (decision) => finish(() => {
-          guard(() => store.resolve(item.id, { kind: decision === 'approve' ? 'approved' : 'denied', by: 'card' }))
+        decide: (decision, { resolution } = {}) => finish(() => {
+          guard(() => store.resolve(item.id, resolution ?? { kind: decision === 'approve' ? 'approved' : 'denied', by: 'card' }))
           resolve(decision === 'approve' ? 'allowed-once' : 'rejected')
         }),
       })
@@ -517,7 +517,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
      * Answer a pending question from the card. answers: [{ id, selected, custom? }], one per question. A detached question (its live
      * request ended, the item is still open) is answered through the session instead; that call is asynchronous.
      */
-    answerQuestion(itemId, answers) {
+    answerQuestion(itemId, answers, { resolution } = {}) {
       const entry = pending.get(itemId)
       if (!entry) {
         const item = store.get(itemId)
@@ -526,7 +526,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       if (entry.type !== 'question') return { ok: false, error: 'not-pending' }
       const clean = cleanAnswers(entry.questions, answers)
       if (!clean) return { ok: false, error: 'bad-answer' }
-      return entry.answer(clean) ? { ok: true } : { ok: false, error: 'not-pending' }
+      return entry.answer(clean, undefined, { resolution }) ? { ok: true } : { ok: false, error: 'not-pending' }
     },
     /**
      * Answer a question that already expired. The assistant carried on with the recommended option; if the late answer is
@@ -557,11 +557,11 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       lateInFlight.delete(itemId)
       return { ok: true, sent: true }
     },
-    decidePermission(itemId, decision) {
+    decidePermission(itemId, decision, { resolution } = {}) {
       const entry = pending.get(itemId)
       if (!entry || entry.type !== 'permission') return { ok: false, error: 'not-pending' }
       if (decision !== 'approve' && decision !== 'deny') return { ok: false, error: 'bad-decision' }
-      return entry.decide(decision) ? { ok: true } : { ok: false, error: 'not-pending' }
+      return entry.decide(decision, { resolution }) ? { ok: true } : { ok: false, error: 'not-pending' }
     },
     /** The sessions whose events this app has seen and that are not disposed. */
     /** Closes an open question or permission card from outside its request (its session was archived); false when it is not open. */

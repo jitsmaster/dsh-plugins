@@ -146,6 +146,13 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       changed()
       return true
     },
+    /** Resolve an open item only when test(item) holds, read in the same tick (a throwing test counts as false). */
+    resolveIf(id, test, resolution) {
+      const item = copy(items.get(id))
+      if (!item || item.status !== 'open') return false
+      try { if (!test(item)) return false } catch { return false }
+      return this.resolve(id, resolution)
+    },
     resolveSession(sessionId, resolution) {
       let any = false
       for (const item of items.values()) {

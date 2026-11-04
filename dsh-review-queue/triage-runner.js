@@ -23,6 +23,15 @@ export const DEFAULT_RULES = [
   { id: 'straightforward-question', name: 'Straightforward questions', class: 'question', enabled: true, mode: 'observe', instruction: 'A question with one clearly recommended option, where the user already asked for exactly that action earlier in the session: propose that option as the answer. The answer must rest on a quote the user wrote (a user-authored source); never answer a choice of direction, scope or taste.' },
 ]
 
+/** A hash of the payload fields that matter for acting (never the summary, which arrives later), so a change between judge and act is seen. */
+export function payloadFingerprint(item) {
+  const p = item?.payload ?? {}
+  const fields = item?.type === 'permission' ? [p.toolName, p.detail, p.path, p.callId]
+    : item?.type === 'question' ? [(Array.isArray(p.questions) ? p.questions : []).map((q) => [q?.question, (Array.isArray(q?.options) ? q.options : []).map((o) => o?.label)]), p.callId]
+      : item?.type === 'completed' ? [p.reply, p.request] : []
+  return createHash('sha1').update(JSON.stringify([item?.type, ...fields])).digest('hex')
+}
+
 /** A short hash of what a rule says, so every decision records the version of the rule it was made under. */
 export const ruleVersion = (rule) => createHash('sha1').update(JSON.stringify([rule.id, rule.class, rule.instruction ?? '', rule.closedSet ?? null, rule.threshold ?? null])).digest('hex').slice(0, 8)
 
@@ -121,7 +130,7 @@ export function lessonFeedbackOf(item) {
  *   now?: () => number, maxInFlight?: number, memory?: ReturnType<import('./triage-memory.js').createTriageMemory> }} deps
  *   memory: the correction memory. A strong match with a past reversal is a code veto before any model call; weaker matches go to the judge as cautionary context.
  */
-export function createTriageRunner({ store, judge, triageLog, memory, rules = DEFAULT_RULES, marksOf = () => ({}), sourcesOf = () => [], sessionContinuesOf, enabled = () => true, log = () => {}, now = Date.now, maxInFlight = MAX_IN_FLIGHT }) {
+export function createTriageRunner({ store, judge, triageLog, memory, rules = DEFAULT_RULES, marksOf = () => ({}), sourcesOf = () => [], sessionContinuesOf, actors = {}, enabled = () => true, log = () => {}, now = Date.now, maxInFlight = MAX_IN_FLIGHT }) {
   const rulesNow = () => (typeof rules === 'function' ? rules() : rules) // a function is read at each use, so a mode change applies without a restart
   const running = new Set()
   let inFlight = 0
@@ -137,6 +146,7 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     if (!cls) return
     const mine = rulesNow().filter((r) => r.class === cls && r.enabled !== false && r.mode !== 'off')
     if (!mine.length) return
+    const judgedPrint = payloadFingerprint(item)
     const facts = factsOf(item, { sessionContinuesOf })
     // Step 1, code only: a veto that no model answer can lift means no model call at all.
     const pre = triageOutcome({ item, judgment: { needs_decision: false, attention: 0, matched_rule: mine[0].id, answer_basis: 'none' }, rule: mine[0], facts, marks: marksOf(item), relax: { sessionFinished: true } })
@@ -170,19 +180,40 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     }
     const rule = mine.find((r) => r.id === result.judgment.matched_rule)
     const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts, sources, marks: marksOf(item), relax: { sessionFinished: true } })
-    const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtra }
+    const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: rule?.mode ?? 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtra }
     // Re-checked after the wait: the item may have been resolved, put on hold or its rule switched off meanwhile.
     const fresh = store.get(item.id) // the item as it is now, not as it was when it was raised
     const marks = fresh ? marksOf(fresh) : {}
     if (outcome.verdict !== 'handle' || fresh?.status !== 'open' || !enabled() || rule.mode === 'off' || marks.onHold || marks.neverAuto) { record(outcome.verdict === 'handle' ? { ...entry, verdict: 'ask', reasons: ['changed-meanwhile'] } : entry); return }
+    if (outcome.act === true && rule.mode === 'auto' && typeof actors[cls] === 'function') { record(entry); await actOn({ item, cls, rule, outcome, judgment: result.judgment, sources, judgedPrint }); return }
     store.update(item.id, { triage: { mode: 'observe', verdict: 'handle', ruleId: rule.id, ruleName: rule.name, ruleVersion: ruleVersion(rule), score: outcome.score, threshold: outcome.threshold, would: wouldText(item, { answer: result.judgment.answer }), ...(cls === 'question' ? { answer: clipAnswer(result.judgment.answer) } : {}), at: now(), ...(recalled.context.length ? { considered: recalled.context.map((l) => ({ id: l.id, title: l.title, count: l.count, lastAt: l.lastAt })) } : {}) } })
     watching.add(item.id)
     record(entry)
     log('triage: would handle ' + item.type + ' ' + item.id + ' (rule ' + rule.id + ', score ' + outcome.score + ')')
   }
 
-  function checkFeedback() {
-    for (const id of [...watching]) {
+  /** The act step: every check is repeated in one synchronous stretch right before the actor is called; whatever goes wrong leaves an ordinary open card. */
+  async function actOn({ item, cls, rule, outcome, judgment, sources, judgedPrint }) {
+    const base = { itemId: item.id, type: item.type, stage: 'act', mode: 'auto', ruleId: rule.id, ruleVersion: ruleVersion(rule), score: outcome.score, threshold: outcome.threshold }
+    const refuse = (reason, result = 'refused') => record({ ...base, result, reason })
+    const fresh = store.get(item.id)
+    const marks = fresh ? marksOf(fresh) : {}
+    const live = rulesNow().find((r) => r.id === rule.id)
+    if (fresh?.status !== 'open' || payloadFingerprint(fresh) !== judgedPrint || !enabled() || live?.mode !== 'auto' || live.enabled === false || marks.onHold || marks.neverAuto) return refuse('changed-meanwhile')
+    const str = (v, cap) => (typeof v === 'string' ? v.slice(0, cap) : undefined)
+    const basis = judgment.answer_basis
+    const resolutionBase = { kind: 'ai-resolved', by: 'ai', ruleId: rule.id, ruleVersion: base.ruleVersion, threshold: outcome.threshold, score: outcome.score, decidedAt: now(), basis, ...(str(judgment.evidence_source, 100) ? { evidenceSource: judgment.evidence_source.slice(0, 100) } : {}), ...(str(judgment.evidence_quote, 300) ? { quote: judgment.evidence_quote.slice(0, 300) } : {}) }
+    const p = fresh.payload ?? {}
+    let res
+    try { res = await actors[cls]({ item: fresh, rule, outcome, judgment, sources, resolutionBase }) } catch (error) { log('triage: actor ' + cls + ' ' + item.id + ' failed: ' + (error?.message ?? error)); return refuse('error') }
+    if (res?.ok !== true) { const reason = typeof res?.reason === 'string' ? res.reason.slice(0, 100) : 'refused'; return refuse(reason, reason === 'not-pending' || reason === 'lost-race' ? 'lost-race' : 'refused') }
+    const answer = typeof res.answer === 'string' ? clipAnswer(res.answer) : undefined
+    const preState = { type: fresh.type, ...(fresh.sessionId ? { sessionId: fresh.sessionId } : {}), ...(p.toolName ? { toolName: p.toolName } : {}), ...(typeof p.detail === 'string' ? { command: redact(p.detail).slice(0, 500) } : {}), ...(typeof p.questions?.[0]?.question === 'string' ? { question: p.questions[0].question.slice(0, 300) } : {}), ...(answer ? { answer: answer.slice(0, 200) } : {}), summaryHead: String(p.summary ?? '').slice(0, 200) }
+    record({ ...base, result: 'done', action: res.action, basis: res.basis ?? basis, preState })
+    log('triage: ' + (res.action ?? 'handled') + ' ' + item.type + ' ' + item.id + ' (rule ' + rule.id + ')')
+  }
+
+  function checkFeedback() {    for (const id of [...watching]) {
       const item = store.get(id)
       if (!item) { watching.delete(id); continue }
       if (item.status !== 'resolved') continue
