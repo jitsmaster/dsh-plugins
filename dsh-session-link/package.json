@@ -1,0 +1,11 @@
+{
+  "name": "dsh-session-link",
+  "version": "0.1.0",
+  "description": "Lets one DeepSeek Harness session find another, send it a message the user confirms in the Review Queue, and read its last reply.",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js", "./package.json": "./package.json" },
+  "files": ["index.js", "match.js", "envelope.js", "sessions.js", "send.js", "result.js", "cordis.patch.yml", "README.md"],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}
