@@ -32,6 +32,7 @@
     "triage-judge.js",
     "triage-log.js",
     "triage-runner.js",
+    "triage-act-done.js",
     "triage-memory.js",
     "triage-review.js",
     "triage-rules.js",

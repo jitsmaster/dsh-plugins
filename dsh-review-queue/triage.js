@@ -136,6 +136,11 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
     const needs = rule.mode === 'observe' ? (facts.needsUserObserve ?? facts.needsUser) : facts.needsUser
     if (needs !== false) reasons.push('needs-user')
     if (facts.sessionContinues !== true && !(relax?.sessionFinished === true && rule.class === 'done' && rule.mode === 'observe')) reasons.push('session-finished')
+    // Auto only: a done card with an action item, or whose summary the summarizer has not settled yet, is never cleared. Missing facts fail closed.
+    if (rule.mode === 'auto') {
+      if (facts.actionItem !== false) reasons.push('action-item')
+      if (facts.summaryPending !== false) reasons.push('summary-pending')
+    }
   }
   if (score !== undefined && score > threshold) reasons.push('score-above-threshold')
   const verdict = reasons.length ? 'ask' : 'handle'
