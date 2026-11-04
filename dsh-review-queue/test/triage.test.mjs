@@ -186,7 +186,7 @@ test('question: a free-text question without options skips the option check', ()
 test('question: with the same valid judgment only an auto rule acts, and the session-finished relax never applies to the question class', () => {
   const item = qItem(opts('Yes, post and resolve'))
   assert.equal(qRun(item).act, false)
-  const auto = qRun(item, { rule: { ...qRule, mode: 'auto' } })
+  const auto = qRun(item, { rule: { ...qRule, mode: 'auto' }, facts: { ...safe, questionSimple: true } }) // auto also needs the code fact that the card is a simple option question
   assert.deepEqual([auto.verdict, auto.act], ['handle', true])
   const relaxed = qRun(item, { relax: { sessionFinished: true }, facts: { riskFlags: [], safe: false } })
   assert.equal(relaxed.verdict, 'ask')

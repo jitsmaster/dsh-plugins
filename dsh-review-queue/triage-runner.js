@@ -66,7 +66,13 @@ export function factsOf(item, { sessionContinuesOf = () => false } = {}) {
     return { riskFlags: [], safe: true, needsUser: needsUser(p.reply), needsUserObserve: needsUserForTriage(p.reply), sessionContinues: continues, actionItem: item.actionable === true || hasActionItem(item.summary), summaryPending: item.summarySource === undefined || item.summarySource === 'fallback' }
   }
   // One question only: with several, a single answer cannot be proposed for the card.
-  if (item?.type === 'question') return { riskFlags: [], safe: Array.isArray(p.questions) && p.questions.length === 1 }
+  // questionSimple (read by auto only): one question with options, single choice, no presentation intent, still live (not detached), reachable by its call id.
+  if (item?.type === 'question') {
+    const one = Array.isArray(p.questions) && p.questions.length === 1
+    const q = one ? p.questions[0] : undefined
+    const questionSimple = one && Array.isArray(q?.options) && q.options.length >= 1 && !q.multiSelect && q.intent === undefined && item.detached !== true && p.callId !== undefined && p.callId !== null && p.callId !== ''
+    return { riskFlags: [], safe: one, questionSimple }
+  }
   return { riskFlags: [], safe: false }
 }
 

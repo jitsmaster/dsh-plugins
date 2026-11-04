@@ -4,6 +4,7 @@
  * threshold: the score is a NECESSARY gate, never a sufficient one. Every hard veto (rule, class, user marks, risk flags, code-computed safety
  * facts, admissible evidence) still wins over a low score, because text the judged agent wrote can steer the model.
  */
+import { recommendedOf } from './speech.js'
 
 /** Items scoring at or below this are candidates for processing (a rule may set its own, never above MAX_THRESHOLD). */
 export const DEFAULT_THRESHOLD = 25
@@ -85,15 +86,28 @@ function isOffered(answer, item) {
   return typeof answer === 'string' && options.some((o) => labelOf(o) === answer.trim().toLowerCase())
 }
 
+/** Auto only: the answer is EXACTLY one offered label (case and spaces as on the card); a question without options never qualifies. */
+function isOfferedExactly(answer, item) {
+  const options = item?.payload?.questions?.[0]?.options
+  return typeof answer === 'string' && Array.isArray(options) && options.some((o) => o?.label === answer)
+}
+
 function questionBasis(judgment, rule, sources, reasons, item) {
+  const auto = rule.mode === 'auto'
   const basis = judgment.answer_basis
   if (basis === 'closed-set') {
     if (!Array.isArray(rule.closedSet) || !rule.closedSet.includes(judgment.answer)) reasons.push('answer-not-in-set')
+    if (auto) reasons.push('inadmissible-evidence') // auto answers only from a quote the user wrote
   } else if (basis === 'quoted-source') {
     const found = quoteSource(judgment.evidence_quote, sources)
     if (found === undefined || found !== judgment.evidence_source) reasons.push('inadmissible-evidence')
   } else { reasons.push('no-basis'); return }
-  if (!isOffered(judgment.answer, item)) reasons.push('answer-not-an-option')
+  if (!(auto ? isOfferedExactly(judgment.answer, item) : isOffered(judgment.answer, item))) reasons.push('answer-not-an-option')
+  // Auto only: when the card marks a recommended option, that is the only one the AI may answer.
+  else if (auto) {
+    const rec = recommendedOf(item?.payload?.questions?.[0])
+    if (rec !== undefined && judgment.answer !== rec) reasons.push('answer-not-recommended')
+  }
 }
 
 /**
@@ -129,7 +143,11 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
     if (facts && ((j.read_only !== undefined && facts.readOnly !== undefined && j.read_only !== facts.readOnly)
       || (j.touches_outside_workspace !== undefined && facts.outsideWorkspace !== undefined && j.touches_outside_workspace !== facts.outsideWorkspace)
       || (j.reversible !== undefined && facts.reversible !== undefined && j.reversible !== facts.reversible))) reasons.push('advisory-disagrees')
-    if (rule && rule.class === 'question') questionBasis(j, rule, sources, reasons, item)
+    if (rule && rule.class === 'question') {
+      // Auto only: one plain option question that can be answered through its live request; missing facts fail closed.
+      if (rule.mode === 'auto' && facts?.questionSimple !== true) reasons.push('question-not-simple')
+      questionBasis(j, rule, sources, reasons, item)
+    }
   }
   if (rule && rule.class === 'done' && facts) {
     // The weaker check may only gate observe; any other mode (auto, off, unknown) fails closed on the strict one.

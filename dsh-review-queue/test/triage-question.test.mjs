@@ -145,7 +145,8 @@ test('a free-text question (no options) may be answered with the quoted text', a
 
 test('a question rule in auto mode still only observes: the item stays open and nothing is answered', async () => {
   const { store, runner } = setup({ rules: [{ ...QRULE, mode: 'auto' }] })
-  const item = store.add(question())
+  const q = question()
+  const item = store.add({ ...q, payload: { ...q.payload, callId: 'c1' } }) // a simple card (auto needs a call id); no actor is registered here, so it only observes
   await runner.idle()
   assert.equal(store.get(item.id).status, 'open')
   assert.equal(store.get(item.id).triage.mode, 'observe')

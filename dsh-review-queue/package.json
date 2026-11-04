@@ -34,6 +34,7 @@
     "triage-runner.js",
     "triage-act-done.js",
     "triage-act-permission.js",
+    "triage-act-question.js",
     "triage-paths.js",
     "triage-memory.js",
     "triage-review.js",
