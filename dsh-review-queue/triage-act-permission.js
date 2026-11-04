@@ -5,6 +5,9 @@
 import { parseReadOnlyCommand } from './triage.js'
 import { commandIntact } from './triage-paths.js'
 
+/** The shell tools Auto trusts, by exact name (same list as the runner's auto facts). */
+const SHELL_TOOLS = new Set(['shell', 'bash', 'powershell', 'pwsh', 'cmd'])
+
 /**
  * @param {{ store: { get: (id: string) => object | undefined }, decide: (id: string, resolution: object) => boolean | { ok?: boolean } }} deps
  *   decide approves the pending request with the given resolution; it returns true / { ok: true } only when it did.
@@ -19,7 +22,9 @@ export function createPermissionActor({ store, decide }) {
       const p = current.payload ?? {}
       // The command judged is the command stored now, whole, and still passes the strict parser.
       if (!commandIntact(p) || p.detail !== item.payload?.detail || p.callId !== item.payload?.callId || p.toolName !== item.payload?.toolName) return { ok: false, reason: 'changed' }
-      if (!parseReadOnlyCommand(p.detail).ok) return { ok: false, reason: 'not-read-only' }
+      if (!parseReadOnlyCommand(p.detail, { auto: true }).ok) return { ok: false, reason: 'not-read-only' }
+      // Defence in depth: the judgment and fingerprint cover the command only, so a call that carries other arguments, or a tool not named like a shell, is never approved here.
+      if (p.extraArgs === true || !SHELL_TOOLS.has(String(p.toolName ?? '').toLowerCase())) return { ok: false, reason: 'not-read-only' }
       const res = await decide(item.id, { ...resolutionBase, action: 'approved' })
       return res === true || res?.ok === true ? { ok: true, action: 'approved' } : { ok: false, reason: 'not-pending' }
     } catch { return { ok: false, reason: 'error' } }

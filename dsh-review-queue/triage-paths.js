@@ -35,27 +35,44 @@ export function commandIntact(payload) {
 /** The path candidates of a command: the value of a --flag=value, and a plain token that has a path character, or that exists (checked by the caller). */
 function candidates(command) {
   const out = []
+  const add = (value, certain) => out.push({ value, certain })
   for (const t of String(command ?? '').trim().split(/\s+/).slice(1)) {
     if (!t) continue
-    if (t.startsWith('-')) { const i = t.indexOf('='); if (i > 0 && i < t.length - 1) out.push({ value: t.slice(i + 1), certain: PATHISH.test(t.slice(i + 1)) }); continue }
-    out.push({ value: t, certain: PATHISH.test(t) })
+    if (t.startsWith('-')) {
+      const i = t.indexOf('=')
+      if (i > 0 && i < t.length - 1) add(t.slice(i + 1), PATHISH.test(t.slice(i + 1)))
+      else if (i < 0 && /^-[^-]/.test(t) && t.length > 2 && PATHISH.test(t.slice(2))) add(t.slice(2), true) // a short option with its value glued on: -f/abs/file
+      continue
+    }
+    add(t, PATHISH.test(t))
   }
   return out
 }
+
+/** A UNC / device / NT-namespace path: reaching it would open a network or device handle (an SMB connection leaks NTLM credentials). Never touched. */
+const UNSAFE_PATH = /^[\\/]{2}|^[\\/]\?\?[\\/]/
+
+const defaultIo = { real }
 
 /**
  * Every path-like argument of the command resolves (symlinks, junctions and 8.3 names followed) to a place inside the real workspace.
  * A path-looking argument that does not resolve is a veto; a plain word that does not exist (a subcommand, a pattern, a number) is not a path.
  * Relative paths resolve against the workspace. A missing or unresolvable workspace is a veto. Never throws.
+ * Before ANY file-system call: a UNC / device candidate is a veto (no I/O at all), and so is any candidate that lexically lies outside the workspace
+ * (it is never resolved). `io.real` is the resolver (injectable for tests).
  */
-export async function containedInWorkspace(command, workspace) {
+export async function containedInWorkspace(command, workspace, io = defaultIo) {
   try {
     if (typeof workspace !== 'string' || !workspace.trim()) return false
-    const root = await real(workspace)
-    for (const { value, certain } of candidates(command)) {
+    const list = candidates(command)
+    if (list.some(({ value }) => UNSAFE_PATH.test(value))) return false
+    const root = await io.real(workspace)
+    for (const { value, certain } of list) {
       const expanded = value === '~' || /^~[\\/]/.test(value) ? homedir() + value.slice(1) : value
+      const lexical = resolve(root, expanded)
+      if (!isInside(root, lexical) && !isInside(workspace, lexical)) return false // lexically outside: never resolved
       let target
-      try { target = await real(resolve(root, expanded)) } catch { if (certain) return false; continue }
+      try { target = await io.real(lexical) } catch { if (certain) return false; continue }
       if (!isInside(root, target)) return false
     }
     return true

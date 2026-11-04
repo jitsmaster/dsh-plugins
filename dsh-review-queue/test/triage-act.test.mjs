@@ -82,18 +82,18 @@ test('actor success: act entry with preState, resolutionBase handed over, no not
 })
 
 test('resolutionBase carries the capped quote (300) and the evidence source', async () => {
-  const judgment = { ...GOOD, matched_rule: 'straightforward-question', answer: 'Yes', evidence_quote: 'q'.repeat(500), evidence_source: 'user-9', answer_basis: 'quoted-source' }
+  const judgment = { ...GOOD, matched_rule: 'straightforward-question', answer: 'Yes (Recommended)', evidence_quote: 'quote words '.repeat(50), evidence_source: 'user-9', answer_basis: 'quoted-source' }
   let n = 0
   const store = createStore({ now: () => 1, uuid: () => 'i' + ++n })
   const seen = []
   const entries = []
   const runner = createTriageRunner({
     store, judge: { judge: async () => ({ judgment }) }, triageLog: { append: (e) => entries.push(e) }, rules: autoRules(),
-    sourcesOf: () => [{ id: 'user-9', userAuthored: true, text: 'q'.repeat(500) + ' go ahead' }],
+    sourcesOf: () => [{ id: 'user-9', userAuthored: true, text: 'quote words '.repeat(50) + ' go ahead' }],
     actors: { question: async (arg) => { seen.push(arg); return { ok: false, reason: 'nope' } } },
   })
   runner.start()
-  store.add({ type: 'question', sessionId: 's1', workspace: 'D:/w', payload: { callId: 'c1', questions: [{ id: 'q1', question: 'Go?', options: [{ label: 'Yes' }, { label: 'No' }] }] } })
+  store.add({ type: 'question', sessionId: 's1', workspace: 'D:/w', payload: { callId: 'c1', questions: [{ id: 'q1', question: 'Go?', options: [{ label: 'Yes (Recommended)' }, { label: 'No' }] }] } })
   await runner.idle()
   assert.equal(seen.length, 1)
   assert.equal(seen[0].resolutionBase.quote.length, 300)

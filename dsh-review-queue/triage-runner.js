@@ -21,6 +21,8 @@ export { clipAnswer }
 /** At most this many judge calls at once; an item arriving beyond that stays a normal card (and is logged), so cost and latency stay bounded. */
 export const MAX_IN_FLIGHT = 2
 const SHELL_TOOL = /shell|bash|powershell|pwsh|cmd|command|exec/i
+/** Auto only: the shell tools by exact (case-insensitive) name; a tool that merely has "exec" or "command" in its name is not trusted to run a plain command. */
+const SHELL_TOOL_AUTO = new Set(['shell', 'bash', 'powershell', 'pwsh', 'cmd'])
 
 export const DEFAULT_RULES = [
   { id: 'ro-permission', name: 'Read-only commands', class: 'permission', enabled: true, mode: 'observe', instruction: 'A read-only command that passes the strict parser, inside the workspace: approve.' },
@@ -39,6 +41,9 @@ export function payloadFingerprint(item) {
 
 /** A short hash of what a rule says, so every decision records the version of the rule it was made under. */
 export const ruleVersion = (rule) => createHash('sha1').update(JSON.stringify([rule.id, rule.class, rule.instruction ?? '', rule.closedSet ?? null, rule.threshold ?? null])).digest('hex').slice(0, 8)
+
+/** An error message for the log: secrets redacted, one line, capped. */
+const safeMsg = (e) => oneLine(redact(String(e?.message ?? e))).slice(0, 300)
 
 const norm = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 
@@ -61,7 +66,9 @@ export function factsOf(item, { sessionContinuesOf = () => false } = {}) {
     const parsed = SHELL_TOOL.test(String(p.toolName ?? '')) ? parseReadOnlyCommand(command) : { ok: false, reason: 'not a shell tool' }
     const riskFlags = riskOf({ toolName: p.toolName, detail: p.detail, path: p.path, workspace: item.workspace }).map((r) => r.code)
     const inside = pathsInside(command, item.workspace)
-    return { riskFlags, commandIntact: commandIntact(p), safe: parsed.ok && inside && !riskFlags.length, readOnly: parsed.ok, outsideWorkspace: !inside || riskFlags.includes('outside-workspace'), reversible: parsed.ok }
+    // Auto only: the stricter parser, an exact shell tool name, and no tool arguments besides the command (the fingerprint and the judgment only cover the command).
+    const autoCommandOk = SHELL_TOOL_AUTO.has(String(p.toolName ?? '').toLowerCase()) && p.extraArgs !== true && parseReadOnlyCommand(command, { auto: true }).ok
+    return { riskFlags, commandIntact: commandIntact(p), autoCommandOk, safe: parsed.ok && inside && !riskFlags.length, readOnly: parsed.ok, outsideWorkspace: !inside || riskFlags.includes('outside-workspace'), reversible: parsed.ok }
   }
   if (item?.type === 'completed') {
     let continues = false
@@ -216,10 +223,10 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     if (fresh?.status !== 'open' || payloadFingerprint(fresh) !== judgedPrint || !enabled() || live?.mode !== 'auto' || live.enabled === false || marks.onHold || marks.neverAuto) return refuse('changed-meanwhile')
     const str = (v, cap) => (typeof v === 'string' ? v.slice(0, cap) : undefined)
     const basis = judgment.answer_basis
-    const resolutionBase = { kind: 'ai-resolved', by: 'ai', ruleId: rule.id, ruleVersion: base.ruleVersion, threshold: outcome.threshold, score: outcome.score, decidedAt: now(), basis, ...(str(judgment.evidence_source, 100) ? { evidenceSource: judgment.evidence_source.slice(0, 100) } : {}), ...(str(judgment.evidence_quote, 300) ? { quote: judgment.evidence_quote.slice(0, 300) } : {}) }
+    const resolutionBase = { kind: 'ai-resolved', by: 'ai', ruleId: rule.id, ruleVersion: base.ruleVersion, threshold: outcome.threshold, score: outcome.score, decidedAt: now(), basis, ...(str(judgment.evidence_source, 100) ? { evidenceSource: judgment.evidence_source.slice(0, 100) } : {}), ...(str(judgment.evidence_quote, 300) ? { quote: redact(judgment.evidence_quote.slice(0, 300)) } : {}) }
     const p = fresh.payload ?? {}
     let res
-    try { res = await actors[cls]({ item: fresh, rule, outcome, judgment, sources, resolutionBase }) } catch (error) { log('triage: actor ' + cls + ' ' + item.id + ' failed: ' + (error?.message ?? error)); return refuse('error') }
+    try { res = await actors[cls]({ item: fresh, rule, outcome, judgment, sources, resolutionBase }) } catch (error) { log('triage: actor ' + cls + ' ' + item.id + ' failed: ' + safeMsg(error)); return refuse('error') }
     if (res?.ok !== true) { const reason = typeof res?.reason === 'string' ? res.reason.slice(0, 100) : 'refused'; return refuse(reason, reason === 'not-pending' || reason === 'lost-race' ? 'lost-race' : 'refused') }
     const answer = typeof res.answer === 'string' ? clipAnswer(res.answer) : undefined
     const preState = { type: fresh.type, ...(fresh.sessionId ? { sessionId: fresh.sessionId } : {}), ...(p.toolName ? { toolName: p.toolName } : {}), ...(typeof p.detail === 'string' ? { command: redact(p.detail).slice(0, 500) } : {}), ...(typeof p.questions?.[0]?.question === 'string' ? { question: p.questions[0].question.slice(0, 300) } : {}), ...(answer ? { answer: answer.slice(0, 200) } : {}), summaryHead: String(p.summary ?? '').slice(0, 200) }
@@ -259,11 +266,11 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
       try { for (const i of store.list({ status: 'open' })) if ((i.triage?.verdict === 'handle' || i.triage?.reason === 'past-correction') && !i.triage.review) watching.add(i.id) } catch { /* nothing to seed */ }
       off = store.onAdd((item) => {
         if (!enabled()) return
-        const p = Promise.resolve().then(() => run(item)).catch((error) => log('triage: ' + (error?.message ?? error)))
+        const p = Promise.resolve().then(() => run(item)).catch((error) => log('triage: ' + safeMsg(error)))
         running.add(p)
         p.finally(() => running.delete(p))
       })
-      offChange = store.onChange(() => { try { checkFeedback() } catch (error) { log('triage: feedback ' + (error?.message ?? error)) } })
+      offChange = store.onChange(() => { try { checkFeedback() } catch (error) { log('triage: feedback ' + safeMsg(error)) } })
       return true
     },
     stop() { off(); offChange() },

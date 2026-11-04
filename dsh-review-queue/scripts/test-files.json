@@ -284,5 +284,6 @@
   "test/triage-act-done.test.mjs",
   "test/triage-act-permission.test.mjs",
   "test/triage-paths.test.mjs",
-  "test/triage-act-question.test.mjs"
+  "test/triage-act-question.test.mjs",
+  "test/triage-hardening.test.mjs"
 ]

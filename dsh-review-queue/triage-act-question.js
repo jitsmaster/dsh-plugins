@@ -4,6 +4,8 @@
  * `custom`, and never throws.
  */
 import { clipAnswer } from './triage-clip.js'
+import { AUTO_MIN_QUOTE_CHARS, autoAnswerRefusal, normalizeQuote, quoteSource } from './triage.js'
+import { redact } from './triage-log.js'
 
 const QUOTE_CAP = 300
 const labelsOf = (q) => (Array.isArray(q?.options) ? q.options.map((o) => o?.label) : [])
@@ -15,7 +17,7 @@ const shapeOf = (item) => JSON.stringify([(Array.isArray(item?.payload?.question
  *   answer settles the pending question with the given resolution; it returns true / { ok: true } only when it did.
  */
 export function createQuestionActor({ store, answer }) {
-  return async ({ item, judgment, resolutionBase } = {}) => {
+  return async ({ item, judgment, resolutionBase, sources } = {}) => {
     try {
       if (item?.type !== 'question') return { ok: false, reason: 'refused' }
       const current = store.get(item.id)
@@ -25,8 +27,13 @@ export function createQuestionActor({ store, answer }) {
       const questions = current.payload?.questions
       const label = judgment?.answer
       if (!Array.isArray(questions) || questions.length !== 1 || typeof label !== 'string' || !labelsOf(questions[0]).includes(label)) return { ok: false, reason: 'refused' }
+      // Defence in depth, the same Auto rules the verdict applied: the card marks a recommended option, the answer is exactly it, and the quote is long enough
+      // (and, when the runner hands over the sources, still found verbatim in the user-authored source it names).
+      if (autoAnswerRefusal(label, questions[0])) return { ok: false, reason: 'refused' }
+      if (normalizeQuote(judgment.evidence_quote).length < AUTO_MIN_QUOTE_CHARS) return { ok: false, reason: 'refused' }
+      if (Array.isArray(sources) && quoteSource(judgment.evidence_quote, sources, AUTO_MIN_QUOTE_CHARS) !== judgment.evidence_source) return { ok: false, reason: 'refused' }
       const answers = [{ id: questions[0].id, selected: [label] }]
-      const quote = typeof judgment.evidence_quote === 'string' ? judgment.evidence_quote.slice(0, QUOTE_CAP) : undefined
+      const quote = typeof judgment.evidence_quote === 'string' ? redact(judgment.evidence_quote.slice(0, QUOTE_CAP)) : undefined
       const shown = clipAnswer(label)
       const res = await answer(current.id, answers, { ...resolutionBase, action: 'answered', answer: shown, answers, ...(quote ? { quote } : {}) })
       return res === true || res?.ok === true

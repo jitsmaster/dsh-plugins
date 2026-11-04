@@ -11,6 +11,8 @@ export const DEFAULT_THRESHOLD = 25
 /** A rule cannot raise its threshold above this, so a big threshold is not a way to pass everything. */
 export const MAX_THRESHOLD = 50
 const MIN_QUOTE_CHARS = 8
+/** Auto only: a user quote shorter than this is too easy to forge or to find by accident; observe keeps MIN_QUOTE_CHARS. */
+export const AUTO_MIN_QUOTE_CHARS = 20
 
 const CLASS_OF = { question: 'question', permission: 'permission', completed: 'done', paused: 'idle' }
 /** The rule class an item type belongs to (a rule's class must equal it); undefined for a type triage never touches. */
@@ -30,10 +32,11 @@ export const normalizeQuote = (text) => (typeof text === 'string' ? text.replace
  * (the item body, earlier assistant turns) never count: the judged agent could plant its own basis there.
  * @param {string} quote
  * @param {{ id: string, text: string, userAuthored?: boolean }[]} sources
+ * @param {number} [minChars] the shortest quote accepted (observe default; Auto passes AUTO_MIN_QUOTE_CHARS)
  */
-export function quoteSource(quote, sources) {
+export function quoteSource(quote, sources, minChars = MIN_QUOTE_CHARS) {
   const q = normalizeQuote(quote)
-  if (q.length < MIN_QUOTE_CHARS || !Array.isArray(sources)) return undefined
+  if (q.length < minChars || !Array.isArray(sources)) return undefined
   for (const s of sources) if (s && s.userAuthored === true && normalizeQuote(s.text).includes(q)) return s.id
   return undefined
 }
@@ -42,19 +45,29 @@ export function quoteSource(quote, sources) {
 const PLAIN = new Set(['pwd', 'ls', 'cat', 'rg', 'grep', 'head', 'tail', 'wc'])
 const GIT_READ = new Set(['status', 'diff', 'log', 'show'])
 const SHELL_SYNTAX = /[;&|`$(){}<>\r\n"'\\*?!]/
+const SHELL_SYNTAX_AUTO = /[;&|`$(){}<>\r\n"'\\*?!%^]/ // Auto also refuses cmd's %VAR% expansion and the ^ escape
 const GIT_BAD_FLAG = /^--(output|exec-path|open-files-in-pager|ext-diff|textconv|upload-pack|receive-pack)/
 const RG_BAD_FLAG = /^--(pre|hostname-bin)/
 const PROTECTED = [/(^|\/)\.env/i, /(^|\/)\.git(\/|$)/i, /^~/, /(^|\/)\.(ssh|aws|dsh|claude|gnupg)(\/|$)/i, /id_(rsa|ed25519|ecdsa|dsa)/i, /\.(pem|key|p12|pfx)$/i, /(credentials|secrets?)(\.|$|\/)/i]
+// Auto only: more secret-bearing files; observe keeps PROTECTED as it was.
+const PROTECTED_AUTO = [...PROTECTED, /(^|\/)\.(npmrc|netrc|pypirc|kube|docker|git-credentials)(\/|$)/i, /(^|\/)appsettings[^/]*\.json$/i, /\.tfvars$/i, /\.kdbx$/i]
+// Auto only: flags that make rg/grep walk directories or reach beyond the named files (long flags; short flags are checked per letter).
+const SEARCH_BAD_LONG = /^--(recursive|dereference-recursive|follow|hidden|no-ignore|search-zip|unrestricted|directories|files|regexp|file)(=|$|-)/
+const SEARCH_BAD_SHORT = /^-[^-]*[rRLuzefd]/
+// Auto only: git options that print file contents or reach history by pickaxe.
+const GIT_BAD_AUTO = /^(--(patch|pickaxe|cc|textconv)|-[^-]*[pucGS])/
 const fail = (reason) => ({ ok: false, reason })
 
 /**
  * Strict allowlist: ONE plain command from a short list (git only status/diff/log/show), no operators, no redirects, no quotes, no
  * substitution, no `..`, no protected path (reading `.env` counts as touching it). Containment inside the workspace is checked separately in code.
+ * With `auto` (only the Auto act path passes it) the list is tighter: no %/^, no recursive or hidden search (rg/grep need a pattern and a named file),
+ * no `rev:path` or patch/pickaxe options in git, more protected files, and every `:` / `=` segment of a token is checked against them.
  * @returns {{ ok: boolean, reason?: string }}
  */
-export function parseReadOnlyCommand(command) {
+export function parseReadOnlyCommand(command, { auto = false } = {}) {
   if (typeof command !== 'string' || !command.trim()) return fail('empty')
-  if (SHELL_SYNTAX.test(command)) return fail('shell syntax')
+  if ((auto ? SHELL_SYNTAX_AUTO : SHELL_SYNTAX).test(command)) return fail('shell syntax')
   const tokens = command.trim().split(/\s+/)
   const bin = tokens[0]
   let args
@@ -62,14 +75,23 @@ export function parseReadOnlyCommand(command) {
     if (!GIT_READ.has(tokens[1])) return fail('git subcommand not allowed')
     args = tokens.slice(2)
     if (args.some((t) => GIT_BAD_FLAG.test(t))) return fail('git flag not allowed')
+    if (auto && args.some((t) => t.includes(':') || GIT_BAD_AUTO.test(t))) return fail('git revision path or patch option not allowed in auto')
   } else if (PLAIN.has(bin)) {
     args = tokens.slice(1)
     if (bin === 'rg' && args.some((t) => RG_BAD_FLAG.test(t))) return fail('rg flag not allowed')
+    if (auto && (bin === 'rg' || bin === 'grep')) {
+      if (args.some((t) => SEARCH_BAD_LONG.test(t) || SEARCH_BAD_SHORT.test(t))) return fail('recursive or hidden search not allowed in auto')
+      // A pattern and at least one named file: without a file rg/grep read the whole working directory (or stdin).
+      if (args.filter((t) => !t.startsWith('-')).length < 2 || args.some((t) => /^\.{1,2}[\\/]?$/.test(t) || /[\\/]$/.test(t))) return fail('search needs a pattern and a named file')
+    }
   } else return fail('command not on the allowlist')
+  const protectedRes = auto ? PROTECTED_AUTO : PROTECTED
   for (const t of args) {
     const p = t.replace(/\\/g, '/')
     if (p.split('/').includes('..')) return fail('path leaves the directory')
-    if (PROTECTED.some((re) => re.test(p))) return fail('protected path')
+    // Auto tests every `a:b` / `--flag=value` segment too, so `HEAD:.env` or `--file=.env` cannot hide a protected name behind a prefix.
+    const parts = auto ? [p, ...p.split(/[:=]/)] : [p]
+    if (parts.some((s) => protectedRes.some((re) => re.test(s)))) return fail('protected path')
   }
   return { ok: true }
 }
@@ -99,15 +121,25 @@ function questionBasis(judgment, rule, sources, reasons, item) {
     if (!Array.isArray(rule.closedSet) || !rule.closedSet.includes(judgment.answer)) reasons.push('answer-not-in-set')
     if (auto) reasons.push('inadmissible-evidence') // auto answers only from a quote the user wrote
   } else if (basis === 'quoted-source') {
-    const found = quoteSource(judgment.evidence_quote, sources)
+    const found = quoteSource(judgment.evidence_quote, sources, auto ? AUTO_MIN_QUOTE_CHARS : MIN_QUOTE_CHARS)
     if (found === undefined || found !== judgment.evidence_source) reasons.push('inadmissible-evidence')
   } else { reasons.push('no-basis'); return }
   if (!(auto ? isOfferedExactly(judgment.answer, item) : isOffered(judgment.answer, item))) reasons.push('answer-not-an-option')
-  // Auto only: when the card marks a recommended option, that is the only one the AI may answer.
+  // Auto only: the card must mark a recommended option and that is the only one the AI may answer.
   else if (auto) {
-    const rec = recommendedOf(item?.payload?.questions?.[0])
-    if (rec !== undefined && judgment.answer !== rec) reasons.push('answer-not-recommended')
+    const refusal = autoAnswerRefusal(judgment.answer, item?.payload?.questions?.[0])
+    if (refusal) reasons.push(refusal)
   }
+}
+
+/**
+ * Auto only, shared with the question actor (which repeats it on the card as stored NOW): the answer must be exactly the option the card marks
+ * "(Recommended)". Returns the veto code, or undefined when it holds.
+ */
+export function autoAnswerRefusal(answer, question) {
+  const rec = recommendedOf(question)
+  if (rec === undefined) return 'no-recommended-option'
+  return answer === rec ? undefined : 'answer-not-recommended'
 }
 
 /**
@@ -162,6 +194,7 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
   }
   // Auto only, permission class: the command must have been captured whole and every path argument must resolve (real path) inside the workspace. Missing facts fail closed.
   if (rule && rule.class === 'permission' && rule.mode === 'auto') {
+    if (facts?.autoCommandOk !== true) reasons.push('command-not-auto-safe') // the tighter Auto parser, an exact shell tool name and no arguments besides the command
     if (facts?.commandIntact !== true) reasons.push('command-truncated')
     if (facts?.pathsContained !== true) reasons.push('outside-workspace-real')
   }

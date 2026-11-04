@@ -10,7 +10,7 @@ import { loadClient } from './client-todo-helpers.mjs'
 
 const RULE_ID = 'straightforward-question'
 const ASK = 'Post both replies and resolve the threads?'
-const YES = 'Yes, post and resolve'
+const YES = 'Yes, post and resolve (Recommended)'
 const NO = 'No, let me review first'
 const QUOTE = 'post both replies and resolve the threads'
 const SOURCES = [
@@ -67,11 +67,12 @@ for (const [name, judgment, reasons] of BAD_ANSWER) {
   })
 }
 
-test('auto: with a recommended option marked, the answer must be that option; with none marked any quoted option may be answered', () => {
-  const rec = question([q1({ options: [{ label: YES + ' (Recommended)' }, { label: NO }] })])
-  assert.deepEqual(verdict('auto', { item: rec, judgment: { ...GOOD, answer: YES + ' (Recommended)' } }).reasons, [])
-  assert.deepEqual(verdict('auto', { item: rec, judgment: { ...GOOD, answer: NO } }).reasons, ['answer-not-recommended'])
-  assert.deepEqual(verdict('auto', { judgment: { ...GOOD, answer: NO } }).reasons, [])
+test('auto: the answer must be exactly the recommended option, and a card that marks none is never answered', () => {
+  assert.deepEqual(verdict('auto', { judgment: { ...GOOD, answer: YES } }).reasons, [])
+  assert.deepEqual(verdict('auto', { judgment: { ...GOOD, answer: NO } }).reasons, ['answer-not-recommended'])
+  const plain = question([q1({ options: [{ label: 'Yes' }, { label: NO }] })])
+  assert.deepEqual(verdict('auto', { item: plain, judgment: { ...GOOD, answer: 'Yes' } }).reasons, ['no-recommended-option'])
+  assert.deepEqual(verdict('auto', { item: plain, judgment: { ...GOOD, answer: NO } }).reasons, ['no-recommended-option'])
 })
 
 test('missing facts fail closed in auto', () => {
@@ -87,8 +88,8 @@ test('observe: the same inputs keep their verdicts and reasons (no new reason co
   assert.deepEqual(verdict('observe', { item: question([q1({ options: [] })]) }).reasons, [])
   assert.deepEqual(verdict('observe', { item: question([q1({ multiSelect: true })], { detached: true }, { callId: undefined }) }).reasons, [])
   assert.deepEqual(verdict('observe', { judgment: { ...GOOD, answer: YES.toLowerCase() + ' ' } }).reasons, [], 'observe still accepts a case/space variant')
-  const rec = question([q1({ options: [{ label: YES + ' (Recommended)' }, { label: NO }] })])
-  assert.deepEqual(verdict('observe', { item: rec, judgment: { ...GOOD, answer: NO } }).reasons, [])
+  assert.deepEqual(verdict('observe', { judgment: { ...GOOD, answer: NO } }).reasons, [])
+  assert.deepEqual(verdict('observe', { item: question([q1({ options: [{ label: 'Yes' }, { label: NO }] })]), judgment: { ...GOOD, answer: 'Yes' } }).reasons, [], 'observe needs no recommended option')
   const v = verdict('observe')
   assert.deepEqual([v.verdict, v.act, v.reasons], ['handle', false, []])
 })
@@ -119,11 +120,11 @@ test('actor: a true result is a success; false / { ok:false } is not-pending', a
 })
 
 test('actor: caps the answer at 200 and the quote at 300', async () => {
-  const long = 'L'.repeat(250)
+  const long = 'L'.repeat(240) + ' (Recommended)'
   const store = fakeStore()
   const item = add(store, [q1({ options: [{ label: long }, { label: NO }] })])
   const calls = []
-  const res = await run(store, item, (...a) => { calls.push(a); return true }, { ...GOOD, answer: long, evidence_quote: 'q'.repeat(500) }, { ...rbase, quote: 'q'.repeat(300) })
+  const res = await run(store, item, (...a) => { calls.push(a); return true }, { ...GOOD, answer: long, evidence_quote: 'quote words '.repeat(50) }, { ...rbase, quote: 'quote words '.repeat(50).slice(0, 300) })
   assert.equal(res.ok, true)
   const r = calls[0][2]
   assert.equal(r.answer.length, 200)

@@ -6,7 +6,7 @@
  */
 import { recommendedOf, cleanText } from './speech.js'
 import { fallbackSummary } from './summary.js'
-import { toolDetail } from './risk.js'
+import { toolDetail, hasExtraToolArgs } from './risk.js'
 import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
 import { MAY_HAVE_BEEN_SENT } from './follow-up-shared.js'
 import { DEFAULT_AUTO_ANSWER_LEAD_MS, autoAnswerText, recommendedAnswers, shownLabel } from './autoanswer.js'
@@ -224,7 +224,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       if (exec?.name === 'ask_user_question' && Number.isInteger(exec.arguments?.timeout) && (exec.arguments.timeout > 0 || exec.arguments.timeout === -1)) timeouts.set(exec.callId, exec.arguments.timeout)
       else if (exec?.callId) {
         const path = [exec.arguments?.file_path, exec.arguments?.path].find((v) => typeof v === 'string' && v)
-        toolNotes.set(exec.callId, { summary: summarizeTool(exec.name, exec.arguments), detail: toolDetail(exec.name, exec.arguments), path })
+        toolNotes.set(exec.callId, { summary: summarizeTool(exec.name, exec.arguments), detail: toolDetail(exec.name, exec.arguments), path, extraArgs: hasExtraToolArgs(exec.arguments) })
       }
     })
     return next()
@@ -314,7 +314,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       const note = req.callId === undefined ? undefined : toolNotes.get(req.callId)
       item = store.add({
         type: 'permission', ...baseOf(agent), key: req.callId,
-        payload: { toolName: req.toolName, summary: note?.summary ?? summarizeTool(req.toolName), ...(note?.detail ? { detail: note.detail } : {}), ...(note?.path ? { path: note.path } : {}), reason: typeof req.reason === 'string' ? req.reason : undefined, callId: req.callId },
+        payload: { toolName: req.toolName, summary: note?.summary ?? summarizeTool(req.toolName), ...(note?.detail ? { detail: note.detail } : {}), ...(note?.path ? { path: note.path } : {}), ...(note?.extraArgs ? { extraArgs: true } : {}), reason: typeof req.reason === 'string' ? req.reason : undefined, callId: req.callId },
       })
     } catch (error) { log('capture: ' + error); return next() }
     return new Promise((resolve, reject) => {

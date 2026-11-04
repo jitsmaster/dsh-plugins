@@ -73,7 +73,7 @@ test('a low score never passes a veto', () => {
 
 test('act is true only for a handled item whose rule is in auto; observe handles on paper only', () => {
   assert.deepEqual([run().verdict, run().act], ['handle', false])
-  const auto = run({ rule: rule({ mode: 'auto' }), facts: { ...safe, commandIntact: true, pathsContained: true } })
+  const auto = run({ rule: rule({ mode: 'auto' }), facts: { ...safe, autoCommandOk: true, commandIntact: true, pathsContained: true } })
   assert.deepEqual([auto.verdict, auto.act], ['handle', true])
   assert.equal(auto.score, 5)
 })
@@ -184,9 +184,10 @@ test('question: a free-text question without options skips the option check', ()
 })
 
 test('question: with the same valid judgment only an auto rule acts, and the session-finished relax never applies to the question class', () => {
-  const item = qItem(opts('Yes, post and resolve'))
-  assert.equal(qRun(item).act, false)
-  const auto = qRun(item, { rule: { ...qRule, mode: 'auto' }, facts: { ...safe, questionSimple: true } }) // auto also needs the code fact that the card is a simple option question
+  const item = qItem(opts('Yes, post and resolve (Recommended)'))
+  const judged = { judgment: qJudgment({ answer: 'Yes, post and resolve (Recommended)' }) }
+  assert.equal(qRun(item, judged).act, false)
+  const auto = qRun(item, { ...judged, rule: { ...qRule, mode: 'auto' }, facts: { ...safe, questionSimple: true } }) // auto also needs the code fact that the card is a simple option question
   assert.deepEqual([auto.verdict, auto.act], ['handle', true])
   const relaxed = qRun(item, { relax: { sessionFinished: true }, facts: { riskFlags: [], safe: false } })
   assert.equal(relaxed.verdict, 'ask')

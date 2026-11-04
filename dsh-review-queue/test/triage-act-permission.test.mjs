@@ -33,11 +33,11 @@ const verdict = (mode, facts) => triageOutcome({ item: { id: 'i1', type: 'permis
 const okFacts = { riskFlags: [], safe: true, readOnly: true, outsideWorkspace: false, reversible: true }
 
 test('auto: truncated command and real-path escape are vetoes; clean facts handle and act; missing facts fail closed', () => {
-  const clean = verdict('auto', { ...okFacts, commandIntact: true, pathsContained: true })
+  const clean = verdict('auto', { ...okFacts, autoCommandOk: true, commandIntact: true, pathsContained: true })
   assert.deepEqual([clean.verdict, clean.act, clean.reasons], ['handle', true, []])
-  assert.deepEqual(verdict('auto', { ...okFacts, commandIntact: false, pathsContained: true }).reasons, ['command-truncated'])
-  assert.deepEqual(verdict('auto', { ...okFacts, commandIntact: true, pathsContained: false }).reasons, ['outside-workspace-real'])
-  assert.deepEqual(verdict('auto', okFacts).reasons, ['command-truncated', 'outside-workspace-real'])
+  assert.deepEqual(verdict('auto', { ...okFacts, autoCommandOk: true, commandIntact: false, pathsContained: true }).reasons, ['command-truncated'])
+  assert.deepEqual(verdict('auto', { ...okFacts, autoCommandOk: true, commandIntact: true, pathsContained: false }).reasons, ['outside-workspace-real'])
+  assert.deepEqual(verdict('auto', okFacts).reasons, ['command-not-auto-safe', 'command-truncated', 'outside-workspace-real'])
 })
 
 test('observe: the new facts change nothing', () => {

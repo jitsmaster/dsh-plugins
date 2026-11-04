@@ -20,6 +20,18 @@ export function toolDetail(name, args) {
   return ''
 }
 
+/** Arguments that change nothing about what a command does (a label, a time limit). */
+const COSMETIC_ARG_KEYS = new Set(['command', 'description', 'timeout', 'timeout_ms', 'explanation', 'reason'])
+
+/**
+ * True when the tool call carries an argument besides the command and cosmetic ones (a working directory, an environment, stdin, a background flag...):
+ * the detail and the fingerprint triage works from cover the command only, so Auto must not approve such a call on that basis.
+ */
+export function hasExtraToolArgs(args) {
+  if (!args || typeof args !== 'object') return false
+  return Object.keys(args).some((k) => args[k] !== undefined && !COSMETIC_ARG_KEYS.has(k))
+}
+
 const RULES = [
   ['recursive-delete', 'Deletes files recursively', [
     /(^|[\s;&|(])rm\s+(?:-[a-z]*r[a-z]*\b|--recursive\b)/i,
