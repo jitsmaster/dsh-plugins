@@ -52,6 +52,17 @@ test('hub list not empty: no tip, and the generator is never asked (no model cal
   assert.equal(tips.asked, 0)
 })
 
+test('hub list with only held (On hold) items: nothing waits, so the snapshot still carries the tip', async (t) => {
+  const hub = await startFakeHub(t)
+  const held = [hubItem(1, { type: 'onhold', payload: { reason: 'later', heldAt: 1 } })]
+  hub.respond = () => [200, hubSnap('E:5', held)]
+  const { queue, tips } = localQueue()
+  const p = await startProxy(t, { hub, queue, mirror: () => hubSnap('E:5', held) })
+  const snap = await snapOf(p)
+  assert.equal(snap.tip.id, 't1')
+  assert.ok(tips.asked >= 1)
+})
+
 test('read-tip stays with this app: the local service answers, the hub is not asked', async (t) => {
   const hub = await startFakeHub(t)
   const { queue } = localQueue()

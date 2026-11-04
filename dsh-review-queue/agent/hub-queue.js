@@ -41,7 +41,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* one bad listener must not stop the others */ } } }
   view.onChange(() => {
     // The tip is only on screen while the merged list is empty: an item of any app ends its reading, even though this app's own store holds none.
-    if (mirror.snapshot().open.length) local.stopTip?.()
+    if (mirror.snapshot().open.some((i) => i.type !== 'onhold')) local.stopTip?.() // held sessions wait for nobody
     emit()
   })
   local.onChange(emit)

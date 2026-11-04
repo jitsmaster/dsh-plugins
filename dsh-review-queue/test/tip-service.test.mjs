@@ -49,6 +49,15 @@ test('resolved items alone do not hide the tip; paused and starting todos count 
   assert.equal(queue.snapshot({ tip: true }).tip, undefined)
 })
 
+test('held (On hold) sessions do not hide the tip: nothing waits on the user, the desktop shows the tip for them', () => {
+  const { store, queue, tips } = setup()
+  store.add({ type: 'onhold', sessionId: 'h', payload: { reason: 'later', heldAt: 1 } })
+  assert.equal(queue.snapshot({ tip: true }).tip.id, 'tip1')
+  assert.equal(tips.asked, 1)
+  store.add(completed())
+  assert.equal(queue.snapshot({ tip: true }).tip, undefined, 'a waiting item still hides it')
+})
+
 test('a generator that has nothing yet (undefined) leaves the snapshot without a tip', () => {
   const { queue } = setup({ tips: fakeTips(null) })
   assert.ok(!('tip' in queue.snapshot({ tip: true })))

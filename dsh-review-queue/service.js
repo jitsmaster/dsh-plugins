@@ -207,7 +207,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       settleArchived()
       const snap = store.snapshot()
       if (opts?.watch || opts?.tip === true) sessions?.touch()
-      const tip = snap.open.length || opts?.tip !== true ? undefined : tipNow() // the tip exists only while nothing is open: nothing is generated for a busy list
+      const tip = snap.open.some((i) => i.type !== 'onhold') || opts?.tip !== true ? undefined : tipNow() // the tip exists only while nothing waits (held sessions wait for nobody): nothing is generated for a busy list
       const counts = sessions?.current()
       const running = sessions?.runningIds?.()
       const open = snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position), ...(archivableOf(item, running) ? { archivable: true } : {}), ...(item.type === 'permission' ? { risks: risksOf(item) } : {}) }))

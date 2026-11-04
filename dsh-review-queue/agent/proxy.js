@@ -81,7 +81,8 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
    * The id of the tip the desktop shows for the hub snapshot with this id, '' for none: only while the hub's list is empty, as its last full answer said. The
    * agent's mirror of the hub list is only a hint before there was such an answer: a lagging mirror can cost one full fetch, never a loop.
    */
-  const tipIdFor = (snapshotId) => ((lastFull && lastFull.id === snapshotId ? lastFull.empty : mirror()?.open?.length === 0) ? tipOf()?.id ?? '' : '')
+  const nothingWaits = (open) => Array.isArray(open) && !open.some((i) => i.type !== 'onhold') // held sessions wait for nobody
+  const tipIdFor = (snapshotId) => ((lastFull && lastFull.id === snapshotId ? lastFull.empty : nothingWaits(mirror()?.open)) ? tipOf()?.id ?? '' : '')
   const localState = () => { const s = queue.snapshot(); return { focusId: s.focusId, reading: s.reading, ui: s.ui } }
 
   // ---- the hub ----
@@ -182,13 +183,13 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
       return localRound({ res, since, remaining, closed, want })
     }
     // A list that is not empty hides the tip: its reading ends too (before the local state is read for the answer).
-    if (!r.json.unchanged && r.json.open.length) { try { queue.stopTip?.() } catch { /* nothing to stop */ } }
+    if (!r.json.unchanged && r.json.open.some((i) => i.type !== 'onhold')) { try { queue.stopTip?.() } catch { /* nothing to stop */ } }
     const now = localState()
     if (r.json.unchanged) {
       const same = now.focusId === local.focusId && now.reading === local.reading && now.ui?.seq === local.ui?.seq && (want.tip ? tipIdFor(parts?.[0]) : '') === tipId
       return same ? send(res, 200, { unchanged: true, snapshotId: r.json.snapshotId }) : AGAIN
     }
-    const empty = r.json.open.length === 0
+    const empty = nothingWaits(r.json.open) // the tip still shows
     lastFull = { id: r.json.snapshotId, empty }
     const tip = empty && want.tip ? tipOf() : undefined
     // The hub's items carry no archivable flag: this app adds it to its own (it knows which of its sessions run), and the other apps' items get none.

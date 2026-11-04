@@ -38,6 +38,15 @@ test('the snapshot of the hub view shows a tip being read here as reading, and o
   assert.equal(queue.snapshot().reading, undefined, 'an item read by the local service is not the hub view reading')
 })
 
+test('a held (On hold) item of any app does not end the reading of the tip: only a waiting item does', () => {
+  const { local, setMirror } = make(true)
+  const base = { seq: 1, status: 'open', createdAt: 1, sessionId: 's', summary: 'x', payload: {}, owner: 'bbbb2222' }
+  setMirror({ snapshotId: 'e:2', open: [{ ...base, id: 'h', type: 'onhold' }], resolved: [] })
+  assert.equal(local.stopped, 0, 'only held: keep reading')
+  setMirror({ snapshotId: 'e:3', open: [{ ...base, id: 'h', type: 'onhold' }, { ...base, id: 'a', seq: 2, type: 'completed' }], resolved: [] })
+  assert.equal(local.stopped, 1)
+})
+
 test('the hub view itself carries no tip and no sessions of its own (the hub and the proxy supply them)', () => {
   const { queue } = make(true)
   const snap = queue.snapshot()
