@@ -92,6 +92,10 @@ window.__ModuleLoader__.load({
 			return base + (r.review === "agreed" || r.review === "matched-user" ? " (you agreed)" : r.review === "overruled" ? " (you marked it wrong)" : "");
 		}
 		const isAiResolved = (it) => !!(it && typeof it === "object" && it.status === "resolved" && it.resolution && it.resolution.kind === "ai-resolved");
+		/** A done card the old auto-clear resolved silently ({ kind: "no-action", by: "auto" }); a manual hide carries another `by`. */
+		const isAutoCleared = (it) => !!(it && typeof it === "object" && it.status === "resolved" && it.resolution && it.resolution.kind === "no-action" && it.resolution.by === "auto");
+		/** Shown as AI-handled (badge, Resolved-by filter); display only, since an auto-cleared item has no quote/rule/score to review. */
+		const isAiHandled = (it) => isAiResolved(it) || isAutoCleared(it);
 		/**
 		 * The facts behind an AI decision for the card: quote, rule and score. Undefined for anything else.
 		 * Shape of item.resolution when kind === "ai-resolved": { quote, answer, action, ruleId, ruleVersion, score, threshold, decidedAt, seen, review }.
@@ -103,6 +107,19 @@ window.__ModuleLoader__.load({
 		}
 		/** AI-resolved items the user has neither seen nor reviewed. */
 		const aiUnseenCount = (resolved) => (Array.isArray(resolved) ? resolved.filter((it) => isAiResolved(it) && it.resolution.seen !== true && !it.resolution.review).length : 0);
+		/** The header chip of the last hourly AI report: { label, title }, or undefined without a report, with nothing handled, or once it is older than 3 intervals. */
+		const aiReportChip = (r, now) => (r && r.handled > 0 && now - r.to <= 3 * 3600000 ? { label: 'AI 1h: ' + r.handled, title: r.text } : undefined);
+
+		// Browser copy of handoffFollowable (handoff-follow.js is the source of truth; this script is one self-contained file).
+		const HANDOFF_WRITE = /\b(?:written|wrote|write|writing|saved|created)\b/i;
+		const HANDOFF_PATH = /`([^`\n]*?handoff\.md)`|(?:^|[^\w.~-])((?:[A-Za-z]:[\\/]|\/)[^\s`"'<>|]*?handoff\.md)/gi; // no lookbehind (older iOS Safari): the char before the path is matched instead
+		// Performance/DoS fix (same caps as handoff-follow.js): only the last 4000 chars are scanned and lines over 1000 chars are skipped.
+		function handoffFollowable(item) {
+			if (!item || item.type !== "completed" || item.status !== "open" || typeof item.sessionId !== "string" || !item.sessionId) return false;
+			const reply = item.payload && item.payload.reply;
+			if (typeof reply !== "string") return false;
+			return reply.slice(-4000).split(/\r?\n/).some((line) => line.length <= 1000 && HANDOFF_WRITE.test(line) && Array.from(line.matchAll(HANDOFF_PATH)).some((m) => /^(?:[A-Za-z]:[\\/]|\/)/.test((m[1] || m[2] || "").trim())));
+		}
 
 		/** One line for a resolved item: what happened to it. */
 		function resolutionText(item) {
@@ -119,6 +136,7 @@ window.__ModuleLoader__.load({
 				case "reviewed": return "Reviewed";
 				case "started": return "Started" + (item.workspaceTitle ? " in " + item.workspaceTitle : "") + " (in the background)";
 				case "followed-up": return "Sent to " + (item.sessionTitle || "the session");
+				case "handoff-followed": return "Followed the handoff in a new session";
 				case "archived": return r.by === "elsewhere" ? "Session archived elsewhere" : "Session archived";
 				case "superseded": return "Replaced by a newer result";
 				case "no-action": return "Hidden: nothing for you to do (judged from the message; Reopen if it was wrong)";
@@ -197,7 +215,7 @@ window.__ModuleLoader__.load({
 			return (items || []).filter((it) => {
 				if (type !== "all" && it.type !== type) return false;
 				if (type === "all" && it.type === "onhold") return false; // the held queue is its own view ("onhold"), never part of the waiting list
-				if (resolvedBy !== "all" && it.status === "resolved" && isAiResolved(it) !== (resolvedBy === "ai")) return false;
+				if (resolvedBy !== "all" && it.status === "resolved" && isAiHandled(it) !== (resolvedBy === "ai")) return false;
 				if (!words.length) return true;
 				const p = it.payload || {};
 				const hay = [it.title, it.sessionTitle, it.workspace, plainAction(it.summary), it.text, p.summary, p.reason, ...(p.questions || []).map((q) => q && q.question)].filter(Boolean).join("\n").toLowerCase();
@@ -865,7 +883,7 @@ function imageFilesOf(data) {
 			"muted": "Voice is muted. Turn it back on in the TTS settings first.", "no-speaker": "The speech engine is not available (is dsh-hooks-tts installed?).", "nothing-to-read": "There is nothing to read.", "not-found": "That item no longer exists.", "not-reopenable": "That item cannot be reopened.", "risky": "That request looks risky, so it has to be approved on its own.", "not-permission": "That is not a permission request.",
 			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
 			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-power": "Pausing and quitting is not available in this app.",
-			"no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "empty-query": "Say which session this is for.", "unknown-session": "That session is not in the list any more. Pick another one.", "too-many-follow-ups": "Too many follow-ups are waiting: confirm or cancel one first.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.", "pr-open": "Its pull request is still open, so the session keeps polling it. Archive it once the PR is merged or abandoned.",
+			"no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "empty-query": "Say which session this is for.", "unknown-session": "That session is not in the list any more. Pick another one.", "too-many-follow-ups": "Too many follow-ups are waiting: confirm or cancel one first.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.", "no-handoff": "That session has no handoff note to follow.", "not-followable": "That card has no handoff to follow.", "unavailable": "Following a handoff is not available in this app.", "follow-busy": "A follow-up is already in progress for that card.", "failed": "The follow-up session could not be started. Try again.", "pr-open": "Its pull request is still open, so the session keeps polling it. Archive it once the PR is merged or abandoned.",
 			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "onhold": "That session is on hold. Continue it first (or release it).", "not-holdable": "Only finished work or a paused session can be put on hold.", "no-onhold": "Putting a session on hold is not available in this app.", "busy": "A message to that session is already on its way. Try again in a moment.",
 			"triage-off": "AI handling is switched off in this app.", "not-ai-resolved": "That item was not handled by the AI.", "already-reviewed": "That AI decision was already reviewed.", "bad-review": "That review is not valid.", "bad-rule": "That rule no longer exists.", "bad-mode": "That mode is not valid.", "bad-input": "That request was incomplete. Refresh and try again.",
 				"bad-images": "An attached image is not valid. Remove it and paste it again.", "too-many-images": "At most " + IMAGE_MAX + " images can be attached.", "unknown-image": "An attached image is no longer on the PC. Remove it and paste it again.", "bad-image": "That is not an image the session can take (png, jpeg, webp or gif).", "too-large": "That image is over 8 MB.",
@@ -1620,6 +1638,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-row" },
 					full ? h("button", { className: "rq-btn pri", disabled: busy || !canSend, onClick: send }, "Send reply") : null,
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Reviewed"),
+					handoffFollowable(item) ? h("button", { className: "rq-btn", disabled: busy, title: "Open a new session that resumes this handoff (SPARC)", onClick: () => act("/v1/follow-handoff", { id: item.id }, item.id, { advance: true }) }, "Follow handoff") : null,
 					full ? h(HoldButton, { item }) : null));
 		}
 
@@ -1861,7 +1880,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			// A todo that started ends up here with no other trace of its text: it can be read aloud like an open card (the service reads any item by id).
 			const reading = !!(st.snap && st.snap.reading === it.id);
 			return h("div", { className: "rq-card rq-res" },
-				h("div", { className: "rq-card-h", title: ai ? (aiOpen ? "Hide details" : "Show details") : canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : ai ? "pointer" : "default" }, onClick: ai ? (e) => { if (!isButtonClick(e && e.target)) toggleAi(it); } : (e) => { if (canOpen && !isButtonClick(e && e.target)) openSession(it); } }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), ai ? h("span", { className: "rq-chip rq-aibadge", "data-ai-badge": it.id }, "AI") : null, h("span", { className: "rq-title", title: canOpen && !ai ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
+				h("div", { className: "rq-card-h", title: ai ? (aiOpen ? "Hide details" : "Show details") : canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : ai ? "pointer" : "default" }, onClick: ai ? (e) => { if (!isButtonClick(e && e.target)) toggleAi(it); } : (e) => { if (canOpen && !isButtonClick(e && e.target)) openSession(it); } }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), isAiHandled(it) ? h("span", Object.assign({ className: "rq-chip rq-aibadge", "data-ai-badge": it.id }, ai ? {} : { "data-ai-auto": it.id, title: "Cleared automatically" }), "AI") : null, h("span", { className: "rq-title", title: canOpen && !ai ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
 				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? plainAction(it.summary) : undefined }, resolutionText(it)),
 				aiOpen ? aiDetailNode(it) : null,
 				aiOpen ? aiReviewNode(it, st) : null,
@@ -2013,9 +2032,11 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		function Head({ snap }) {
 			const { waiting: n, paused } = snapCounts(snap);
 			const sessions = sessionsText(snap && snap.sessions);
+			const aiChip = snap ? aiReportChip(snap.aiReport, snap.serverNow || Date.now()) : undefined;
 			return h("div", { className: "rq-head" }, h("h2", null, "Coding Boss Review Queue"), h("span", { className: "rq-count" }, n + " waiting"),
 				sessions ? h("span", { className: "rq-count rq-sess", title: sessionsTitle }, sessions) : null,
 				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
+				aiChip ? h("button", { className: "rq-count", "data-ai-report": true, title: aiChip.title, onClick: () => { set({ filter: { ...state.filter, type: "all", query: "", resolvedBy: "ai" } }); setView("resolved"); } }, aiChip.label) : null,
 				h("span", { className: "rq-grow" }),
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				h("button", { type: "button", className: "rq-iconx", title: "Close (Esc)", "aria-label": "Close (Esc)", onClick: () => setOverlay(false) }, "✕"));
@@ -2247,7 +2268,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
+		exports.shared = { handoffFollowable, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;

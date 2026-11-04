@@ -240,6 +240,7 @@ function PermissionBody({ item }) {
 function CompletedBody({ item }) {
   const st = useStore()
   const busy = st.busy[item.id]
+  const [askFollow, setAskFollow] = useState(false) // the Follow handoff confirm sheet
   const replyDefault = ((item.payload && item.payload.reply) || '').length < 1500 // a short reply starts open, a long one closed, until the user chooses
   // Writing back to the session is the composer under the card (ItemView): this body keeps the summary, the full reply and Reviewed.
   return html`<div>
@@ -247,10 +248,13 @@ function CompletedBody({ item }) {
     ${item.payload && item.payload.reply ? html`<details open=${detailOpen(st.toggles, item.id, 'reply', replyDefault)} onToggle=${(e) => rememberDetail(item.id, 'reply', e.currentTarget.open, replyDefault)}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>
+      ${getCore().handoffFollowable(item) ? html`<button class="btn" disabled=${busy} title="Open a new session that resumes this handoff (SPARC)" onClick=${() => setAskFollow(true)}>Follow handoff</button>` : null}
       <${ArchiveSessionButton} item=${item} inline onDone=${() => go('/')} />
       <${OnHoldButton} item=${item} />
     </div>
     <${OnHoldForm} item=${item} />
+    ${askFollow ? html`<${Sheet} title="Follow this handoff?" lines=${['Open a new session that resumes this handoff and archive this one?']} confirmLabel="Follow handoff"
+    onConfirm=${async () => { setAskFollow(false); if (await act('/v1/follow-handoff', { id: item.id, confirmed: true }, item.id)) go('/') }} onCancel=${() => setAskFollow(false)} />` : null}
   </div>`
 }
 
@@ -539,9 +543,11 @@ function Composer({ item }) {
 
 // ---- AI-resolved items (hook-free: the screens that hold them re-render on every store change) -------------------------
 
-/** The small "AI" badge of a row the AI resolved. */
+/** The small "AI" badge of a row the AI resolved; an auto-cleared row gets it too, marked and titled so it reads apart from a decision. */
 export function AiBadge({ item }) {
-  return getCore().aiDetail(item) ? html`<span class="chip ai-badge" data-ai-badge=${item.id}>AI</span>` : null
+  const core = getCore()
+  if (core.aiDetail(item)) return html`<span class="chip ai-badge" data-ai-badge=${item.id}>AI</span>`
+  return core.isAutoCleared(item) ? html`<span class="chip ai-badge" data-ai-badge=${item.id} data-ai-auto=${item.id} title="Cleared automatically">AI</span>` : null
 }
 
 /** What the AI relied on: the quote, the rule and the attention score. */
