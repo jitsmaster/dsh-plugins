@@ -21,6 +21,24 @@ The queue is global, so it is an **overlay only** (the right sidebar is per sess
 
 Voice control (read, answer, approve, deny by voice) is a later phase; the plugin already exposes a `reviewQueue` service with speakable text for each item. Besides `snapshot`, `read`, `stop`, `answer`, `approve`, `deny`, `reply`, `markReviewed` it has `count()` (`{total, byType:{question, permission, completed}}`, open items only), `first()` (the oldest open item), `readPosition(n)` (reads the open item at 1-based position n and focuses it; errors `empty`, `no-item`), `again()` (reads the last item read once more; `nothing-read`) and `uiCommand('show'|'hide')`. The text of a read is `"Item N."` as a chunk of its own followed by body chunks that do not depend on the position, so the speech cache hits at any position.
 
+## AI triage: Observe and Auto
+
+Each rule in the **AI rules** tab is *Off*, *Observe* or *Auto*. The shipped default is **Observe** for every rule, with the global switch On: the AI only notes on the card what it would have done ("AI would have handled this") and never acts. Picking **Auto** asks for a confirmation ("Auto acts for you: ... Switch to Auto?") and then really resolves matching items; each one is listed under **Resolved by AI**.
+
+| Rule (class) | What Auto does | Auto-only vetoes (any one keeps the card open for you) |
+| --- | --- | --- |
+| `green-done` (done) | Clears a done card while the session continues. | The session must continue; no action item in the result; the summary is settled. |
+| `ro-permission` (permission) | Approves a read-only command. Never denies. | The read-only parser accepts it; the whole command is checked (not truncated); every real path stays inside the workspace; the only action is approve. |
+| `straightforward-question` (question) | Answers with an option. | One simple option question; the exact option label; a quote from your own words backs it; when an option is marked *(Recommended)*, that one. |
+
+**Global switch:** *AI triage On / Off* at the top of the AI rules tab (the header shows an **AI off** chip while it is Off). Off means the AI makes no judgments at all, whatever the rules say.
+
+**Cards already open:** switching a rule to Auto, or the switch to On, never acts on cards that are already open; only items that arrive afterwards are handled.
+
+**Undo:** a done card cleared by the AI comes back with *Reopen* in Resolved. An answer is undone with *Mark wrong*, which also sends a correction to the session. *Revert* does not apply to an approval.
+
+**Record:** each act is a line with stage `act` in `triage-log.jsonl`, next to the observe-stage lines.
+
 ## Tip of the day and the session count
 
 **Tip of the day (desktop only).** While the Coding Boss Review Queue has no open item at all, the right panel (the detail pane, empty then) shows a card with a short tip, while the left list keeps only "Nothing waiting on you." (the narrow single-column layout shows the tip under that message): a title, 2 to 4 sentences (each shown as a paragraph of its own, so it is easy to read) that teach one idea with a concrete example, and a category (`algorithms`, `ai` or `agents`): how an agent loop works, tool calling, context windows, RAG, embeddings, prompt caching, evals, big-O, hashing, graph search, dynamic programming, consensus, Bloom filters and so on. Broad general knowledge, never a summary of your work. It is not shown in the phone app, not while any item is open and not in *Resolved*. The topics are session titles, so they go to the model as a delimited block of untrusted data, and an answer that tells the reader to run, install or open something (or has code, links or headings) is rejected, and so is one that points the reader somewhere (a bare domain such as example.com/x) or tells them what to do (visit, download, install, enter your ..., log in, click, turn off your antivirus). Topics that read like instructions to the model are dropped. The tip is always written by a Haiku model (never another one: with no Haiku available a built-in tip is shown). A model-written tip is labelled *AI-generated* on the card; built-in tips are not. The card is a button: click (or Enter / Space) reads title and body aloud through the same speech stack as *Read aloud*, one sentence at a time (the title, then one speech chunk per sentence, never several sentences in one request; a muted voice is refused with a message); click again, or the Stop of the TTS, stops it.

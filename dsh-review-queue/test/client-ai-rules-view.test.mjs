@@ -4,7 +4,7 @@
 //   tabs         the "AI rules" tab of the Views tablist (data-tab="rules", role tab, aria-selected = st.showRules); the old header button is gone
 //   component    RulesView, hook-free, rendered by Panel when st.showRules (found through T.Panel() like FilterBar in client-ai-filter-head)
 //   rule block   data-rule="<id>"; a segmented role=radiogroup (aria-label "Mode") of role=radio buttons "Off" "Observe" "Auto" (class `on`, aria-checked); Auto asks first: data-rule-auto-confirm="<id>"
-//                with "Auto is not active yet", "Confirm Auto" and "Cancel"; lessons: data-lesson="<id>" with a "Forget" button
+//                with "Auto acts for you","Confirm Auto" and "Cancel"; lessons: data-lesson="<id>" with a "Forget" button
 //   endpoints    GET /review-queue/v1/triage-rules, POST .../triage-rule-mode { ruleId, mode }, POST .../triage-forget { id }
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -232,7 +232,8 @@ test('Auto first shows a confirm line and posts nothing', async () => {
   assert.equal(posts(calls).length, 0)
   const line = confirmLine(view(T), 'r1')
   assert.ok(line, 'confirm line for r1')
-  assert.match(textOf(line), /Auto is not active yet/)
+  assert.match(textOf(line), /Auto acts for you: the AI will approve read-only commands without asking, and shows each one under Resolved by AI\. Switch to Auto\?/)
+  assert.doesNotMatch(textOf(line), /not active yet/)
   assert.ok(btn(line, 'Confirm Auto') || btn(view(T), 'Confirm Auto'), 'a Confirm Auto button')
   assert.equal(confirmLine(view(T), 'r2'), undefined, 'only the clicked rule asks')
 })

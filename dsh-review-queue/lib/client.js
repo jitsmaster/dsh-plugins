@@ -2174,6 +2174,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			if (state.triageRulesError) return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, h("div", { className: "rq-empty" }, state.triageRulesError));
 			if (!t) return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, h("div", { className: "rq-empty" }, "Loading AI rules…"));
 			const modeBtn = (r, mode, label) => h("button", { key: mode, type: "button", role: "radio", className: "rq-segb" + (r.mode === mode ? " on" : ""), "aria-checked": r.mode === mode, disabled: !!state.rulesBusy[r.id], onClick: () => pickRuleMode(r.id, mode) }, label);
+			const autoActionPhrase = (cls) => cls === "permission" ? "approve read-only commands" : cls === "question" ? "answer questions from your own words" : cls === "done" ? "clear done cards while the session continues" : "act on matching cards";
 			const rec = (label, v) => h("div", { className: "rq-sub" }, label + ": " + recordText(v));
 			const older = (r) => { const o = r.record && r.record.older; return countOf(o && o.agreed) + countOf(o && o.overruled) > 0 ? rec("older versions", o) : null; };
 			const rule = (r) => h("div", { key: r.id, className: "rq-rule", "data-rule": r.id },
@@ -2181,7 +2182,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", null, r.instruction), rec("this version", r.record && r.record.current), older(r),
 				promotionHint(r) ? h("div", { className: "rq-ok" }, promotionHint(r)) : null,
 				h("div", { className: "rq-rule-m" }, h("span", { className: "rq-seg", role: "radiogroup", "aria-label": "Mode" }, modeBtn(r, "off", "Off"), modeBtn(r, "observe", "Observe"), modeBtn(r, "auto", "Auto"))),
-				state.rulesConfirm === r.id ? h("div", { className: "rq-warnbox", "data-rule-auto-confirm": r.id }, h("span", null, "Auto is not active yet: the AI only notes what it would do. Switch to Auto anyway?"),
+				state.rulesConfirm === r.id ? h("div", { className: "rq-warnbox", "data-rule-auto-confirm": r.id }, h("span", null, "Auto acts for you: the AI will " + autoActionPhrase(r.class) + " without asking, and shows each one under Resolved by AI. Switch to Auto?"),
 					h("button", { className: "rq-btn pri", disabled: !!state.rulesBusy[r.id], onClick: () => rulesAct(r.id, "/v1/triage-rule-mode", { ruleId: r.id, mode: "auto", confirmed: true }) }, "Confirm Auto"), h("button", { className: "rq-btn", onClick: () => set({ rulesConfirm: null }) }, "Cancel")) : null);
 			const lesson = (l, i) => h("div", { key: l.id || i, className: "rq-rule", "data-lesson": l.id },
 				h("div", { className: "rq-rule-h" }, h("strong", null, lessonLine(l)), l.active === false ? h("span", { className: "rq-sub" }, "retired") : null, h("span", { className: "rq-grow" }),
