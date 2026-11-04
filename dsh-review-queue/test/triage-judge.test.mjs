@@ -185,3 +185,27 @@ test('a 300000-character reply is clipped before redaction, so logging it is fas
   assert.ok(lines[0].split('; the model said: ')[1].length <= RAW_MAX)
   assert.ok(ms < 500, 'judge + log took ' + Math.round(ms) + ' ms')
 })
+
+// --- question guidance (rule straightforward-question) ---
+const QRULES = [{ id: 'straightforward-question', class: 'question', instruction: 'Answer only with a quote from a user-authored source.' }]
+const QITEM = { id: 'q1', type: 'question', payload: { questions: [{ id: 'a', question: 'Post both replies and resolve the threads?', options: [{ label: 'Yes' }, { label: 'No' }] }] } }
+
+test('with a question rule the system prompt carries the question guidance: one recommended option, already requested by the user, no direction/scope/taste choice', async () => {
+  const seen = {}
+  const j = createTriageJudge({ llm: fakeLlm({ answer: { ...GOOD, matched_rule: 'straightforward-question' }, seen }) })
+  await j.judge({ item: QITEM, rules: QRULES, sources: [{ id: 'user-1', text: 'post both replies', userAuthored: true }] })
+  const system = seen.req.system
+  assert.match(system, /needs_decision true unless/i)
+  assert.match(system, /one clearly recommended option/i)
+  assert.match(system, /already requested/i)
+  assert.match(system, /earlier by the user/i)
+  assert.match(system, /VERBATIM from a USER-AUTHORED SOURCE/)
+  assert.match(system, /direction, scope or taste/i)
+})
+
+test('without a question rule the system prompt has no question guidance', async () => {
+  const seen = {}
+  const j = createTriageJudge({ llm: fakeLlm({ answer: GOOD, seen }) })
+  await j.judge({ item: ITEM, rules: RULES })
+  assert.doesNotMatch(seen.req.system, /one clearly recommended option/i)
+})

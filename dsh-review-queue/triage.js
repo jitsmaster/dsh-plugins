@@ -76,20 +76,31 @@ export function parseReadOnlyCommand(command) {
 // --- the verdict --------------------------------------------------------------------------------------------------------------------
 const thresholdOf = (rule) => (typeof rule?.threshold === 'number' && Number.isFinite(rule.threshold) && rule.threshold >= 0 ? Math.min(rule.threshold, MAX_THRESHOLD) : DEFAULT_THRESHOLD)
 
-function questionBasis(judgment, rule, sources, reasons) {
+const labelOf = (o) => String(o?.label ?? o ?? '').trim().toLowerCase()
+
+/** An answer to a question that offers options must be one of them (case and surrounding spaces ignored); a free-text question has nothing to check. */
+function isOffered(answer, item) {
+  const options = item?.payload?.questions?.[0]?.options
+  if (!Array.isArray(options) || !options.length) return true
+  return typeof answer === 'string' && options.some((o) => labelOf(o) === answer.trim().toLowerCase())
+}
+
+function questionBasis(judgment, rule, sources, reasons, item) {
   const basis = judgment.answer_basis
   if (basis === 'closed-set') {
     if (!Array.isArray(rule.closedSet) || !rule.closedSet.includes(judgment.answer)) reasons.push('answer-not-in-set')
   } else if (basis === 'quoted-source') {
     const found = quoteSource(judgment.evidence_quote, sources)
     if (found === undefined || found !== judgment.evidence_source) reasons.push('inadmissible-evidence')
-  } else reasons.push('no-basis')
+  } else { reasons.push('no-basis'); return }
+  if (!isOffered(judgment.answer, item)) reasons.push('answer-not-an-option')
 }
 
 /**
  * @param {{ item: object, judgment?: object, rule?: object, facts?: object, sources?: object[], marks?: object }} input
- *   facts: what CODE computed (riskFlags[], safe, readOnly?, outsideWorkspace?, reversible?, needsUser?, sessionContinues?); sources: evidence sources by id;
- *   relax: { sessionFinished?: true } lifts the session-finished veto only for an observe-mode rule (fails closed for auto or any other mode).
+ *   facts: what CODE computed (riskFlags[], safe, readOnly?, outsideWorkspace?, reversible?, needsUser? (strict), needsUserObserve? (weaker, observe-mode only), sessionContinues?); sources: evidence sources by id;
+ *   relax: { sessionFinished?: true } lifts the session-finished veto only for an observe-mode rule of the done class (fails closed for auto or any other mode; never applies to questions).
+ *   A question rule's answer must also be one of the offered options (reason 'answer-not-an-option'); a question without options skips that check.
  * @returns {{ verdict: 'handle' | 'ask', act: boolean, score?: number, threshold: number, reasons: string[] }}
  *   act is true only for a handled item whose rule is in `auto`; `observe` handles on paper only. reasons lists EVERY veto that applied.
  */
@@ -118,11 +129,13 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
     if (facts && ((j.read_only !== undefined && facts.readOnly !== undefined && j.read_only !== facts.readOnly)
       || (j.touches_outside_workspace !== undefined && facts.outsideWorkspace !== undefined && j.touches_outside_workspace !== facts.outsideWorkspace)
       || (j.reversible !== undefined && facts.reversible !== undefined && j.reversible !== facts.reversible))) reasons.push('advisory-disagrees')
-    if (rule && rule.class === 'question') questionBasis(j, rule, sources, reasons)
+    if (rule && rule.class === 'question') questionBasis(j, rule, sources, reasons, item)
   }
   if (rule && rule.class === 'done' && facts) {
-    if (facts.needsUser !== false) reasons.push('needs-user')
-    if (facts.sessionContinues !== true && !(relax?.sessionFinished === true && rule.mode === 'observe')) reasons.push('session-finished')
+    // The weaker check may only gate observe; any other mode (auto, off, unknown) fails closed on the strict one.
+    const needs = rule.mode === 'observe' ? (facts.needsUserObserve ?? facts.needsUser) : facts.needsUser
+    if (needs !== false) reasons.push('needs-user')
+    if (facts.sessionContinues !== true && !(relax?.sessionFinished === true && rule.class === 'done' && rule.mode === 'observe')) reasons.push('session-finished')
   }
   if (score !== undefined && score > threshold) reasons.push('score-above-threshold')
   const verdict = reasons.length ? 'ask' : 'handle'

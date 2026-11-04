@@ -33,7 +33,7 @@ test('with triage on, the queue serves the rule set and the lessons from a triag
   const { plugin } = boot(t)
   const out = plugin.local.triageRules()
   assert.equal(out.ok, true)
-  assert.deepEqual(out.rules.map((r) => r.id), ['ro-permission', 'green-done'])
+  assert.deepEqual(out.rules.map((r) => r.id), ['ro-permission', 'green-done', 'straightforward-question'])
   assert.deepEqual(out.lessons, [])
   assert.ok(out.rules.every((r) => r.mode === 'observe' && /^[0-9a-f]{8}$/.test(r.version)))
 })
@@ -61,4 +61,80 @@ test('a correction recorded through the queue is seen by the runner: the same co
   await new Promise((r) => setTimeout(r, 30))
   assert.equal(calls.length, 0)
   assert.equal(plugin.store.get(again.id).triage?.reason, 'past-correction')
+})
+
+// --- question triage reads the user's earlier messages from the session thread by default ---
+import { writeLog } from './paused-helpers.mjs'
+import { log as logRec } from './paused-helpers.mjs'
+
+const QGOOD = { needs_decision: false, answer_basis: 'quoted-source', answer: 'Yes', evidence_quote: 'post both replies and resolve the threads', evidence_source: 'user-', matched_rule: 'straightforward-question', attention: 5 }
+const question = () => ({ type: 'question', sessionId: 'sess-q', workspace: 'D:/w', payload: { questions: [{ id: 'q1', question: 'Post both replies and resolve the threads?', options: [{ label: 'Yes' }, { label: 'No' }] }] } })
+
+function bootQuestion(t, triageDeps = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'rq-triage-q-'))
+  const before = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  writeLog(join(dir, 'sessions'), 'sess-q', [[logRec.head(), logRec.turnStart(1), logRec.user('Please post both replies and resolve the threads.'), logRec.assistant('Done, shall I post?'), logRec.turnEnd(1)]])
+  const calls = []
+  const judge = { judge: async (arg) => { calls.push(arg); return { judgment: QGOOD, raw: '' } } }
+  const plugin = createReviewQueuePlugin(fakeCtx(), { hub: false, stateDir: join(dir, 'state'), triage: true, triageDeps: { judge, ...triageDeps } })
+  t.after(() => { if (before === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = before; rmSync(dir, { recursive: true, force: true }) })
+  return { plugin, calls }
+}
+
+test('the default rule set includes the straightforward-question rule in observe mode', (t) => {
+  const { plugin } = boot(t)
+  const rule = plugin.local.triageRules().rules.find((r) => r.id === 'straightforward-question')
+  assert.equal(rule?.class, 'question')
+  assert.equal(rule?.mode, 'observe')
+})
+
+test('by default the judge of a question gets the user messages of the session as quotable sources (assistant text never)', async (t) => {
+  const { plugin, calls } = bootQuestion(t)
+  plugin.store.add(question())
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(calls.length, 1)
+  const sources = calls[0].sources
+  assert.equal(sources.length, 1)
+  assert.match(sources[0].id, /^user-/)
+  assert.equal(sources[0].userAuthored, true)
+  assert.equal(sources[0].text, 'Please post both replies and resolve the threads.')
+})
+
+test('config.triageDeps.sourcesOf overrides the default sources', async (t) => {
+  const mine = [{ id: 'custom', text: 'custom source', userAuthored: true }]
+  const { plugin, calls } = bootQuestion(t, { sourcesOf: () => mine })
+  plugin.store.add(question())
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].sources, mine)
+})
+
+// --- the default sourcesOf only reads the thread for question items ---
+function bootCounting(t, type) {
+  const dir = mkdtempSync(join(tmpdir(), 'rq-triage-src-'))
+  const before = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  writeLog(join(dir, 'sessions'), 'sess-q', [[logRec.head(), logRec.turnStart(1), logRec.user('Please do it.'), logRec.assistant('Done.'), logRec.turnEnd(1)]])
+  const calls = []
+  const judge = { judge: async (arg) => { calls.push(arg); return { judgment: type === 'permission' ? GOOD : { ...GOOD, matched_rule: 'green-done' }, raw: '' } } }
+  const plugin = createReviewQueuePlugin(fakeCtx(), { hub: false, stateDir: join(dir, 'state'), triage: true, triageDeps: { judge } })
+  t.after(() => { if (before === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = before; rmSync(dir, { recursive: true, force: true }) })
+  return { plugin, calls }
+}
+
+test('by default a permission item gets no thread sources (the judge sees an empty list)', async (t) => {
+  const { plugin, calls } = bootCounting(t, 'permission')
+  plugin.store.add({ type: 'permission', sessionId: 'sess-q', workspace: 'D:/w', payload: { toolName: 'shell', detail: 'git status', summary: 'git status' } })
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].sources, [])
+})
+
+test('by default a done item gets no thread sources', async (t) => {
+  const { plugin, calls } = bootCounting(t, 'completed')
+  plugin.store.add({ type: 'completed', sessionId: 'sess-q', workspace: 'D:/w', payload: { reply: 'Renamed the helper and ran the build.' } })
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].sources, [])
 })

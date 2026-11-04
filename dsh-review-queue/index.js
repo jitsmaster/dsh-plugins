@@ -17,6 +17,8 @@
  * gets a paused card. `idleResume: false` or env DSH_RQ_IDLE_RESUME=0 turns it off, and it is off in node --test runs unless `idleResume: true`; `idleDeps` ({ readLog, judge }) replaces the
  * log reader and the model judge (tests).
  *
+ * Hourly AI report (ai-reporter.js): on by default; `aiReport: false` or env DSH_RQ_AI_REPORT=0 turns it off, and it is off in node --test runs unless `aiReport: true`. `aiReport` may be an object { intervalMinutes (60), voice, chat (false = channel off), rcEnvFile }; `aiReportDeps` ({ notify, speaker, now, spawn }) replaces parts (tests).
+ *
  * `taskbarBadge` (default on, Windows only; env DSH_RQ_TASKBAR=0 turns it off): the number of waiting items as a badge on the app's taskbar button (taskbar.js).
  *
  * Config (all optional): `sparcCommandPath` (the modes:sparc command file a "Use SPARC" todo inlines, default ~/.claude/commands/modes/sparc.md), `stateDir` (where queue.json lives), `ttsClient` (path of dsh-hooks-tts's tts-client.ps1, default the
@@ -58,6 +60,7 @@ import { createPushRoutes } from './hub/push-routes.js'
 import { createFileLog } from './filelog.js'
 import { STALE_MS, createDismissals, createPausedTracker, scanSessionLogs } from './paused.js'
 import { readThread } from './thread.js'
+import { sourcesForItem } from './triage-sources.js'
 import { snippetsFromThread } from './follow-up.js'
 import { createTaskbarBadge } from './taskbar.js'
 import { CHECK_MS, IDLE_MS, createIdleJudge, createIdleResumer, createLogReader } from './idle-resume.js'
@@ -67,6 +70,8 @@ import { createTriageLog } from './triage-log.js'
 import { createTriageRunner, DEFAULT_RULES } from './triage-runner.js'
 import { createTriageMemory } from './triage-memory.js'
 import { createTriageRules } from './triage-rules.js'
+import { createAiReporter, REPORT_INTERVAL_MS } from './ai-reporter.js'
+import { createRcNotify } from './ai-report-notify.js'
 
 export const name = 'review-queue'
 
@@ -226,15 +231,35 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
   const triageRules = triageWanted ? (config.triageDeps?.triageRules ?? createTriageRules({ io: stateDir ? fileIo(join(stateDir, 'triage-rules.json')) : undefined, defaults: DEFAULT_RULES, log })) : undefined
   // Correction memory (triage-memory.js): reversed AI proposals become lessons, so the same mistake is not proposed again.
   const triageMemory = triageWanted ? (config.triageDeps?.memory ?? createTriageMemory({ io: stateDir ? fileIo(join(stateDir, 'triage-memory.json')) : undefined })) : undefined
-  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
+  const triageLog = stateDir ? createTriageLog(join(stateDir, 'triage-log.jsonl')) : undefined
+  // Hourly AI report: the last report rides the queue snapshot (header chip); voice and chat go out through the same speaker and the RingCentral wrapper.
+  const reportObj = typeof config.aiReport === 'object' && config.aiReport !== null
+  const reportCfg = reportObj ? config.aiReport : {}
+  const reportWanted = config.aiReport === true || reportObj || (config.aiReport !== false && process.env.DSH_RQ_AI_REPORT !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
+  const reportDeps = config.aiReportDeps ?? {}
+  const aiReporter = reportWanted
+    ? createAiReporter({
+      store, triageLog, log, speaker: reportDeps.speaker ?? speaker, now: reportDeps.now, channels: { voice: reportCfg.voice, chat: reportCfg.chat },
+      intervalMs: Number.isFinite(reportCfg.intervalMinutes) && reportCfg.intervalMinutes > 0 ? reportCfg.intervalMinutes * 60_000 : REPORT_INTERVAL_MS,
+      io: stateDir ? fileIo(join(stateDir, 'ai-report.json')) : undefined,
+      notify: reportDeps.notify ?? createRcNotify({
+        spawn: reportDeps.spawn ?? spawn, script: join(HERE, 'scripts', 'rc-notify.ps1'), envFile: reportCfg.rcEnvFile, log,
+        powershell: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      }),
+    })
+    : undefined
+  // dsh-hooks-tts's 'handoffFollowUp' service (read per call: that plugin may load later or not at all).
+  const handoffFollowOf = () => { try { return ctx.get?.('handoffFollowUp') ?? undefined } catch { return undefined } }
+  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
   // Observe mode only: every new item is judged in the background and an open card that is safe to handle gets the note "AI would have handled this". Nothing is ever done to an item.
   let triage
   if (triageWanted) {
-    const triageLog = stateDir ? createTriageLog(join(stateDir, 'triage-log.jsonl')) : undefined
     try { triageLog?.prune() } catch { /* next start */ }
     triage = createTriageRunner({
       store, log, triageLog, memory: triageMemory, rules: () => triageRules.current(),
       judge: config.triageDeps?.judge ?? createTriageJudge({ llm, log }),
+      // A question may only be answered from what the user wrote earlier in the session: its thread, user messages only.
+      sourcesOf: sourcesForItem(threadOf),
       enabled: () => config.triage !== false,
       // A session parked on hold is never a candidate (a user mark that vetoes triage).
       marksOf: (item) => ({ onHold: safe(() => heldIds().has(item.sessionId)) === true }),
@@ -244,6 +269,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
     })
     triage.start()
   }
+  aiReporter?.start()
   const pausedTimers = []
   if (paused) {
     const later = (ms) => { const t = setTimeout(() => { void paused.scan() }, ms); t.unref?.(); pausedTimers.push(t) }
@@ -324,7 +350,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
   const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
   sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); triage?.stop(); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); triage?.stop(); aiReporter?.stop(); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.
@@ -389,7 +415,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
 
   // Other plugins (voice) reach the queue through the context.
   try { ctx.provide?.('reviewQueue', provided) } catch { /* optional */ }
-  return { queue: provided, local: queue, agent: wiring?.client, proxy: wiring?.proxy, store, idle }
+  return { queue: provided, local: queue, agent: wiring?.client, proxy: wiring?.proxy, store, idle, aiReporter }
 }
 
 export function apply(ctx, config = {}) {

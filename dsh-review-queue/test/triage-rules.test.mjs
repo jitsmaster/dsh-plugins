@@ -47,7 +47,7 @@ test('setMode with an unknown id or a bad mode returns false and changes nothing
   assert.equal(rules.setMode('nope', 'auto'), false)
   assert.equal(rules.setMode('ro-permission', 'yolo'), false)
   assert.equal(rules.setMode('ro-permission', undefined), false)
-  assert.deepEqual(rules.list().map((r) => r.mode), ['observe', 'observe'])
+  assert.deepEqual(rules.list().map((r) => r.mode), ['observe', 'observe', 'observe'])
   assert.equal(io.box.writes, 0)
 })
 
@@ -70,7 +70,7 @@ test('a stored mode for an unknown rule id is ignored and does not create a rule
 test('garbled stored text starts from the defaults', () => {
   for (const text of ['{not json', '[]', 'null', '"x"']) {
     const rules = createTriageRules({ io: memIo(text), defaults: DEFAULT_RULES })
-    assert.deepEqual(rules.list().map((r) => r.mode), ['observe', 'observe'], text)
+    assert.deepEqual(rules.list().map((r) => r.mode), ['observe', 'observe', 'observe'], text)
   }
 })
 

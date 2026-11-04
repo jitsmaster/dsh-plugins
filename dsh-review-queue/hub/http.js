@@ -18,15 +18,21 @@ const SHUTDOWN = '/hub/v1/shutdown'
 const LOCAL_ONLY = new Set(['read', 'read-tip', 'tip-next', 'tip-current', 'tip-peek', 'tip-deeper', 'tip-todo', 'stop', 'ui', 'focus'])
 /**
  * What a paired phone may do with an item. It may start todos (todo, todo-confirm, todo-cancel: hub/routing.js sends them to the
- * owner app, or for "Choose for me" to the most recently desktop-active one) but never open sessions: open-session, and every action
- * not listed here, stays on the desktop (403 desktop-only). It may dismiss a paused session (paused-dismiss: it needs no action) but not resume one. thread and post are the chat view of a session (docs/mobile.md "Chat thread").
+ * owner app, or for "Choose for me" to the most recently desktop-active one). It cannot open a session directly: open-session, and every action
+ * not listed here, stays on the desktop (403 desktop-only). The one exception is follow-handoff, which lets a phone open a NEW session resuming a
+ * handoff note (the owning app does it; the audit line names the device and item, never the note path). It may dismiss a paused session (paused-dismiss: it needs no action) but not resume one. thread and post are the chat view of a session (docs/mobile.md "Chat thread").
  */
-const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'archive-session', 'paused-dismiss', 'hold', 'hold-release', 'hold-continue', 'todo', 'todo-confirm', 'todo-cancel', 'thread', 'post'])
+const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'archive-session', 'follow-handoff', 'paused-dismiss', 'hold', 'hold-release', 'hold-continue', 'todo', 'todo-confirm', 'todo-cancel', 'thread', 'post'])
 
 /** Client input in a log line: only safe characters, cut short (a line cannot be forged or flooded). Not a string: '?'. */
 const safeId = (value, max) => (typeof value === 'string' ? value.replace(/[^A-Za-z0-9_-]/g, '?').slice(0, max) : '?')
 
 /** The audit line of a phone's post (docs/hub.md 6.8): the device, the item and the length of the text. The text itself is never logged; the item id is client input, so it is cut to safe characters. */
+// Outcome of a phone follow-handoff: ok or the error code, plus the new session id only when it is id-safe; never a path or a service message.
+const followResultAudit = (deviceId, value, result) => {
+	const sid = typeof result?.sessionId === 'string' && /^[A-Za-z0-9_-]{1,60}$/.test(result.sessionId) ? ' ' + result.sessionId : ''
+	return 'follow-handoff-result: device ' + deviceId + ' item ' + safeId(value.id, 40) + ' ' + (result?.ok === true ? 'ok' + sid : safeId(result?.error, 40))
+}
 const postAudit = (deviceId, body) => 'post: device ' + deviceId + ' item ' + safeId(body.id, 40) + ' chars ' + (typeof body.text === 'string' ? body.text.length : 0)
 
 /**
@@ -135,10 +141,12 @@ export function createHttp({ hub, log = () => {} }) {
     const body = await readJson(req)
     if (!body.value) return send(res, body.status, { error: 'bad-request' })
     if (who.deviceId) { // a phone can prompt any session (a post, or a follow-up todo): leave a trace of who, which item and session and how long, never the text
-      const line = kind === 'post' ? postAudit(who.deviceId, body.value) : followUpAudit(who.deviceId, kind, body.value, hub.store)
+      const line = kind === 'post' ? postAudit(who.deviceId, body.value) : kind === 'follow-handoff' ? 'follow-handoff: device ' + who.deviceId + ' item ' + safeId(body.value.id, 40) : followUpAudit(who.deviceId, kind, body.value, hub.store)
       if (line) log(line)
     }
-    return outcome(res, await hub.act(kind, body.value, { role: who.role, caller }), kind === 'todo-confirm' ? CONFIRM_BAD_INPUT : undefined)
+    const result = await hub.act(kind, body.value, { role: who.role, caller })
+    if (who.deviceId && kind === 'follow-handoff') log(followResultAudit(who.deviceId, body.value, result))
+    return outcome(res, result, kind === 'todo-confirm' ? CONFIRM_BAD_INPUT : undefined)
   }
 
   function assetlinks(req, res) {

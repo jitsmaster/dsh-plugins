@@ -311,9 +311,9 @@ test('auto is never relaxed: an auto done rule on a finished session is still a 
   assert.ok(entries.at(-1).reasons.includes('session-finished'))
 })
 
-test('factsOf: a done card whose reply only mentions a PR, a handoff or a ticket does not need the user; a question still does', () => {
+test('factsOf: a done card whose reply only mentions a PR, a handoff or a ticket does not need the user under the observe check; a question still does', () => {
   for (const reply of ['Tests pass.\n\nPR #123 is open.', 'Handoff written to the vault.', 'AB#25870 updated.']) {
-    assert.equal(factsOf({ type: 'completed', payload: { reply } }).needsUser, false, reply)
+    assert.equal(factsOf({ type: 'completed', payload: { reply } }).needsUserObserve, false, reply)
   }
   assert.equal(factsOf({ type: 'completed', payload: { reply: 'PR #123 is open. Should I merge it?' } }).needsUser, true)
   assert.equal(factsOf({ type: 'completed', payload: { reply: '' } }).needsUser, true)

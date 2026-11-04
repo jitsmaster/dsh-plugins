@@ -261,3 +261,12 @@ test('review fix: ids never collide when the file has no seq; agree, confirm and
   const id = bad.record({ item: resolved(perm('ls'), 'denied'), review: 'overruled' }).lesson.id
   assert.doesNotThrow(() => { bad.agree(id); bad.confirm(id); bad.forget(id) })
 })
+
+test('a question item overruled by the user becomes a lesson that is recalled for the same question', () => {
+  const q = { type: 'question', sessionId: 's1', payload: { questions: [{ id: 'q1', question: 'Post both replies and resolve the threads?', options: [{ label: 'Yes' }, { label: 'No' }] }] } }
+  const item = { ...q, status: 'resolved', resolution: { kind: 'answered', answers: [{ id: 'q1', selected: ['No'] }] }, triage: { verdict: 'handle', ruleId: 'straightforward-question', ruleVersion: 'abcd1234', would: 'answer "Yes"', answer: 'Yes', score: 8 } }
+  const m = createTriageMemory()
+  const out = m.record({ item, review: 'overruled' })
+  assert.ok(out.lesson)
+  assert.equal(m.recall(q, ['straightforward-question']).veto?.ruleId, 'straightforward-question')
+})

@@ -53,6 +53,10 @@ export function createTriageLog(file, { now = Date.now, maxBytes = LOG_MAX_BYTES
       }
       return typeof test === 'function' ? all.filter(test) : all
     },
+    /** Read-only: entries stamped in [since, until) (either bound optional), oldest first. */
+    entries({ since = -Infinity, until = Infinity } = {}) {
+      return this.read((e) => typeof e.at === 'number' && e.at >= since && e.at < until)
+    },
     /** Drops entries older than the retention from the file; returns how many went. */
     prune() {
       try {

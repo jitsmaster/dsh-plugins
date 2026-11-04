@@ -15,6 +15,7 @@ import { isSessionId } from './thread.js'
 import { postKeyOf } from './post-key.js'
 import { archKeyOf } from './sessions.js'
 import { createTriageReview } from './triage-review.js'
+import { createHandoffFollow } from './handoff-follow.js'
 
 const MAX_REPLY = 4000
 /** reading === 'tip:<id>' while the tip of the day is read aloud (lib/client.js keeps its own copy of the string: it is one self-contained script). */
@@ -34,7 +35,7 @@ const needsUser = (item) => item.type !== 'paused' && item.type !== 'onhold' && 
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, ticketTitleOf, defaultModelOf, paused, onHold, threadOf, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, paused, onHold, threadOf, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
@@ -196,9 +197,19 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   /** The tip to show (asking for a new one when it is older than its slot); undefined without a generator or a tip. Never throws. */
   const tipNow = () => { try { return tips?.current() } catch { return undefined } }
 
+  const handoffFollow = createHandoffFollow({ serviceOf: handoffFollowOf, store, log })
   const triageReview = createTriageReview({ store, triageApi, promptSession, posting, log })
+  // The last hourly AI report for the header chip: only what the chip needs, and a failing source never breaks the snapshot.
+  const aiReportPart = () => {
+    try {
+      const r = aiReportOf?.()
+      return r ? { aiReport: { total: r.total, handled: r.handled, overruled: r.overruled, text: r.text, to: r.to } } : {}
+    } catch { return {} }
+  }
   return {
     ...triageReview,
+    /** The done card's Follow handoff button: a new session resumes the latest handoff note (the source session is archived by that follow-up). */
+    followHandoff: (id) => handoffFollow.follow(id),
     /**
      * opts.tip === true: the overlay is open, so the tip is wanted (and asked for when the list is empty); without it none is attached and none generated.
      * opts.watch (or tip): somebody looks at the session numbers (the phone, an open overlay), so they are kept fresh.
@@ -217,6 +228,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
         ...(counts ? { sessions: counts } : {}),
         ...(tip ? { tip } : {}),
         serverNow: now(),
+        ...aiReportPart(),
         focusId,
         reading,
         ui: { seq: ui.seq, cmd: ui.cmd },

@@ -155,3 +155,53 @@ test('the session-finished relax fails closed: only mode exactly "observe" is re
 	const { mode, ...noMode } = rule({ class: 'done' })
 	assert.ok(run({ item: done, rule: noMode, facts, relax }).reasons.includes('session-finished'), 'missing mode was relaxed')
 })
+
+// --- question answers must be one of the offered options (straightforward-question rule) ---
+const opts = (...labels) => labels.map((label) => ({ label }))
+const qItem = (options) => ({ id: 'q', type: 'question', status: 'open', payload: { questions: [{ id: 'q1', question: 'Post both replies and resolve the threads?', ...(options ? { options } : {}) }] } })
+const qRule = rule({ class: 'question', id: 'r1' })
+const qSources = [{ id: 'user-7', text: 'Please post both replies and resolve the threads when you are done.', userAuthored: true }]
+const qJudgment = (over) => judgment({ answer_basis: 'quoted-source', answer: 'Yes, post and resolve', evidence_source: 'user-7', evidence_quote: 'post both replies and resolve the threads', ...over })
+const qRun = (item, over) => triageOutcome({ item, judgment: qJudgment(), rule: qRule, facts: safe, sources: qSources, marks: {}, ...over })
+
+test('question: an answer that is one of the option labels is handled (case and surrounding spaces do not matter)', () => {
+  const item = qItem(opts('Yes, post and resolve', 'No, let me review first'))
+  assert.equal(qRun(item).verdict, 'handle')
+  assert.equal(qRun(item, { judgment: qJudgment({ answer: '  yes, POST and resolve ' }) }).verdict, 'handle')
+})
+
+test('question: an answer that is not one of the option labels is vetoed with answer-not-an-option', () => {
+  const item = qItem(opts('Yes, post and resolve', 'No, let me review first'))
+  const out = qRun(item, { judgment: qJudgment({ answer: 'Post only the first reply' }) })
+  assert.equal(out.verdict, 'ask')
+  assert.ok(out.reasons.includes('answer-not-an-option'))
+})
+
+test('question: a free-text question without options skips the option check', () => {
+  const out = qRun(qItem(undefined), { judgment: qJudgment({ answer: 'Whatever the user quoted' }) })
+  assert.equal(out.verdict, 'handle')
+  assert.ok(!out.reasons.includes('answer-not-an-option'))
+})
+
+test('question: with the same valid judgment only an auto rule acts, and the session-finished relax never applies to the question class', () => {
+  const item = qItem(opts('Yes, post and resolve'))
+  assert.equal(qRun(item).act, false)
+  const auto = qRun(item, { rule: { ...qRule, mode: 'auto' } })
+  assert.deepEqual([auto.verdict, auto.act], ['handle', true])
+  const relaxed = qRun(item, { relax: { sessionFinished: true }, facts: { riskFlags: [], safe: false } })
+  assert.equal(relaxed.verdict, 'ask')
+})
+
+
+test('the session-finished relax never applies to a question rule, even with sessionContinues false', () => {
+	const item = qItem(opts('Yes, post and resolve'))
+	const facts = { riskFlags: [], safe: true, sessionContinues: false }
+	const plain = qRun(item, { facts })
+	const relaxed = qRun(item, { facts, relax: { sessionFinished: true } })
+	assert.deepEqual(relaxed, plain)
+	assert.ok(!relaxed.reasons.includes('session-finished'))
+	// no non-done class is relaxed either
+	const perm = { id: 'p', type: 'permission', status: 'open' }
+	const r = run({ item: perm, rule: rule({ class: 'permission' }), facts, relax: { sessionFinished: true } })
+	assert.ok(!r.reasons.includes('session-finished'))
+})

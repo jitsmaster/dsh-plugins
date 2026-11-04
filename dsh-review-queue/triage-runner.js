@@ -8,7 +8,7 @@
  */
 import { createHash } from 'node:crypto'
 import { riskOf } from './risk.js'
-import { needsUserForTriage } from './actionable.js'
+import { needsUser, needsUserForTriage } from './actionable.js'
 import { RAW_MAX, RAW_PRECLIP, oneLine } from './triage-judge.js'
 import { classOf, parseReadOnlyCommand, triageOutcome } from './triage.js'
 import { redact } from './triage-log.js'
@@ -19,7 +19,8 @@ const SHELL_TOOL = /shell|bash|powershell|pwsh|cmd|command|exec/i
 
 export const DEFAULT_RULES = [
   { id: 'ro-permission', name: 'Read-only commands', class: 'permission', enabled: true, mode: 'observe', instruction: 'A read-only command that passes the strict parser, inside the workspace: approve.' },
-  { id: 'green-done', name: 'Mechanical done messages', class: 'done', enabled: true, mode: 'observe', instruction: 'A done message that only reports passing tests or a finished mechanical step, with no question or follow-up, while the session continues or has remaining task items: handle.' },
+  { id: 'green-done', name: 'Mechanical done messages', class: 'done', enabled: true, mode: 'observe', instruction: 'A done message that only reports passing tests or a finished mechanical step, with no question or follow-up: handle.' },
+  { id: 'straightforward-question', name: 'Straightforward questions', class: 'question', enabled: true, mode: 'observe', instruction: 'A question with one clearly recommended option, where the user already asked for exactly that action earlier in the session: propose that option as the answer. The answer must rest on a quote the user wrote (a user-authored source); never answer a choice of direction, scope or taste.' },
 ]
 
 /** A short hash of what a rule says, so every decision records the version of the rule it was made under. */
@@ -51,16 +52,38 @@ export function factsOf(item, { sessionContinuesOf = () => false } = {}) {
   if (item?.type === 'completed') {
     let continues = false
     try { continues = sessionContinuesOf(item) === true } catch { /* unknown means the session is treated as finished */ }
-    return { riskFlags: [], safe: true, needsUser: needsUserForTriage(p.reply), sessionContinues: continues }
+    return { riskFlags: [], safe: true, needsUser: needsUser(p.reply), needsUserObserve: needsUserForTriage(p.reply), sessionContinues: continues }
   }
+  // One question only: with several, a single answer cannot be proposed for the card.
+  if (item?.type === 'question') return { riskFlags: [], safe: Array.isArray(p.questions) && p.questions.length === 1 }
   return { riskFlags: [], safe: false }
 }
 
-/** What the card says the AI would have done. */
-export function wouldText(item) {
+/** The proposed answer kept on the card: model text, so whitespace-collapsed and capped at 200 characters (ellipsis if cut). */
+const ANSWER_CAP = 200
+export function clipAnswer(answer) {
+  if (typeof answer !== 'string') return answer
+  const s = answer.replace(/\s+/g, ' ').trim()
+  return s.length > ANSWER_CAP ? s.slice(0, ANSWER_CAP - 1) + '\u2026' : s
+}
+
+/** What the card says the AI would have done; a question proposal quotes the answer (capped, it is model text). */
+export function wouldText(item, { answer } = {}) {
+  if (item?.type === 'question') return 'answer \"' + String(answer ?? '').slice(0, 120) + '\"'
   if (item?.type === 'permission') return 'approve this read-only command'
   if (item?.type === 'completed') return 'clear this done card as handled'
   return 'handle this'
+}
+
+/** The answer the user gave to a one-question item: the chosen labels joined, or the typed text. */
+const givenAnswer = (a) => (Array.isArray(a?.selected) && a.selected.length ? a.selected.join(', ') : String(a?.custom ?? ''))
+const same = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase()
+
+/** A question item: did the user answer what the AI proposed? undefined unless the user answered or confirmed it. */
+function answeredAsProposed(item) {
+  const { kind, answers } = item.resolution ?? {}
+  if ((kind !== 'answered' && kind !== 'confirmed') || typeof item.triage?.answer !== 'string' || !Array.isArray(answers) || !answers.length) return undefined
+  return same(givenAnswer(answers[0]), item.triage.answer)
 }
 
 /** Did the user do what the AI would have done? true | false | undefined (no comparison possible: cancelled, expired, a type triage does not judge). */
@@ -68,6 +91,7 @@ export function userDidWhatAiWould(item) {
   const kind = item?.resolution?.kind
   if (item?.type === 'permission') return kind === 'approved' ? true : kind === 'denied' ? false : undefined
   if (item?.type === 'completed') return kind === 'reviewed' || kind === 'no-action' ? true : kind === 'replied' ? false : undefined
+  if (item?.type === 'question') return answeredAsProposed(item)
   return undefined
 }
 
@@ -93,7 +117,7 @@ export function lessonFeedbackOf(item) {
 
 /**
  * @param {{ store: any, judge: { judge: Function }, triageLog?: { append: Function }, rules?: object[], marksOf?: (item: object) => object,
- *   sourcesOf?: (item: object) => object[], sessionContinuesOf?: (item: object) => boolean, enabled?: () => boolean, log?: (line: string) => void,
+ *   sourcesOf?: (item: object) => object[] | Promise<object[]>, sessionContinuesOf?: (item: object) => boolean, enabled?: () => boolean, log?: (line: string) => void,
  *   now?: () => number, maxInFlight?: number, memory?: ReturnType<import('./triage-memory.js').createTriageMemory> }} deps
  *   memory: the correction memory. A strong match with a past reversal is a code veto before any model call; weaker matches go to the judge as cautionary context.
  */
@@ -117,7 +141,8 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     // Step 1, code only: a veto that no model answer can lift means no model call at all.
     const pre = triageOutcome({ item, judgment: { needs_decision: false, attention: 0, matched_rule: mine[0].id, answer_basis: 'none' }, rule: mine[0], facts, marks: marksOf(item), relax: { sessionFinished: true } })
     const doneExtra = cls === 'done' ? { sessionContinues: facts.sessionContinues === true } : {}
-    const hard = pre.reasons.filter((r) => r !== 'no-rule')
+    // For a question the pre-check judgment has no answer yet, so its missing basis is no veto.
+    const hard = pre.reasons.filter((r) => r !== 'no-rule' && !(cls === 'question' && r === 'no-basis'))
     if (hard.length) { record({ itemId: item.id, type: item.type, stage: 'code-veto', verdict: 'ask', reasons: hard, ...doneExtra }); return }
     // Learning from reversals: the user reversed a similar AI proposal before. Code decides, not the model: the card stays a normal card and says why.
     let recalled = { context: [] }
@@ -133,20 +158,22 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     if (inFlight >= maxInFlight) { record({ itemId: item.id, type: item.type, stage: 'skipped', verdict: 'ask', reasons: ['busy'] }); return }
     inFlight++
     let result
-    try { result = await judge.judge({ item, rules: mine, sources: sourcesOf(item), lessons: recalled.context }) } catch (error) { result = { note: String(error?.message ?? error) } } finally { inFlight-- }
+    let sources = []
+    try { sources = (await sourcesOf(item)) ?? [] } catch { /* no sources means no admissible quote */ }
+    try { result = await judge.judge({ item, rules: mine, sources, lessons: recalled.context }) } catch (error) { result = { note: String(error?.message ?? error) } } finally { inFlight-- }
     if (!result?.judgment) {
       const raw = oneLine(redact(String(result?.raw ?? '').slice(0, RAW_PRECLIP))).slice(0, RAW_MAX)
       record({ itemId: item.id, type: item.type, stage: 'judge', verdict: 'ask', reasons: ['no-judgment'], note: result?.note, ...(raw ? { raw } : {}) })
       return
     }
     const rule = mine.find((r) => r.id === result.judgment.matched_rule)
-    const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts, sources: sourcesOf(item), marks: marksOf(item), relax: { sessionFinished: true } })
+    const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts, sources, marks: marksOf(item), relax: { sessionFinished: true } })
     const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtra }
     // Re-checked after the wait: the item may have been resolved, put on hold or its rule switched off meanwhile.
     const fresh = store.get(item.id) // the item as it is now, not as it was when it was raised
     const marks = fresh ? marksOf(fresh) : {}
     if (outcome.verdict !== 'handle' || fresh?.status !== 'open' || !enabled() || rule.mode === 'off' || marks.onHold || marks.neverAuto) { record(outcome.verdict === 'handle' ? { ...entry, verdict: 'ask', reasons: ['changed-meanwhile'] } : entry); return }
-    store.update(item.id, { triage: { mode: 'observe', verdict: 'handle', ruleId: rule.id, ruleName: rule.name, ruleVersion: ruleVersion(rule), score: outcome.score, threshold: outcome.threshold, would: wouldText(item), at: now(), ...(recalled.context.length ? { considered: recalled.context.map((l) => ({ id: l.id, title: l.title, count: l.count, lastAt: l.lastAt })) } : {}) } })
+    store.update(item.id, { triage: { mode: 'observe', verdict: 'handle', ruleId: rule.id, ruleName: rule.name, ruleVersion: ruleVersion(rule), score: outcome.score, threshold: outcome.threshold, would: wouldText(item, { answer: result.judgment.answer }), ...(cls === 'question' ? { answer: clipAnswer(result.judgment.answer) } : {}), at: now(), ...(recalled.context.length ? { considered: recalled.context.map((l) => ({ id: l.id, title: l.title, count: l.count, lastAt: l.lastAt })) } : {}) } })
     watching.add(item.id)
     record(entry)
     log('triage: would handle ' + item.type + ' ' + item.id + ' (rule ' + rule.id + ', score ' + outcome.score + ')')

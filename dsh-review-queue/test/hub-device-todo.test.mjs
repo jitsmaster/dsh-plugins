@@ -108,11 +108,11 @@ test('a revoked phone cannot start a todo any more (401)', async (t) => {
 
 const http = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'hub', 'http.js'), 'utf8')
 
-test('DEVICE_ACTIONS is exactly the old phone actions plus todo, todo-confirm, todo-cancel and the chat view (thread, post), never open-session', () => {
+test('DEVICE_ACTIONS is exactly the old phone actions plus follow-handoff, todo, todo-confirm, todo-cancel and the chat view (thread, post), never open-session', () => {
   const m = /const DEVICE_ACTIONS = new Set\(\[([^\]]*)\]\)/.exec(http)
   assert.ok(m, 'DEVICE_ACTIONS literal')
   const actions = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
-  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'archive-session', 'deny', 'hold', 'hold-continue', 'hold-release', 'late-answer', 'paused-dismiss', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
+  assert.deepEqual(actions, ['answer', 'approve', 'approve-similar', 'archive', 'archive-session', 'deny', 'follow-handoff', 'hold', 'hold-continue', 'hold-release', 'late-answer', 'paused-dismiss', 'post', 'reopen', 'reply', 'reviewed', 'thread', 'todo', 'todo-cancel', 'todo-confirm'])
   assert.ok(!actions.includes('open-session'))
 })
 

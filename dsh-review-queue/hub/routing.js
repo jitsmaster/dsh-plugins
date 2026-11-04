@@ -22,7 +22,7 @@ import { isSentFollowUp } from '../follow-up-shared.js'
 const HUB_LOCAL = ['reviewed', 'reopen']
 const PAUSED_ACTIONS = ['paused-resume', 'paused-dismiss']
 /** Value: the item must still be open (an expired question can still be answered late, any session can be opened, the chat of a finished item can be read and continued). */
-const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'paused-resume': true, 'paused-dismiss': true, hold: true, 'hold-release': true, 'hold-continue': true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'archive-session': false, 'open-session': false, thread: false, post: false }
+const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'paused-resume': true, 'paused-dismiss': true, hold: true, 'hold-release': true, 'hold-continue': true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'archive-session': false, 'follow-handoff': true, 'open-session': false, thread: false, post: false }
 export const ACTION_KINDS = [...HUB_LOCAL, 'todo', ...Object.keys(OWNER_ACTIONS)]
 
 const risksOf = (item) => (item.type === 'permission' ? riskOf({ toolName: item.payload?.toolName, detail: item.payload?.detail ?? item.payload?.summary, path: item.payload?.path, workspace: item.workspace }) : [])
@@ -50,6 +50,8 @@ export function createRouting({ store, queue, instances, commands, log = () => {
 
   /** The phone's checks (D8). Returns an error result, or undefined to go on. */
   function guard(kind, item, body, via) {
+    // A phone tap opens a new session and archives this one: it asks to confirm first, like approve (the desktop does not).
+    if (kind === 'follow-handoff') return via === 'phone' && body.confirmed !== true ? { ok: false, error: 'needs-confirm' } : undefined
     if (kind !== 'approve' && kind !== 'approve-similar') return undefined
     const risky = risksOf(item).length > 0
     if (via === 'phone' && (kind === 'approve-similar' || item.type === 'permission') && body.confirmed !== true) return { ok: false, error: 'needs-confirm' }
