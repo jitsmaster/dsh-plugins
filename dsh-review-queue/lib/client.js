@@ -2036,7 +2036,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return h("div", { className: "rq-head" }, h("h2", null, "Coding Boss Review Queue"), h("span", { className: "rq-count" }, n + " waiting"),
 				sessions ? h("span", { className: "rq-count rq-sess", title: sessionsTitle }, sessions) : null,
 				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
-				aiChip ? h("button", { className: "rq-count", "data-ai-report": true, title: aiChip.title, onClick: () => { set({ filter: { ...state.filter, type: "all", query: "", resolvedBy: "ai" } }); setView("resolved"); } }, aiChip.label) : null,
+				aiChip ? h("button", { type: "button", className: "rq-count", "data-ai-report": true, title: aiChip.title, onClick: () => { set({ filter: { ...state.filter, type: "all", query: "", resolvedBy: "ai" } }); setView("resolved"); } }, aiChip.label) : null,
 				h("span", { className: "rq-grow" }),
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
 				h("button", { type: "button", className: "rq-iconx", title: "Close (Esc)", "aria-label": "Close (Esc)", onClick: () => setOverlay(false) }, "✕"));

@@ -33,6 +33,7 @@ test('the header shows the chip when the snapshot carries a fresh report', () =>
   assert.equal(c.length, 1)
   assert.equal(textOf(c[0]), 'AI 1h: 7')
   assert.equal(c[0].props.title, report().text)
+  assert.equal(c[0].props.type, 'button')
 })
 
 test('the header has no chip without a report, or with a stale one', () => {
