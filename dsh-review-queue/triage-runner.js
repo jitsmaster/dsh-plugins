@@ -7,7 +7,7 @@
  * Runs async after the raise, never blocks it, never throws; any failure leaves a normal card.
  */
 import { createHash } from 'node:crypto'
-import { riskOf } from './risk.js'
+import { riskOf, AUTO_SHELL_TOOLS } from './risk.js'
 import { needsUser, needsUserForTriage } from './actionable.js'
 import { RAW_MAX, RAW_PRECLIP, oneLine } from './triage-judge.js'
 import { hasActionItem } from './auto-clear.js'
@@ -21,8 +21,6 @@ export { clipAnswer }
 /** At most this many judge calls at once; an item arriving beyond that stays a normal card (and is logged), so cost and latency stay bounded. */
 export const MAX_IN_FLIGHT = 2
 const SHELL_TOOL = /shell|bash|powershell|pwsh|cmd|command|exec/i
-/** Auto only: the shell tools by exact (case-insensitive) name; a tool that merely has "exec" or "command" in its name is not trusted to run a plain command. */
-const SHELL_TOOL_AUTO = new Set(['shell', 'bash', 'powershell', 'pwsh', 'cmd'])
 
 export const DEFAULT_RULES = [
   { id: 'ro-permission', name: 'Read-only commands', class: 'permission', enabled: true, mode: 'observe', instruction: 'A read-only command that passes the strict parser, inside the workspace: approve.' },
@@ -67,7 +65,8 @@ export function factsOf(item, { sessionContinuesOf = () => false } = {}) {
     const riskFlags = riskOf({ toolName: p.toolName, detail: p.detail, path: p.path, workspace: item.workspace }).map((r) => r.code)
     const inside = pathsInside(command, item.workspace)
     // Auto only: the stricter parser, an exact shell tool name, and no tool arguments besides the command (the fingerprint and the judgment only cover the command).
-    const autoCommandOk = SHELL_TOOL_AUTO.has(String(p.toolName ?? '').toLowerCase()) && p.extraArgs !== true && parseReadOnlyCommand(command, { auto: true }).ok
+    // Auto trusts a shell tool by exact name only; a tool that merely has "exec" or "command" in its name is not trusted to run a plain command.
+    const autoCommandOk = AUTO_SHELL_TOOLS.has(String(p.toolName ?? '').toLowerCase()) && p.extraArgs !== true && parseReadOnlyCommand(command, { auto: true }).ok
     return { riskFlags, commandIntact: commandIntact(p), autoCommandOk, safe: parsed.ok && inside && !riskFlags.length, readOnly: parsed.ok, outsideWorkspace: !inside || riskFlags.includes('outside-workspace'), reversible: parsed.ok }
   }
   if (item?.type === 'completed') {

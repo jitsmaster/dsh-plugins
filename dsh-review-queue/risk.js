@@ -20,6 +20,9 @@ export function toolDetail(name, args) {
   return ''
 }
 
+/** The shell tools Auto trusts, by exact (lower-cased) name. Shared by the runner's auto facts and the permission actor's re-check. */
+export const AUTO_SHELL_TOOLS = new Set(['shell', 'bash', 'powershell', 'pwsh', 'cmd'])
+
 /** Arguments that change nothing about what a command does (a label, a time limit). */
 const COSMETIC_ARG_KEYS = new Set(['command', 'description', 'timeout', 'timeout_ms', 'explanation', 'reason'])
 

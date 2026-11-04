@@ -56,13 +56,20 @@ const SEARCH_BAD_LONG = /^--(recursive|dereference-recursive|follow|hidden|no-ig
 const SEARCH_BAD_SHORT = /^-[^-]*[rRLuzefd]/
 // Auto only: git options that print file contents or reach history by pickaxe.
 const GIT_BAD_AUTO = /^(--(patch|pickaxe|cc|textconv)|-[^-]*[pucGS])/
+// Auto only: git is `status`, or `log` / `diff` with a summary flag (log and diff print patches by default, show always does).
+const GIT_AUTO_SUBCOMMANDS = new Set(['status', 'log', 'diff'])
+const GIT_SUMMARY_FLAGS = { log: new Set(['--oneline', '--stat', '--name-only', '--name-status']), diff: new Set(['--stat', '--name-only', '--name-status', '--shortstat', '--numstat']) }
+// Auto only: rg/grep take just these flags, none of which takes a value (so no flag value can pass for the named file).
+const SEARCH_OK_LONG = new Set(['--line-number', '--ignore-case', '--invert-match', '--count', '--files-with-matches', '--word-regexp', '--fixed-strings', '--with-filename', '--no-filename', '--no-messages'])
+const SEARCH_OK_SHORT = /^-[nivclwHhFs]+$/
 const fail = (reason) => ({ ok: false, reason })
 
 /**
  * Strict allowlist: ONE plain command from a short list (git only status/diff/log/show), no operators, no redirects, no quotes, no
  * substitution, no `..`, no protected path (reading `.env` counts as touching it). Containment inside the workspace is checked separately in code.
- * With `auto` (only the Auto act path passes it) the list is tighter: no %/^, no recursive or hidden search (rg/grep need a pattern and a named file),
- * no `rev:path` or patch/pickaxe options in git, more protected files, and every `:` / `=` segment of a token is checked against them.
+ * With `auto` (only the Auto act path passes it) the list is tighter: no %/^, rg/grep take only a few no-value flags and need a pattern and a named file,
+ * git is only `status` and `log` / `diff` with a summary flag (no show, blame, grep, cat-file; no `rev:path`, patch or pickaxe options),
+ * more protected files, and every `:` / `=` segment of a token is checked against them.
  * @returns {{ ok: boolean, reason?: string }}
  */
 export function parseReadOnlyCommand(command, { auto = false } = {}) {
@@ -76,11 +83,18 @@ export function parseReadOnlyCommand(command, { auto = false } = {}) {
     args = tokens.slice(2)
     if (args.some((t) => GIT_BAD_FLAG.test(t))) return fail('git flag not allowed')
     if (auto && args.some((t) => t.includes(':') || GIT_BAD_AUTO.test(t))) return fail('git revision path or patch option not allowed in auto')
+    if (auto) {
+      if (!GIT_AUTO_SUBCOMMANDS.has(tokens[1])) return fail('git subcommand not allowed in auto')
+      const summary = GIT_SUMMARY_FLAGS[tokens[1]]
+      if (summary && !args.some((t) => summary.has(t))) return fail('git log and diff need a summary flag in auto')
+    }
   } else if (PLAIN.has(bin)) {
     args = tokens.slice(1)
     if (bin === 'rg' && args.some((t) => RG_BAD_FLAG.test(t))) return fail('rg flag not allowed')
     if (auto && (bin === 'rg' || bin === 'grep')) {
       if (args.some((t) => SEARCH_BAD_LONG.test(t) || SEARCH_BAD_SHORT.test(t))) return fail('recursive or hidden search not allowed in auto')
+      // Only flags that take no value: a value-taking flag would put its value where the named file is counted.
+      if (args.some((t) => t.startsWith('-') && !(SEARCH_OK_LONG.has(t) || SEARCH_OK_SHORT.test(t)))) return fail('search flag not allowed in auto')
       // A pattern and at least one named file: without a file rg/grep read the whole working directory (or stdin).
       if (args.filter((t) => !t.startsWith('-')).length < 2 || args.some((t) => /^\.{1,2}[\\/]?$/.test(t) || /[\\/]$/.test(t))) return fail('search needs a pattern and a named file')
     }

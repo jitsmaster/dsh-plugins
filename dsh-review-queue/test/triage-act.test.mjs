@@ -103,7 +103,7 @@ test('resolutionBase carries the capped quote (300) and the evidence source', as
 test('a payload change between judge and act is refused as changed-meanwhile; the actor is not called and no note is left', async () => {
   const { store, runner, calls, entries } = setup({
     actor: approve,
-    hook: (s) => s.update(s.list({ status: 'open' })[0].id, { payload: { toolName: 'shell', detail: 'git log', summary: 'git status', callId: 'c1' } }),
+    hook: (s) => s.update(s.list({ status: 'open' })[0].id, { payload: { toolName: 'shell', detail: 'git log --oneline', summary: 'git status', callId: 'c1' } }),
   })
   const item = store.add(perm())
   await runner.idle()

@@ -22,13 +22,14 @@ const auto = (c) => parseReadOnlyCommand(c, { auto: true })
 
 // --- S1: UNC / device paths never reach the file system; % and ^ are shell syntax ---------------------------------------------------
 test('S1: UNC, device and outside drive paths are vetoed before any file-system call', async () => {
-  const bad = ['cat //attacker.example/share/x', 'cat \\\\attacker.example\\share\\x', 'cat \\\\?\\C:\\x', 'cat \\\\.\\pipe\\x', 'cat //./pipe/x', 'cat -f//attacker.example/s/x', 'cat Z:/definitely/outside.txt', 'cat C:\\Windows\\win.ini']
-  for (const cmd of bad) {
-    let calls = 0
-    const io = { real: async (p) => { calls++; return p } }
+  // [command, the exact paths resolved]: a UNC / device path resolves nothing, a lexically outside drive path resolves only the workspace root
+  const bad = [['cat //attacker.example/share/x', []], ['cat \\\\attacker.example\\share\\x', []], ['cat \\\\?\\C:\\x', []], ['cat \\\\.\\pipe\\x', []], ['cat //./pipe/x', []], ['cat -f//attacker.example/s/x', []],
+    ['cat Z:/definitely/outside.txt', [ws]], ['cat C:\\Windows\\win.ini', [ws]]]
+  for (const [cmd, expected] of bad) {
+    const seen = []
+    const io = { real: async (p) => { seen.push(p); return p } }
     assert.equal(await containedInWorkspace(cmd, ws, io), false, cmd)
-    // the workspace itself may be resolved, but never the hostile candidate
-    assert.ok(calls <= 1, cmd + ' resolved a candidate (calls=' + calls + ')')
+    assert.deepEqual(seen, expected, cmd + ' resolved ' + JSON.stringify(seen))
   }
 })
 
@@ -59,7 +60,15 @@ test('S2: rg/grep may only read explicit files in auto', () => {
     'rg --follow foo a.txt', 'rg --hidden foo a.txt', 'rg -u foo a.txt', 'rg -uu foo a.txt', 'rg -uuu foo a.txt', 'rg --no-ignore foo a.txt', 'rg --no-ignore-vcs foo a.txt',
     'rg --search-zip foo a.txt', 'rg -z foo a.txt', 'rg -nz foo a.txt', 'rg foo', 'grep foo', 'rg --files']
   for (const c of bad) assert.equal(auto(c).ok, false, c)
-  for (const c of ['rg foo a.txt', 'grep -n foo a.txt', 'grep -in foo a.txt b.txt', 'rg -n -i foo src/a.js']) assert.equal(auto(c).ok, true, c)
+  for (const c of ['rg foo a.txt', 'grep -n foo a.txt', 'grep -in foo a.txt b.txt', 'rg -n -i foo src/a.js', 'rg -n foo src/a.js', 'grep --line-number --ignore-case foo a.txt']) assert.equal(auto(c).ok, true, c)
+})
+
+test('S2: rg/grep in auto take only no-value flags, so a flag value can never pass for the named file', () => {
+  const bad = ['rg -A 3 foo', 'rg --max-count 5 foo', 'grep -m 5 foo', "rg -g '*.js' foo", 'rg -g *.js foo', 'rg -t js foo', 'rg -B 2 foo', 'rg -C 2 foo', 'grep -A 3 foo', 'rg -A3 foo a.txt', 'rg -m5 foo a.txt', 'rg --max-count=5 foo a.txt',
+    'grep -e foo a.txt', 'rg --color always foo', 'rg --glob x foo', 'rg --type js foo', 'rg -j 4 foo', 'grep --max-count 5 foo', 'rg -n -A 3 foo', 'rg -nA 3 foo', 'grep -nm 5 foo', 'rg --context 3 foo']
+  for (const c of bad) assert.equal(auto(c).ok, false, c)
+  for (const c of ['rg -n foo src/a.js', 'grep -in foo a.txt', 'grep -c foo a.txt', 'rg -l foo a.txt b.txt', 'rg -w -F foo a.txt', 'grep -vHs foo a.txt', 'rg --word-regexp --fixed-strings foo a.txt', 'rg --no-filename --count foo a.txt']) assert.equal(auto(c).ok, true, c)
+  for (const c of ['rg -A 3 foo', 'rg --max-count 5 foo', 'grep -m 5 foo', 'rg -t js foo']) assert.equal(parseReadOnlyCommand(c).ok, true, 'observe: ' + c)
 })
 
 test('S2: observe still accepts what it accepted', () => {
@@ -69,7 +78,18 @@ test('S2: observe still accepts what it accepted', () => {
 test('S2: git in auto: no revision:path, no patch / pickaxe options', () => {
   const bad = ['git show HEAD:.env', 'git show HEAD:src/a.js', 'git show :0:a.js', 'git log -p', 'git log --patch', 'git show -p HEAD', 'git log -Gsecret', 'git log -Ssecret', 'git diff -c', 'git diff --cc', 'git log -pw']
   for (const c of bad) assert.equal(auto(c).ok, false, c)
-  for (const c of ['git status', 'git diff', 'git log --oneline -5', 'git diff HEAD~1 --stat', 'git show HEAD --stat']) assert.equal(auto(c).ok, true, c)
+  for (const c of ['git status', 'git log --oneline -5', 'git diff HEAD~1 --stat']) assert.equal(auto(c).ok, true, c)
+})
+
+test('S2: git in auto is status and summary-only log / diff: nothing that prints file contents', () => {
+  const ok = ['git status', 'git status -s', 'git status --short -b', 'git status --porcelain', 'git log --oneline', 'git log --stat', 'git log --name-only', 'git log --name-status', 'git log --oneline -5',
+    'git diff --stat', 'git diff --name-only', 'git diff --name-status', 'git diff --shortstat', 'git diff --numstat', 'git diff HEAD~1 --stat']
+  const bad = ['git show HEAD', 'git show HEAD --stat', 'git show', 'git diff', 'git diff HEAD~1', 'git log', 'git log -5', 'git log -p', 'git log --stat -p', 'git diff --stat -p', 'git diff --stat --patch', 'git diff --stat -u',
+    'git blame a.js', 'git grep foo', 'git cat-file -p HEAD', 'git log --oneline -Gx', 'git diff --stat -c', 'git log --oneline HEAD:a.js', 'git diff --stat -S x']
+  for (const c of ok) assert.equal(auto(c).ok, true, c)
+  for (const c of bad) assert.equal(auto(c).ok, false, c)
+  for (const c of ['git show HEAD', 'git diff', 'git log', 'git log -p', 'git diff --stat -p', 'git show HEAD:README.md']) assert.equal(parseReadOnlyCommand(c).ok, true, 'observe: ' + c)
+  assert.equal(parseReadOnlyCommand('git blame a.js').ok, false, 'observe never allowed these')
 })
 
 test('S2: more protected paths in auto (every colon / equals segment is tested), observe unchanged', () => {

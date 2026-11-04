@@ -94,7 +94,7 @@ export function createStoreAdapter({ instanceId, io, legacyRead, now = Date.now,
       return true
     },
     resolve,
-    /** Resolves only an open item that passes 	est (the inner store's contract); written out here so it neither depends on 	his nor skips the hub op. */
+    /** Resolves only an open item that passes `test` (the inner store's contract); written out here so it neither depends on `this` nor skips the hub op. */
     resolveIf(id, test, resolution) {
       const item = inner.get(id)
       if (!item || item.status !== 'open') return false

@@ -63,6 +63,22 @@ test('a correction recorded through the queue is seen by the runner: the same co
   assert.equal(plugin.store.get(again.id).triage?.reason, 'past-correction')
 })
 
+// --- the global switch fails closed: only an explicit true from the rule set turns triage on ---
+import { DEFAULT_RULES } from '../triage-runner.js'
+for (const [name, enabled, expected] of [['true', () => true, 1], ['missing method', undefined, 0], ['undefined', () => undefined, 0], ['null', () => null, 0], ['truthy non-boolean', () => 1, 0], ['throwing', () => { throw new Error('boom') }, 0], ['false', () => false, 0]]) {
+  test('the global switch fails closed: a rule set whose enabled() is ' + name + ' => ' + (expected ? 'triage runs' : 'triage is off'), async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'rq-triage-sw-'))
+    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    const calls = []
+    const judge = { judge: async (arg) => { calls.push(arg); return { judgment: GOOD, raw: '' } } }
+    const triageRules = { current: () => DEFAULT_RULES.map((r) => ({ ...r })), list: () => [], ...(enabled ? { enabled } : {}) }
+    const plugin = createReviewQueuePlugin(fakeCtx(), { hub: false, stateDir: dir, triage: true, triageDeps: { judge, triageRules } })
+    plugin.store.add(perm())
+    await new Promise((r) => setTimeout(r, 40))
+    assert.equal(calls.length, expected)
+  })
+}
+
 // --- question triage reads the user's earlier messages from the session thread by default ---
 import { writeLog } from './paused-helpers.mjs'
 import { log as logRec } from './paused-helpers.mjs'

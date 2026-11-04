@@ -224,7 +224,7 @@ test('e2e auto: a command that riskOf flags is not acted on', async () => {
 })
 
 test('e2e auto: payload changed between judge and act is refused (item stays open, nothing decided)', async () => {
-  const { store, runner, decided, entries } = setup({ hook: (s) => { const i = s.list({ status: 'open' })[0]; s.update(i.id, { payload: { ...i.payload, detail: 'git log' } }) } })
+  const { store, runner, decided, entries } = setup({ hook: (s) => { const i = s.list({ status: 'open' })[0]; s.update(i.id, { payload: { ...i.payload, detail: 'git log --oneline' } }) } })
   const item = store.add(perm())
   await runner.idle()
   assert.equal(decided.length, 0)

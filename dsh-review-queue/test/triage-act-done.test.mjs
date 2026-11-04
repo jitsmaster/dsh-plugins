@@ -91,8 +91,9 @@ test('actor: anything that is not a done card is refused and left open', async (
   const store = createStore({ now: () => 1000, uuid: () => 'i' + ++n })
   const perm = store.add({ type: 'permission', sessionId: 's1', payload: { toolName: 'shell', detail: 'ls' } })
   const res = await createDoneActor({ store })({ item: perm, resolutionBase: base })
-  assert.equal(res.ok, false)
+  assert.deepEqual(res, { ok: false, reason: 'refused' }, 'the actor itself refuses a wrong-type item, like the other actors')
   assert.equal(store.get(perm.id).status, 'open')
+  assert.deepEqual(await createDoneActor({ store })({ item: undefined, resolutionBase: base }), { ok: false, reason: 'refused' })
 })
 
 // --- shared UI helpers cope with a resolution that has no quote / answer / basis ------------------------------------------------------
