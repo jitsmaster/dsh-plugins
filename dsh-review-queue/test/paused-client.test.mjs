@@ -58,11 +58,11 @@ test('pausedFacts: why, how long ago, a tool call that may be half done, the las
   assert.deepEqual(plain(shared.pausedFacts(paused('b', { payload: {} }), 5000)), ['Cut off by a restart or crash', 'Last activity just now'])
 })
 
-test('Resume all asks first: the text names the count and the pace; one session is asked about without a pace', () => {
+test('Resume all does not ask first: the overlay and the plugin agree on the pace of 3, and there is no confirm text', () => {
   const { T } = load()
   assert.equal(T.RESUME_AT_A_TIME, RESUME_CONCURRENCY, 'the overlay and the plugin agree on 3')
-  assert.equal(T.resumeAllText(12), 'Resume all 12 paused sessions, 3 at a time? Each one gets the standard resume prompt.')
-  assert.equal(T.resumeAllText(1), 'Resume 1 paused session? It gets the standard resume prompt.')
+  assert.equal(T.resumeAllText, undefined)
+  assert.equal(T.askResumeAll, undefined)
 })
 
 test('settledAfter: a resumed session is done working when it has a new done, question or permission item', () => {

@@ -575,7 +575,7 @@ function imageFilesOf(data) {
 			if (p.lastUser) facts.push("Last request: " + p.lastUser);
 			return facts;
 		}
-		// ---- Resume all: confirm, then a few sessions at a time ------------------------------------------
+		// ---- Resume all: no confirm step, a few sessions at a time ------------------------------------------
 		/** Sessions resumed at a time (the same number as RESUME_CONCURRENCY in paused.js; a test keeps them equal). */
 		const RESUME_AT_A_TIME = 3;
 		/** The last resort: a resumed session that neither reports back (a done, question or permission item) nor shows as stopped frees its place after this long. */
@@ -587,7 +587,6 @@ function imageFilesOf(data) {
 		const RESUME_STOPPED_POLLS = 2;
 		/** A running-sessions request that has not answered by then is a failed poll (and no longer shared with the next lane). */
 		const RESUME_POLL_TIMEOUT_MS = 10000;
-		const resumeAllText = (n) => (n === 1 ? "Resume 1 paused session? It gets the standard resume prompt." : "Resume all " + n + " paused sessions, " + RESUME_AT_A_TIME + " at a time? Each one gets the standard resume prompt.");
 		/** A resumed session has stopped working again when it has a new done, question or permission item since the resume. */
 		function settledAfter(snap, item, since) {
 			if (!snap) return false;
@@ -1407,13 +1406,13 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return call.promise;
 		}
 		const pausedOpen = () => (state.snap ? state.snap.open.filter((i) => i.type === "paused") : []);
-		const askResumeAll = () => { const n = pausedOpen().length; if (n) set({ resumeAll: { phase: "confirm", total: n } }); };
 		const closeResumeAll = () => set({ resumeAll: null });
 		let resumeAbort;
-		/** After the user confirmed: resumes every paused session, a few at a time; each place is held until its session reports back. */
+		/** Resumes every paused session at once (no confirm step), a few at a time; each place is held until its session reports back. A second click while a run is open does nothing. */
 		async function startResumeAll() {
+			if (state.resumeAll) return;
 			const items = pausedOpen();
-			if (!items.length) { set({ resumeAll: null }); return; }
+			if (!items.length) return;
 			resumeAbort = new AbortController();
 			runInstanceId = undefined;
 			const since = {};
@@ -1967,7 +1966,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const paused = snapCounts(snap).paused;
 			return h("div", { className: "rq-strip" },
 				h("span", { className: "rq-sub rq-grow" }, paused ? paused + " paused session" + (paused === 1 ? "" : "s") + ": cut off by a restart." : "No paused session."),
-				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
+				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: startResumeAll }, "Resume all (" + paused + ")") : null,
 				h("button", { className: "rq-btn", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"));
 		}
 
@@ -2097,8 +2096,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			if (!r && !st.scanNote) return null;
 			if (!r) return h("div", { className: "rq-sub", style: { padding: "6px 14px" }, role: "status" }, st.scanNote, " ", h("button", { className: "rq-link", onClick: () => set({ scanNote: undefined }) }, "✕"));
 			let body;
-			if (r.phase === "confirm") body = [h("span", { key: "t" }, resumeAllText(r.total)), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "y", className: "rq-btn pri", onClick: startResumeAll }, r.total === 1 ? "Resume" : "Resume all"), h("button", { key: "n", className: "rq-link", onClick: closeResumeAll }, "Cancel")];
-			else if (r.phase === "running") body = [h("span", { key: "t" }, resumeProgressText(r.progress)), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "s", className: "rq-btn", onClick: stopResumeAll }, "Stop")];
+			if (r.phase === "running") body = [h("span", { key: "t" }, resumeProgressText(r.progress)), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "s", className: "rq-btn", onClick: stopResumeAll }, "Stop")];
 			else body = [h("span", { key: "t" }, "Resumed " + r.result.ok + " of " + r.total + (r.result.failed.length ? "; " + r.result.failed.length + " could not be resumed (" + r.result.failed.map((f) => f.error).filter((e, n, all) => all.indexOf(e) === n).join(", ") + ")" : "") + (r.result.cancelled ? "; stopped" : "") + "."), h("span", { key: "g", className: "rq-grow" }), h("button", { key: "c", className: "rq-link", onClick: closeResumeAll }, "Close")];
 			return h("div", { className: "rq-todoform", role: "status" }, h("div", { className: "rq-row" }, body));
 		}
@@ -2283,7 +2281,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		exports.__test = { visibleOpen, detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
-		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, askResumeAll });
+		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });

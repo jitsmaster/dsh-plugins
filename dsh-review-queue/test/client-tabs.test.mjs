@@ -9,7 +9,7 @@ const react = { createElement: el, useEffect() {}, useState: () => [0, () => {}]
 function load({ fetchImpl } = {}) {
   const calls = []
   const f = fetchImpl ?? (async (url, init) => { calls.push([String(url).replace('/review-queue', ''), init && init.body ? JSON.parse(init.body) : undefined]); return okJson({ ok: true }) })
-  const { T } = loadClient({ fetchImpl: f, react })
+  const { T } = loadClient({ fetchImpl: f, react, globals: { AbortController, AbortSignal } })
   T.state.snap = snap()
   return { T, calls }
 }
@@ -310,12 +310,15 @@ test('the Paused strip shows only on the Paused tab of the Waiting view, with Re
   assert.deepEqual(buttons.map((b) => textOf(b)), ['Resume all (2)', 'Find paused'])
   assert.match(buttons[0].props.className, /pri/)
   buttons[0].props.onClick()
-  assert.deepEqual({ ...T.state.resumeAll }, { phase: 'confirm', total: 2 })
+  assert.equal(T.state.resumeAll.phase, 'running', 'no confirm step: the click starts resuming at once')
+  assert.equal(T.state.resumeAll.total, 2)
   assert.equal(part(T, 'PausedStrip').children.length > 0, true)
   assert.equal(findAll(part(T, 'PausedStrip'), (n) => n.type === 'button')[0].props.disabled, true, 'disabled while a Resume all is open')
+  await tick()
+  assert.ok(calls.some((c) => c[0] === '/v1/paused-resume'), 'the resume prompts are sent without asking')
   buttons[1].props.onClick()
   await tick()
-  assert.deepEqual(calls.map((c) => c[0]), ['/v1/paused-scan'])
+  assert.deepEqual(calls.map((c) => c[0]).filter((u) => u !== '/v1/paused-resume'), ['/v1/paused-scan'])
   T.set({ showResolved: true })
   assert.equal(part(T, 'PausedStrip'), null, 'not in the Resolved view even with the type set')
 })
@@ -324,8 +327,10 @@ test('the scan note and the Resume all bar still show (ResumeAllBar)', () => {
   const { T } = load()
   T.set({ scanNote: 'No new paused sessions.' })
   assert.match(textOf(part(T, 'ResumeAllBar')), /No new paused sessions\./)
-  T.set({ scanNote: undefined, resumeAll: { phase: 'confirm', total: 2 } })
-  assert.match(textOf(part(T, 'ResumeAllBar')), /Resume all/)
+  T.set({ scanNote: undefined, resumeAll: { phase: 'running', total: 2, progress: { total: 2, started: 1, ok: 1, failed: 0, running: 1, waiting: 1 } } })
+  assert.match(textOf(part(T, 'ResumeAllBar')), /Resuming/)
+  assert.equal(T.askResumeAll, undefined, 'the confirm step is gone')
+  assert.equal(T.resumeAllText, undefined, 'the confirm text is gone')
 })
 
 // ---- the left list --------------------------------------------------------------------------------------------------------------------
