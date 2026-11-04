@@ -14,6 +14,7 @@ mkdirSync(outside)
 writeFileSync(join(ws, 'src', 'a.txt'), 'a')
 writeFileSync(join(ws, 'top.txt'), 't')
 writeFileSync(join(outside, 'secret.txt'), 's')
+writeFileSync(join(outside, 'plain.txt'), 'p')
 let linkSkip
 try { symlinkSync(outside, join(ws, 'link'), 'junction') } catch (e) { linkSkip = 'the OS refused to create a junction/symlink: ' + e.code }
 test.after(() => rmSync(base, { recursive: true, force: true }))
@@ -78,8 +79,8 @@ test('the workspace itself may be reached through a different spelling (case on 
 
 test('the realpath of a workspace that is itself reached through a link is used', { skip: linkSkip }, async () => {
   assert.equal(await inside('cat src/a.txt', join(ws, 'link')), false, 'src/a.txt does not exist under the outside dir')
-  assert.equal(await inside('cat secret.txt', join(ws, 'link')), true, 'the real workspace is the outside dir')
-  assert.equal(await inside('cat ' + join(realpathSync(outside), 'secret.txt'), join(ws, 'link')), true)
+  assert.equal(await inside('cat plain.txt', join(ws, 'link')), true, 'the real workspace is the outside dir')
+  assert.equal(await inside('cat ' + join(realpathSync(outside), 'plain.txt'), join(ws, 'link')), true)
 })
 
 test('isInside: containment is prefix on whole segments, separators normalised, case-insensitive on request', () => {

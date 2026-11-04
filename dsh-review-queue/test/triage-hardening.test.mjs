@@ -213,6 +213,48 @@ test('S5: a glued short-option value that is a path is checked as a candidate', 
   assert.equal(await containedInWorkspace('cat -ftop.txt', ws, io), true, 'a bare name is not a path character candidate')
 })
 
+// --- S7: cat/head/tail/wc/ls flags in auto -------------------------------------------------------------------------------------------
+test('S7: auto allows only a small no-value flag set for cat/head/tail/wc/ls and needs a named file', () => {
+  const bad = ['tail -f app.log', 'tail -F app.log', 'tail --follow app.log', 'tail -n 5 a.log', 'tail -n5 a.log', 'tail --pid=1 a.log', 'tail --retry a.log', 'cat', 'cat -n', 'cat -v a.txt', 'cat --show-all a.txt',
+    'ls -R .', 'ls --recursive', 'ls -lR', 'ls -I x', 'wc --files0-from=list.txt', 'wc -l', 'wc --total=only a.txt', 'head -n 3 a.txt', 'head -c 3 a.txt', 'head', 'tail', 'head --lines=3 a.txt']
+  for (const c of bad) assert.equal(auto(c).ok, false, c)
+  const good = ['cat -n src/a.js', 'cat -bs src/a.js', 'cat --number src/a.js', 'head src/a.js', 'head -q src/a.js', 'tail src/a.js', 'tail --quiet src/a.js', 'wc -l src/a.js', 'wc -lw src/a.js', 'wc --lines src/a.js', 'ls', 'ls -la', 'ls -1 src', 'ls src', 'ls --all --long', 'ls -h']
+  for (const c of good) assert.equal(auto(c).ok, true, c)
+  for (const c of ['tail -f app.log', 'cat -v a.txt', 'ls -R .', 'head -n 3 a.txt', 'wc --files0-from=list.txt']) assert.equal(parseReadOnlyCommand(c).ok, true, 'observe: ' + c)
+})
+
+// --- S8: protected names are re-checked on the resolved real path ---------------------------------------------------------------------
+test('S8: a candidate that resolves to a protected name is vetoed in containedInWorkspace', async () => {
+  const resolveTo = (map) => ({ real: async (p) => (p === ws ? ws : (map[p.replace(/\\/g, '/').replace(ws.replace(/\\/g, '/') + '/', '')] ? join(ws, map[p.replace(/\\/g, '/').replace(ws.replace(/\\/g, '/') + '/', '')]) : p)) })
+  assert.equal(await containedInWorkspace('cat link-to-env', ws, resolveTo({ 'link-to-env': '.env' })), false, 'symlink to .env')
+  assert.equal(await containedInWorkspace('cat link-to-key', ws, resolveTo({ 'link-to-key': 'sub/server.pem' })), false, 'symlink to a .pem')
+  assert.equal(await containedInWorkspace('cat link-to-git', ws, resolveTo({ 'link-to-git': '.git/config' })), false, 'symlink into .git')
+  assert.equal(await containedInWorkspace('cat ENV~1', ws, { real: async (p) => p }), false, '8.3 short name')
+  assert.equal(await containedInWorkspace('cat sub/PROGRA~1/x', ws, { real: async (p) => p }), false, '8.3 short name segment')
+  assert.equal(await containedInWorkspace('cat .git./config', ws, { real: async (p) => p }), false, 'trailing-dot .git')
+  assert.equal(await containedInWorkspace('cat link-ok', ws, resolveTo({ 'link-ok': 'src/a.js' })), true, 'a normal file resolving inside passes')
+  assert.equal(await containedInWorkspace('cat top.txt', ws, { real: async (p) => p }), true)
+})
+
+test('S8: .git. and .git<space> variants and 8.3 names are protected in auto only', () => {
+  for (const c of ['cat .git./config', 'cat .git /config', 'cat ENV~1', 'cat a/PROGRA~2/b']) assert.equal(auto(c).ok, false, c)
+  assert.equal(parseReadOnlyCommand('cat ENV~1').ok, true, 'observe unchanged')
+})
+
+// --- S9: a detached question is never answered by the Auto actor ----------------------------------------------------------------------
+test('S9: the question actor refuses a stored card that is detached', async () => {
+  const item = { id: 'i1', type: 'question', status: 'open', sessionId: 's1', workspace: 'D:/w', payload: { callId: 'c1', questions: [{ id: 'q1', question: 'Go?', options: [{ label: REC }, { label: NO }] }] } }
+  let answered = 0
+  const answer = () => { answered++; return true }
+  const judgment = { ...GOOD }
+  const ok = await createQuestionActor({ store: { get: () => item }, answer })({ item, judgment, resolutionBase: {} })
+  assert.equal(ok.ok, true, 'control: an attached card is answered')
+  answered = 0
+  const res = await createQuestionActor({ store: { get: () => ({ ...item, detached: true }) }, answer })({ item, judgment, resolutionBase: {} })
+  assert.deepEqual(res, { ok: false, reason: 'refused' })
+  assert.equal(answered, 0)
+})
+
 // --- S6: privacy ------------------------------------------------------------------------------------------------------------------------
 test('S6: the persisted quote is redacted and an actor failure message is sanitised in the log', async () => {
   const secretQuote = 'please answer yes with token=abcdef1234567890abcd for the deploy'

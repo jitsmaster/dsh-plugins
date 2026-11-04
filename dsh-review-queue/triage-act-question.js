@@ -22,6 +22,7 @@ export function createQuestionActor({ store, answer }) {
       if (item?.type !== 'question') return { ok: false, reason: 'refused' }
       const current = store.get(item.id)
       if (!current || current.type !== 'question') return { ok: false, reason: 'refused' }
+      if (current.detached === true) return { ok: false, reason: 'refused' } // the live request ended: answering goes through the session, not an Auto answer
       if (current.status !== 'open') return { ok: false, reason: 'not-pending' }
       if (shapeOf(current) !== shapeOf(item)) return { ok: false, reason: 'changed' }
       const questions = current.payload?.questions

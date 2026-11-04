@@ -9,6 +9,12 @@ import { resolve } from 'node:path'
 /** The ellipsis risk.js appends when it clips a command at its cap. */
 const CLIP_MARK = '…'
 const MAX_DETAIL = 3000 // risk.js caps a detail at this many characters (plus the mark)
+// Protected names (reading one counts as touching it). Shared with the read-only parser in triage.js; Auto adds more, observe keeps PROTECTED as it was.
+export const PROTECTED = [/(^|\/)\.env/i, /(^|\/)\.git(\/|$)/i, /^~/, /(^|\/)\.(ssh|aws|dsh|claude|gnupg)(\/|$)/i, /id_(rsa|ed25519|ecdsa|dsa)/i, /\.(pem|key|p12|pfx)$/i, /(credentials|secrets?)(\.|$|\/)/i]
+// Auto only: more secret-bearing files, `.git.` (Windows drops trailing dots and spaces) and any 8.3 short name segment (`ENV~1`).
+export const PROTECTED_AUTO = [...PROTECTED, /(^|\/)\.(npmrc|netrc|pypirc|kube|docker|git-credentials)(\/|$)/i, /(^|\/)appsettings[^/]*\.json$/i, /\.tfvars$/i, /\.kdbx$/i, /(^|\/)\.git[. ]*(\/|$)/i]
+/** An NTFS 8.3 short name segment (`ENV~1`): it can stand for a protected name. A git revision such as `HEAD~1` is not a path, so the parser skips this for git. */
+export const SHORT_NAME = /~\d/
 const PATHISH = /[\\/]|^[.~]|^[a-z]:/i
 
 const real = (p) => new Promise((ok, no) => realpath.native(p, (e, r) => (e ? no(e) : ok(r))))
@@ -77,6 +83,9 @@ export async function containedInWorkspace(command, workspace, io = defaultIo) {
       let target
       try { target = await io.real(lexical) } catch { if (certain) return false; continue }
       if (!isInside(root, target)) return false
+      // The resolved real path is tested again: a link to `.env` or an 8.3 name that expands to it only shows its protected name after resolution.
+      const rel = slashes(target).slice(slashes(root).replace(/\/+$/, '').length).replace(/^\/+/, '')
+      if (SHORT_NAME.test(rel) || PROTECTED_AUTO.some((re) => re.test(rel))) return false
     }
     return true
   } catch { return false }

@@ -5,6 +5,7 @@
  * facts, admissible evidence) still wins over a low score, because text the judged agent wrote can steer the model.
  */
 import { recommendedOf } from './speech.js'
+import { PROTECTED, PROTECTED_AUTO, SHORT_NAME } from './triage-paths.js'
 
 /** Items scoring at or below this are candidates for processing (a rule may set its own, never above MAX_THRESHOLD). */
 export const DEFAULT_THRESHOLD = 25
@@ -48,9 +49,6 @@ const SHELL_SYNTAX = /[;&|`$(){}<>\r\n"'\\*?!]/
 const SHELL_SYNTAX_AUTO = /[;&|`$(){}<>\r\n"'\\*?!%^]/ // Auto also refuses cmd's %VAR% expansion and the ^ escape
 const GIT_BAD_FLAG = /^--(output|exec-path|open-files-in-pager|ext-diff|textconv|upload-pack|receive-pack)/
 const RG_BAD_FLAG = /^--(pre|hostname-bin)/
-const PROTECTED = [/(^|\/)\.env/i, /(^|\/)\.git(\/|$)/i, /^~/, /(^|\/)\.(ssh|aws|dsh|claude|gnupg)(\/|$)/i, /id_(rsa|ed25519|ecdsa|dsa)/i, /\.(pem|key|p12|pfx)$/i, /(credentials|secrets?)(\.|$|\/)/i]
-// Auto only: more secret-bearing files; observe keeps PROTECTED as it was.
-const PROTECTED_AUTO = [...PROTECTED, /(^|\/)\.(npmrc|netrc|pypirc|kube|docker|git-credentials)(\/|$)/i, /(^|\/)appsettings[^/]*\.json$/i, /\.tfvars$/i, /\.kdbx$/i]
 // Auto only: flags that make rg/grep walk directories or reach beyond the named files (long flags; short flags are checked per letter).
 const SEARCH_BAD_LONG = /^--(recursive|dereference-recursive|follow|hidden|no-ignore|search-zip|unrestricted|directories|files|regexp|file)(=|$|-)/
 const SEARCH_BAD_SHORT = /^-[^-]*[rRLuzefd]/
@@ -62,6 +60,14 @@ const GIT_SUMMARY_FLAGS = { log: new Set(['--oneline', '--stat', '--name-only', 
 // Auto only: rg/grep take just these flags, none of which takes a value (so no flag value can pass for the named file).
 const SEARCH_OK_LONG = new Set(['--line-number', '--ignore-case', '--invert-match', '--count', '--files-with-matches', '--word-regexp', '--fixed-strings', '--with-filename', '--no-filename', '--no-messages'])
 const SEARCH_OK_SHORT = /^-[nivclwHhFs]+$/
+// Auto only: cat/head/tail/wc/ls take just these no-value flags (value-taking and follow/recursive flags are refused) and, but for ls, need a named file.
+const FILE_OK = {
+  cat: { long: new Set(['--number', '--number-nonblank', '--squeeze-blank']), short: /^-[nbs]+$/ },
+  head: { long: new Set(['--quiet', '--verbose']), short: /^-[qv]+$/ },
+  tail: { long: new Set(['--quiet', '--verbose']), short: /^-[qv]+$/ },
+  wc: { long: new Set(['--lines', '--words', '--bytes', '--chars']), short: /^-[lwcmL]+$/ },
+  ls: { long: new Set(['--all', '--long']), short: /^-[laA1h]+$/ },
+}
 const fail = (reason) => ({ ok: false, reason })
 
 /**
@@ -91,6 +97,11 @@ export function parseReadOnlyCommand(command, { auto = false } = {}) {
   } else if (PLAIN.has(bin)) {
     args = tokens.slice(1)
     if (bin === 'rg' && args.some((t) => RG_BAD_FLAG.test(t))) return fail('rg flag not allowed')
+    if (auto && FILE_OK[bin]) {
+      const ok = FILE_OK[bin]
+      if (args.some((t) => t.startsWith('-') && !(ok.long.has(t) || ok.short.test(t)))) return fail(bin + ' flag not allowed in auto')
+      if (bin !== 'ls' && !args.some((t) => !t.startsWith('-'))) return fail(bin + ' needs a named file in auto')
+    }
     if (auto && (bin === 'rg' || bin === 'grep')) {
       if (args.some((t) => SEARCH_BAD_LONG.test(t) || SEARCH_BAD_SHORT.test(t))) return fail('recursive or hidden search not allowed in auto')
       // Only flags that take no value: a value-taking flag would put its value where the named file is counted.
@@ -106,6 +117,7 @@ export function parseReadOnlyCommand(command, { auto = false } = {}) {
     // Auto tests every `a:b` / `--flag=value` segment too, so `HEAD:.env` or `--file=.env` cannot hide a protected name behind a prefix.
     const parts = auto ? [p, ...p.split(/[:=]/)] : [p]
     if (parts.some((s) => protectedRes.some((re) => re.test(s)))) return fail('protected path')
+    if (auto && bin !== 'git' && SHORT_NAME.test(p)) return fail('8.3 short name not allowed in auto')
   }
   return { ok: true }
 }
