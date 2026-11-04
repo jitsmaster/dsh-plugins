@@ -37,9 +37,17 @@ test('turn/end interrupted with no later turn is cut off; a later finished turn 
 })
 
 test('deliberate or ordinary ends are not a restart cut: stopped by the user, error, parent abort, cap handoff, max tokens', () => {
-  for (const reason of [{ kind: 'aborted', reason: { kind: 'user' } }, { kind: 'aborted', reason: { kind: 'parent' } }, { kind: 'aborted', reason: { kind: 'disposed' } }, { kind: 'error', error: { message: 'Overloaded' } }, { kind: 'blocked' }, { kind: 'max-tokens' }]) {
+  for (const reason of [{ kind: 'aborted', reason: { kind: 'user' } }, { kind: 'aborted', reason: { kind: 'parent' } }, { kind: 'error', error: { message: 'Overloaded' } }, { kind: 'blocked' }, { kind: 'max-tokens' }]) {
     assert.deepEqual(kindsOf(finished(reason)), [], JSON.stringify(reason))
   }
+})
+
+test('a turn ended aborted/disposed (what a DSH restart writes for every running turn) is cut off; a later finished turn clears it', () => {
+  const disposed = [log.head(), log.turnStart(1), log.turnEnd(1, { kind: 'aborted', reason: { kind: 'disposed' } })]
+  assert.deepEqual(kindsOf([disposed]), ['disposed'])
+  assert.match(reasonText({ kinds: ['disposed'], pending: 0 }), /restart/i)
+  assert.deepEqual(kindsOf([[...disposed, log.turnStart(2), log.turnEnd(2)]]), [])
+  assert.deepEqual(kindsOf([[...disposed, log.splice('next-step', 0, 0, [log.queued('cwd', { kind: 'working-directory' })])]]), ['disposed'], 'trailing notices do not hide it')
 })
 
 test('an unconsumed next-turn inbox is pending-inbox, even after a finished turn; a splice that removes it clears it', () => {

@@ -135,6 +135,8 @@ export function classifyLog(records, { torn = false } = {}) {
   const kinds = []
   if (openTurn !== null) kinds.push('open-turn')
   else if (lastEnd?.kind === 'interrupted') kinds.push('interrupted')
+  // A DSH restart disposes the agent and ends every running turn aborted/disposed (the next load does not rewrite it as interrupted).
+  else if (lastEnd?.kind === 'aborted' && lastEnd.reason?.kind === 'disposed') kinds.push('disposed')
   if (inbox.length > 0) kinds.push('pending-inbox')
   if (torn) kinds.push('torn')
   return {
@@ -149,6 +151,7 @@ export function reasonText({ kinds, pending }) {
   const parts = []
   if (kinds.includes('open-turn')) parts.push('Cut off in the middle of a turn')
   if (kinds.includes('interrupted')) parts.push('The last turn was interrupted by a crash or restart')
+  if (kinds.includes('disposed')) parts.push('The turn was ended by a DSH restart')
   if (kinds.includes('pending-inbox')) {
     parts.push(pending + (pending === 1 ? ' queued message never ran' : ' queued messages never ran'))
   }
