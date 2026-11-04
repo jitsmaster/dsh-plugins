@@ -254,8 +254,10 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       if (!speaker) return { ok: false, error: 'no-speaker' }
       // The title, then one chunk per sentence (an over-long sentence is still cut at spaces): the speaker plays them one after the other, so the tip is read a sentence at a time.
       const title = String(tip.title ?? '').trim()
-      const longer = Array.isArray(tip.deeper?.paragraphs) ? tip.deeper.paragraphs : [] // the longer text (Go deeper) follows the body
-      const chunks = [...(title ? chunkForSpeech(/[.!?:;]$/.test(title) ? title : title + '.') : []), ...[tip.body, ...longer].flatMap((text) => tipSentences(text).flatMap((s) => chunkForSpeech(s)))]
+      // Once the reader went deeper (Go deeper), the longer text is what is read, not the short body (it is the same idea, told at length); without it, the body.
+      const longer = Array.isArray(tip.deeper?.paragraphs) ? tip.deeper.paragraphs.filter((p) => String(p ?? '').trim()) : []
+      const texts = longer.length ? longer : [tip.body]
+      const chunks = [...(title ? chunkForSpeech(/[.!?:;]$/.test(title) ? title : title + '.') : []), ...texts.flatMap((text) => tipSentences(text).flatMap((s) => chunkForSpeech(s)))]
       return speakAs(TIP_READING + tip.id, chunks, false)
     },
     /**

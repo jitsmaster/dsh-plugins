@@ -91,10 +91,16 @@ test('the snapshot carries the longer text of the tip', () => {
   assert.deepEqual(queue.snapshot({ tip: true }).tip.deeper, DEEPER)
 })
 
-test('readTip reads the title, the body and then the longer text, one chunk per sentence', () => {
+test('readTip reads the title and then the longer text only (not the short body) once the reader went deeper, one chunk per sentence', () => {
   const { queue, speaker } = setup({ tips: fakeTips({ ...TIP, deeper: DEEPER }) })
   assert.deepEqual(queue.readTip('tip1'), { ok: true })
-  assert.deepEqual(speaker.spoken[0], ['Bloom filters.', 'A Bloom filter is a bit array.', 'It never gives a false negative.', 'It sets one bit per hash function.', 'A zero bit proves absence.', 'A crawler asks first.', 'Deletion is not possible.'])
+  assert.deepEqual(speaker.spoken[0], ['Bloom filters.', 'It sets one bit per hash function.', 'A zero bit proves absence.', 'A crawler asks first.', 'Deletion is not possible.'])
+})
+
+test('readTip falls back to the body when the longer text is empty', () => {
+  const { queue, speaker } = setup({ tips: fakeTips({ ...TIP, deeper: { paragraphs: [], source: 'model' } }) })
+  assert.deepEqual(queue.readTip('tip1'), { ok: true })
+  assert.deepEqual(speaker.spoken[0], ['Bloom filters.', 'A Bloom filter is a bit array.', 'It never gives a false negative.'])
 })
 
 test('readTip without longer text is unchanged', () => {
