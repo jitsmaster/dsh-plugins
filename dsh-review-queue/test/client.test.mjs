@@ -285,9 +285,9 @@ test('a snapshot drops toggle choices of items that left the queue', () => {
   assert.deepEqual({ ...m.__test.state.lateOpen }, { a: true })
 })
 
-test('the screens (showResolved, showHeld, showPhone, holdOpen) are not remembered with the toggles', () => {
+test('the screens (showResolved, showHeld, showPhone, showRules, dialog) are not remembered with the toggles', () => {
   const first = loadWithTimers(false)
-  first.m.__test.set({ showResolved: true, showHeld: true, showPhone: true, holdOpen: { a: true } })
+  first.m.__test.set({ showResolved: true, showHeld: true, showPhone: true, showRules: true, dialog: { kind: 'hold', id: 'a', text: 'x' } })
   for (const t of first.timers.filter((x) => !x.cancelled)) t.fn()
   assert.equal(first.store['dsh-review-queue.toggles'], undefined, 'no toggle write for them')
 })

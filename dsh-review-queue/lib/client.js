@@ -205,6 +205,14 @@ window.__ModuleLoader__.load({
 			});
 		}
 
+		/** The counts of the "Resolved by" tabs for a Type and a search (the words filterItems takes): all, by me, by AI. The one rule of both screens;
+		 *  the "N new" mark on the AI tab is separate (aiUnseenCount, whatever the filter). */
+		function resolvedCounts(items, f) {
+			const shown = filterItems(items, { type: f && f.type, query: f && f.query });
+			const ai = shown.filter(isAiResolved).length;
+			return { all: shown.length, me: shown.length - ai, ai };
+		}
+
 		const permKey = (i) => [i.sessionId, i.payload && i.payload.toolName, (i.payload && (i.payload.detail || i.payload.summary)) || ""].join("\u0000");
 		/** How many open permission requests are identical to this one (same session, tool and command); 0 for a risky one. Mirrors the server. */
 		function similarCount(open, item) {
@@ -622,8 +630,10 @@ function imageFilesOf(data) {
 		const FILTER_TYPES = ["all", "completed", "question", "permission", "pr-merged", "todo", "paused"];
 		/** Who resolved an item, for the Resolved filter. */
 		const RESOLVED_BY = ["all", "me", "ai"];
-		const resolvedByLabel = (v) => (v === "me" ? "Me" : v === "ai" ? "AI" : "All");
-		/** The filter bar shows from four items in all (waiting + resolved), and always while a type, a search or a resolvedBy is active, or once an AI-resolved item exists. */
+		/** The tab labels of RESOLVED_BY (desktop and phone). */
+		const RESOLVED_LABELS = { all: "All", me: "By me", ai: "By AI" };
+		/** Whether a filter bar would show: from four items in all (waiting + resolved), and always while a type, a search or a resolvedBy is active, or once an AI-resolved item exists.
+		 *  No screen hides its tabs and search with it any more (the desktop and the phone always draw them); kept as a shared helper with its own tests. */
 		function filterBarVisible(snap, f) {
 			const total = snap ? snap.open.length + snap.resolved.length : 0;
 			if (snap && (snap.resolved || []).some(isAiResolved)) return true;
@@ -702,7 +712,7 @@ function imageFilesOf(data) {
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyImages: {}, replyOpen: savedToggles.reply, busy: {}, errors: {},
-			selected: null, showResolved: false, showHeld: false, holdOpen: {}, showPhone: false, showRules: false, rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, aiCorrection: {}, aiOverrule: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all" }, overlay: storage.get(LS.overlay) === "1",
+			selected: null, showResolved: false, showHeld: false, showPhone: false, showRules: false, dialog: null, phoneFrom: "waiting", rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all", resolvedType: "all" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipTopic: "", tipUse: { open: false, workspaceId: "" },
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
@@ -742,7 +752,22 @@ function imageFilesOf(data) {
 			version++;
 			listeners.forEach((l) => l());
 		}
-		function visibleOpen() { return state.snap ? filterItems(state.snap.open, state.showHeld ? { ...state.filter, type: "onhold" } : state.filter) : []; }
+		const NO_ITEMS = [];
+		let openMemo = { snap: null, filter: null, held: false, list: NO_ITEMS };
+		/** The open items the list shows. Computed once per snapshot, filter and view: Panel, currentItem and the keys all ask for it. */
+		function visibleOpen() {
+			const snap = state.snap;
+			if (!snap) return NO_ITEMS;
+			if (openMemo.snap !== snap || openMemo.filter !== state.filter || openMemo.held !== state.showHeld) openMemo = { snap, filter: state.filter, held: state.showHeld, list: filterItems(snap.open, state.showHeld ? { ...state.filter, type: "onhold" } : state.filter) };
+			return openMemo.list;
+		}
+		let countsMemo = { snap: null, counts: null };
+		/** The counts of the header and the tabs, one pass each, once per snapshot. */
+		function snapCounts(snap) {
+			if (!snap) return { waiting: 0, paused: 0, held: 0, unseen: 0, aiN: 0, resolved: 0 };
+			if (countsMemo.snap !== snap) countsMemo = { snap, counts: { waiting: waitingCount(snap.open), paused: pausedCount(snap.open), held: heldCount(snap.open), unseen: aiUnseenCount(snap.resolved), aiN: snap.resolved.filter(isAiResolved).length, resolved: snap.resolved.length } };
+			return countsMemo.counts;
+		}
 		/** The selected card: the chosen one, else the one the voice focus is on, else the oldest. */
 		function currentItem() {
 			const open = visibleOpen();
@@ -753,7 +778,9 @@ function imageFilesOf(data) {
 
 		/** Takes a fresh snapshot into the store. */
 		function applySnapshot(body) {
-			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now() });
+			const d = state.dialog;
+			const gone = d && !(body.open || []).some((i) => i.id === d.id) && !(body.resolved || []).some((i) => i.id === d.id); // the item it acts on left the queue
+			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? { dialog: null } : {}) });
 			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen, late: state.lateOpen }, body);
 			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply)) || Object.keys(state.lateOpen).some((k) => !(k in tog.late))) set({ expanded: tog.expanded, replyOpen: tog.reply, lateOpen: tog.late });
 		}
@@ -900,7 +927,35 @@ function imageFilesOf(data) {
 		}
 		/** Off and Observe at once; Auto asks first (rulesConfirm) so a rule never starts acting by accident once a later phase makes auto live. */
 		function pickRuleMode(id, mode) { if (mode === "auto") set({ rulesConfirm: id }); else rulesAct(id, "/v1/triage-rule-mode", { ruleId: id, mode }); }
-		function toggleRules() { const on = !state.showRules; set({ showRules: on, showResolved: false, showHeld: false, showPhone: false, selected: null, rulesConfirm: null, rulesError: undefined }); if (on) loadTriageRules(); }
+		/** The view a set of flags shows: one of the five primary tabs (phone wins over rules over resolved over held; none set = waiting). Pure. */
+		function viewOf(s) { return s && s.showPhone ? "phone" : s && s.showRules ? "rules" : s && s.showResolved ? "resolved" : s && s.showHeld ? "held" : "waiting"; }
+		/** Selects a primary tab: the flag of that view is set and the others cleared (as the old buttons did), nothing is selected in the list, a dialog is closed, and the rules are loaded when that tab opens. */
+		function setView(view) {
+			const on = (v) => view === v;
+			const from = viewOf(state);
+			set({ showResolved: on("resolved"), showHeld: on("held"), showRules: on("rules"), showPhone: on("phone"), selected: null, dialog: null, rulesConfirm: null, rulesError: undefined, ...(on("phone") && from !== "phone" ? { phoneFrom: from } : {}) }); // a dialog belongs to the view it was opened in; Esc on the Phone tab goes back to phoneFrom
+			if (on("rules")) loadTriageRules();
+		}
+		/** The tab a key moves to inside a tablist: Left and Right wrap around, Home and End jump; undefined for any other key. Pure. */
+		function nextTabId(ids, current, key) {
+			if (!ids.length) return undefined;
+			const i = Math.max(0, ids.indexOf(current));
+			if (key === "ArrowRight") return ids[(i + 1) % ids.length];
+			if (key === "ArrowLeft") return ids[(i + ids.length - 1) % ids.length];
+			if (key === "Home") return ids[0];
+			if (key === "End") return ids[ids.length - 1];
+			return undefined;
+		}
+		/** The small dialogs of Hold, Mark wrong and Overrule rule: state.dialog = { kind: "hold" | "wrong" | "overrule", id, text }; one at a time, never remembered across reloads. */
+		function openDialog(kind, id) { set({ dialog: { kind, id, text: "" }, errors: { ...state.errors, [id]: undefined } }); } // an old error of the item is not shown again in the dialog
+		/** Esc and a press on the backdrop: like the (disabled while busy) Cancel button, they do nothing while the dialog's action is running. */
+		function dismissDialog() { if (state.dialog && !state.busy[state.dialog.id]) closeDialog(); }
+		/** Closes the dialog; given the dialog that asked, only while that one is still the open one (a late answer must not close another dialog). */
+		function closeDialog(which) {
+			const d = state.dialog;
+			if (!d || (which && (d.id !== which.id || d.kind !== which.kind))) return;
+			set({ dialog: null });
+		}
 
 		// Host capabilities captured in apply(); absent on a DSH without the workspace API, which just hides the button.
 		const hostApi = { openSession: undefined, sidebar: undefined }; // sidebar: () => ctx.sidebarRight (the right panel), undefined on a DSH without it
@@ -1380,7 +1435,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
 			+ ".rq-text{white-space:pre-wrap;word-break:break-word}.rq-clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}"
-			+ ".rq-sub{color:var(--rq-mute);font-size:12px}.rq-aibadge{background:var(--rq-accent,#3b82f6);color:#fff}.rq-aid{margin:6px 0}.rq-col{display:flex;flex-direction:column;gap:6px}.rq-filter-by{display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex-basis:100%}.rq-ai{font-style:italic;border-left:3px solid var(--rq-mute);padding-left:8px;margin:4px 0}.rq-opts{display:flex;flex-direction:column;gap:6px}.rq-chips{display:flex;flex-wrap:wrap;gap:6px}"
+			+ ".rq-sub{color:var(--rq-mute);font-size:12px}.rq-aibadge{background:var(--rq-accent,#3b82f6);color:#fff}.rq-aid{margin:6px 0}.rq-col{display:flex;flex-direction:column;gap:6px}.rq-ai{font-style:italic;border-left:3px solid var(--rq-mute);padding-left:8px;margin:4px 0}.rq-opts{display:flex;flex-direction:column;gap:6px}.rq-chips{display:flex;flex-wrap:wrap;gap:6px}"
 			+ ".rq-opt{display:flex;gap:8px;align-items:flex-start;text-align:left;border:1px solid var(--rq-border);border-radius:7px;padding:8px 10px;background:var(--rq-base)}"
 			+ ".rq-opt:hover:not(:disabled){background:var(--rq-hover)}.rq-opt.on{border-color:var(--rq-accent);background:var(--rq-layer2)}.rq-opt .d{color:var(--rq-mute);font-size:12px}"
 			+ ".rq-star{color:var(--rq-warn)}.rq-pill{border:1px solid var(--rq-border);border-radius:9px;padding:1px 8px;font-size:12px;color:var(--rq-mute)}"
@@ -1397,8 +1452,20 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-replybox{max-height:360px;overflow:auto;background:var(--rq-base);border:1px solid var(--rq-border);border-radius:7px;padding:10px 12px;margin-top:6px}"
 			+ ".rq-todoform{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-sel{width:auto;max-width:260px;padding:6px 8px}.rq-sel-wide{width:100%;max-width:none;box-sizing:border-box;text-overflow:ellipsis}.rq-thumbs{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.rq-tunequestions{display:flex;flex-direction:column;gap:8px;padding:8px 10px;border:1px solid var(--rq-border,rgba(127,127,127,.35));border-radius:8px}.rq-tq{display:flex;flex-direction:column;gap:3px;font-size:13px}.rq-thumb{position:relative;display:inline-flex}.rq-thumb img{height:56px;max-width:120px;object-fit:cover;border-radius:6px;border:1px solid var(--rq-border)}.rq-thumb-x{position:absolute;top:-7px;right:-7px;width:18px;height:18px;padding:0;border-radius:50%;border:1px solid var(--rq-border);background:var(--rq-layer);color:inherit;cursor:pointer;line-height:1;font-size:11px}"
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
-			+ ".rq-filter{flex:none;display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--rq-border);flex-wrap:wrap}.rq-fchip{padding:3px 12px;border-radius:9px;border:1px solid var(--rq-border)!important;font-size:12px;color:var(--rq-mute)}"
-			+ ".rq-fchip.on{background:var(--rq-layer2)!important;color:var(--rq-fg);border-color:var(--rq-accent)!important}.rq-fsearch{flex:1;min-width:160px;width:auto;padding:4px 10px}.rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
+			+ ".rq-hint{flex:none;padding:6px 14px;border-top:1px solid var(--rq-border);color:var(--rq-mute);font-size:11.5px}"
+			+ ".rq-tabs{flex:none;display:flex;align-items:center;gap:2px;padding:0 10px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-tabs>[role=tablist]{display:flex;gap:2px;min-width:0;flex-wrap:wrap}"
+			+ ".rq-tab{display:flex;align-items:center;gap:6px;padding:10px 14px;border-bottom:2px solid transparent!important;color:var(--rq-mute);font-weight:600;margin-bottom:-1px}.rq-tab:hover:not(:disabled){color:var(--rq-fg)}"
+			+ ".rq-tab[aria-selected=true]{color:var(--rq-fg);border-bottom-color:var(--rq-accent)!important}.rq-tab:focus-visible,.rq-segb:focus-visible,.rq-row-i:focus-visible,.rq-iconx:focus-visible{outline:2px solid var(--rq-accent);outline-offset:-2px}"
+			+ ".rq-tabs.sub{background:none;gap:0}.rq-tabs.sub .rq-tab{padding:8px 12px;font-weight:500;font-size:12.5px}.rq-tabs.sub .rq-tab[aria-selected=true]{color:var(--rq-accent)}"
+			+ ".rq-todoform .rq-tabs{padding:0;background:none}.rq-todoform .rq-tabs .rq-tab{padding:6px 12px}"
+			+ ".rq-n{min-width:18px;padding:0 6px;border-radius:9px;background:var(--rq-layer2);color:var(--rq-mute);font-size:11px;line-height:18px;text-align:center;font-weight:600}"
+			+ ".rq-tab[aria-selected=true] .rq-n{background:var(--rq-accent);color:#fff}.rq-n.hot{background:var(--rq-accent);color:#fff}.rq-n.warn{background:var(--rq-warn);color:#fff}"
+			+ ".rq-search{flex:1;min-width:160px;max-width:320px;width:auto;margin:5px 0 5px auto;padding:4px 10px}.rq-tabs.sub select{width:auto;margin:5px 0 5px 8px;padding:4px 8px}"
+			+ ".rq-strip{flex:none;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-bottom:1px solid var(--rq-border);background:#f59e0b14}"
+			+ ".rq-seg{display:inline-flex;border:1px solid var(--rq-border);border-radius:8px;overflow:hidden}.rq-segb{padding:5px 14px;border-right:1px solid var(--rq-border)}.rq-segb:last-child{border-right:0}.rq-segb.on{background:var(--rq-accent);color:#fff}"
+			+ ".rq-iconx{flex:none;width:30px;height:30px;border-radius:7px;display:grid;place-items:center;color:var(--rq-mute);font-size:15px}.rq-iconx:hover{background:var(--rq-hover);color:var(--rq-fg)}"
+			+ ".rq-modal-h{padding:12px 16px;border-bottom:1px solid var(--rq-border);font-weight:600}.rq-modal-b{padding:14px 16px;display:flex;flex-direction:column;gap:10px;overflow:auto}.rq-modal-f{padding:10px 16px;border-top:1px solid var(--rq-border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}"
+			+ ".rq-late>summary{cursor:pointer;color:var(--rq-mute);padding:4px 0}"
 			+ ".rq-rules{overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-rule{border:1px solid var(--rq-border);border-radius:10px;padding:10px 12px;background:var(--rq-layer);display:flex;flex-direction:column;gap:6px}.rq-rule-h,.rq-rule-m{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.rq-warnbox{display:flex;gap:8px;align-items:center;flex-wrap:wrap;border:1px solid var(--rq-warn);border-radius:8px;padding:6px 10px}"
 			+ ".rq-sess{font-variant-numeric:tabular-nums;white-space:nowrap}.rq-emptywrap{margin:auto;display:flex;flex-direction:column;gap:16px;align-items:stretch;max-width:100%}.rq-emptywrap .rq-empty{margin:0;padding:8px}"
 			+ ".rq-tip{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;border:1px solid var(--rq-border)!important;border-radius:10px;padding:10px 12px;background:var(--rq-layer)}.rq-tip:hover{background:var(--rq-hover)}.rq-tip.on{border-color:var(--rq-accent)!important}"
@@ -1407,7 +1474,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
 			+ ".rq-split{flex:1;min-height:0;display:grid;grid-template-columns:minmax(260px,360px) 1fr}.rq-side{border-right:1px solid var(--rq-border);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:4px}"
 			+ ".rq-detail{overflow:auto;padding:16px 20px}.rq-row-i{display:flex;flex-direction:column;gap:2px;text-align:left;border:1px solid transparent!important;border-radius:8px;padding:8px 10px}"
-			+ ".rq-row-i:hover{background:var(--rq-hover)}.rq-row-i.sel{background:var(--rq-layer2);border-color:var(--rq-border)!important}"
+			+ ".rq-row-i{cursor:pointer}.rq-row-i:hover{background:var(--rq-hover)}.rq-row-i.sel,.rq-row-i[aria-selected=true]{background:var(--rq-layer2);border-color:var(--rq-border)!important}"
 			+ "@media (max-width:820px){.rq-split{display:block;overflow:auto}.rq-side{display:none}.rq-detail{display:none}.rq-split .rq-narrow{display:flex}}.rq-narrow{display:none;flex-direction:column;gap:12px;padding:12px}";
 
 		let styled = false;
@@ -1553,8 +1620,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-row" },
 					full ? h("button", { className: "rq-btn pri", disabled: busy || !canSend, onClick: send }, "Send reply") : null,
 					h("button", { className: "rq-btn", disabled: busy, onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Reviewed"),
-					full ? h(HoldButton, { item }) : null),
-				full ? h(HoldForm, { item }) : null);
+					full ? h(HoldButton, { item }) : null));
 		}
 
 		/** A session asked to be archived (ARCHIVE-OFFER marker or /archive-offer): nothing happens until the button is pressed. */
@@ -1639,8 +1705,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: busy, title: "Prompt the session to check its worktree and continue where it stopped", onClick: () => act("/v1/paused-resume", { id: item.id }, item.id, { advance: true }) }, busy ? "Resuming…" : "Resume"),
 					h("button", { className: "rq-btn", disabled: busy, title: "Do not resume it; it stays out of the list", onClick: () => act("/v1/paused-dismiss", { id: item.id }, item.id, { advance: true }) }, "Dismiss"),
-					h(HoldButton, { item })),
-				h(HoldForm, { item }));
+					h(HoldButton, { item })));
 		}
 
 		function Card({ item, forceFull, selected, onSelect }) {
@@ -1672,23 +1737,71 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					hostApi.openSession && item.type !== "todo" && canViewChanges() ? h("button", { className: "rq-link", title: "Open the session and show its changes in the Git tab of the right panel", onClick: () => viewChanges(item) }, "View Changes") : null));
 		}
 
-		/** The Hold button of a Done or Paused card: it opens the reason line (HoldForm) under the row. */
+		/** The Hold button of a Done or Paused card: it opens the Hold dialog (DialogHost). */
 		function HoldButton({ item }) {
 			const st = useStore();
-			return h("button", { className: "rq-btn", disabled: st.busy[item.id] || st.holdOpen[item.id] !== undefined, title: "Park this session in the On hold queue; with an Azure DevOps ticket it is watched and continued when the ticket changes", onClick: () => set({ holdOpen: { ...state.holdOpen, [item.id]: "" } }) }, "Hold…");
+			return h("button", { className: "rq-btn", disabled: !!st.busy[item.id], title: "Park this session in the On hold queue; with an Azure DevOps ticket it is watched and continued when the ticket changes", onClick: () => openDialog("hold", item.id) }, "Hold…");
 		}
-		/** The reason line and the confirm of a hold (the reason is optional; a ticket in the session title is found by the plugin). */
-		function HoldForm({ item }) {
+		const FOCUSABLE = "button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[href],[tabindex]:not([tabindex=\"-1\"])";
+		/** Keeps Tab inside a modal: Tab on the last control goes to the first, Shift+Tab on the first to the last. Other keys are left alone. */
+		function trapTab(e, root) {
+			if (e.key !== "Tab" || !root || typeof root.querySelectorAll !== "function") return;
+			const list = Array.from(root.querySelectorAll(FOCUSABLE));
+			if (!list.length) { e.preventDefault(); return; }
+			const a = typeof document !== "undefined" ? document.activeElement : null;
+			const outside = !a || (typeof root.contains === "function" && !root.contains(a));
+			if (e.shiftKey ? (outside || a === list[0]) : (outside || a === list[list.length - 1])) { e.preventDefault(); list[e.shiftKey ? list.length - 1 : 0].focus(); }
+		}
+		/** Mounted with the dialog: moves the focus to its first control, and gives it back to the opener when the dialog goes. Renders nothing. */
+		function DialogFocus() {
+			useEffect(() => {
+				if (typeof document === "undefined") return undefined;
+				const opener = document.activeElement;
+				const root = document.querySelector("[data-rq=\"dialog\"] [role=\"dialog\"]");
+				const first = root && typeof root.querySelectorAll === "function" ? root.querySelectorAll(FOCUSABLE)[0] : null;
+				if (first && typeof first.focus === "function") first.focus();
+				return () => { if (opener && typeof opener.focus === "function") opener.focus(); };
+			}, []);
+			return null;
+		}
+		/** The one small dialog of the overlay (state.dialog): Hold (an optional reason), Mark wrong (the correction) or Overrule rule (observe or off). Its confirm button does the action;
+		 *  Cancel, Esc (overlayKey) and a press on the backdrop close it. It names the item, takes the focus, keeps Tab inside and gives the focus back. Hook-free itself (reads the store). */
+		function DialogHost() {
 			const st = useStore();
-			const draft = st.holdOpen[item.id];
-			if (draft === undefined) return null;
-			const busy = st.busy[item.id];
-			const close = () => { const m = { ...state.holdOpen }; delete m[item.id]; set({ holdOpen: m }); };
-			const send = async () => { if (await act("/v1/hold", { id: item.id, reason: draft }, item.id, { advance: true })) close(); };
-			return h("div", { className: "rq-row" },
-				h("input", { className: "rq-input rq-fsearch", placeholder: "Why? (optional, e.g. waiting for the customer)", value: draft, disabled: busy, maxLength: 300, autoFocus: true, onChange: (e) => set({ holdOpen: { ...state.holdOpen, [item.id]: e.target.value } }), onKeyDown: (e) => { const ne = e.nativeEvent || e; if (isSendKey(ne)) { e.preventDefault(); if (!busy) send(); } else if (e.key === "Escape") { e.stopPropagation(); close(); } } }),
-				h("button", { className: "rq-btn pri", disabled: busy, onClick: send }, busy ? "Holding…" : "Put on hold"),
-				h("button", { className: "rq-btn", disabled: busy, onClick: close }, "Cancel"));
+			const d = st.dialog;
+			if (!d) return null;
+			const busy = !!st.busy[d.id];
+			const err = st.errors[d.id];
+			const snap = st.snap;
+			const it = snap ? snap.open.find((x) => x.id === d.id) || snap.resolved.find((x) => x.id === d.id) : undefined;
+			const setText = (text) => set({ dialog: { ...state.dialog, text } });
+			const run = async (path, body, opts) => { if (busy) return; if (await act(path, { id: d.id, ...body }, d.id, opts)) closeDialog(d); };
+			const btn = (key, label, onClick, pri, off) => h("button", { key, type: "button", className: "rq-btn" + (pri ? " pri" : ""), disabled: busy || !!off, onClick }, label);
+			let title, body, confirm;
+			if (d.kind === "hold") {
+				const send = () => run("/v1/hold", { reason: d.text }, { advance: true });
+				title = "Put this session on hold";
+				body = [h("input", { key: "i", className: "rq-input", placeholder: "Why? (optional, e.g. waiting for the customer)", value: d.text, disabled: busy, maxLength: 300, autoFocus: true, onChange: (e) => setText(e.target.value), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); send(); } } }),
+					h("div", { key: "n", className: "rq-sub" }, "With an Azure DevOps ticket in the title it is watched and continued when the ticket changes.")];
+				confirm = [btn("ok", busy ? "Holding…" : "Put on hold", send, true)];
+			} else if (d.kind === "wrong") {
+				const text = (d.text || "").trim();
+				const cannotUnsend = !!it && (it.type === "question" || it.type === "permission");
+				title = "Mark this decision wrong";
+				body = [h("textarea", { key: "t", className: "rq-ta", "data-ai-correction": d.id, rows: 3, autoFocus: true, placeholder: "What should it have done?", value: d.text, disabled: busy, onChange: (e) => setText(e.target.value) }),
+					h("div", { key: "n", className: "rq-sub" }, cannotUnsend ? "The answer already went to the session and cannot be unsent; your correction is recorded for the rule." : "Your correction is recorded for the rule.")];
+				confirm = [btn("ok", busy ? "Sending…" : "Send correction", () => run("/v1/triage-review", { review: "mark-wrong", text }), true, !text)];
+			} else {
+				title = "Overrule this rule";
+				body = [h("div", { key: "n" }, "Set the rule back to Observe so the AI only notes what it would do, or switch it Off. This changes the rule, not only this item.")];
+				confirm = [btn("observe", "Set rule to observe", () => run("/v1/triage-review", { review: "overrule-rule", mode: "observe" }), true), btn("off", "Set rule to off", () => run("/v1/triage-review", { review: "overrule-rule", mode: "off" }))];
+			}
+			return h("div", { className: "rq-modal-back", "data-rq": "dialog", onMouseDown: (e) => { if (e.target === e.currentTarget) dismissDialog(); } },
+				h("div", { className: "rq-modal", role: "dialog", "aria-modal": "true", "aria-label": title, onKeyDown: (e) => trapTab(e, e.currentTarget) },
+					h(DialogFocus),
+					h("div", { className: "rq-modal-h" }, title),
+					h("div", { className: "rq-modal-b" }, it ? h("div", { className: "rq-sub rq-clamp", title: cardTitle(it) }, cardTitle(it)) : null, body, err ? h("div", { className: "rq-err" }, err) : null),
+					h("div", { className: "rq-modal-f" }, btn("cancel", "Cancel", () => closeDialog()), confirm)));
 		}
 
 		/** A session on hold: why, the ticket being watched, when it was last checked; Continue prompts the session now, Release just takes it off hold. */
@@ -1718,7 +1831,6 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			aiSeenRequested.add(it.id);
 			postJson("/v1/triage-review", { id: it.id, review: "seen" }).finally(() => { aiSeenRequested.delete(it.id); });
 		}
-		const closeKey = (key, id) => { const m = { ...state[key] }; delete m[id]; set({ [key]: m }); };
 		/** What the AI relied on, shown when an AI-resolved card is opened. */
 		function aiDetailNode(it) {
 			const d = aiDetail(it);
@@ -1726,26 +1838,15 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				d.quote ? h("div", { className: "rq-ai" }, "“" + d.quote + "”") : null,
 				h("div", { className: "rq-sub" }, "Rule: " + d.ruleName + (d.score !== undefined ? " · attention " + d.score : "")));
 		}
-		/** Review actions of an opened AI card: agree, mark wrong with a correction, or overrule the rule. */
+		/** Review actions of an opened AI card: Looks right acts at once; Mark wrong… and Overrule rule… each open a dialog (DialogHost) whose confirm button acts. */
 		function aiReviewNode(it, st) {
 			const r = it.resolution;
-			const text = st.aiCorrection[it.id];
-			const marking = typeof text === "string";
 			const canMarkWrong = it.type !== "paused" && typeof it.sessionId === "string" && it.sessionId !== ""; // the reply path refuses the others too
-			const review = async (body) => { const ok = await act("/v1/triage-review", { id: it.id, ...body }, it.id); if (ok) { closeKey("aiOverrule", it.id); closeKey("aiCorrection", it.id); } return ok; };
-			const cannotUnsend = it.type === "question" || it.type === "permission";
 			return h("div", { className: "rq-aid" },
 				h("div", { className: "rq-row" },
-					!r.review ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => review({ review: "agreed" }) }, "Looks right") : null,
-					!r.review && canMarkWrong ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => set({ aiCorrection: { ...state.aiCorrection, [it.id]: marking ? text : "" } }) }, "Mark wrong…") : null,
-					r.review !== "overruled" ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => set({ aiOverrule: { ...state.aiOverrule, [it.id]: true } }) }, "Overrule rule") : null),
-				marking ? h("div", { className: "rq-col" },
-					h("textarea", { className: "rq-input", "data-ai-correction": it.id, rows: 2, placeholder: "What should it have done?", value: text, onChange: (e) => set({ aiCorrection: { ...state.aiCorrection, [it.id]: e.target.value } }) }),
-					cannotUnsend ? h("div", { className: "rq-sub" }, "The answer already went to the session and cannot be unsent; your correction is recorded for the rule.") : null,
-					h("div", { className: "rq-row" }, h("button", { className: "rq-btn pri", disabled: st.busy[it.id] || !text.trim(), onClick: () => review({ review: "mark-wrong", text: text.trim() }) }, "Send"))) : null,
-				st.aiOverrule[it.id] ? h("div", { className: "rq-row" },
-					h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => review({ review: "overrule-rule", mode: "observe" }) }, "Set rule to observe"),
-					h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => review({ review: "overrule-rule", mode: "off" }) }, "Set rule to off")) : null);
+					!r.review ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/triage-review", { id: it.id, review: "agreed" }, it.id) }, "Looks right") : null,
+					!r.review && canMarkWrong ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => openDialog("wrong", it.id) }, "Mark wrong…") : null,
+					r.review !== "overruled" ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => openDialog("overrule", it.id) }, "Overrule rule…") : null));
 		}
 
 		function ResolvedCard({ it }) {
@@ -1769,38 +1870,95 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					canViewChanges() ? h("button", { className: asButton ? "rq-btn" : "rq-link", title: "Open the session and show its changes in the Git tab of the right panel", onClick: () => viewChanges(it) }, "View Changes") : null) : null,
 				reopenable ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/reopen", { id: it.id }, it.id) }, "Reopen")) : null,
 				it.type === "todo" ? h("div", { className: "rq-row" }, h("button", { className: "rq-btn rq-play", disabled: st.busy[it.id], title: reading ? "Stop reading" : "Read the whole todo aloud", "aria-pressed": reading, onClick: () => (reading ? act("/v1/stop", {}, it.id) : act("/v1/read", { id: it.id }, it.id)) }, reading ? "■ Stop reading" : "▶ Read aloud")) : null,
-				late ? h("div", { className: "rq-row" }, h("button", { className: "rq-link", onClick: () => set({ lateOpen: { ...st.lateOpen, [it.id]: !open } }) }, open ? "Hide" : "Answer now (late) ▸")) : null,
-				late && open ? h(QuestionBody, { item: it, full: true, path: "/v1/late-answer", sendLabel: "Send late answer" }) : null,
-				late && open ? h("div", { className: "rq-sub" }, "The assistant already carried on with the recommended option. An answer that differs is sent to it as a late reply; the same one is just confirmed.") : null,
+				late ? h("details", { className: "rq-late", open, onToggle: (e) => { const now = !!(e && e.currentTarget && e.currentTarget.open); if (now !== !!state.lateOpen[it.id]) set({ lateOpen: { ...state.lateOpen, [it.id]: now } }); } },
+					h("summary", null, "Answer now (late)"),
+					open ? h(QuestionBody, { item: it, full: true, path: "/v1/late-answer", sendLabel: "Send late answer" }) : null,
+					open ? h("div", { className: "rq-sub" }, "The assistant already carried on with the recommended option. An answer that differs is sent to it as a late reply; the same one is just confirmed.") : null) : null,
 				st.errors[it.id] ? h("div", { className: "rq-err" }, st.errors[it.id]) : null);
 		}
 
 		function ResolvedList({ items }) {
 			const st = useStore();
-			const shown = filterItems(items, st.filter);
+			const shown = filterItems(items, { ...st.filter, type: st.filter.resolvedType || "all" }); // the Resolved Type select is its own choice, not the Waiting type tab
 			return h("div", { className: "rq-opts" }, shown.length ? shown.map((it) => h(ResolvedCard, { key: it.id, it })) : h("div", { className: "rq-empty" }, items.length ? "Nothing matches this filter." : "Nothing resolved in the last 7 days."));
 		}
 
-		function FilterBar({ snap }) {
+		/** A tablist (hook-free, so a screen can build it inline): roving tabindex, Left / Right / Home / End move AND select, a tab can show count badges.
+		 *  tabs: [{ id, label, attrs?, title?, disabled?, badges?: [{ text, cls?, title? }] }]; current: the selected id (the first tab when it is not among them). */
+		function tabList(name, cls, tabs, current, onPick) {
+			const ids = tabs.map((t) => t.id);
+			const cur = ids.indexOf(current) >= 0 ? current : ids[0];
+			return h("div", { className: cls, role: "tablist", "aria-label": name },
+				tabs.map((t) => h("button", { key: t.id, type: "button", role: "tab", className: "rq-tab", "aria-selected": t.id === cur, tabIndex: t.id === cur ? 0 : -1, title: t.title, disabled: !!t.disabled, ...(t.attrs || {}),
+					onClick: () => onPick(t.id),
+					onKeyDown: (e) => {
+						const to = nextTabId(ids, t.id, e.key);
+						if (to === undefined) return;
+						e.preventDefault();
+						onPick(to);
+						const list = e.currentTarget && e.currentTarget.parentElement;
+						const nodes = list && typeof list.querySelectorAll === "function" ? list.querySelectorAll('[role="tab"]') : [];
+						const node = nodes[ids.indexOf(to)];
+						if (node && typeof node.focus === "function") node.focus();
+					} },
+					t.label, (t.badges || []).map((b, n) => h("span", { key: n, className: "rq-n" + (b.cls ? " " + b.cls : ""), title: b.title }, b.text)))));
+		}
+
+		/** The search box of a view (the same words as before: title, session or workspace). */
+		function searchBox(f) {
+			return h("input", { className: "rq-input rq-search", "aria-label": "Filter", placeholder: "Filter by title, session or workspace…", value: f.query, onChange: (e) => set({ filter: { ...state.filter, query: e.target.value } }) });
+		}
+		/** The row under the primary tabs: Waiting = Type tabs + search; Resolved = "Resolved by" tabs + a Type select + search; On hold = search; AI rules and Phone = nothing. */
+		function SubTabs({ snap }) {
 			const st = useStore();
 			const f = st.filter;
-			if (!filterBarVisible(snap, f)) return null;
-			const unseen = aiUnseenCount(snap && snap.resolved);
-			return h("div", { className: "rq-filter" },
-				FILTER_TYPES.map((t) => h("button", { key: t, className: "rq-fchip" + (f.type === t ? " on" : ""), "aria-pressed": f.type === t, onClick: () => set({ filter: { ...f, type: t } }) }, t === "all" ? "All" : typeLabel(t))),
-				h("input", { className: "rq-input rq-fsearch", placeholder: "Filter by title, session or workspace…", value: f.query, onChange: (e) => set({ filter: { ...f, query: e.target.value } }) }),
-				st.showResolved ? h("div", { className: "rq-filter-by" }, h("span", { className: "rq-sub" }, "Resolved by:"),
-					RESOLVED_BY.map((v) => h("button", { key: v, className: "rq-fchip" + (f.resolvedBy === v ? " on" : ""), "aria-pressed": f.resolvedBy === v, "data-resolved-by": v, onClick: () => set({ filter: { ...f, resolvedBy: v } }) }, resolvedByLabel(v) + (v === "ai" && unseen > 0 ? " (" + unseen + ")" : "")))) : null);
+			const view = viewOf(st);
+			if (view === "rules" || view === "phone") return null;
+			if (view === "held") return h("div", { className: "rq-tabs sub" }, searchBox(f));
+			if (view === "resolved") {
+				const c = snapCounts(snap);
+				const unseen = c.unseen;
+				const rt = f.resolvedType || "all";
+				const counts = resolvedCounts(snap ? snap.resolved : [], { type: rt, query: f.query }); // the counts follow the Type select and the search, as on the phone
+				const tabs = RESOLVED_BY.map((v) => ({ id: v, label: RESOLVED_LABELS[v], attrs: { "data-resolved-by": v }, badges: [{ text: String(counts[v]) }].concat(v === "ai" && unseen > 0 ? [{ text: unseen + " new", cls: "hot", title: "Resolved by AI, not looked at yet" }] : []) }));
+				return h("div", { className: "rq-tabs sub" },
+					tabList("Resolved by", "", tabs, f.resolvedBy, (id) => set({ filter: { ...state.filter, resolvedBy: id }, dialog: null })),
+					h("select", { className: "rq-input rq-sel", "aria-label": "Type", value: rt, onChange: (e) => set({ filter: { ...state.filter, resolvedType: e.target.value }, dialog: null }) },
+						FILTER_TYPES.map((t) => h("option", { key: t, value: t }, t === "all" ? "All types" : typeLabel(t)))),
+					searchBox(f));
+			}
+			const open = snap ? snap.open : [];
+			const countOfType = (t) => filterItems(open, { type: t, query: f.query }).length; // follows the search, as on the phone
+			const tabs = FILTER_TYPES.filter((t) => t === "all" || t === "paused" || t === f.type || countOfType(t) > 0).map((t) => ({ id: t, label: t === "all" ? "All" : typeLabel(t), attrs: { "data-type": t }, badges: [{ text: String(countOfType(t)), cls: t === "paused" && countOfType(t) > 0 ? "warn" : undefined }] }));
+			return h("div", { className: "rq-tabs sub" }, tabList("Type", "", tabs, f.type, (id) => set({ filter: { ...state.filter, type: id }, dialog: null })), searchBox(f));
+		}
+
+		/** The strip of the Paused type tab: Resume all and Find paused apply to paused sessions, so they sit where those are listed (they used to be in the header). */
+		function PausedStrip({ snap }) {
+			const st = useStore();
+			if (viewOf(st) !== "waiting" || st.filter.type !== "paused") return null;
+			const paused = snapCounts(snap).paused;
+			return h("div", { className: "rq-strip" },
+				h("span", { className: "rq-sub rq-grow" }, paused ? paused + " paused session" + (paused === 1 ? "" : "s") + ": cut off by a restart." : "No paused session."),
+				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
+				h("button", { className: "rq-btn", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"));
 		}
 
 		/** One row of the left list: position, type, title, time left on a question, a warning for a risky request. */
 		function SideRow({ it, selected }) {
 			const now = useNow(it.type === "question" && !!it.expiresAt);
 			const ref = useRef(null);
-			useEffect(() => { if (selected && ref.current && ref.current.scrollIntoView) ref.current.scrollIntoView({ block: "nearest" }); }, [selected]);
+			useEffect(() => {
+				const r = ref.current;
+				if (!selected || !r) return;
+				if (r.scrollIntoView) r.scrollIntoView({ block: "nearest" });
+				const a = typeof document !== "undefined" ? document.activeElement : null; // the keyboard focus follows the selection while it is inside the list
+				if (a && a !== r && typeof a.getAttribute === "function" && a.getAttribute("role") === "option" && typeof r.focus === "function") r.focus();
+			}, [selected]);
 			const left = it.expiresAt ? it.expiresAt - now : undefined;
 			const risky = it.risks && it.risks.length;
-			return h("button", { ref, className: "rq-row-i" + (selected ? " sel" : ""), onClick: () => set({ selected: it.id }) },
+			return h("div", { ref, role: "option", tabIndex: selected ? 0 : -1, "aria-selected": !!selected, className: "rq-row-i" + (selected ? " sel" : ""), onClick: () => set({ selected: it.id }),
+				onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); set({ selected: it.id }); } } },
 				h("span", { className: "rq-row" }, h("span", { className: "rq-pos" }, "#" + it.position), h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title" }, cardTitle(it)),
 					left !== undefined || risky ? h("span", { className: "rq-meta" },
 						left !== undefined ? h("span", { className: "rq-left" + (left < 30000 ? " soon" : ""), title: "Time left before this question expires" }, fmtLeft(left)) : null,
@@ -1817,8 +1975,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const note = follow ? undefined : workspacesNote(st.workspaces);
 			const submitOnKey = (e) => { if (isSubmitKey(e.nativeEvent || e)) { e.preventDefault(); submitTodo(); } };
 			return h("div", { className: "rq-todoform" },
-				h("div", { className: "rq-row", role: "group", "aria-label": "Kind of todo" },
-					[["new", "New session"], ["followup", "Follow up"]].map(([mode, label]) => h("button", { key: mode, className: "rq-fchip" + (follow === (mode === "followup") ? " on" : ""), "aria-pressed": follow === (mode === "followup"), disabled: f.busy || f.tuning, onClick: () => setTodoMode(mode) }, label))),
+				tabList("Kind of todo", "rq-tabs sub", [{ id: "new", label: "New session", disabled: f.busy || f.tuning }, { id: "followup", label: "Follow up", disabled: f.busy || f.tuning }], follow ? "followup" : "new", setTodoMode),
 				h("textarea", { className: "rq-ta", autoFocus: true, placeholder: follow ? "What should the existing session do next? (Ctrl+Enter adds it)" : "What should the new session do? (Ctrl+Enter adds it)", value: f.text, disabled: f.busy || f.tuning, onChange: (e) => patchForm({ text: e.target.value, error: undefined }), onKeyDown: submitOnKey, onPaste: onPasteImages }),
 				((f.images && f.images.length) || f.uploading > 0) ? h("div", { className: "rq-thumbs" },
 					(f.images || []).map((im) => h("span", { key: im.id, className: "rq-thumb" },
@@ -1852,26 +2009,33 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				h("div", { className: "rq-sub" }, follow ? "Sent to the picked session at once." : (f.workspaceId ? "Starts in the background right away." : "Nothing starts until you confirm the workspace.") + " Paste an image (Ctrl+V) to attach it to the session."));
 		}
 
-		function Head({ snap, extra }) {
-			const st = useStore();
-			const n = snap ? waitingCount(snap.open) : 0;
-			const paused = snap ? pausedCount(snap.open) : 0;
-			const held = snap ? heldCount(snap.open) : 0;
+		/** The header: the title, the counts, + New todo and the close icon. Every view lives in the tabs under it (ViewTabs). */
+		function Head({ snap }) {
+			const { waiting: n, paused } = snapCounts(snap);
 			const sessions = sessionsText(snap && snap.sessions);
-			const aiUnseen = snap ? aiUnseenCount(snap.resolved) : 0;
-			return h("div", { className: "rq-head" }, h("h2", null, "Coding Boss Review Queue"), h("span", { className: "rq-count" }, n),
+			return h("div", { className: "rq-head" }, h("h2", null, "Coding Boss Review Queue"), h("span", { className: "rq-count" }, n + " waiting"),
 				sessions ? h("span", { className: "rq-count rq-sess", title: sessionsTitle }, sessions) : null,
 				paused ? h("span", { className: "rq-count", title: "Sessions a restart cut off" }, "⏸ " + paused + " paused") : null,
-				aiUnseen ? h("button", { className: "rq-count", "data-ai-handled": true, title: "Items the AI resolved that you have not looked at", onClick: () => set({ showResolved: true, showHeld: false, showPhone: false, showRules: false, selected: null, filter: { ...st.filter, type: "all", query: "", resolvedBy: "ai" } }) }, "AI handled " + aiUnseen) : null,
 				h("span", { className: "rq-grow" }),
 				h("button", { className: "rq-btn pri", title: "Start a new session and follow it from this list", onClick: openTodoForm }, "+ New todo"),
-				paused ? h("button", { className: "rq-btn pri", title: "Resume every paused session, " + RESUME_AT_A_TIME + " at a time", disabled: !!st.resumeAll, onClick: askResumeAll }, "Resume all (" + paused + ")") : null,
-				h("button", { className: "rq-btn", title: "Look for sessions a restart cut off", disabled: st.scanning, onClick: scanPaused }, st.scanning ? "Looking…" : "Find paused"),
-				held || st.showHeld ? h("button", { className: "rq-btn", title: "Sessions parked until they can continue; a held session with a ticket is checked " + HELD_CHECK_TEXT, "aria-pressed": st.showHeld, onClick: () => set({ showHeld: !st.showHeld, showResolved: false, showPhone: false, showRules: false, selected: null }) }, st.showHeld ? "Waiting" : "On hold (" + held + ")") : null,
-				h("button", { className: "rq-btn", onClick: () => set({ showResolved: !st.showResolved, showHeld: false, showPhone: false, showRules: false, selected: null }) }, st.showResolved ? "Waiting" : "Resolved (" + (snap ? snap.resolved.length : 0) + ")"),
-				h("button", { className: "rq-btn", title: "Pair a phone and manage the paired phones (opens a window)", "aria-haspopup": "dialog", onClick: () => set({ showPhone: !st.showPhone }) }, "Phone"),
-				h("button", { className: "rq-btn", "data-ai-rules": true, title: "What the AI judges, how well it has done, and what it learned from your corrections", "aria-pressed": !!st.showRules, onClick: toggleRules }, "AI rules"),
-				extra);
+				h("button", { type: "button", className: "rq-iconx", title: "Close (Esc)", "aria-label": "Close (Esc)", onClick: () => setOverlay(false) }, "✕"));
+		}
+
+		/** The tabpanel props of the main body: one panel (id rq-vpanel), labelled by the selected primary tab. */
+		const vpanel = (view) => ({ id: "rq-vpanel", role: "tabpanel", "aria-labelledby": "rq-vtab-" + view });
+		/** The primary tabs: Waiting, On hold (always there), Resolved (with the AI items you have not looked at), AI rules and Phone. The selected one comes from the view flags. */
+		function ViewTabs({ snap }) {
+			const st = useStore();
+			const { waiting, held, unseen, resolved } = snapCounts(snap);
+			const count = (n) => ({ text: String(n) });
+			const tabs = [
+				{ id: "waiting", label: "Waiting", badges: [count(waiting)] },
+				{ id: "held", label: "On hold", title: "Sessions parked until they can continue; a held session with a ticket is checked " + HELD_CHECK_TEXT, badges: [count(held)] },
+				{ id: "resolved", label: "Resolved", badges: [count(resolved)].concat(unseen > 0 ? [{ text: unseen + " new", cls: "hot", title: "Resolved by AI, not looked at yet" }] : []) },
+				{ id: "rules", label: "AI rules", title: "What the AI judges, how well it has done, and what it learned from your corrections", badges: [] },
+				{ id: "phone", label: "Phone", title: "Pair a phone and manage the paired phones", badges: [] },
+			].map((t) => ({ ...t, attrs: { "data-tab": t.id, id: "rq-vtab-" + t.id, "aria-controls": "rq-vpanel" } }));
+			return tabList("Views", "rq-tabs", tabs, viewOf(st), setView);
 		}
 
 		// The phone panel (pairing code, paired phones, revoke) is lib/phone-panel.js. This file has to stay one self-contained script, so the panel is
@@ -1888,14 +2052,6 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			useEffect(() => { loadPhonePanel().then((C) => setLoaded(() => C), (e) => setFailed(String((e && e.message) || e))); }, []);
 			if (Loaded) return h(Loaded);
 			return h("div", { className: failed ? "rq-err" : "rq-sub", style: { padding: "12px 20px" } }, failed ? "The phone panel could not be loaded (" + failed + "). Restart DSH if the plugin was just updated." : "Loading…");
-		}
-
-		/** The Phone window: a dialog over the task list (the list stays under it), closed by its Close button, Esc or a click outside it. */
-		function PhoneDialog() {
-			return h("div", { className: "rq-modal-back", "data-rq": "phone-dialog", onMouseDown: (e) => { if (e.target === e.currentTarget) set({ showPhone: false }); } },
-				h("div", { className: "rq-modal", role: "dialog", "aria-modal": "true", "aria-label": "Phone" },
-					h("div", { className: "rq-head" }, h("h2", null, "Phone"), h("span", { className: "rq-grow" }), h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => set({ showPhone: false }) }, "✕ Close")),
-					h("div", { className: "rq-body" }, h(PhoneHost))));
 		}
 
 		/** The hub's one-line notice (phone sync off, hub unreachable); nothing when the snapshot carries none. */
@@ -1974,23 +2130,23 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		/** The AI rules view: each rule with its mode switch and record, then the corrections the AI learned. Hook-free (reads the store). */
 		function RulesView() {
 			const t = state.triageRules, rules = t && Array.isArray(t.rules) ? t.rules.filter((r) => r && typeof r === "object") : [], lessons = t && Array.isArray(t.lessons) ? t.lessons.filter((l) => l && typeof l === "object") : [];
-			if (state.triageRulesError) return h("div", { className: "rq-body rq-rules" }, h("div", { className: "rq-empty" }, state.triageRulesError));
-			if (!t) return h("div", { className: "rq-body rq-rules" }, h("div", { className: "rq-empty" }, "Loading AI rules…"));
-			const modeBtn = (r, mode, label) => h("button", { key: mode, className: "rq-btn" + (r.mode === mode ? " on" : ""), "aria-pressed": r.mode === mode, disabled: !!state.rulesBusy[r.id], onClick: () => pickRuleMode(r.id, mode) }, label);
+			if (state.triageRulesError) return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, h("div", { className: "rq-empty" }, state.triageRulesError));
+			if (!t) return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, h("div", { className: "rq-empty" }, "Loading AI rules…"));
+			const modeBtn = (r, mode, label) => h("button", { key: mode, type: "button", role: "radio", className: "rq-segb" + (r.mode === mode ? " on" : ""), "aria-checked": r.mode === mode, disabled: !!state.rulesBusy[r.id], onClick: () => pickRuleMode(r.id, mode) }, label);
 			const rec = (label, v) => h("div", { className: "rq-sub" }, label + ": " + recordText(v));
 			const older = (r) => { const o = r.record && r.record.older; return countOf(o && o.agreed) + countOf(o && o.overruled) > 0 ? rec("older versions", o) : null; };
 			const rule = (r) => h("div", { key: r.id, className: "rq-rule", "data-rule": r.id },
 				h("div", { className: "rq-rule-h" }, h("strong", null, r.name), h("span", { className: "rq-count" }, r.class), h("span", { className: "rq-sub" }, ruleModeLabel(r.mode))),
 				h("div", null, r.instruction), rec("this version", r.record && r.record.current), older(r),
 				promotionHint(r) ? h("div", { className: "rq-ok" }, promotionHint(r)) : null,
-				h("div", { className: "rq-rule-m" }, modeBtn(r, "off", "Off"), modeBtn(r, "observe", "Observe"), modeBtn(r, "auto", "Auto")),
+				h("div", { className: "rq-rule-m" }, h("span", { className: "rq-seg", role: "radiogroup", "aria-label": "Mode" }, modeBtn(r, "off", "Off"), modeBtn(r, "observe", "Observe"), modeBtn(r, "auto", "Auto"))),
 				state.rulesConfirm === r.id ? h("div", { className: "rq-warnbox", "data-rule-auto-confirm": r.id }, h("span", null, "Auto is not active yet: the AI only notes what it would do. Switch to Auto anyway?"),
 					h("button", { className: "rq-btn pri", disabled: !!state.rulesBusy[r.id], onClick: () => rulesAct(r.id, "/v1/triage-rule-mode", { ruleId: r.id, mode: "auto", confirmed: true }) }, "Confirm Auto"), h("button", { className: "rq-btn", onClick: () => set({ rulesConfirm: null }) }, "Cancel")) : null);
 			const lesson = (l, i) => h("div", { key: l.id || i, className: "rq-rule", "data-lesson": l.id },
 				h("div", { className: "rq-rule-h" }, h("strong", null, lessonLine(l)), l.active === false ? h("span", { className: "rq-sub" }, "retired") : null, h("span", { className: "rq-grow" }),
 					h("button", { className: "rq-btn", disabled: !!state.rulesBusy[l.id], onClick: () => rulesAct(l.id, "/v1/triage-forget", { id: l.id }) }, "Forget")),
 				h("div", { className: "rq-sub" }, l.content));
-			return h("div", { className: "rq-body rq-rules" }, state.rulesError ? h("div", { className: "rq-err" }, state.rulesError) : null,
+			return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, state.rulesError ? h("div", { className: "rq-err" }, state.rulesError) : null,
 				rules.length ? rules.map(rule) : h("div", { className: "rq-empty" }, "No rules."),
 				h("h3", null, "Corrections the AI learned"), lessons.length ? lessons.map(lesson) : h("div", { className: "rq-empty" }, "No corrections learned yet."));
 		}
@@ -1998,24 +2154,26 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		function Panel() {
 			const st = useStore();
 			const snap = st.snap;
-			const open = visibleOpen();
-			const sel = currentItem();
+			const view = viewOf(st);
+			const listed = view === "waiting" || view === "held"; // the other views draw no list: nothing of it is built
+			const open = listed ? visibleOpen() : NO_ITEMS;
+			const sel = listed ? currentItem() : undefined;
 			const none = st.showHeld ? "No session is on hold." : snap && snap.open.some((i) => i.type !== "onhold") ? "Nothing matches this filter." : "Nothing waiting on you.";
 			const banner = st.error ? h("div", { className: "rq-banner" }, st.error) : null;
 			// With no open item at all the tip shows in the right panel (the detail pane, empty then); the left list keeps only the message.
 			// The narrow layout hides both panes and shows one column, so there the tip sits under the message. Never next to cards, never in Resolved.
-			const tip = snap && !st.showHeld && !snap.open.some((i) => i.type !== "onhold") && snap.tip ? h(TipCard, { tip: snap.tip }) : null;
+			const tip = listed && snap && !st.showHeld && !snap.open.some((i) => i.type !== "onhold") && snap.tip ? h(TipCard, { tip: snap.tip }) : null;
 			const emptySide = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none));
 			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), tip);
-			const list = open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
-			const extra = h("button", { className: "rq-btn", title: "Close (Esc)", onClick: () => setOverlay(false) }, "✕ Close");
-			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap, extra }), noticeBanner(snap), banner, h(ResumeAllBar), h(TodoForm), st.showPhone ? h(PhoneDialog) : null, st.showHeld || st.showRules ? null : h(FilterBar, { snap }),
-				st.showRules ? h(RulesView) : st.showResolved ? h("div", { className: "rq-body" }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
-					: h("div", { className: "rq-split" },
-						h("div", { className: "rq-side" }, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
+			const list = !listed ? null : open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
+			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap }), noticeBanner(snap), banner, h(ViewTabs, { snap }), h(SubTabs, { snap }), h(PausedStrip, { snap }), h(ResumeAllBar), h(TodoForm),
+				view === "phone" ? h("div", { className: "rq-body", ...vpanel("phone") }, h(PhoneHost)) : view === "rules" ? h(RulesView) : view === "resolved" ? h("div", { className: "rq-body", ...vpanel("resolved") }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
+					: h("div", { className: "rq-split", ...vpanel(view) },
+						h("div", Object.assign({ className: "rq-side" }, open.length ? { role: "listbox", "aria-label": view === "held" ? "Held sessions" : "Waiting items" } : {}), open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
 						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip ? h("div", { className: "rq-tipwrap" }, tip) : null),
 						h("div", { className: "rq-narrow" }, list)),
-				st.showResolved || st.showRules ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"));
+				view === "resolved" || view === "rules" || view === "phone" ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"),
+				h(DialogHost));
 		}
 
 		/** The full-screen overlay: mounted once, in a root on document.body (the queue is global, not per session). */
@@ -2023,26 +2181,27 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const st = useStore();
 			useEffect(() => {
 				if (!st.overlay) return undefined;
-				const onKey = (e) => {
-					if (e.key === "Escape") { if (state.todoForm.open) closeTodoForm(); else if (state.showPhone) set({ showPhone: false }); else setOverlay(false); return; }
-					if (state.showResolved || state.showPhone || state.showRules) return;
-					const action = keyAction(e);
-					const cur = action ? currentItem() : undefined;
-					if (!cur) return;
-					const open = visibleOpen();
-					const i = open.findIndex((x) => x.id === cur.id);
-					if (action === "next" || action === "prev") { e.preventDefault(); const to = open[Math.min(open.length - 1, Math.max(0, i + (action === "next" ? 1 : -1)))]; if (to) set({ selected: to.id }); return; }
-					if (state.busy[cur.id]) return;
-					e.preventDefault();
-					if (action === "read") { if (state.snap && state.snap.reading === cur.id) act("/v1/stop", {}, cur.id); else act("/v1/read", { id: cur.id }, cur.id); }
-					else { const route = keyRoute(action, cur); if (route) act(route, { id: cur.id }, cur.id, { advance: true }); }
-				};
-				window.addEventListener("keydown", onKey);
-				return () => window.removeEventListener("keydown", onKey);
+				window.addEventListener("keydown", overlayKey);
+				return () => window.removeEventListener("keydown", overlayKey);
 			}, [st.overlay]);
 			return st.overlay ? h("div", { className: "rq rq-ov-back", onMouseDown: (e) => { if (e.target === e.currentTarget) setOverlay(false); } }, h(Panel)) : null;
 		}
-
+		/** The keys of the open overlay. Esc closes an open dialog first, then the todo form; on the Phone tab it goes back to the tab you came from (so a pairing in progress is not lost); elsewhere it closes the overlay; the list keys (j / k / arrows, r, e, Shift+A, Shift+D) only act on the list views and never under a dialog. */
+		function overlayKey(e) {
+			if (e.key === "Escape") { if (state.dialog) dismissDialog(); else if (state.todoForm.open) closeTodoForm(); else if (state.showPhone) setView(state.phoneFrom || "waiting"); else setOverlay(false); return; }
+			if (state.dialog) return;
+			if (state.showResolved || state.showPhone || state.showRules) return;
+			const action = keyAction(e);
+			const cur = action ? currentItem() : undefined;
+			if (!cur) return;
+			const open = visibleOpen();
+			const i = open.findIndex((x) => x.id === cur.id);
+			if (action === "next" || action === "prev") { e.preventDefault(); const to = open[Math.min(open.length - 1, Math.max(0, i + (action === "next" ? 1 : -1)))]; if (to) set({ selected: to.id }); return; }
+			if (state.busy[cur.id]) return;
+			e.preventDefault();
+			if (action === "read") { if (state.snap && state.snap.reading === cur.id) act("/v1/stop", {}, cur.id); else act("/v1/read", { id: cur.id }, cur.id); }
+			else { const route = keyRoute(action, cur); if (route) act(route, { id: cur.id }, cur.id, { advance: true }); }
+		}
 		/** The header button that opens the overlay. Registered in the session header's utilities slot, last, so it sits just left of the right-sidebar button. */
 		function HeaderAnchor() {
 			ensureStyle();
@@ -2088,18 +2247,18 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, resolvedByLabel, aiUnseenCount, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
+		exports.shared = { stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, resolvedByLabel, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
+		exports.__test = { visibleOpen, detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
-		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldForm, HoldButton, PausedBody, startResumeAll, askResumeAll });
+		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, resumeAllText, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, askResumeAll });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });
-		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
+		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, viewOf, setView, nextTabId, openDialog, closeDialog, overlayKey, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;
 	}
 });

@@ -1,9 +1,9 @@
 // Slice 5 of the AI triage plan (RED): the desktop "AI rules" view (phone is out of scope).
 // Names chosen here (the implementation must match):
 //   state keys   showRules (false), triageRules (the loaded payload { rules, lessons }), triageRulesError (string)
-//   header       a button with data-ai-rules, text "AI rules" while closed, aria-pressed = st.showRules
+//   tabs         the "AI rules" tab of the Views tablist (data-tab="rules", role tab, aria-selected = st.showRules); the old header button is gone
 //   component    RulesView, hook-free, rendered by Panel when st.showRules (found through T.Panel() like FilterBar in client-ai-filter-head)
-//   rule block   data-rule="<id>"; mode buttons "Off" "Observe" "Auto" (class `on`, aria-pressed); Auto asks first: data-rule-auto-confirm="<id>"
+//   rule block   data-rule="<id>"; a segmented role=radiogroup (aria-label "Mode") of role=radio buttons "Off" "Observe" "Auto" (class `on`, aria-checked); Auto asks first: data-rule-auto-confirm="<id>"
 //                with "Auto is not active yet", "Confirm Auto" and "Cancel"; lessons: data-lesson="<id>" with a "Forget" button
 //   endpoints    GET /review-queue/v1/triage-rules, POST .../triage-rule-mode { ruleId, mode }, POST .../triage-forget { id }
 import test from 'node:test'
@@ -40,15 +40,15 @@ function load({ get = () => okJson(PAYLOAD()), post = () => okJson({ ok: true })
 const gets = (calls) => calls.filter((c) => c[0] === 'GET' && c[1] === 'triage-rules')
 const posts = (calls) => calls.filter((c) => c[0] === 'POST')
 const part = (T, name) => { const n = findAll(T.Panel(), (x) => typeof x.type === 'function' && x.type.name === name)[0]; assert.ok(n, name + ' is rendered'); return n.type(n.props) }
-const rulesBtn = (T) => { const b = findAll(part(T, 'Head'), (n) => n.type === 'button' && n.props && n.props['data-ai-rules'])[0]; assert.ok(b, 'the AI rules header button'); return b }
+const rulesBtn = (T) => { const b = findAll(part(T, 'ViewTabs'), (n) => n.props?.role === 'tab' && n.props['data-tab'] === 'rules')[0]; assert.ok(b, 'the AI rules tab'); return b }
 const view = (T) => part(T, 'RulesView')
 const block = (tree, id) => { const b = findAll(tree, (n) => n.props && n.props['data-rule'] === id)[0]; assert.ok(b, 'rule block ' + id); return b }
 const btn = (tree, text) => findAll(tree, (n) => n.type === 'button' && textOf(n) === text)[0]
+const tabBtn = (T, view) => findAll(part(T, 'ViewTabs'), (n) => n.props?.role === 'tab' && n.props['data-tab'] === view)[0]
 const press = (tree, text) => { const b = btn(tree, text); assert.ok(b, 'button ' + text); b.props.onClick(); return b }
 const confirmLine = (tree, id) => findAll(tree, (n) => n.props && n.props['data-rule-auto-confirm'] === id)[0]
 const on = (b) => b.props.className.split(' ').includes('on')
 const open = async (T) => { rulesBtn(T).props.onClick(); await tick(); await tick() }
-const headBtn = (T, re) => findAll(part(T, 'Head'), (n) => n.type === 'button' && re.test(textOf(n)))[0]
 
 // ---- state and header ----
 
@@ -59,11 +59,11 @@ test('the initial state has showRules false and nothing loaded', () => {
   assert.equal(T.state.triageRulesError, undefined)
 })
 
-test('the "AI rules" header button toggles the view and clears the other views', () => {
+test('the "AI rules" tab selects the view and clears the other views', () => {
   const { T } = load()
   const b = rulesBtn(T)
-  assert.equal(textOf(b), 'AI rules')
-  assert.equal(b.props['aria-pressed'], false)
+  assert.equal(textOf(b).trim(), 'AI rules')
+  assert.equal(b.props['aria-selected'], false)
   T.set({ showResolved: true, showHeld: true, showPhone: true, selected: 'x' })
   rulesBtn(T).props.onClick()
   assert.equal(T.state.showRules, true)
@@ -71,37 +71,28 @@ test('the "AI rules" header button toggles the view and clears the other views',
   assert.equal(T.state.showHeld, false)
   assert.equal(T.state.showPhone, false)
   assert.equal(T.state.selected, null)
-  assert.equal(rulesBtn(T).props['aria-pressed'], true)
-  rulesBtn(T).props.onClick()
+  assert.equal(rulesBtn(T).props['aria-selected'], true)
+  tabBtn(T, 'waiting').props.onClick()
   assert.equal(T.state.showRules, false)
-  assert.equal(rulesBtn(T).props['aria-pressed'], false)
+  assert.equal(rulesBtn(T).props['aria-selected'], false)
 })
 
-test('the Resolved button closes the rules view', () => {
+test('the Resolved tab closes the rules view', () => {
   const { T } = load()
   T.set({ showRules: true })
-  headBtn(T, /^(Resolved|Waiting)/).props.onClick()
+  tabBtn(T, 'resolved').props.onClick()
   assert.equal(T.state.showRules, false)
   assert.equal(T.state.showResolved, true)
 })
 
-test('the On hold button closes the rules view', () => {
+test('the On hold tab closes the rules view', () => {
   const { T } = load()
   T.state.snap = { snapshotId: 'e:1', open: [{ id: 'h1', type: 'onhold', status: 'open', title: 'Held', createdAt: 1, sessionId: 's1', payload: { reason: 'wait', heldAt: 1 } }], resolved: [] }
   assert.equal(T.heldCount(T.state.snap.open), 1, 'fixture: one held session')
   T.set({ showRules: true })
-  headBtn(T, /^On hold/).props.onClick()
+  tabBtn(T, 'held').props.onClick()
   assert.equal(T.state.showRules, false)
   assert.equal(T.state.showHeld, true)
-})
-
-test('the "AI handled N" chip closes the rules view', () => {
-  const { T } = load()
-  T.state.snap = { snapshotId: 'e:1', open: [], resolved: [{ id: 'a1', type: 'permission', status: 'resolved', title: 'x', createdAt: 1, resolvedAt: 2, resolution: { kind: 'ai-resolved', by: 'ai', action: 'approved', ruleId: 'r1' } }] }
-  T.set({ showRules: true })
-  headBtn(T, /AI handled/).props.onClick()
-  assert.equal(T.state.showRules, false)
-  assert.equal(T.state.showResolved, true)
 })
 
 test('Panel shows RulesView only while showRules, and the keyboard hint only outside Resolved and rules', () => {
@@ -130,7 +121,7 @@ test('opening the view GETs /v1/triage-rules once and stores the payload', async
 test('closing the view does not GET again', async () => {
   const { T, calls } = load()
   await open(T)
-  rulesBtn(T).props.onClick()
+  tabBtn(T, 'waiting').props.onClick()
   await tick()
   assert.equal(gets(calls).length, 1)
 })
@@ -199,19 +190,25 @@ test('the promotion hint shows for the good observe rule only', async () => {
   assert.doesNotMatch(textOf(block(view(T), 'r3')), /Record is good/, 'an auto rule gets no suggestion')
 })
 
-test('mode buttons: the active mode is `on` and aria-pressed, the others are not', async () => {
+test('the modes are one segmented radiogroup of radios: the active one is `on` and aria-checked, the others are not', async () => {
   const { T } = load()
   await open(T)
   for (const [id, active] of [['r1', 'Observe'], ['r2', 'Off'], ['r3', 'Auto']]) {
+    const group = findAll(block(view(T), id), (n) => n.props?.role === 'radiogroup')
+    assert.equal(group.length, 1, `${id} has one radiogroup`)
+    assert.equal(group[0].props['aria-label'], 'Mode')
+    assert.match(group[0].props.className, /rq-seg/)
+    assert.deepEqual(findAll(group[0], (n) => n.type === 'button').map((b) => b.props.role), ['radio', 'radio', 'radio'])
     for (const label of ['Off', 'Observe', 'Auto']) {
       const b = btn(block(view(T), id), label)
       assert.ok(b, `${id} has ${label}`)
+      assert.equal(b.props.role, 'radio')
       assert.equal(on(b), label === active, `${id} ${label} class`)
-      assert.equal(b.props['aria-pressed'], label === active, `${id} ${label} aria-pressed`)
+      assert.equal(b.props['aria-checked'], label === active, `${id} ${label} aria-checked`)
+      assert.equal('aria-pressed' in b.props, false, `${id} ${label} is not a toggle button`)
     }
   }
 })
-
 test('Off and Observe POST /v1/triage-rule-mode at once, with no confirm step, then reload', async () => {
   const { T, calls } = load()
   await open(T)

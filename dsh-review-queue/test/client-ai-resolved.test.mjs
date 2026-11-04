@@ -11,7 +11,7 @@ const me = (kind = 'approved', item = {}) => ({ id: 'm' + Math.random(), type: '
 const open = (item = {}) => ({ id: 'o' + Math.random(), type: 'permission', status: 'open', title: 'Run cat', ...item })
 
 test('the new helpers are exported through shared and __test', () => {
-  for (const name of ['aiDetail', 'resolvedByLabel', 'aiUnseenCount']) {
+  for (const name of ['aiDetail', 'aiUnseenCount']) {
     assert.equal(typeof S[name], 'function', name + ' in shared')
     assert.equal(T[name], S[name], name + ' in __test')
   }
@@ -88,13 +88,6 @@ test('aiDetail is undefined for anything that is not a resolved AI-resolved item
   for (const bad of [undefined, null, 'x', 5, []]) assert.equal(S.aiDetail(bad), undefined)
 })
 
-test('resolvedByLabel names the choices', () => {
-  assert.equal(S.resolvedByLabel('all'), 'All')
-  assert.equal(S.resolvedByLabel('me'), 'Me')
-  assert.equal(S.resolvedByLabel('ai'), 'AI')
-  for (const v of ['nope', undefined, null, 3, '']) assert.equal(S.resolvedByLabel(v), 'All')
-})
-
 test('filterItems resolvedBy "ai" keeps only AI-resolved items among the resolved', () => {
   const a = ai(), m = me(), o = open()
   assert.deepEqual(S.filterItems([a, m], { type: 'all', query: '', resolvedBy: 'ai' }), [a])
@@ -156,5 +149,5 @@ test('filterBarVisible shows once an AI-resolved item exists, so the AI filter c
 })
 
 test('the desktop filter starts with resolvedBy "all"', () => {
-  assert.deepEqual({ ...T.state.filter }, { type: 'all', query: '', resolvedBy: 'all' })
+  assert.deepEqual({ ...T.state.filter }, { type: 'all', query: '', resolvedBy: 'all', resolvedType: 'all' })
 })

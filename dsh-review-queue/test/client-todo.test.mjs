@@ -203,10 +203,12 @@ test('loadWorkspaces fills the dropdown list from GET /v1/workspaces', async () 
   assert.deepEqual(T.state.workspaces, [{ id: 'w1', title: 'Alpha' }])
 })
 
-test('source: the header has "+ New todo" next to Resolved, the form and the card are wired, the Open session control is not automatic', () => {
+test('source: the header has "+ New todo" and the close icon (the views are tabs), the form and the card are wired, the Open session control is not automatic', () => {
   const head = source.slice(source.indexOf('function Head('), source.indexOf('function Panel('))
   assert.match(head, /\+ New todo/)
-  assert.ok(head.indexOf('Resolved (') < head.indexOf('+ New todo') || head.indexOf('+ New todo') < head.indexOf('Resolved ('))
+  assert.ok(head.indexOf('+ New todo') < head.indexOf('Close (Esc)'), 'New todo first, the close icon last')
+  assert.doesNotMatch(head.slice(0, head.indexOf('/** The primary tabs')), /Resolved|On hold|Find paused|Phone|AI rules/, 'the views and the paused actions left the header')
+  assert.match(source.slice(source.indexOf('function ViewTabs(')), /Resolved/)
   assert.match(source, /function TodoForm/)
   assert.match(source, /function TodoBody/)
   assert.match(source, /Use SPARC/)

@@ -29,7 +29,7 @@ const buttons = (tree) => findAll(tree, (n) => n.type === 'button')
 const button = (tree, label) => buttons(tree).find((b) => textOf(b) === label)
 const selectOf = (tree) => findAll(tree, (n) => n.type === 'select')[0]
 const optionsOf = (sel) => findAll(sel, (n) => n.type === 'option').map((o) => ({ value: o.props.value, label: textOf(o) }))
-const switchOf = (tree) => findAll(tree, (n) => n.props?.role === 'group' && n.props['aria-label'] === 'Kind of todo')[0]
+const switchOf = (tree) => findAll(tree, (n) => n.props?.role === 'tablist' && n.props['aria-label'] === 'Kind of todo')[0]
 
 // ---- the pure helpers ---------------------------------------------------------------------------------------
 
@@ -332,10 +332,10 @@ test('form, New session (the default): the switch has two options with New sessi
   T.set({ todoForm: FORM() })
   const tree = T.TodoForm()
   const sw = switchOf(tree)
-  assert.ok(sw, 'a group named Kind of todo')
+  assert.ok(sw, 'a tablist named Kind of todo')
   const [a, b] = buttons(sw)
   assert.deepEqual([textOf(a), textOf(b)], ['New session', 'Follow up'])
-  assert.deepEqual([a.props['aria-pressed'], b.props['aria-pressed']], [true, false])
+  assert.deepEqual([a.props['aria-selected'], b.props['aria-selected']], [true, false])
   assert.equal(findAll(tree, (n) => n.type === 'textarea')[0].props.placeholder, 'What should the new session do? (Ctrl+Enter adds it)')
   assert.equal(findAll(tree, (n) => n.type === 'select' && n.props['aria-label'] === 'Workspace').length, 1)
   assert.match(textOf(tree), /Use SPARC/)
@@ -355,7 +355,7 @@ test('form, Follow up: its own placeholder, the "Which session" dropdown of the 
   T.set({ todoForm: FORM({ mode: 'followup', followUp: 's2' }), followSessions: LIST })
   const tree = T.TodoForm()
   const [a, b] = buttons(switchOf(tree))
-  assert.deepEqual([a.props['aria-pressed'], b.props['aria-pressed']], [false, true])
+  assert.deepEqual([a.props['aria-selected'], b.props['aria-selected']], [false, true])
   assert.equal(findAll(tree, (n) => n.type === 'textarea')[0].props.placeholder, 'What should the existing session do next? (Ctrl+Enter adds it)')
   assert.equal(findAll(tree, (n) => n.type === 'input' && n.props['aria-label'] === 'Which session').length, 0, 'no free text any more')
   const sel = findAll(tree, (n) => n.type === 'select')

@@ -1,6 +1,6 @@
 // Slice 3 of the AI triage plan (RED): the desktop Resolved card for an item the AI resolved - badge, details, seen, review buttons, reopen.
-// State keys the card uses (desktop store): aiOpen { [id]: true } (expanded), aiCorrection { [id]: string } (the inline correction box is open
-// while the key exists), aiOverrule { [id]: true } (the two rule choices are showing).
+// State keys the card uses (desktop store): aiOpen { [id]: true } (expanded) and dialog { kind: 'wrong' | 'overrule', id, text } (the Mark wrong and Overrule rule
+// dialogs; Looks right is a plain action button). The inline aiCorrection / aiOverrule keys are gone.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -147,15 +147,19 @@ test('Looks right posts review agreed; the three review buttons show only while 
   }
 })
 
-test('Mark wrong opens a correction box; Send is disabled while the trimmed text is empty and posts the trimmed text', async () => {
+const dialogTree = (T) => { const n = findAll(T.Panel(), (x) => typeof x.type === 'function' && x.type.name === 'DialogHost')[0]; assert.ok(n, 'DialogHost is rendered'); return n.type(n.props) }
+const dlg = (T) => dialogTree(T)
+
+test('Mark wrong opens a dialog with a correction box; Send correction is disabled while the trimmed text is empty and posts the trimmed text', async () => {
   const { T, calls } = load()
   const it = aiItem({ type: 'completed' }, { seen: true })
   expand(T, it)
-  assert.equal(findAll(render(T, it), attr('data-ai-correction', 'a1')).length, 0)
+  assert.equal(dlg(T), null)
   press(render(T, it), /Mark wrong/)
-  const box = () => must(findAll(render(T, it), attr('data-ai-correction', 'a1'))[0], 'the correction box')
-  assert.ok(box(), 'a correction box')
-  const send = () => must(btn(render(T, it), /Send/), 'a Send button')
+  assert.deepEqual({ ...T.state.dialog }, { kind: 'wrong', id: 'a1', text: '' })
+  assert.equal(findAll(render(T, it), attr('data-ai-correction', 'a1')).length, 0, 'no inline box in the card')
+  const box = () => must(findAll(dlg(T), (n) => n.type === 'textarea')[0], 'the correction box')
+  const send = () => must(btn(dlg(T), /Send correction/), 'a Send correction button')
   assert.equal(send().props.disabled, true)
   box().props.onChange({ target: { value: '   ' } })
   assert.equal(send().props.disabled, true, 'blank text stays disabled')
@@ -166,24 +170,28 @@ test('Mark wrong opens a correction box; Send is disabled while the trimmed text
   assert.deepEqual(calls, [[URL_REVIEW, { id: 'a1', review: 'mark-wrong', text: 'Use main instead' }]])
 })
 
-test('for a question or permission the correction says the answer cannot be unsent; for done it does not', () => {
+test('for a question or permission the correction dialog says the answer cannot be unsent; for done it does not', () => {
   const { T } = load()
   for (const [type, unsent] of [['question', true], ['permission', true], ['completed', false]]) {
     const it = aiItem({ id: 'x-' + type, type }, { seen: true })
     expand(T, it)
+    T.state.snap = { snapshotId: 'e:1', open: [], resolved: [it] }
     press(render(T, it), /Mark wrong/)
-    assert.equal(/cannot be unsent/.test(textOf(render(T, it))), unsent, type)
+    assert.equal(/cannot be unsent/.test(textOf(dlg(T))), unsent, type)
   }
 })
 
-test('Overrule rule offers observe and off, each posting overrule-rule with its mode', async () => {
+test('Overrule rule opens a dialog offering observe and off, each posting overrule-rule with its mode', async () => {
   const { T, calls } = load()
   const it = aiItem({}, { seen: true })
   expand(T, it)
-  assert.equal(btn(render(T, it), /Set rule to observe/), undefined, 'the choices wait for a click')
+  assert.equal(dlg(T), null, 'the choices wait for a click')
   press(render(T, it), /Overrule rule/)
-  press(render(T, it), /Set rule to observe/)
-  press(render(T, it), /Set rule to off/)
+  assert.deepEqual({ ...T.state.dialog }, { kind: 'overrule', id: 'a1', text: '' })
+  press(dlg(T), /Set rule to observe/)
+  await tick()
+  press(render(T, it), /Overrule rule/)
+  press(dlg(T), /Set rule to off/)
   await tick()
   assert.deepEqual(calls, [[URL_REVIEW, { id: 'a1', review: 'overrule-rule', mode: 'observe' }], [URL_REVIEW, { id: 'a1', review: 'overrule-rule', mode: 'off' }]])
 })
@@ -223,7 +231,7 @@ test('Mark wrong is hidden on a paused item and on an item without a session; Lo
 })
 
 
-// ---- RED: review success closes the per-item keys, handlers read live state, the seen call is silent ------------------------------------
+// ---- the dialogs close after a success, stay on a failure, and are per item -------------------------------------------------------------------
 
 function loadWith(reply) {
   const calls = []
@@ -235,56 +243,36 @@ function loadWith(reply) {
 const OKR = () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })
 const FAILR = () => ({ ok: false, status: 500, json: async () => ({}) })
 
-test('a successful review closes aiOverrule for the item (Looks right, Overrule rule, Mark wrong + Send); other ids stay', async () => {
-  for (const how of ['agreed', 'overrule', 'mark-wrong']) {
-    const { T } = loadWith(OKR)
-    const it = aiItem({ type: 'completed' }, { seen: true })
-    expand(T, it)
-    T.state.aiOverrule = { a1: true, other: true }
-    if (how === 'agreed') press(render(T, it), /Looks right/)
-    if (how === 'overrule') press(render(T, it), /Set rule to observe/)
-    if (how === 'mark-wrong') {
-      T.state.aiCorrection = { a1: 'Use main' }
-      press(render(T, it), /Send/)
+test('a successful review closes the dialog of that item (Set rule to observe, Send correction); a failure keeps it with its text', async () => {
+  for (const how of ['overrule', 'mark-wrong']) {
+    for (const ok of [true, false]) {
+      const { T } = loadWith(ok ? OKR : FAILR)
+      T.set({ dialog: { kind: how === 'overrule' ? 'overrule' : 'wrong', id: 'a1', text: how === 'overrule' ? '' : 'Use main' } })
+      press(dlg(T), how === 'overrule' ? /Set rule to observe/ : /Send correction/)
+      await tick(); await tick()
+      assert.equal(T.state.dialog === null, ok, how + ': dialog ' + (ok ? 'closed' : 'kept'))
+      if (!ok) assert.equal(T.state.dialog.text, how === 'overrule' ? '' : 'Use main', how + ': the open dialog keeps its text')
     }
-    await tick()
-    assert.equal('a1' in T.state.aiOverrule, false, how + ': aiOverrule[a1] is closed after success')
-    assert.equal(T.state.aiOverrule.other, true, how + ': another card keeps its overrule choices')
   }
 })
 
-test('a failed review keeps aiOverrule open for the item', async () => {
-  for (const how of ['agreed', 'overrule', 'mark-wrong']) {
-    const { T } = loadWith(FAILR)
-    const it = aiItem({ type: 'completed' }, { seen: true })
-    expand(T, it)
-    T.state.aiOverrule = { a1: true }
-    if (how === 'agreed') press(render(T, it), /Looks right/)
-    if (how === 'overrule') press(render(T, it), /Set rule to observe/)
-    if (how === 'mark-wrong') {
-      T.state.aiCorrection = { a1: 'Use main' }
-      press(render(T, it), /Send/)
-    }
-    await tick()
-    assert.equal(T.state.aiOverrule.a1, true, how + ': stays open on failure')
-  }
+test('Looks right is a plain action: it posts agreed at once and opens no dialog', async () => {
+  const { T, calls } = loadWith(OKR)
+  const it = aiItem({ type: 'completed' }, { seen: true })
+  expand(T, it)
+  press(render(T, it), /Looks right/)
+  await tick()
+  assert.equal(T.state.dialog, null)
+  assert.deepEqual(calls, [[URL_REVIEW, { id: 'a1', review: 'agreed' }]])
 })
 
-test('Mark wrong and Overrule rule spread the live state, not the one captured at render time', () => {
+test('opening Mark wrong replaces any other dialog: one dialog at a time, no stale text', () => {
   const { T } = loadWith(OKR)
   const it = aiItem({ type: 'completed' }, { seen: true })
   expand(T, it)
-  T.state.aiCorrection = {}
-  T.state.aiOverrule = {}
-  const tree = render(T, it) // rendered before the other card changed
-  T.state.aiCorrection = { other: 'typed later' }
-  T.state.aiOverrule = { other: true }
-  press(tree, /Mark wrong/)
-  assert.equal(T.state.aiCorrection.other, 'typed later', 'the other card correction text survives')
-  assert.equal(T.state.aiCorrection.a1, '')
-  press(tree, /Overrule rule/)
-  assert.equal(T.state.aiOverrule.other, true, 'the other card overrule choice survives')
-  assert.equal(T.state.aiOverrule.a1, true)
+  T.set({ dialog: { kind: 'wrong', id: 'other', text: 'typed for the other card' } })
+  press(render(T, it), /Mark wrong/)
+  assert.deepEqual({ ...T.state.dialog }, { kind: 'wrong', id: 'a1', text: '' })
 })
 
 test('the seen call of an expanded unseen AI card is silent: no busy and no error text, in flight or after a failure; earlier ones are kept', async () => {
@@ -330,33 +318,12 @@ test('the seen in-flight guard still blocks duplicates and is cleared in finally
 })
 
 
-test('source: the Mark wrong and Overrule rule handlers spread the live state, not the render-time st (the harness shares one live object, so only the text can pin this)', () => {
+test('source: the review node has no inline form state any more (no aiCorrection, no aiOverrule, no data-ai-correction box)', () => {
   const src = readFileSync(file, 'utf8')
   const a = src.indexOf('function aiReviewNode'), b = src.indexOf('function ResolvedCard')
   assert.ok(a >= 0 && b > a, 'aiReviewNode markers found')
   const body = src.slice(a, b)
-  assert.match(body, /\.\.\.state\.aiCorrection, \[it\.id\]: marking/, 'Mark wrong spreads state.aiCorrection')
-  assert.match(body, /\.\.\.state\.aiOverrule, \[it\.id\]: true/, 'Overrule rule spreads state.aiOverrule')
-  assert.doesNotMatch(body, /\.\.\.st\.ai(Correction|Overrule)/, 'no spread of the captured st')
-})
-
-test('a successful review closes aiCorrection too (Looks right, Overrule rule, Mark wrong + Send); other ids stay; a failure keeps both', async () => {
-  for (const how of ['agreed', 'overrule', 'mark-wrong']) {
-    for (const ok of [true, false]) {
-      const { T } = loadWith(ok ? OKR : FAILR)
-      const it = aiItem({ type: 'completed' }, { seen: true })
-      expand(T, it)
-      T.state.aiOverrule = { a1: true, other: true }
-      T.state.aiCorrection = { a1: 'Use main', other: 'keep me' }
-      if (how === 'agreed') press(render(T, it), /Looks right/)
-      if (how === 'overrule') press(render(T, it), /Set rule to observe/)
-      if (how === 'mark-wrong') press(render(T, it), /Send/)
-      await tick()
-      assert.equal('a1' in T.state.aiOverrule, !ok, how + ': aiOverrule[a1] ' + (ok ? 'closed' : 'kept'))
-      assert.equal('a1' in T.state.aiCorrection, !ok, how + ': aiCorrection[a1] ' + (ok ? 'closed' : 'kept'))
-      if (!ok) assert.equal(T.state.aiCorrection.a1, 'Use main', how + ': the open box keeps its text')
-      assert.equal(T.state.aiOverrule.other, true, how + ': another card keeps its overrule choices')
-      assert.equal(T.state.aiCorrection.other, 'keep me', how + ': another card keeps its correction text')
-    }
-  }
+  assert.doesNotMatch(body, /aiCorrection|aiOverrule|data-ai-correction/)
+  assert.doesNotMatch(src, /aiCorrection|aiOverrule|holdOpen/, 'the old inline state keys are gone from the whole file')
+  assert.match(body, /openDialog\(/, 'Mark wrong and Overrule rule open a dialog')
 })

@@ -68,7 +68,7 @@ test('errors: not-holdable and no-onhold have words', () => {
 })
 
 test('the overlay has the On hold view, the card, the Hold button and the three routes', () => {
-  for (const needle of ['/v1/hold"', '/v1/hold-release', '/v1/hold-continue', 'OnHoldBody', 'HoldForm', 'showHeld', 'rq-chip.onhold']) assert.ok(source.includes(needle), needle)
+  for (const needle of ['/v1/hold"', '/v1/hold-release', '/v1/hold-continue', 'OnHoldBody', 'DialogHost', 'showHeld', 'rq-chip.onhold']) assert.ok(source.includes(needle), needle)
 })
 
 // ---- what the cards do -------------------------------------------------------------------------------------
@@ -97,23 +97,22 @@ test('the on-hold card shows the facts and its Continue and Release buttons call
   assert.deepEqual(calls.map((c) => c[1]), [{ id: 'h1' }, { id: 'h1' }])
 })
 
-test('the Hold form: closed it shows nothing; the Hold button opens it; Put on hold posts the id and the reason and closes it', async () => {
+test('the Hold button opens the Hold dialog; Put on hold posts the id and the reason and closes it', async () => {
   const { T, calls } = render()
   const item = { id: 'd1', type: 'completed', status: 'open', sessionId: 's1', sessionTitle: 'Fix: X - 4711', summary: 'Done', createdAt: 1 }
-  assert.equal(T.HoldForm({ item }), null)
+  T.state.snap = { snapshotId: 'e:1', open: [item], resolved: [] }
   const hasHold = (tree) => findAll(tree, (n) => n.type === T.HoldButton).length === 1
   assert.ok(hasHold(T.PausedBody({ item: { ...item, type: 'paused', payload: {} }, full: true })), 'a paused card has a Hold button')
   assert.ok(hasHold(T.CompletedBody({ item, full: true })), 'a Done card has a Hold button once it is expanded')
   assert.ok(!hasHold(T.CompletedBody({ item, full: false })), 'but not while collapsed')
   T.HoldButton({ item }).props.onClick()
-  assert.equal(T.state.holdOpen.d1, '', 'the Hold button opens the reason line')
-  assert.equal(T.HoldButton({ item }).props.disabled, true, 'and is disabled while the line is open')
-  T.set({ holdOpen: { d1: 'waiting for the customer' } })
-  const form = T.HoldForm({ item })
+  assert.deepEqual({ ...T.state.dialog }, { kind: 'hold', id: 'd1', text: '' }, 'the Hold button opens the dialog')
+  T.set({ dialog: { kind: 'hold', id: 'd1', text: 'waiting for the customer' } })
+  const form = T.DialogHost()
   assert.equal(findAll(form, (n) => n.type === 'input')[0].props.value, 'waiting for the customer')
   button(form, 'Put on hold').props.onClick()
   await tick()
   await tick()
   assert.deepEqual(calls, [['/v1/hold', { id: 'd1', reason: 'waiting for the customer' }]])
-  assert.equal(T.state.holdOpen.d1, undefined, 'the form closes after a successful hold')
+  assert.equal(T.state.dialog, null, 'the dialog closes after a successful hold')
 })
