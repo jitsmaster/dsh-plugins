@@ -347,10 +347,13 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     /**
      * A session asks the user to archive it (it printed an ARCHIVE-OFFER marker or the user typed /archive-offer in it): one open "archive" item per session, whose
      * card has the Archive session button (desktop and phone). Nothing is archived before the user presses it. info: { sessionId, sessionTitle?, workspace?, reason? }.
+     * Async: refused with pr-open (no card) while the session polls a PR that is still open.
      */
-    offerArchive(info) {
+    async offerArchive(info) {
       const sessionId = typeof info?.sessionId === 'string' ? info.sessionId : ''
       if (!sessionId) return { ok: false, error: 'bad-input' }
+      const refusal = await prOpenRefusal(sessionId)
+      if (refusal) return refusal
       const reason = typeof info.reason === 'string' ? info.reason.replace(/\s+/g, ' ').trim().slice(0, 200) : ''
       const open = store.snapshot().open.find((i) => i.type === 'archive' && i.sessionId === sessionId)
       if (open) {

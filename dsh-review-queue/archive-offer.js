@@ -33,12 +33,13 @@ export function installArchiveOffer(ctx, { queueOf, log = () => {}, enabled = ()
   const handled = new Map() // agent id -> "<count of human messages>:<text>" of the last command handled (bounded)
   const titleOf = (agent) => { try { return ctx.get?.('sessionTitle')?.get(agent?.session)?.title } catch { return undefined } }
 
-  function offer(agent, reason) {
+  async function offer(agent, reason) {
     try {
       const queue = queueOf?.()
       if (typeof queue?.offerArchive !== 'function') return
-      const res = queue.offerArchive({ sessionId: agent.id, sessionTitle: titleOf(agent), workspace: agent.session?.header?.cwd, reason })
+      const res = await queue.offerArchive({ sessionId: agent.id, sessionTitle: titleOf(agent), workspace: agent.session?.header?.cwd, reason })
       if (res?.ok) log('archive-offer: session ' + agent.id + (res.updated ? ' already has an archive card (reason updated)' : ' offered for archiving'))
+      else if (res?.error === 'pr-open') log('archive-offer: session ' + agent.id + ' not offered: ' + (res.message ?? 'its PR is still open'))
       else log('archive-offer: offer of ' + agent.id + ' failed: ' + (res?.error ?? 'error'))
     } catch (error) { log('archive-offer: ' + (error?.message ?? error)) }
   }
@@ -58,7 +59,7 @@ export function installArchiveOffer(ctx, { queueOf, log = () => {}, enabled = ()
             handled.delete(agent.id)
             handled.set(agent.id, key)
             if (handled.size > 500) handled.delete(handled.keys().next().value)
-            offer(agent, cmd.reason)
+            await offer(agent, cmd.reason)
           }
         }
       }
@@ -71,7 +72,7 @@ export function installArchiveOffer(ctx, { queueOf, log = () => {}, enabled = ()
       if (enabled() && agent?.id && !children.has(agent.id) && MARKER_TOOLS.test(exec?.name ?? '') && !result?.isError) {
         const wrote = JSON.stringify(exec.arguments ?? {}).includes('ARCHIVE-OFFER') // the call itself names the marker: the session chose to print it
         const marker = wrote ? parseArchiveMarker(textOf(result?.content)) : undefined
-        if (marker) offer(agent, marker.reason)
+        if (marker) await offer(agent, marker.reason)
       }
     } catch (error) { log('archive-offer: ' + (error?.message ?? error)) }
     return next()

@@ -22,26 +22,60 @@ test('parsers: the command and the marker line', () => {
   assert.equal(parseArchiveMarker('no ARCHIVE-OFFER inside a line'), undefined)
 })
 
-test('offerArchive adds ONE open archive card per session; a second offer only updates the reason', () => {
+test('offerArchive adds ONE open archive card per session; a second offer only updates the reason', async () => {
   const { queue, store } = make()
-  const a = queue.offerArchive({ sessionId: 's1', sessionTitle: 'Work', reason: 'done' })
+  const a = await queue.offerArchive({ sessionId: 's1', sessionTitle: 'Work', reason: 'done' })
   assert.equal(a.ok, true)
-  const b = queue.offerArchive({ sessionId: 's1', reason: 'really done' })
+  const b = await queue.offerArchive({ sessionId: 's1', reason: 'really done' })
   assert.deepEqual([b.id, b.updated], [a.id, true])
   const open = store.snapshot().open.filter((i) => i.type === 'archive')
   assert.equal(open.length, 1)
   assert.equal(open[0].payload.reason, 'really done')
-  assert.deepEqual(queue.offerArchive({}), { ok: false, error: 'bad-input' })
+  assert.deepEqual(await queue.offerArchive({}), { ok: false, error: 'bad-input' })
   assert.equal(queue.count().byType.archive, 1)
+})
+
+function makeGuarded(guard) {
+  let n = 0
+  const store = createStore({ uuid: () => 'i' + ++n })
+  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => ({}), registryOf: () => ({ archiveSession: async () => {} }), prGuardOf: guard === undefined ? undefined : () => guard })
+  return { store, queue }
+}
+
+test('offerArchive is refused with pr-open (no card) while the session polls an open PR', async () => {
+  const { store, queue } = makeGuarded({ check: async () => ({ protected: true, prId: '77' }) })
+  const res = await queue.offerArchive({ sessionId: 's1', reason: 'done' })
+  assert.equal(res.ok, false)
+  assert.equal(res.error, 'pr-open')
+  assert.match(res.message, /PR 77 is still open/)
+  assert.equal(store.snapshot().open.filter((i) => i.type === 'archive').length, 0)
+})
+
+test('offerArchive still offers when the PR is not open, the guard throws, or there is no guard', async () => {
+  for (const guard of [{ check: async () => ({ protected: false }) }, { check: async () => { throw new Error('boom') } }, undefined]) {
+    const { store, queue } = makeGuarded(guard)
+    assert.equal((await queue.offerArchive({ sessionId: 's1' })).ok, true)
+    assert.equal(store.snapshot().open.filter((i) => i.type === 'archive').length, 1)
+  }
+})
+
+test('the plugin hook logs a pr-open refusal and awaits the offer', async () => {
+  const handlers = {}
+  const ctx = { on: (e, fn) => { (handlers[e] ??= []).push(fn) }, get: () => ({ get: () => ({ title: 'T' }) }) }
+  const logs = []
+  installArchiveOffer(ctx, { log: (l) => logs.push(l), queueOf: () => ({ offerArchive: async () => ({ ok: false, error: 'pr-open', message: 'PR 77 is still open: x' }) }) })
+  const agent = { id: 'a1', session: { header: { cwd: 'C:/p' } } }
+  await handlers['tools/post-execute'][0]({ name: 'pwsh', agent, arguments: { command: 'echo ARCHIVE-OFFER x' } }, { content: [{ type: 'text', text: 'ARCHIVE-OFFER x' }] }, async () => {})
+  assert.deepEqual(logs, ['archive-offer: session a1 not offered: PR 77 is still open: x'])
 })
 
 test('the Archive button archives the session and closes the card; Keep session clears it', async () => {
   const { queue, store, archived } = make()
-  const a = queue.offerArchive({ sessionId: 's1' })
+  const a = await queue.offerArchive({ sessionId: 's1' })
   assert.deepEqual(await queue.archive(a.id), { ok: true })
   assert.deepEqual(archived, [['s1', { stopActivity: true }]])
   assert.equal(store.get(a.id).resolution.kind, 'archived')
-  const b = queue.offerArchive({ sessionId: 's2' })
+  const b = await queue.offerArchive({ sessionId: 's2' })
   assert.deepEqual(queue.markReviewed(b.id), { ok: true })
   assert.equal(archived.length, 1)
 })

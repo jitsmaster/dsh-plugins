@@ -36,6 +36,12 @@ test('updated passes through when the queue refreshed an open card', async () =>
   assert.deepEqual(await offer(s, {}), { status: 'offered', cardId: 'card-9', updated: true })
 })
 
+test('a pr-open refusal from the queue reaches the model as the rejection reason and frees the rate slot', async () => {
+  const s = setup({ queue: { offerArchive: async () => ({ ok: false, error: 'pr-open', message: 'PR 7 is still open' }) } })
+  assert.deepEqual(await offer(s, {}), { status: 'rejected', reason: 'pr-open' })
+  assert.deepEqual(await offer(s, {}), { status: 'rejected', reason: 'pr-open' }) // not rate-limited: the slot was released
+})
+
 test('a session without a working directory sends an undefined workspace', async () => {
   const s = setup()
   await s.archiver.offer({ agent: { id: ME, session: { header: {} } }, message: 'done' })
