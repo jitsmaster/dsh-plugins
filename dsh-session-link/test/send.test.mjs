@@ -10,13 +10,13 @@ const items = [
   { sessionId: 'me', updatedAt: 9, cwd: 'D:\\dsh-plugins', projections: { values: { title: 'Queue tabs me' } } },
 ]
 const agent = { id: 'me', session: { header: {} } }
-function setup({ queue = true, approvalOutcome = 'allowed-once', states = [], approvalFn } = {}) {
+function setup({ queue = true, approvalOutcome = 'allowed-once', states = [], approvalFn, lagging = false } = {}) {
   const calls = { prompt: [], addTodo: [], approval: [] }
   let clock = 1_000_000
   const svc = {
     sessionController: { list: async () => ({ items }), prompt: async (r) => { calls.prompt.push(r); return { accepted: true } } },
     workspaceRegistry: { archivedSessionIds: new Set() },
-    reviewQueue: queue ? { addTodo: async (text, o) => { calls.addTodo.push({ text, ...o }); return { ok: true, id: 'card' + calls.addTodo.length } }, todoStates: () => states } : undefined,
+    reviewQueue: queue ? { addTodo: async (text, o) => { calls.addTodo.push({ text, ...o }); return { ok: true, id: 'card' + calls.addTodo.length } }, todoStates: () => (lagging ? states : [...states, ...calls.addTodo.map((c, n) => ({ id: 'card' + (n + 1), status: 'resolved', state: 'started', text: c.text }))]) } : undefined,
     approval: { request: async (r) => { calls.approval.push(r); return approvalFn ? approvalFn(r) : approvalOutcome } },
   }
   const sender = createSender({ get: (n) => svc[n], now: () => clock, titleOf: () => 'Queue tabs me' })
@@ -243,4 +243,29 @@ test('model-facing titles are flattened in no-match, ambiguous and the sent targ
     const sent = await go(s, { session: 'e1' }); assert.equal(sent.status, 'sent'); assert.ok(!bad.test(sent.target.title))
     const q = setup(); const offered = await go(q, { session: 'e2' }); assert.ok(!bad.test(offered.offers))
   } finally { items.length -= 2 }
+})
+
+test('waiting cap holds while the mirror has not yet shown just-queued cards, and releases once it shows them resolved', async () => {
+  const states = []
+  const s = setup({ states, lagging: true })
+  for (const t of ['s1', 's2', 's3']) assert.equal((await go(s, { session: t, text: 'm ' + t })).status, 'queued-for-confirmation')
+  s.tick(20_000)
+  assert.equal((await go(s, { session: 'ctnp', text: 'm4' })).reason, 'waiting-cap')
+  for (let n = 1; n <= 3; n++) states.push({ id: 'card' + n, status: 'resolved', state: 'started', text: 'x' })
+  assert.equal((await go(s, { session: 'ctnp', text: 'm5' })).status, 'queued-for-confirmation')
+})
+
+test('oversized text that also holds an envelope header is rejected as too-long', async () => {
+  const s = setup()
+  const text = '[Message from session s9 ("x")] ' + 'a'.repeat(3500)
+  assert.equal((await go(s, { text })).reason, 'too-long')
+})
+
+test('pair entries past 256 are swept once they are older than the cooldown', async () => {
+  const s = setup()
+  for (let i = 0; i < 300; i++) assert.equal((await s.sender.send({ agent: { id: 'p' + i, session: { header: {} } }, session: 's3', text: 'hi' })).status, 'queued-for-confirmation')
+  assert.equal(s.sender.sizes().pairs, 300)
+  s.tick(60_001)
+  assert.equal((await s.sender.send({ agent: { id: 'late', session: { header: {} } }, session: 's3', text: 'hi' })).status, 'queued-for-confirmation')
+  assert.equal(s.sender.sizes().pairs, 1)
 })

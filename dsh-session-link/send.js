@@ -2,19 +2,17 @@ import { createHash } from 'node:crypto'
 import { MAX_CARD, MAX_RAW, buildEnvelope, cleanTitle, hasEnvelope, isSessionId } from './envelope.js'
 import { listPeers, isSubagent } from './sessions.js'
 import { matchSessions } from './match.js'
+import { createGuards, LIMITS } from './guards.js'
 
-export const LIMITS = { perMinute: 5, windowMs: 60_000, pairMs: 60_000, waiting: 3 }
+export { LIMITS }
 const BUCKET_MS = 10 * 60_000
+const SWEEP_ABOVE = 256
 const reject = (reason) => ({ status: 'rejected', reason })
 const sha = (s) => createHash('sha256').update(s).digest('hex')
 
-export function createSender({ get, now = Date.now, log = () => {}, limits = LIMITS, titleOf = (agent) => { try { return get('sessionTitle')?.get(agent.session)?.title ?? agent.id } catch { return agent?.id } } }) {
-  const sends = new Map() // senderId -> timestamps (a slot is reserved before the first await, so parallel calls cannot all pass the limit)
+export function createSender({ get, now = Date.now, log = () => {}, limits = LIMITS, guards = createGuards({ now, limits }), titleOf = (agent) => { try { return get('sessionTitle')?.get(agent.session)?.title ?? agent.id } catch { return agent?.id } } }) {
+  // perMinute and windowMs apply only to the guards instance (its minute window); hourly, waiting and pairMs apply here.
   const pairs = new Map() // senderId|targetId -> time
-  const inflight = new Map() // key (senderId|target-or-words|hash of text) -> senderId, only while a send is between reservation and its queue/prompt result
-  const recent = (id) => { const t = (sends.get(id) ?? []).filter((x) => now() - x < limits.windowMs); sends.set(id, t); return t }
-  const releaseSlot = (id, t) => { const a = sends.get(id) ?? []; const i = a.indexOf(t); if (i >= 0) a.splice(i, 1) }
-  const inflightOf = (id) => { let n = 0; for (const v of inflight.values()) if (v === id) n++; return n }
 
   async function send(args) {
     const { agent, text, mode = 'queue' } = args
@@ -22,24 +20,22 @@ export function createSender({ get, now = Date.now, log = () => {}, limits = LIM
     if (isSubagent(agent)) return reject('sub-agent-sender')
     const body = String(text ?? '').trim()
     if (!body) return reject('empty')
-    if (hasEnvelope(body)) return reject('loop-guard')
     if (body.length > MAX_RAW) return reject('too-long')
+    if (hasEnvelope(body)) return reject('loop-guard')
     if (mode !== 'queue' && mode !== 'steer') return reject('bad-mode')
     if (String(args.session ?? '').trim() === agent.id) return reject('self-send')
-    const used = recent(agent.id)
-    if (used.length >= limits.perMinute) return reject('rate-limit')
-    const slot = now()
-    used.push(slot)
+    const slot = guards.reserveMinute(agent.id)
+    if (slot === null) return reject('rate-limit')
     const state = { keep: false, flight: undefined, pairKey: undefined, pairPrev: undefined }
     try {
       return await run(args, body, mode, slot, state)
     } finally {
       if (!state.keep) {
-        releaseSlot(agent.id, slot)
+        guards.releaseMinute(agent.id, slot)
         // Roll back only our own reservation: a later send to the same target may have written its own entry while an approval was pending.
         if (state.pairKey && pairs.get(state.pairKey) === state.pairMine) { if (state.pairPrev === undefined) pairs.delete(state.pairKey); else pairs.set(state.pairKey, state.pairPrev) }
       }
-      if (state.flight) inflight.delete(state.flight)
+      if (state.flight) guards.endFlight(state.flight)
     }
   }
 
@@ -60,22 +56,24 @@ export function createSender({ get, now = Date.now, log = () => {}, limits = LIM
 
     // Reserve everything synchronously, before the first await below: the in-flight key and the pair cooldown.
     const key = agent.id + '|' + (target ? target.sessionId : words) + '|' + sha(envelope)
-    if (inflight.has(key)) return reject('duplicate')
-    if (target && now() - (pairs.get(agent.id + '|' + target.sessionId) ?? -Infinity) < limits.pairMs) return reject('pair-cooldown')
-    const othersInFlight = inflightOf(agent.id)
-    inflight.set(key, agent.id)
+    const othersInFlight = guards.flightsOf(agent.id)
+    if (!guards.reserveFlight(key, agent.id)) return reject('duplicate')
     state.flight = key
+    if (target && now() - (pairs.get(agent.id + '|' + target.sessionId) ?? -Infinity) < limits.pairMs) return reject('pair-cooldown')
+    if (pairs.size > SWEEP_ABOVE) for (const [k, t] of pairs) if (now() - t >= limits.pairMs) pairs.delete(k)
     if (target) { state.pairKey = agent.id + '|' + target.sessionId; state.pairPrev = pairs.get(state.pairKey); state.pairMine = now(); pairs.set(state.pairKey, state.pairMine) }
 
     if (hasQueue) {
-      const own = (await Promise.resolve(queue.todoStates({ senderId: agent.id })) ?? []).filter((s) => s.status === 'open' && s.state === 'awaiting-confirm')
-      if (own.length + othersInFlight >= limits.waiting) return reject('waiting-cap')
+      const listed = await Promise.resolve(queue.todoStates({ senderId: agent.id })) ?? []
+      const own = listed.filter((s) => s.status === 'open' && s.state === 'awaiting-confirm')
+      if (own.length + guards.pendingCards(agent.id, new Set(listed.map((s) => s.id))).length + othersInFlight >= limits.waiting) return reject('waiting-cap')
       if (own.some((s) => s.text === envelope && (!target || !s.targetSessionId || s.targetSessionId === target.sessionId))) return reject('duplicate')
       const followUp = target ? target.sessionId : (isSessionId(words) ? words + ' session' : words)
       let res
       try { res = await queue.addTodo(envelope, { followUp, mode, excludeSessionIds: [agent.id], source: { sessionId: agent.id, title: titleOf(agent) } }) } catch (e) { log('session-link: addTodo failed'); return reject('queue-failed') }
       if (!res?.ok) return reject(String(res?.error ?? 'queue-failed'))
       state.keep = true
+      guards.keepCard(agent.id, res.id)
       return { status: 'queued-for-confirmation', cardId: res.id, mode, running: target ? target.running : undefined, offers: target ? cleanTitle(target.title) : 'the user will pick' }
     }
 
@@ -96,5 +94,5 @@ export function createSender({ get, now = Date.now, log = () => {}, limits = LIM
     try { await controller.prompt({ requestId, sessionId: target.sessionId, mode, content: [{ type: 'text', text: envelope }] }, signal ?? AbortSignal.timeout(30_000)) } catch { log('session-link: prompt failed'); return reject('prompt-failed') }
     return { status: 'sent', mode, target: { sessionId: target.sessionId, title: cleanTitle(target.title) } }
   }
-  return { send }
+  return { send, sizes: () => ({ pairs: pairs.size }) }
 }

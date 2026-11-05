@@ -1,4 +1,6 @@
 import { createSender } from './send.js'
+import { createStarter } from './starter.js'
+import { createGuards, LIMITS } from './guards.js'
 import { listPeers, isSubagent } from './sessions.js'
 import { matchSessions } from './match.js'
 import { readResult } from './result.js'
@@ -23,6 +25,7 @@ export function defineTool({ name, description, parameters, output, execute, isC
       const v = args[key]
       if (v === undefined) continue
       if (schema.type === 'string' && typeof v !== 'string') bad.push(key + ' must be a string')
+      else if (schema.type === 'boolean' && typeof v !== 'boolean') bad.push(key + ' must be a boolean')
       else if (schema.enum && !schema.enum.includes(v)) bad.push(key + ' must be one of ' + schema.enum.join(', '))
     }
     for (const key of Object.keys(args)) if (!Object.hasOwn(properties, key)) bad.push('unknown argument ' + key)
@@ -51,7 +54,9 @@ const out = { schema: { type: 'string' }, render: text }
 export function apply(ctx, config = {}) {
   const get = (n) => { try { return ctx.get?.(n) ?? ctx[n] } catch { return undefined } }
   const titleOf = (agent) => { try { return get('sessionTitle')?.get(agent.session)?.title ?? agent.id } catch { return agent?.id } }
-  const sender = createSender({ get, titleOf, log: config.log })
+  const guards = config.guards ?? createGuards({ now: config.now ?? Date.now, limits: LIMITS })
+  const sender = createSender({ get, titleOf, log: config.log, guards })
+  const starter = createStarter({ get, titleOf, log: config.log, guards })
   const caller = (exec) => {
     if (!exec.agent) throw new Error('no sender: these tools need a calling session')
     if (isSubagent(exec.agent)) throw new Error('only top-level sessions can use session-link tools')
@@ -96,6 +101,22 @@ export function apply(ctx, config = {}) {
     async execute(args, exec) {
       const me = caller(exec)
       return json(await readResult({ get, session: args.session, senderId: me.id, signal: exec.signal }))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'start_session',
+    description: "Ask for a NEW session. Nothing starts by itself: it creates a card in the user's Review Queue and the user confirms it, so the call returns at once with status queued-for-confirmation; the new session cannot see this conversation, so `text` must be self-contained. `workspace` is an exact workspace id or plain words (several matches: the user picks on the card). `sparc` starts the task with the SPARC instructions, `effort` is a reasoning effort id of the default model. Limits: 3500 characters, 5 requests a minute, 3 waiting cards, 3 starts an hour. Do not start sessions unless the task needs one.",
+    parameters: {
+      text: { type: 'string', required: true, description: 'The task, self-contained: the new session cannot see this conversation.' },
+      workspace: { type: 'string', description: 'Exact workspace id, or plain words describing the workspace.' },
+      sparc: { type: 'boolean', description: 'Start the task with the SPARC instructions.' },
+      effort: { type: 'string', description: 'A reasoning effort id of the default model.' },
+    },
+    output: out,
+    async execute(args, exec) {
+      const me = caller(exec)
+      return json(await starter.start({ agent: me, text: args.text, workspace: args.workspace, sparc: args.sparc, effort: args.effort, signal: exec.signal }))
     },
   }))
 }

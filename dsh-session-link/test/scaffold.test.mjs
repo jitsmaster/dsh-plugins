@@ -12,5 +12,10 @@ test('the plugin has a name, injects tools and exports apply', () => {
 test('package.json points at the patch and lists every runtime file', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
-  for (const f of ['index.js', 'match.js', 'envelope.js', 'sessions.js', 'send.js', 'result.js', 'cordis.patch.yml', 'README.md']) assert.ok(pkg.files.includes(f), f)
+  for (const f of ['index.js', 'match.js', 'envelope.js', 'sessions.js', 'send.js', 'guards.js', 'result.js', 'cordis.patch.yml', 'README.md']) assert.ok(pkg.files.includes(f), f)
+})
+
+test('package.json also lists starter.js, added with the start_session tool', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.ok(pkg.files.includes('starter.js'))
 })

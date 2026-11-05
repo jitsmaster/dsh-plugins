@@ -1,19 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apply } from '../index.js'
+import { createGuards } from '../guards.js'
 
-function load(extra = {}) {
+function load(extra = {}, config = {}) {
   const tools = []
   const items = [{ sessionId: 's1', updatedAt: 2, cwd: 'D:\\a', projections: { values: { title: 'Fix 25883' } } }, { sessionId: 'me', updatedAt: 3, cwd: 'D:\\b' }]
   const svc = { sessionController: { list: async () => ({ items }), prompt: async () => ({}) }, workspaceRegistry: { archivedSessionIds: new Set() }, agents: { list: () => [] }, sessionTitle: { get: () => ({ title: 'Me' }) }, reviewQueue: { addTodo: async () => ({ ok: true, id: 'c1' }), todoStates: () => [] }, ...extra }
-  apply({ tools: { register: (t) => tools.push(t) }, get: (n) => svc[n] })
+  apply({ tools: { register: (t) => tools.push(t) }, get: (n) => svc[n] }, config)
   return Object.fromEntries(tools.map((t) => [t.name, t]))
 }
 const exec = { agent: { id: 'me', session: { header: {} } }, signal: new AbortController().signal, callId: 'c' }
 
-test('registers the three tools; reads are concurrency safe, send is not', async () => {
+test('registers the four tools; reads are concurrency safe, send and start are not', async () => {
   const t = load()
-  assert.deepEqual(Object.keys(t).sort(), ['list_sessions', 'read_session_result', 'send_to_session'])
+  assert.deepEqual(Object.keys(t).sort(), ['list_sessions', 'read_session_result', 'send_to_session', 'start_session'])
+  assert.ok(!t.start_session.isConcurrencySafe?.({}))
   assert.equal(t.list_sessions.isConcurrencySafe?.({}), true)
   assert.equal(t.read_session_result.isConcurrencySafe?.({}), true)
   assert.ok(!t.send_to_session.isConcurrencySafe?.({}))
@@ -61,4 +63,30 @@ test('list_sessions titles are flattened; invalid arguments use hasOwn (no proto
   const r = JSON.parse(await t.list_sessions.execute({}, exec))
   assert.ok(!/["\[\]\n]/.test(r.sessions[0].title))
   await assert.rejects(t.list_sessions.execute({ toString: 'x' }, exec), /unknown argument toString/)
+})
+
+test('start_session parameters', () => {
+  const p = load().start_session.parameters
+  assert.deepEqual(p.required, ['text'])
+  assert.deepEqual(Object.fromEntries(Object.entries(p.properties).map(([k, v]) => [k, v.type])), { text: 'string', workspace: 'string', sparc: 'boolean', effort: 'string' })
+  assert.equal(p.additionalProperties, false)
+})
+
+test('start_session queues a card, fails closed without a caller, refuses sub-agents', async () => {
+  const t = load()
+  assert.equal(JSON.parse(await t.start_session.execute({ text: 'do it' }, exec)).status, 'queued-for-confirmation')
+  await assert.rejects(t.start_session.execute({ text: 'x' }, { ...exec, agent: undefined }), /sender/)
+  await assert.rejects(t.start_session.execute({ text: 'x' }, { ...exec, agent: { id: 'sub', session: { header: { origin: 'subagent' } } } }), /top-level/)
+})
+
+test('start_session validates boolean arguments', async () => {
+  await assert.rejects(load().start_session.execute({ text: 'x', sparc: 'yes' }, exec), /sparc must be a boolean/)
+})
+
+test('send_to_session and start_session share one guards instance', async () => {
+  const t = load({}, { guards: createGuards({ limits: { perMinute: 1, windowMs: 60_000 } }) })
+  assert.equal(JSON.parse(await t.send_to_session.execute({ session: 's1', text: 'go' }, exec)).status, 'queued-for-confirmation')
+  const r = JSON.parse(await t.start_session.execute({ text: 'new task' }, exec))
+  assert.equal(r.status, 'rejected')
+  assert.equal(r.reason, 'rate-limit')
 })

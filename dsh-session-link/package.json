@@ -5,7 +5,7 @@
   "type": "module",
   "main": "index.js",
   "exports": { ".": "./index.js", "./package.json": "./package.json" },
-  "files": ["index.js", "match.js", "envelope.js", "sessions.js", "send.js", "result.js", "cordis.patch.yml", "README.md"],
+  "files": ["index.js", "match.js", "envelope.js", "sessions.js", "send.js", "guards.js", "starter.js", "result.js", "cordis.patch.yml", "README.md"],
   "scripts": { "test": "node --test test/*.test.mjs" },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }
