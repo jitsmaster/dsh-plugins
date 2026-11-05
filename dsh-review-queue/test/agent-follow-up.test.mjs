@@ -81,6 +81,15 @@ test('sessions-list is a read: it runs at once beside a slow command and its res
   assert.deepEqual(approvals, ['keep'], 'the reads pushed nothing out of the 200 cached results')
 })
 
+test('todo-start forwards source to addTodo only when present', async () => {
+  const source = { sessionId: 's1', title: 'Requester' }
+  const { executor, calls } = make()
+  await executor.execute(cmd('todo-start', undefined, { text: 'a', workspaceId: 'w1', source }))
+  await executor.execute(cmd('todo-start', undefined, { text: 'b', workspaceId: 'w1' }))
+  assert.equal(calls[0][2].source, source)
+  assert.equal('source' in calls[1][2], false)
+})
+
 test('followup-suggest adds the follow-up with the words and the hub\'s union of sessions, and answers what addTodo answers', async () => {
   const sessions = [{ sessionId: 's1', title: 'T1', owner: 'aaaa1111' }]
   const { executor, calls } = make({ results: { addTodo: { ok: true, id: 'aaaa-000000000001', state: 'awaiting-confirm' } } })
@@ -93,6 +102,15 @@ test('followup-suggest passes the count of apps the hub could not ask on to the 
   const { executor, calls } = make()
   await executor.execute(cmd('followup-suggest', undefined, { text: 'also null', followUp: 'the PR review', sessions: [], skippedApps: 2 }))
   assert.deepEqual(calls, [['addTodo', 'also null', { followUp: 'the PR review', sessions: [], skippedApps: 2 }]])
+})
+
+test('todo-suggest forwards requireConfirm, source and workspaceId only when the hub sent them', async () => {
+  const { executor, calls } = make()
+  const source = { sessionId: 's1', title: 'T' }
+  await executor.execute(cmd('todo-suggest', undefined, { text: 'do it', sparc: false, workspaces: [], requireConfirm: true, source, workspaceId: 'bbbb/w1' }))
+  assert.deepEqual(calls.at(-1), ['addTodo', 'do it', { sparc: false, workspaces: [], requireConfirm: true, source, workspaceId: 'bbbb/w1' }])
+  await executor.execute(cmd('todo-suggest', undefined, { text: 'do it', sparc: false, workspaces: [] }))
+  assert.deepEqual(calls.at(-1), ['addTodo', 'do it', { sparc: false, workspaces: [] }])
 })
 
 test('followup-send confirms the item with the session; a moved item is adopted first', async () => {
@@ -162,6 +180,18 @@ test('hub mode: addTodo sends the words of a follow-up to the hub (and nothing e
   assert.deepEqual(client.calls, [['todo', { text: 'also null', followUp: 'the PR review' }]])
   await queue.addTodo('plain', {})
   assert.deepEqual(client.calls.at(-1), ['todo', { text: 'plain' }], 'an ordinary todo has no followUp field')
+})
+
+test('hub mode: addTodo with requireConfirm or a source on a plain todo goes by todo-link and forwards both', async () => {
+  const client = fakeClient()
+  const queue = hubQueue(fakeLocal(), client)
+  const source = { sessionId: 's1', title: 'T' }
+  await queue.addTodo('x', { workspaceId: 'bbbb/w1', requireConfirm: true, source, sparc: true })
+  assert.deepEqual(client.calls.at(-1), ['todo-link', { text: 'x', workspaceId: 'bbbb/w1', sparc: true, source, requireConfirm: true }])
+  await queue.addTodo('x', { requireConfirm: true })
+  assert.deepEqual(client.calls.at(-1), ['todo-link', { text: 'x', requireConfirm: true }])
+  await queue.addTodo('x', { requireConfirm: false })
+  assert.deepEqual(client.calls.at(-1), ['todo', { text: 'x' }])
 })
 
 test('hub mode: addTodo never sends a sessions list of its own to the hub', async () => {

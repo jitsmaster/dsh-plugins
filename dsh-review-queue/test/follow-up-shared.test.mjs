@@ -241,3 +241,13 @@ test('checkLinkOptions stores the source session id as a string', async () => {
   const { checkLinkOptions } = await import('../follow-up-shared.js')
   assert.equal(checkLinkOptions({ source: { sessionId: 12345, title: 't' } }).source.sessionId, '12345')
 })
+
+test('requireConfirm is a trusted link option: listed, stripped, validated', async () => {
+  const { LINK_OPTIONS, stripLinkOptions, checkLinkOptions } = await import('../follow-up-shared.js')
+  assert.ok(LINK_OPTIONS.includes('requireConfirm'))
+  assert.equal('requireConfirm' in stripLinkOptions({ text: 'x', requireConfirm: true }), false)
+  assert.deepEqual(checkLinkOptions({ requireConfirm: 'yes' }), { ok: false, error: 'bad-require-confirm' })
+  assert.equal(checkLinkOptions({ requireConfirm: true }).requireConfirm, true)
+  assert.ok(!checkLinkOptions({}).requireConfirm)
+  assert.equal(checkLinkOptions({ requireConfirm: false }).requireConfirm, false)
+})

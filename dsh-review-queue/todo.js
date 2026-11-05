@@ -272,7 +272,7 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
 
   return {
     /** { ok, id, state } at once; the session is created (or the suggestion looked for) in the background. */
-    add(text, { workspaceId, sparc, effort, workspaces, followUp, sessions, skippedApps, images, mode, excludeSessionIds, source } = {}) {
+    add(text, { workspaceId, sparc, effort, workspaces, followUp, sessions, skippedApps, images, mode, excludeSessionIds, source, requireConfirm } = {}) {
       const body = typeof text === 'string' ? text.trim() : ''
       if (!body) return { ok: false, error: 'empty' }
       if (body.length > MAX_TODO) return { ok: false, error: 'too-long' }
@@ -291,14 +291,21 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
       if (!pasted.ok) return { ok: false, error: pasted.error }
       const asked = effortOf(effort)
       if (!asked.ok) return { ok: false, error: 'bad-effort' }
+      const link = checkLinkOptions({ source, requireConfirm })
+      if (!link.ok) return { ok: false, error: link.error }
       // A list given by the caller (the hub's union of every app's workspaces) replaces this app's own registry.
       const list = Array.isArray(workspaces) ? normalizeWorkspaces(workspaces) : listWorkspaces(registryOf)
       const given = workspaceId === undefined || workspaceId === null || workspaceId === '' ? undefined : String(workspaceId)
-      const base = { type: 'todo', text: body, sparc: sparc === true, ...(asked.value ? { effort: asked.value } : {}), ...(pasted.ids.length ? { imageIds: pasted.ids } : {}) }
+      const base = { type: 'todo', text: body, sparc: sparc === true, ...(asked.value ? { effort: asked.value } : {}), ...(pasted.ids.length ? { imageIds: pasted.ids } : {}), ...(link.source ? { source: link.source } : {}) }
       if (given !== undefined) {
         if (!list) return { ok: false, error: 'no-registry' }
         const ws = list.find((w) => w.id === given)
         if (!ws) return { ok: false, error: 'unknown-workspace' }
+        if (link.requireConfirm === true) {
+          const suggested = { workspaceId: ws.id, title: ws.title, reason: 'picked by the requesting session' }
+          const waiting = store.add({ ...base, state: 'awaiting-confirm', suggested })
+          return { ok: true, id: waiting.id, state: 'awaiting-confirm' }
+        }
         const item = store.add({ ...base, state: 'starting', workspaceId: ws.id, workspaceTitle: ws.title, workspace: ws.path })
         track(start(item.id))
         return { ok: true, id: item.id, state: 'starting' }

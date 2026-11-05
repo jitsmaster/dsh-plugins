@@ -48,7 +48,7 @@ async function readImage(req, max = MAX_IMAGE_BYTES) {
 }
 
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
-const BAD_INPUT = new Set(['bad-images', 'bad-effort', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session', 'bad-mode', 'bad-review', 'bad-rule', 'bad-input'])
+const BAD_INPUT = new Set(['bad-images', 'bad-effort', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session', 'bad-mode', 'bad-source', 'bad-require-confirm', 'bad-review', 'bad-rule', 'bad-input'])
 // 'no-session' is a 409 for a reply or an archive (this app's controller does not know the session) but a 400 for a follow-up confirm with no session to send to.
 /** An id the triage routes accept: a string or a finite number (coerced with String); anything else never reaches the queue. */
 const validId = (v) => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v))

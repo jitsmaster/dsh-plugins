@@ -21,7 +21,7 @@ test('mode is steer or queue; fields are the documented ones', () => {
   const [a, , e] = todoStatesOf(snap, { senderId: 'me' })
   assert.equal(a.mode, 'queue')
   assert.equal(e.mode, 'steer')
-  assert.deepEqual(e, { id: 'e', state: 'started', status: 'resolved', text: 't', mode: 'steer', targetSessionId: undefined, sessionId: 's1', sessionTitle: 'One' })
+  assert.deepEqual(e, { id: 'e', kind: 'followup', state: 'started', status: 'resolved', text: 't', mode: 'steer', targetSessionId: undefined, sessionId: 's1', sessionTitle: 'One' })
 })
 test('the service lists a waiting card created by addTodo with a source', () => {
   const f = setupFollowUp()
@@ -48,4 +48,19 @@ test('todoStatesOf(null) and a missing snapshot give []', () => {
   assert.deepEqual(todoStatesOf(null), [])
   assert.deepEqual(todoStatesOf(null, { senderId: 'me' }), [])
   assert.deepEqual(todoStatesOf(undefined, { senderId: 'me' }), [])
+})
+
+const plainTodo = (o) => ({ type: 'todo', status: 'open', state: 'awaiting-confirm', text: 'go', source: { sessionId: 'me', title: 'Me' }, ...o })
+test('both card kinds of the sender are listed; a plain todo without source is not', () => {
+  const s = { open: [plainTodo({ id: 'n1', suggested: { workspaceId: 'w1', title: 'Alpha', reason: 'r' } }), plainTodo({ id: 'n2', source: undefined }), plainTodo({ id: 'n3', source: { sessionId: 'other' } }), item({ id: 'f1' })], resolved: [plainTodo({ id: 'n4', status: 'resolved', state: 'started', sessionId: 'ns', workspaceTitle: 'Beta' })] }
+  const r = todoStatesOf(s, { senderId: 'me' })
+  assert.deepEqual(r.map((x) => [x.id, x.kind]), [['n1', 'newsession'], ['f1', 'followup'], ['n4', 'newsession']])
+  assert.equal(r[0].workspaceTitle, 'Alpha')
+  assert.equal(r[2].workspaceTitle, 'Beta')
+  assert.equal(r[2].sessionId, 'ns')
+})
+test('a send_to_session status query with a targetSessionId lists no new-session cards', () => {
+  const s = { open: [plainTodo({ id: 'n1', sessionId: 's1' }), item({ id: 'f1', targetSessionId: 's1' })], resolved: [] }
+  assert.deepEqual(todoStatesOf(s, { senderId: 'me', targetSessionId: 's1' }).map((x) => x.id), ['f1'])
+  assert.deepEqual(todoStatesOf(s, { senderId: 'me' }).map((x) => x.id), ['n1', 'f1'])
 })

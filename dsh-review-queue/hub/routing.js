@@ -17,7 +17,7 @@
 import { riskOf } from '../risk.js'
 import { postKeyOf } from '../post-key.js'
 import { createHubFollowUps } from './follow-up.js'
-import { isSentFollowUp, stripLinkOptions } from '../follow-up-shared.js'
+import { checkLinkOptions, isSentFollowUp, stripLinkOptions } from '../follow-up-shared.js'
 
 const HUB_LOCAL = ['reviewed', 'reopen']
 const PAUSED_ACTIONS = ['paused-resume', 'paused-dismiss']
@@ -114,19 +114,31 @@ export function createRouting({ store, queue, instances, commands, log = () => {
     return send(to.inst, { kind, itemId: item.id, args: argsFor(kind, body, via, item) })
   }
 
-  async function addTodo(body, caller, role) {
+  /**
+   * trusted (todo-link, no followUp): requireConfirm and source are read, and a workspace is not started but handed to the coordinator as the
+   * waiting card's choice (its hub id, which is what the list given with it holds); the item is moved to that app by todo-confirm.
+   */
+  async function addTodo(body, caller, role, { trusted = false } = {}) {
     const wanted = text(body.workspaceId)
     // Pasted images are the desktop form's (files on this PC): a phone never sends any, and what it sends as images is dropped.
     const base = { text: body.text, sparc: body.sparc === true, ...(typeof body.effort !== 'string' || !body.effort ? {} : { effort: body.effort }), ...(role !== 'device' && body.images !== undefined && body.images !== null ? { images: body.images } : {}) }
+    const link = checkLinkOptions(trusted ? { source: body.source, requireConfirm: body.requireConfirm } : {})
+    if (!link.ok) return { ok: false, error: link.error }
+    const linked = { ...(link.requireConfirm === true ? { requireConfirm: true } : {}), ...(link.source ? { source: link.source } : {}) }
+    const waiting = link.requireConfirm === true
     if (wanted !== undefined) {
       const target = findWorkspace(wanted)
       if (!target) return { ok: false, error: instances.list().some((i) => i.state === 'online') ? 'unknown-workspace' : 'no-registry' }
       const to = reachable(target.inst.id)
-      return to.error ? { ok: false, error: to.error } : send(to.inst, { kind: 'todo-start', args: { ...base, workspaceId: target.workspaceId } })
+      if (to.error) return { ok: false, error: to.error }
+      if (!waiting) return send(to.inst, { kind: 'todo-start', args: { ...base, ...(link.source ? { source: link.source } : {}), workspaceId: target.workspaceId } })
+      const coordinator = instances.coordinator(caller)
+      if (!coordinator) return { ok: false, error: 'no-registry' }
+      return send(coordinator, { kind: 'todo-suggest', args: { ...base, ...linked, workspaceId: instances.short(target.inst.id) + '/' + target.workspaceId, workspaces: instances.workspaces({ caller: coordinator.id, full: true }) } })
     }
     const coordinator = instances.coordinator(caller)
     if (!coordinator) return { ok: false, error: 'no-registry' }
-    return send(coordinator, { kind: 'todo-suggest', args: { ...base, workspaces: instances.workspaces({ caller: coordinator.id, full: true }) } })
+    return send(coordinator, { kind: 'todo-suggest', args: { ...base, ...linked, workspaces: instances.workspaces({ caller: coordinator.id, full: true }) } })
   }
 
   /** Start (or retry) a todo: in a workspace of its own instance as a todo-start there, in another instance's by moving the item. */
@@ -164,8 +176,8 @@ export function createRouting({ store, queue, instances, commands, log = () => {
     /** @param {{ role?: string, caller?: string }} [ctx] role 'device' is the phone, any other credential the desktop (D8). */
     async act(kind, body, { role, caller } = {}) {
       // The three link options come only through todo-link (desktop role; the plugin's own queue): every 'todo' is stripped here, once, whatever route it came by.
-      if (kind === 'todo') return body.followUp !== undefined && body.followUp !== null ? followUps.add(stripLinkOptions(body), caller, role) : addTodo(body, caller, role)
-      if (kind === 'todo-link') return followUps.add(body, caller, role, { trusted: true })
+      if (kind === 'todo') { const plain = stripLinkOptions(body); return plain.followUp !== undefined && plain.followUp !== null ? followUps.add(plain, caller, role) : addTodo(plain, caller, role) }
+      if (kind === 'todo-link') return body.followUp !== undefined && body.followUp !== null ? followUps.add(body, caller, role, { trusted: true }) : addTodo(body, caller, role, { trusted: true })
       const id = String(body.id)
       if (HUB_LOCAL.includes(kind)) return hubLocal(kind, id)
       const item = store.get(id)

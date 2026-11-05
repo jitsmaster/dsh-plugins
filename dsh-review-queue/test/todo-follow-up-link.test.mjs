@@ -6,16 +6,16 @@ import { stripLinkOptions, LINK_OPTIONS, checkLinkOptions } from '../follow-up-s
 const MSG = '[Message from session s9 ("Me")] hello'
 const sessions = [{ sessionId: 's1', title: 'Engine one', updatedAt: 3 }, { sessionId: 'me', title: 'Me', updatedAt: 9 }, { sessionId: 's2', title: 'Engine two', updatedAt: 2 }]
 
-test('stripLinkOptions removes exactly mode, excludeSessionIds and source', () => {
-  assert.deepEqual(LINK_OPTIONS.slice().sort(), ['excludeSessionIds', 'mode', 'source'])
+test('stripLinkOptions removes exactly mode, excludeSessionIds, source and requireConfirm', () => {
+  assert.deepEqual(LINK_OPTIONS.slice().sort(), ['excludeSessionIds', 'mode', 'requireConfirm', 'source'])
   assert.deepEqual(stripLinkOptions({ text: 'x', followUp: 'y', mode: 'steer', excludeSessionIds: ['a'], source: { sessionId: 'a' } }), { text: 'x', followUp: 'y' })
   assert.equal(stripLinkOptions(7), 7)
   assert.equal(stripLinkOptions(null), null)
 })
 
 test('checkLinkOptions validates and cleans the three options', () => {
-  assert.deepEqual(checkLinkOptions({}), { ok: true, mode: undefined, source: undefined, exclude: [] })
-  assert.deepEqual(checkLinkOptions({ mode: 'queue' }), { ok: true, mode: undefined, source: undefined, exclude: [] })
+  assert.deepEqual(checkLinkOptions({}), { ok: true, mode: undefined, source: undefined, exclude: [], requireConfirm: undefined })
+  assert.deepEqual(checkLinkOptions({ mode: 'queue' }), { ok: true, mode: undefined, source: undefined, exclude: [], requireConfirm: undefined })
   assert.equal(checkLinkOptions({ mode: 'steer' }).mode, 'steer')
   assert.deepEqual(checkLinkOptions({ mode: 'interrupt' }), { ok: false, error: 'bad-mode' })
   assert.deepEqual(checkLinkOptions({ source: null }), { ok: false, error: 'bad-source' })
