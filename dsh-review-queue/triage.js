@@ -46,7 +46,8 @@ export function quoteSource(quote, sources, minChars = MIN_QUOTE_CHARS) {
 const PLAIN = new Set(['pwd', 'ls', 'cat', 'rg', 'grep', 'head', 'tail', 'wc'])
 const GIT_READ = new Set(['status', 'diff', 'log', 'show'])
 const SHELL_SYNTAX = /[;&|`$(){}<>\r\n"'\\*?!]/
-const SHELL_SYNTAX_AUTO = /[;&|`$(){}<>\r\n"'\\*?!%^[\]@#]/ // Auto also refuses cmd's %VAR% expansion and the ^ escape, PowerShell's [..] wildcards, the @ splat / array and # comments
+const SHELL_SYNTAX_AUTO = /[;&|`$(){}<>\r\n"'\\*?!%^[\]@#,+]/ // Auto also refuses cmd's %VAR% expansion and the ^ escape, PowerShell's [..] wildcards, the @ splat / array, # comments and `,` / `+` (arrays: `cat a,.env`)
+const WIN_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i // Auto: a reserved Windows device name (with or without an extension) is never a file
 const GIT_BAD_FLAG = /^--(output|exec-path|open-files-in-pager|ext-diff|textconv|upload-pack|receive-pack)/
 const RG_BAD_FLAG = /^--(pre|hostname-bin)/
 // Auto only: git is `status`, or `log` / `diff` with a summary flag (log and diff print patches by default, show always does).
@@ -104,7 +105,8 @@ export function parseReadOnlyCommand(command, { auto = false } = {}) {
     if (auto && FILE_OK[bin]) {
       const ok = FILE_OK[bin]
       if (args.some((t) => t.startsWith('-') && !(ok.long.has(t) || ok.short.test(t)))) return fail(bin + ' flag not allowed in auto')
-      if (bin !== 'ls' && !args.some((t) => !t.startsWith('-'))) return fail(bin + ' needs a named file in auto')
+      // ls needs a path too: a bare `ls` lists the shell's current directory, which may not be the workspace the check resolves against.
+      if (!args.some((t) => !t.startsWith('-'))) return fail(bin + ' needs a named file in auto')
     }
     if (auto && (bin === 'rg' || bin === 'grep')) {
       // Only flags that take no value: a value-taking flag would put its value where the named file is counted. Recursive, hidden and every other flag is refused.
@@ -118,8 +120,13 @@ export function parseReadOnlyCommand(command, { auto = false } = {}) {
     const p = t.replace(/\\/g, '/')
     if (p.split('/').includes('..')) return fail('path leaves the directory')
     // Auto tests every `a:b` / `--flag=value` segment too, so `HEAD:.env` or `--file=.env` cannot hide a protected name behind a prefix.
-    const parts = auto ? [p, ...p.split(/[:=]/)] : [p]
+    const parts = auto ? [p, ...p.split(/[:=,]/)] : [p]
     if (parts.some((s) => protectedRes.some((re) => re.test(s)))) return fail('protected path')
+    if (auto && bin !== 'git') {
+      // PowerShell provider drives (`Env:X`, `HKCU:`) and alternate data streams (`f.txt:s`) hide behind a colon: only a one-letter drive prefix (`C:/`) may carry one.
+      if (p.replace(/^[a-z]:(?=\/)/i, '').includes(':')) return fail('colon not allowed in auto')
+      if (p.split(/[/=]/).some((s) => WIN_DEVICE.test(s.split('.')[0]))) return fail('device name not allowed in auto')
+    }
     if (auto && bin !== 'git' && SHORT_NAME.test(p)) return fail('8.3 short name not allowed in auto')
   }
   return { ok: true }
@@ -153,14 +160,22 @@ const RISKY_STEMS = ['delet', 'remov', 'drop', 'destroy', 'wipe', 'erase', 'purg
   'publish', 'push', 'send', 'sent\\b', 'email', 'notif', 'posts?\\b', 'posted\\b', 'posting\\b', 'upload', 'install', 'uninstall', 'migrat', 'commit', 'tags?\\b', 'pay(?!load)', 'charg', 'bill',
   'credential', 'secret', 'password', 'passwd', 'token', 'keys?\\b', 'ssh', 'sudo', 'chmod', 'chown', 'rotat', 'truncat', 'disabl', 'production', 'prods?\\b', 'force', 'rm\\s+[rf]', 'curl', 'wget',
   'replac', 'rewrit', 'appl(?:y|ie)', 'run', 'execut', 'restart', 'stop', 'rebas', 'amend', 'squash', 'enabl', 'grant', 'approv', 'shar', 'expos', 'upgrad', 'downgrad', 'overrid', 'unlock', 'lock',
-  'ignor', 'skip', 'bypass']
-const RISKY_RE = new RegExp(`\\b(?:${RISKY_STEMS.join('|')})|\\|\\s*(?:ba|z)?sh\\b`, 'i')
+  'ignor', 'skip', 'bypass', 'nuk', 'obliterat', 'scrub', 'format', 'clear', 'empty', 'trash', 'unlink', 'prun', 'flush', 'evict', 'withdraw', 'transfer', 'purchas', 'sync', 'ship',
+  'go\\s+live', 'submit', 'write', 'move', 'pull', 'checkout']
+// A stem may follow a common prefix (redeploy, reinstall, republish, undelete, unpublish, predeploy); the word start `\b` stays.
+const RISKY_RE = new RegExp(`\\b(?:re|un|de|pre)?(?:${RISKY_STEMS.join('|')})|\\|\\s*(?:ba|z)?sh\\b`, 'i')
+/** A letter outside ASCII that normalisation did not fold to ASCII (Cyrillic / Greek homoglyphs such as `Мerge`): the scan cannot read it, so it fails closed. */
+const NON_ASCII_LETTER = /(?![\x00-\x7F])\p{L}/u
 
 /** NFKD then NFKC (full-width and compatibility letters), no format characters (zero-width and the like) and no combining marks,camelCase / snake / kebab / dotted words split, lower case. */
 const normaliseRisky = (text) => text.normalize('NFKD').replace(/\p{Cf}|\p{M}/gu, '').normalize('NFKC').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_.-]+/g, ' ').toLowerCase()
 
 /** True when the text names a destructive, external or sensitive action (see RISKY_STEMS). */
-export const isRiskyOption = (text) => typeof text === 'string' && RISKY_RE.test(normaliseRisky(text))
+export const isRiskyOption = (text) => {
+  if (typeof text !== 'string') return false
+  const n = normaliseRisky(text)
+  return NON_ASCII_LETTER.test(n) || RISKY_RE.test(n)
+}
 
 /** Every text a card shows the user: the question and header, each option's label and description. */
 function cardTexts(question) {

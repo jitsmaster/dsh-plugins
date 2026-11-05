@@ -14,7 +14,7 @@ test('P1: glob brackets are shell syntax in Auto (PowerShell expands [.]env as a
   for (const c of ['cat [.]env', 'cat id_[r]sa', 'cat se[c]rets.txt', 'rg foo [.]env', 'cat a].txt', 'cat @x', 'cat #x']) {
     assert.deepEqual(auto(c), { ok: false, reason: 'shell syntax' }, c)
   }
-  for (const c of ['cat top.txt', 'git status', 'git log --oneline -5', 'rg foo src/a.js', 'ls -la', 'head top.txt']) assert.equal(auto(c).ok, true, c)
+  for (const c of ['cat top.txt', 'git status', 'git log --oneline -5', 'rg foo src/a.js', 'ls -la src', 'head top.txt']) assert.equal(auto(c).ok, true, c)
 })
 
 test('P1: observe still accepts brackets (unchanged)', () => {
@@ -51,7 +51,7 @@ test('P4: the permission actor re-checks containment for every command it approv
       const store = createStore({ now: () => 1, uuid: () => 'i1' })
       const item = store.add({ type: 'permission', sessionId: 's1', workspace, payload: { toolName: 'shell', detail, summary: detail, callId: 'c1' } })
       let decided = 0
-      const res = await createPermissionActor({ store, decide: () => { decided++; return true } })({ item, resolutionBase: {} })
+      const res = await createPermissionActor({ store, decide: () => { decided++; return true } })({ item, resolutionBase: {}, stillAllowed: () => true })
       assert.equal(res.ok, ok, detail + ' ' + workspace)
       if (!ok) assert.deepEqual(res, { ok: false, reason: 'not-read-only' })
       assert.equal(decided, ok ? 1 : 0)

@@ -3,7 +3,7 @@
  * the command we judged is the whole command. Observe mode never uses these.
  */
 import { realpath } from 'node:fs'
-import { stat as fsStat } from 'node:fs/promises'
+import { stat as fsStat, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 
@@ -13,7 +13,10 @@ const MAX_DETAIL = 3000 // risk.js caps a detail at this many characters (plus t
 // Protected names (reading one counts as touching it). Shared with the read-only parser in triage.js; Auto adds more, observe keeps PROTECTED as it was.
 export const PROTECTED = [/(^|\/)\.env/i, /(^|\/)\.git(\/|$)/i, /^~/, /(^|\/)\.(ssh|aws|dsh|claude|gnupg)(\/|$)/i, /id_(rsa|ed25519|ecdsa|dsa)/i, /\.(pem|key|p12|pfx)$/i, /(credentials|secrets?)(\.|$|\/)/i]
 // Auto only: more secret-bearing files, `.git.` (Windows drops trailing dots and spaces) and any 8.3 short name segment (`ENV~1`).
-export const PROTECTED_AUTO = [...PROTECTED, /(^|\/)\.(npmrc|netrc|pypirc|kube|docker|git-credentials)(\/|$)/i, /(^|\/)appsettings[^/]*\.json$/i, /\.tfvars$/i, /\.kdbx$/i, /(^|\/)\.git[. ]*(\/|$)/i]
+export const PROTECTED_AUTO = [...PROTECTED, /(^|\/)\.(npmrc|netrc|pypirc|kube|docker|git-credentials)(\/|$)/i, /(^|\/)appsettings[^/]*\.json$/i, /\.tfvars$/i, /\.kdbx$/i, /(^|\/)\.git[. ]*(\/|$)/i,
+  // Windows drops trailing dots and spaces, so every dotted protected directory tolerates them (`.ssh.`); and more secret-bearing files.
+  /(^|\/)\.(ssh|aws|dsh|claude|gnupg|kube|docker|git)[. ]*(\/|$)/i, /(^|\/)\.(htpasswd|pgpass|vault-token|my\.cnf)[. ]*(\/|$)/i, /\.tfstate(\.[^/]*)?[. ]*(\/|$)/i,
+  /(^|\/)local\.settings\.json[. ]*(\/|$)/i, /\.sqlite3?[. ]*(\/|$)/i]
 /** An NTFS 8.3 short name segment (`ENV~1`): it can stand for a protected name. A git revision such as `HEAD~1` is not a path, so the parser skips this for git. */
 export const SHORT_NAME = /~\d/
 const PATHISH = /[\\/]|^[.~]|^[a-z]:/i
@@ -63,7 +66,22 @@ export const MAX_CANDIDATES = 64
 const UNSAFE_PATH = /^[\\/]{2}|^[\\/]\?\?[\\/]/
 
 const stat = (p) => fsStat(p)
-const defaultIo = { real, stat }
+const defaultIo = { real, stat, readdir: (p) => readdir(p) }
+const PLANT_EXTS = ['', '.exe', '.bat', '.cmd', '.com', '.ps1', '.js', '.vbs']
+/**
+ * cmd.exe (and a PATH holding `.`) runs a file of the current directory before the real binary, so a workspace file named like the command's first word
+ * (`rg.bat`, `git.cmd`, `cat.exe`, ...) would run instead of it. True when the workspace root holds one (names compared case-insensitively). An unreadable
+ * root also returns true (fail closed). `io.readdir` is the directory listing (injectable for tests). Never throws.
+ */
+export async function plantedBinary(workspace, bin, io = defaultIo) {
+  try {
+    const name = String(bin ?? '').trim().toLowerCase()
+    if (!name) return true
+    const names = await (io.readdir ?? defaultIo.readdir)(workspace)
+    const wanted = new Set(PLANT_EXTS.map((e) => name + e))
+    return names.some((n) => wanted.has(String(n).toLowerCase()))
+  } catch { return true }
+}
 /** rg and grep recurse into a directory and read secret-named files the argument does not show, so Auto refuses a directory for them. */
 const SEARCH_BINS = new Set(['rg', 'grep'])
 

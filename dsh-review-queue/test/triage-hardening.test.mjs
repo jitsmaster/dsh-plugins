@@ -174,7 +174,7 @@ test('S4: the permission actor re-checks the auto parser and the extra-arguments
   const store = createStore({ now: () => 1000 + n, uuid: () => 'i' + ++n })
   const actor = createPermissionActor({ store, decide: () => true })
   const ok = store.add(perm())
-  assert.equal((await actor({ item: ok, resolutionBase: {} })).ok, true)
+  assert.equal((await actor({ item: ok, resolutionBase: {}, stillAllowed: () => true })).ok, true)
   const rec = store.add(perm({ detail: 'rg -r foo', summary: 'x' }))
   assert.equal((await actor({ item: rec, resolutionBase: {} })).ok, false)
   const extra = store.add(perm({ extraArgs: true }))
@@ -218,7 +218,7 @@ test('S7: auto allows only a small no-value flag set for cat/head/tail/wc/ls and
   const bad = ['tail -f app.log', 'tail -F app.log', 'tail --follow app.log', 'tail -n 5 a.log', 'tail -n5 a.log', 'tail --pid=1 a.log', 'tail --retry a.log', 'cat', 'cat -n', 'cat -v a.txt', 'cat --show-all a.txt',
     'ls -R .', 'ls --recursive', 'ls -lR', 'ls -I x', 'wc --files0-from=list.txt', 'wc -l', 'wc --total=only a.txt', 'head -n 3 a.txt', 'head -c 3 a.txt', 'head', 'tail', 'head --lines=3 a.txt']
   for (const c of bad) assert.equal(auto(c).ok, false, c)
-  const good = ['cat -n src/a.js', 'cat -bs src/a.js', 'cat --number src/a.js', 'head src/a.js', 'head -q src/a.js', 'tail src/a.js', 'tail --quiet src/a.js', 'wc -l src/a.js', 'wc -lw src/a.js', 'wc --lines src/a.js', 'ls', 'ls -la', 'ls -1 src', 'ls src', 'ls --all --long', 'ls -h']
+  const good = ['cat -n src/a.js', 'cat -bs src/a.js', 'cat --number src/a.js', 'head src/a.js', 'head -q src/a.js', 'tail src/a.js', 'tail --quiet src/a.js', 'wc -l src/a.js', 'wc -lw src/a.js', 'wc --lines src/a.js', 'ls src', 'ls -la src', 'ls -1 src', 'ls src', 'ls --all --long src', 'ls -h src']
   for (const c of good) assert.equal(auto(c).ok, true, c)
   for (const c of ['tail -f app.log', 'cat -v a.txt', 'ls -R .', 'head -n 3 a.txt', 'wc --files0-from=list.txt']) assert.equal(parseReadOnlyCommand(c).ok, true, 'observe: ' + c)
 })

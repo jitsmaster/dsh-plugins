@@ -13,7 +13,7 @@ import { RAW_MAX, RAW_PRECLIP, oneLine } from './triage-judge.js'
 import { hasActionItem } from './auto-clear.js'
 import { classOf, parseReadOnlyCommand, triageOutcome } from './triage.js'
 import { redact } from './triage-log.js'
-import { commandIntact, containedInWorkspace } from './triage-paths.js'
+import { commandIntact, containedInWorkspace, plantedBinary } from './triage-paths.js'
 import { clipAnswer } from './triage-clip.js'
 
 export { clipAnswer }
@@ -207,7 +207,9 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     if (rule?.mode === 'auto' && latest && cls === 'permission') {
       const p = latest.payload ?? {}
       const cmdText = typeof p.detail === 'string' && p.detail ? p.detail : p.summary
-      verdictFacts = { ...verdictFacts, pathsContained: verdictFacts.readOnly === true && await containedInWorkspace(cmdText, latest.workspace, undefined, String(cmdText ?? '').trim().split(/\s+/)[0]) }
+      const bin = String(cmdText ?? '').trim().split(/\s+/)[0]
+      // A workspace file named like the binary (cmd.exe runs the current directory first) fails the same fact as a path outside the workspace.
+      verdictFacts = { ...verdictFacts, pathsContained: verdictFacts.readOnly === true && await containedInWorkspace(cmdText, latest.workspace, undefined, bin) && !(await plantedBinary(latest.workspace, bin)) }
     }
     const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts: verdictFacts, sources, marks: marksOf(item), relax: { sessionFinished: true } })
     const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: rule?.mode ?? 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtraOf(verdictFacts) }
@@ -230,16 +232,25 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     const marks = fresh ? marksOf(fresh) : {}
     const live = rulesNow().find((r) => r.id === rule.id)
     if (fresh?.status !== 'open' || payloadFingerprint(fresh) !== judgedPrint || !enabled() || live?.mode !== 'auto' || live.enabled === false || marks.onHold || marks.neverAuto) return refuse('changed-meanwhile')
+    // The same live getters, read again by an actor right before it decides (after its own awaits): open, switch on, rule still auto, no user marks. Throws count as no.
+    const stillAllowed = () => {
+      try {
+        const now2 = store.get(item.id)
+        const m = now2 ? marksOf(now2) : {}
+        const l = rulesNow().find((r) => r.id === rule.id)
+        return now2?.status === 'open' && enabled() === true && l?.mode === 'auto' && l.enabled !== false && !m.onHold && !m.neverAuto
+      } catch { return false }
+    }
     const str = (v, cap) => (typeof v === 'string' ? v.slice(0, cap) : undefined)
     const basis = judgment.answer_basis
     const quoted = basis !== 'recommended-option' // the recommended-option basis rests on no quote, so none is recorded even if the model sent one
     const resolutionBase = { kind: 'ai-resolved', by: 'ai', ruleId: rule.id, ruleVersion: base.ruleVersion, threshold: outcome.threshold, score: outcome.score, decidedAt: now(), basis, ...(quoted && str(judgment.evidence_source, 100) ? { evidenceSource: judgment.evidence_source.slice(0, 100) } : {}), ...(quoted && str(judgment.evidence_quote, 300) ? { quote: redact(judgment.evidence_quote.slice(0, 300)) } : {}) }
     const p = fresh.payload ?? {}
     let res
-    try { res = await actors[cls]({ item: fresh, rule, outcome, judgment, sources, resolutionBase }) } catch (error) { log('triage: actor ' + cls + ' ' + item.id + ' failed: ' + safeMsg(error)); return refuse('error') }
+    try { res = await actors[cls]({ item: fresh, rule, outcome, judgment, sources, resolutionBase, stillAllowed }) } catch (error) { log('triage: actor ' + cls + ' ' + item.id + ' failed: ' + safeMsg(error)); return refuse('error') }
     if (res?.ok !== true) { const reason = typeof res?.reason === 'string' ? res.reason.slice(0, 100) : 'refused'; return refuse(reason, reason === 'not-pending' || reason === 'lost-race' ? 'lost-race' : 'refused') }
     const answer = typeof res.answer === 'string' ? clipAnswer(res.answer) : undefined
-    const preState = { type: fresh.type, ...(fresh.sessionId ? { sessionId: fresh.sessionId } : {}), ...(p.toolName ? { toolName: p.toolName } : {}), ...(typeof p.detail === 'string' ? { command: redact(p.detail).slice(0, 500) } : {}), ...(typeof p.questions?.[0]?.question === 'string' ? { question: p.questions[0].question.slice(0, 300) } : {}), ...(answer ? { answer: answer.slice(0, 200) } : {}), summaryHead: String(p.summary ?? '').slice(0, 200) }
+    const preState = { type: fresh.type, ...(fresh.sessionId ? { sessionId: fresh.sessionId } : {}), ...(p.toolName ? { toolName: p.toolName } : {}), ...(typeof p.detail === 'string' ? { command: redact(p.detail).slice(0, 500) } : {}), ...(typeof p.questions?.[0]?.question === 'string' ? { question: redact(p.questions[0].question).slice(0, 300) } : {}), ...(answer ? { answer: redact(answer).slice(0, 200) } : {}), summaryHead: redact(String(p.summary ?? '')).slice(0, 200) }
     record({ ...base, result: 'done', action: res.action, basis: res.basis ?? basis, preState })
     log('triage: ' + (res.action ?? 'handled') + ' ' + item.type + ' ' + item.id + ' (rule ' + rule.id + ')')
   }

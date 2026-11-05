@@ -286,5 +286,6 @@
   "test/triage-paths.test.mjs",
   "test/triage-act-question.test.mjs",
   "test/triage-hardening.test.mjs",
-  "test/triage-robustness.test.mjs"
+  "test/triage-robustness.test.mjs",
+  "test/triage-pass5.test.mjs"
 ]
