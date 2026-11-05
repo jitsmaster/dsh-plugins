@@ -1,6 +1,6 @@
 # dsh-session-link
 
-Lets a DSH session find another open session, ask it to do something, and read its last reply. Four tools, available to top-level sessions only (sub-agents are refused):
+Lets a DSH session find another open session, ask it to do something, read its last reply, and offer to archive itself. Five tools, available to top-level sessions only (sub-agents are refused):
 
 | Tool | What it does |
 | --- | --- |
@@ -8,6 +8,7 @@ Lets a DSH session find another open session, ask it to do something, and read i
 | `send_to_session` | Asks another session to do something. **Nothing is sent by the call itself**: it creates a follow-up card in the Review Queue and the user confirms or cancels it. |
 | `read_session_result` | Reads the last assistant reply of a loaded session, whether its turn is still running, and the state of the cards you sent it. |
 | `start_session` | Asks for a **new** session. Nothing starts by itself: it creates a card in the Review Queue and the user confirms or cancels it. |
+| `archive_self` | A finished session offers to archive **itself**. Nothing is archived by the call: it creates an Archive card in the Review Queue (the message is its reason) and the user presses **Archive session** or **Keep session**. |
 
 ## Example calls
 
@@ -16,6 +17,7 @@ Lets a DSH session find another open session, ask it to do something, and read i
 { "tool": "send_to_session", "args": { "session": "ctnp 25883", "text": "Please re-run the five reviews on the final diff and report the findings.", "mode": "queue" } }
 { "tool": "read_session_result", "args": { "session": "ctnp 25883" } }
 { "tool": "start_session", "args": { "text": "Review PR 6681 in the ctnp workspace and list the blocking findings.", "workspace": "ctnp", "sparc": false, "effort": "high" } }
+{ "tool": "archive_self", "args": { "message": "Shipped the guard and archiver, both suites pass, nothing is waiting." } }
 ```
 
 `session` is an exact session id or plain words. One match: the card is preselected on that session. Several matches: the user picks on the card (the sender is never offered). No match: the call returns the nearest titles (`no-match`).
@@ -76,6 +78,17 @@ Result: `{ status: "queued-for-confirmation", cardId, offers, sparc, effort? }` 
 - **Known limitation: list view.** A card waiting for confirmation shows its task text clamped to 3 lines in the list view, so expand a card from another session before starting it.
 - **Loopback is the desktop role.** The hub treats a direct loopback request on this PC as the desktop role, so a local page or process can reach the trusted todo-link action and spoof the "Requested by session" label. It still cannot start a session without a card through `start_session`.
 - **Limits reset on restart.** Limits are kept in memory, so a DSH or plugin restart resets the hourly cap. The waiting cap is read from the queue.
+
+## archive_self
+
+`archive_self({ message })`, top-level sessions only. A session that has finished its work offers to be archived; it can only offer itself (the session id comes from the caller, never from an argument).
+
+- **Message.** Required. Cleaned to one line (control and invisible characters dropped, whitespace collapsed) and clipped to 200 characters; it becomes the reason shown on the card, as plain text. A message that is empty after cleaning is rejected `empty`.
+- **Card.** The queue adds one open `archive` card per session (chip *Archive*, desktop and phone). A repeat call while the card is open only updates its reason (`updated: true`). Nothing is archived before the user presses **Archive session**; **Keep session** dismisses it. No push is sent.
+- **Switch.** It obeys the review queue setting `archiveOfferCommands: false`: the tool then answers `disabled` and the call does not use the rate limit. The same switch turns off the `ARCHIVE-OFFER` marker and `/archive-offer` command.
+- **Limit.** 1 offer per session per minute, kept in memory (a restart resets it). The slot is given back when the queue fails.
+- **Result.** `{ status: "offered", cardId, updated }` or `{ status: "rejected", reason }`. Reasons: `no-sender`, `sub-agent-sender`, `empty`, `no-queue`, `queue-unsupported` (the queue does not declare `offerArchive` support), `disabled`, `rate-limit`, `queue-failed`; an error code from the queue (for example `bad-input`) is returned as the reason too.
+- **Hub mode.** The hub queue forwards `offerArchive` and reads the switch from this app's own local queue, never from the hub.
 
 ## Unrestricted read warning
 
