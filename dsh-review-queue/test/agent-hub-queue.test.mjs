@@ -38,9 +38,9 @@ function make() {
 
 test('the hub queue declares requireConfirm support, in hub mode and not', () => {
   const { queue, client } = make()
-  assert.deepEqual(queue.supports, { requireConfirm: true })
+  assert.deepEqual(queue.supports, { requireConfirm: true, offerArchive: true })
   client.setState('disconnected')
-  assert.deepEqual(queue.supports, { requireConfirm: true })
+  assert.deepEqual(queue.supports, { requireConfirm: true, offerArchive: true })
 })
 
 test('connected: reads come from the mirror, in hub order with global positions, and carry the owner', () => {

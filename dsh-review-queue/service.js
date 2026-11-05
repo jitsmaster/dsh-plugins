@@ -36,7 +36,7 @@ const needsUser = (item) => (item.type !== 'paused' || isLimitSignin(item)) && i
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, paused, limitSignIn, onHold, threadOf, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, paused, limitSignIn, onHold, threadOf, archiveOfferEnabled = () => true, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
@@ -563,7 +563,9 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     /** The follow-up cards a session created by a link, with their states (todo-states.js). */
     todoStates: (opts) => todoStatesOf(store.snapshot(), opts),
     /** Capabilities a trusted plugin can check: an older queue lacks this and would ignore addTodo's requireConfirm. */
-    supports: { requireConfirm: true },
+    supports: { requireConfirm: true, offerArchive: true },
+    /** The shared archiveOfferCommands switch (marker, command and the session-link tool archive_self): false when the user turned archive offers off. */
+    archiveOfferEnabled: () => archiveOfferEnabled() !== false,
     /** The oldest open item (position 1), or undefined. */
     first: () => store.snapshot().open[0],
     /** Reads the open item at a 1-based queue position (what the card's play button reads) and focuses it. */

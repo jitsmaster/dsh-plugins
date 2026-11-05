@@ -242,7 +242,8 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   // A session goes on hold by "/onhold <reason>" typed in it, or by an ONHOLD marker line it prints itself (off with onHoldCommands: false).
   installOnHoldCommand(ctx, { onHoldOf: () => onHold, log, enabled: () => config.onHoldCommands !== false })
   // A session asks the user to archive it by "/archive-offer <reason>" typed in it or an ARCHIVE-OFFER marker line it prints itself: an archive card (desktop and phone), nothing is archived before the user presses it (off with archiveOfferCommands: false).
-installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.archiveOfferCommands !== false })
+  const archiveOfferEnabled = () => config.archiveOfferCommands !== false // shared by the marker/command paths and the queue (the session-link tool archive_self asks it)
+  installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: archiveOfferEnabled })
   // AI triage (triage-runner.js) shares ONE rule set and ONE correction memory with the queue, so a mode change or a correction made through the queue acts at once.
   // Off with triage: false or env DSH_RQ_TRIAGE=0, and off in node --test runs unless triage: true; config.triageDeps replaces parts (tests).
   const triageWanted = config.triage === true || (config.triage !== false && process.env.DSH_RQ_TRIAGE !== '0' && process.env.NODE_TEST_CONTEXT === undefined)
@@ -268,7 +269,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
     : undefined
   // dsh-hooks-tts's 'handoffFollowUp' service (read per call: that plugin may load later or not at all).
   const handoffFollowOf = () => { try { return ctx.get?.('handoffFollowUp') ?? undefined } catch { return undefined } }
-  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, limitSignIn, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, limitSignIn, archiveOfferEnabled, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
   // Observe mode only: every new item is judged in the background and an open card that is safe to handle gets the note "AI would have handled this". Nothing is ever done to an item.
   let triage
   if (triageWanted) {

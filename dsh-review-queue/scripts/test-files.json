@@ -298,5 +298,6 @@
   "test/limit-routes.test.mjs",
   "test/limit-card-ui.test.mjs",
   "test/limit-shutdown.test.mjs",
-  "test/limit-recover.test.mjs"
+  "test/limit-recover.test.mjs",
+  "test/archive-offer-switch.test.mjs"
 ]
