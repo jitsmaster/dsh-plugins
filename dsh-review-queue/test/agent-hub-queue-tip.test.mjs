@@ -6,21 +6,22 @@ import { createHubQueue } from '../agent/hub-queue.js'
 function make(connected = true) {
   const listeners = new Set()
   const local = {
-    tip: () => ({ id: 't1' }), stopTip: () => { local.stopped++ ; return { ok: true } }, stopped: 0, watched: 0, watchSessions: () => { local.watched++ }, snapshotArgs: [], tipDeeper: (id) => ({ ok: true, deeper: id }), tipTodo: (id, ws, opts) => ({ ok: true, id, ws, ...(opts ? { opts } : {}) }), readTip: (id) => ({ ok: true, from: 'local', id }), readingId: () => localReading,
-    snapshot: (opts) => { local.snapshotArgs.push(opts); return { snapshotId: 'L', open: [], resolved: [], reading: localReading, tip: { id: 't1' } } },
+    tip: () => ({ id: 't1' }), stopTip: () => { local.stopped++ ; return { ok: true } }, stopped: 0, watched: 0, watchSessions: () => { local.watched++ }, snapshotArgs: [], tipDeeper: (id) => ({ ok: true, deeper: id }), tipTodo: (id, ws, opts) => ({ ok: true, id, ws, ...(opts ? { opts } : {}) }), readTip: (id) => ({ ok: true, from: 'local', id }), readingId: () => localReading, tipSurvey: (id, ws) => { local.surveyCalls.push([id, ws]); return { ok: true, survey: { id: 's1', tipId: id, workspaceId: ws } } }, surveyCalls: [], tipSurveyState: () => ({ ok: true, surveys: [] }),
+    snapshot: (opts) => { local.snapshotArgs.push(opts); return { snapshotId: 'L', open: [], resolved: [], reading: localReading, tip: { id: 't1' }, ...(localSurvey ? { tipSurvey: localSurvey } : {}) } },
     onChange: (l) => { listeners.add(l); return () => listeners.delete(l) }, stop: () => ({ ok: true }), uiState: () => ({ seq: 0 }),
   }
   let localReading
+  let localSurvey
   let hubWorkspaces = []
   let mirrorSnap = connected ? { snapshotId: 'e:1', open: [], resolved: [] } : undefined
   const mirrorListeners = new Set()
   const client = {
     state: connected ? 'connected' : 'stopped',
     mirror: { ready: connected, snapshot: () => mirrorSnap, workspaces: () => hubWorkspaces, onChange: (l) => { mirrorListeners.add(l); return () => mirrorListeners.delete(l) } },
-    onState: () => () => {}, call: async () => ({ ok: true }),
+    instanceId: 'ab12', onState: () => () => {}, call: async () => ({ ok: true }),
   }
   const queue = createHubQueue({ local, client, speaker: { speak: () => ({ ok: true }), stop() {} }, controllerOf: () => ({}) })
-  return { queue, local, setHubWorkspaces: (list) => { hubWorkspaces = list }, setReading: (v) => { localReading = v }, setMirror: (snap) => { mirrorSnap = snap; mirrorListeners.forEach((l) => l()) } }
+  return { queue, local, setHubWorkspaces: (list) => { hubWorkspaces = list }, setReading: (v) => { localReading = v }, setSurvey: (v) => { localSurvey = v }, setMirror: (snap) => { mirrorSnap = snap; mirrorListeners.forEach((l) => l()) } }
 }
 
 test('tip() and readTip() go to the local service in hub mode', () => {
@@ -104,4 +105,60 @@ test('without a hub no title is passed: the local registry is the only source', 
   const { queue, setHubWorkspaces } = make(false)
   setHubWorkspaces([{ id: 'ab12/w1', title: 'Alpha' }])
   assert.deepEqual(queue.tipTodo('t1', 'ab12/w1'), { ok: true, id: 't1', ws: 'ab12/w1' })
+})
+
+test('tipSurvey() in hub mode: a bare id is passed as is, the own "<instanceId>/<id>" has the prefix stripped', () => {
+  const { queue, local, setHubWorkspaces } = make(true)
+  setHubWorkspaces([{ id: 'ab12/w1', title: 'Alpha (Laptop)' }])
+  assert.deepEqual(queue.tipSurvey('t1', 'w1'), { ok: true, survey: { id: 's1', tipId: 't1', workspaceId: 'w1' } })
+  assert.deepEqual(queue.tipSurvey('t1', 'ab12/w1'), { ok: true, survey: { id: 's1', tipId: 't1', workspaceId: 'w1' } })
+  assert.deepEqual(local.surveyCalls, [['t1', 'w1'], ['t1', 'w1']])
+  assert.deepEqual(queue.tipSurveyState(), { ok: true, surveys: [] })
+})
+
+test('tipSurvey() in hub mode refuses a workspace of another app with other-app, and the local service is not called', () => {
+  const { queue, local, setHubWorkspaces } = make(true)
+  setHubWorkspaces([{ id: 'cd34/w2', title: 'Beta' }])
+  assert.deepEqual(queue.tipSurvey('t1', 'cd34/w2'), { ok: false, error: 'other-app' })
+  assert.deepEqual(local.surveyCalls, [])
+})
+
+test('tipSurvey() without a hub passes the id unchanged, whatever it looks like', () => {
+  const { queue, local } = make(false)
+  queue.tipSurvey('t1', 'w1')
+  queue.tipSurvey('t1', 'ab12/w1')
+  queue.tipSurvey('t1', 'cd34/w2')
+  assert.deepEqual(local.surveyCalls, [['t1', 'w1'], ['t1', 'ab12/w1'], ['t1', 'cd34/w2']])
+})
+
+test('the tipSurvey field of the local snapshot survives the hub snapshot merge (the card works in hub mode), and is absent when the local one has none', () => {
+  const { queue, setSurvey } = make(true)
+  queue.snapshot() // the hub view is active
+  assert.ok(!('tipSurvey' in queue.snapshot()))
+  setSurvey([{ id: 's1', state: 'running' }])
+  assert.deepEqual(queue.snapshot().tipSurvey, [{ id: 's1', state: 'running' }])
+})
+test('in hub mode the survey records of the snapshot carry "<instanceId>/<workspaceId>" (a copy; an already prefixed id is kept; the local objects are not mutated)', () => {
+  const { queue, setSurvey } = make(true)
+  const rec = { id: 's1', workspaceId: 'w1', state: 'running' }
+  const done = { id: 's2', workspaceId: 'ab12/w2', state: 'ready' }
+  setSurvey([rec, done])
+  const got = queue.snapshot().tipSurvey
+  assert.deepEqual(got.map((r) => r.workspaceId), ['ab12/w1', 'ab12/w2'])
+  assert.equal(rec.workspaceId, 'w1', 'the local record is untouched')
+})
+
+test('without a hub the survey records keep the bare workspaceId', () => {
+  const { queue, setSurvey } = make(false)
+  setSurvey([{ id: 's1', workspaceId: 'w1', state: 'running' }])
+  assert.equal(queue.snapshot().tipSurvey[0].workspaceId, 'w1')
+})
+
+test('tipSurveyState() maps the workspaceId the same way in hub mode only', () => {
+  const hub = make(true)
+  hub.local.tipSurveyState = () => ({ ok: true, surveys: [{ id: 's1', workspaceId: 'w1' }] })
+  assert.deepEqual(hub.queue.tipSurveyState(), { ok: true, surveys: [{ id: 's1', workspaceId: 'ab12/w1' }] })
+  const plain = make(false)
+  plain.local.tipSurveyState = () => ({ ok: true, surveys: [{ id: 's1', workspaceId: 'w1' }] })
+  assert.deepEqual(plain.queue.tipSurveyState(), { ok: true, surveys: [{ id: 's1', workspaceId: 'w1' }] })
 })

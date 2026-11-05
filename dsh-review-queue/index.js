@@ -51,6 +51,7 @@ import { createOnHold } from './onhold.js'
 import { installOnHoldCommand } from './onhold-command.js'
 import { installArchiveOffer } from './archive-offer.js'
 import { fetchTicketState } from './ado-ticket.js'
+import { adoBaseOf, createTask } from './ado-create.js'
 import { createReviewQueue } from './service.js'
 import { createReader } from './reader.js'
 import { listWorkspaces } from './todo.js'
@@ -64,6 +65,7 @@ import { readThread } from './thread.js'
 import { sourcesForItem } from './triage-sources.js'
 import { snippetsFromThread } from './follow-up.js'
 import { createTaskbarBadge } from './taskbar.js'
+import { createSurveyLogReader } from './tip-survey.js'
 import { CHECK_MS, IDLE_MS, createIdleJudge, createIdleResumer, createLogReader } from './idle-resume.js'
 import { ASK_CHECK_MS, ASK_IDLE_MS, BEAT_MS, createIdleAsker, createSleepTracker } from './idle-ask.js'
 import { createTriageJudge } from './triage-judge.js'
@@ -269,7 +271,18 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
     : undefined
   // dsh-hooks-tts's 'handoffFollowUp' service (read per call: that plugin may load later or not at all).
   const handoffFollowOf = () => { try { return ctx.get?.('handoffFollowUp') ?? undefined } catch { return undefined } }
-  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, limitSignIn, archiveOfferEnabled, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
+  // "Find places" (tip-survey.js): the survey is built by the queue over its own todos; the session log is read like the idle check reads it, the workspaces are this app's own registry (a hub workspace is refused),
+  // the tip is looked up by id while it is the current one, and the ADO calls read the PAT from the environment inside ado-create.js only. config.tipSurveyDeps replaces parts (tests).
+  const tipSurveyDeps = {
+    readLog: config.idleDeps?.readLog ?? createSurveyLogReader({ root: sessionsRoot }),
+    workspacesOf: () => listWorkspaces(registryOf) ?? [],
+    tipOf: (id) => { try { const tip = tipper.peek(); return tip && tip.id === id ? tip : undefined } catch { return undefined } },
+    adoBaseOf: (path) => adoBaseOf(path),
+    createTask: (base, task) => createTask(base, task, { env: process.env, log }),
+    log,
+    ...(config.tipSurveyDeps ?? {}),
+  }
+  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, limitSignIn, archiveOfferEnabled, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, tipSurveyDeps, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
   // Observe mode only: every new item is judged in the background and an open card that is safe to handle gets the note "AI would have handled this". Nothing is ever done to an item.
   let triage
   if (triageWanted) {
@@ -370,7 +383,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
   sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); triage?.stop(); aiReporter?.stop(); pausedTimers.forEach(clearTimeout); try { let cancelTimer; await Promise.race([(async () => { await limitSignIn.cancel(); await limitSignIn.whenDone() })(), new Promise((resolve) => { cancelTimer = setTimeout(() => { log('limit-signin: cancel at shutdown timed out'); resolve() }, config.limitCancelTimeoutMs ?? 10_000); cancelTimer.unref?.() })]).finally(() => clearTimeout(cancelTimer)) } catch (error) { log('limit-signin: cancel at shutdown failed: ' + String(error?.message ?? error)) } idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); triage?.stop(); aiReporter?.stop(); queue.stopTipSurvey?.(); pausedTimers.forEach(clearTimeout); try { let cancelTimer; await Promise.race([(async () => { await limitSignIn.cancel(); await limitSignIn.whenDone() })(), new Promise((resolve) => { cancelTimer = setTimeout(() => { log('limit-signin: cancel at shutdown timed out'); resolve() }, config.limitCancelTimeoutMs ?? 10_000); cancelTimer.unref?.() })]).finally(() => clearTimeout(cancelTimer)) } catch (error) { log('limit-signin: cancel at shutdown failed: ' + String(error?.message ?? error)) } idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.

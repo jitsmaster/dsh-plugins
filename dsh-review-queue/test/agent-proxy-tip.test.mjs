@@ -218,3 +218,73 @@ test('standalone: a local change of the session numbers wakes the proxy long pol
   assert.deepEqual(res.json.sessions, { working: 2, open: 2 })
   assert.ok(Date.now() - started < 3000)
 })
+
+// ---- the Find places surveys are this app's own: in hub mode the proxy merges them from the local queue and watches their key ----
+function surveyQueue() {
+  let onChange = () => {}
+  const survey = { records: [], state: () => survey.records, start: () => ({ ok: true }), onChange: (l) => { onChange = l; return () => {} }, fire: () => onChange() }
+  const store = createStore()
+  store.add({ type: 'completed', sessionId: 'own', summary: 'x', payload: {} })
+  const queue = createReviewQueue({ store, capture: {}, controllerOf: () => undefined, tipSurvey: survey, speaker: { speak: () => ({ ok: true }), stop() {} } })
+  return { queue, survey }
+}
+const SURVEY = { id: 's1', tipId: 't1', tipTitle: 'Bloom filters', workspaceId: 'w1', workspaceTitle: 'Alpha', state: 'running' }
+
+test('hub mode: a local survey change wakes the long poll and the full answer carries tipSurvey', async (t) => {
+  const hub = await startFakeHub(t)
+  hub.respond = async (rec) => {
+    if (!new URL('http://x' + rec.url).searchParams.has('since')) return [200, hubSnap('E:5', [], { sessions: { working: 1, open: 2 } })]
+    await sleep(400)
+    return [200, { unchanged: true, snapshotId: 'E:5' }]
+  }
+  const { queue, survey } = surveyQueue()
+  const p = await startProxy(t, { hub, queue, mirror: () => hubSnap('E:5', []) })
+  const first = await snapOf(p, '')
+  assert.ok(!('tipSurvey' in first), 'no records, no field')
+  const token = fullStampOf(first)
+  assert.equal(token.split('|').length, 8)
+  const started = Date.now()
+  const pending = p.get('/v1/snapshot?wait=5000&since=' + encodeURIComponent(token))
+  await sleep(60)
+  survey.records = [SURVEY]
+  survey.fire()
+  const res = await pending
+  assert.equal(res.status, 200)
+  assert.equal(res.json.unchanged, undefined)
+  assert.equal(res.json.tipSurvey[0].id, 's1')
+  assert.equal(res.json.tipSurvey[0].state, 'running')
+  assert.ok(Date.now() - started < 3000)
+})
+
+test('hub mode: a token whose survey key is stale gets the full answer at once, with tipSurvey', async (t) => {
+  const hub = await startFakeHub(t)
+  hub.respond = (rec) => (new URL('http://x' + rec.url).searchParams.has('since') ? [200, { unchanged: true, snapshotId: 'E:5' }] : [200, hubSnap('E:5', [])])
+  const { queue, survey } = surveyQueue()
+  survey.records = [SURVEY]
+  const p = await startProxy(t, { hub, queue, mirror: () => hubSnap('E:5', []) })
+  const first = await snapOf(p, '')
+  const stale = fullStampOf({ ...first, tipSurvey: undefined })
+  const res = await p.get('/v1/snapshot?wait=0&since=' + encodeURIComponent(stale))
+  assert.equal(res.json.tipSurvey[0].id, 's1')
+  const same = await p.get('/v1/snapshot?wait=0&since=' + encodeURIComponent(fullStampOf(first)))
+  assert.deepEqual(same.json, { unchanged: true, snapshotId: 'E:5' })
+})
+
+test('hub mode: a client with fewer than eight token parts is not held to the survey key', async (t) => {
+  const hub = await startFakeHub(t)
+  hub.respond = (rec) => (new URL('http://x' + rec.url).searchParams.has('since') ? [200, { unchanged: true, snapshotId: 'E:5' }] : [200, hubSnap('E:5', [])])
+  const { queue, survey } = surveyQueue()
+  survey.records = [SURVEY]
+  const p = await startProxy(t, { hub, queue, mirror: () => hubSnap('E:5', []) })
+  await snapOf(p, '')
+  const res = await p.get('/v1/snapshot?wait=0&since=' + encodeURIComponent('E:5|||0|1/2||'))
+  assert.deepEqual(res.json, { unchanged: true, snapshotId: 'E:5' })
+})
+
+test('hub mode: the hub answer has no tipSurvey field when there are no records', async (t) => {
+  const hub = await startFakeHub(t)
+  hub.respond = () => [200, hubSnap('E:5', [])]
+  const { queue } = surveyQueue()
+  const p = await startProxy(t, { hub, queue, mirror: () => hubSnap('E:5', []) })
+  assert.ok(!('tipSurvey' in await snapOf(p, '')))
+})
