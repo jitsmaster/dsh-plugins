@@ -14,7 +14,7 @@ test('desktop line names the sender and the steer mode after the original senten
   const plainLine = core.todoLine(fu(), undefined, [])
   const line = core.todoLine(fu(LINKED), undefined, [])
   assert.ok(line.startsWith(plainLine))
-  assert.ok(line.includes('From session Me'))
+  assert.ok(line.includes('From session Me (me)'))
   assert.ok(line.includes('Will be inserted into the running turn'))
   assert.ok(line.includes(plainLine + ' — '))
 })
@@ -36,7 +36,7 @@ test('desktop Send button label', () => {
 test('phone card model: startLabel, sourceLine and modeLine', async () => {
   const m = plain((await model()).todoCardModel(core, fu(LINKED), []))
   assert.equal(m.startLabel, 'Send (steer)')
-  assert.equal(m.sourceLine, 'From session Me')
+  assert.equal(m.sourceLine, 'From session Me (me)')
   assert.equal(m.modeLine, 'Will be inserted into the running turn')
   const q = plain((await model()).todoCardModel(core, fu(), []))
   assert.equal(q.startLabel, 'Send')

@@ -474,10 +474,12 @@ function imageFilesOf(data) {
 			}
 			return { value, options, placeholder: value ? undefined : "Pick a workspace…" };
 		}
+		/** The sending session: its title plus the first 8 characters of its id, or the full id when untitled. Browser copy lives in lib/mobile/model.js; keep both in sync. */
+		function sourceLabel(source) { return source.title ? source.title + " (" + String(source.sessionId).slice(0, 8) + ")" : source.sessionId; }
 		/** The sentence under the text of a follow-up, then (session link) who sent it and how it arrives. */
 		function followUpLine(item, pick) {
 			const line = followUpBase(item, pick);
-			const from = item.source && typeof item.source === "object" ? "From session " + (item.source.title || item.source.sessionId) : "";
+			const from = item.source && typeof item.source === "object" ? "From session " + sourceLabel(item.source) : "";
 			const how = item.mode === "steer" ? "Will be inserted into the running turn" : "";
 			return [line, from, how].filter(Boolean).join(" — ");
 		}
@@ -502,6 +504,10 @@ function imageFilesOf(data) {
 		/** The sentence under the task text. */
 		function todoLine(item, pick, workspaces) {
 			if (isFollowUp(item)) return followUpLine(item, pick);
+			const line = newSessionLine(item, pick, workspaces);
+			return item.source && typeof item.source === "object" ? [line, "Requested by session " + sourceLabel(item.source)].filter(Boolean).join(" — ") : line;
+		}
+		function newSessionLine(item, pick, workspaces) {
 			const title = (id) => { const w = (workspaces || []).find((x) => x.id === id); return w ? w.title : "the chosen workspace"; };
 			switch (todoCardState(item)) {
 				case "confirm": case "pick": case "suggesting": {

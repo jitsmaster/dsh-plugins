@@ -273,5 +273,9 @@
   "test/todo-states.test.mjs",
   "test/client-follow-up-link.test.mjs",
   "test/follow-up-link-routes.test.mjs",
-  "test/todo-follow-up-link.test.mjs"
+  "test/todo-follow-up-link.test.mjs",
+  "test/todo-require-confirm.test.mjs",
+  "test/hub-todo-link.test.mjs",
+  "test/todo-link-options-http.test.mjs",
+  "test/client-new-session-card.test.mjs"
 ]

@@ -128,7 +128,7 @@ export function todoCardModel(core, item, workspaces, pick) {
     sparc: !!item.sparc,
     effort: typeof item.effort === 'string' ? item.effort : '',
     line: core.todoLine({ ...item, source: undefined, mode: undefined }, pick, workspaces), // the sender and the mode have their own lines below
-    sourceLine: item.source && typeof item.source === 'object' ? 'From session ' + (item.source.title || item.source.sessionId) : '',
+    sourceLine: item.source && typeof item.source === 'object' ? (followUp ? 'From session ' : 'Requested by session ') + sourceLabel(item.source) : '',
     modeLine: item.mode === 'steer' ? 'Will be inserted into the running turn' : '',
     failed,
     canAct,
@@ -145,6 +145,9 @@ export function todoCardModel(core, item, workspaces, pick) {
 /** A todo that is a follow-up for an existing session. */
 // Source of truth for what a follow-up item is: kind 'followup' of todo-follow-up.js (a browser copy of that check).
 const isFollowUp = (item) => !!item && item.kind === 'followup'
+
+// Browser copy of sourceLabel in lib/client.js; keep both in sync.
+const sourceLabel = (source) => (source.title ? source.title + ' (' + String(source.sessionId).slice(0, 8) + ')' : source.sessionId)
 
 /** The body of POST /v1/todo-confirm (Start, Send or Retry): the chosen session of a follow-up, else the chosen workspace. */
 export const todoConfirmBody = (item, selected) => (isFollowUp(item) ? { id: item.id, sessionId: selected } : { id: item.id, workspaceId: selected })
