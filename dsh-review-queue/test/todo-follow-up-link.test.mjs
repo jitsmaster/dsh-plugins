@@ -22,6 +22,8 @@ test('checkLinkOptions validates and cleans the three options', () => {
   assert.deepEqual(checkLinkOptions({ source: { sessionId: 'a b' } }), { ok: false, error: 'bad-source' })
   assert.deepEqual(checkLinkOptions({ source: { sessionId: 'a1', title: '  x\ny\u0000 z ' } }).source, { sessionId: 'a1', title: 'x y z' })
   assert.equal(checkLinkOptions({ source: { sessionId: 'a1', title: 'x'.repeat(200) } }).source.title.length, 80)
+  assert.equal(checkLinkOptions({ source: { sessionId: 'a1', title: '\u202eevil\u200b "t"\u3164 [x]\u{e0041}' } }).source.title, 'evil t x')
+  assert.equal(checkLinkOptions({ source: { sessionId: 'a1', title: '\uff3bMessage\uff3d a\uff02b\u201cc\u201dd\u300ce\u300f' } }).source.title, 'Message a b c d e')
   const many = Array.from({ length: 30 }, (_, i) => 'id' + i)
   assert.deepEqual(checkLinkOptions({ excludeSessionIds: ['a', 'a', 7, 'b', ...many] }).exclude, ['a', 'b', ...many].slice(0, 20))
   assert.deepEqual(checkLinkOptions({ excludeSessionIds: 'a' }).exclude, [])

@@ -20,15 +20,15 @@ test('the agent API needs the secret: a wrong or missing one is 401, and so is a
 })
 
 test('an agent of an older protocol, or one that sends none, gets 426 upgrade-required on every route; this protocol and newer are served', async (t) => {
-  const { port } = await startHub(t, { protocol: 3 })
+  const { port } = await startHub(t, { protocol: 4 })
   for (const protocol of [1, undefined]) {
     const a = agentOf(port, { protocol })
     const res = await a.register()
-    assert.deepEqual([res.status, res.json], [426, { error: 'upgrade-required', protocol: 3 }], String(protocol))
+    assert.deepEqual([res.status, res.json], [426, { error: 'upgrade-required', protocol: 4 }], String(protocol))
     assert.equal((await a.poll()).status, 426)
     assert.equal((await a.ops([])).status, 426)
   }
-  for (const protocol of [2, 3, 4]) assert.equal((await agentOf(port, { protocol }).register()).status, 200, String(protocol))
+  for (const protocol of [3, 4, 5]) assert.equal((await agentOf(port, { protocol }).register()).status, 200, String(protocol))
 })
 
 test('only POST registers and only GET polls; unknown agent routes are 404', async (t) => {

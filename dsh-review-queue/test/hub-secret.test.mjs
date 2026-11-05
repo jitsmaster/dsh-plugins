@@ -3,12 +3,13 @@ import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadOrCreateSecret, secretMatches } from '../hub/secret.js'
-import { PROTOCOL } from '../hub/protocol.js'
+import { PROTOCOL, MIN_HUB_PROTOCOL } from '../hub/protocol.js'
 import { createHub, PROTOCOL as HUB_PROTOCOL } from '../hub/hub.js'
 import { tmpDir } from './hub-helpers.mjs'
 
-test('the protocol constant starts at 1 and is the hub one', () => {
-  assert.equal(PROTOCOL, 1)
+test('the protocol constant is 2 (bumped so a hub older than requireConfirm is restarted) and is the hub one', () => {
+  assert.equal(PROTOCOL, 2)
+  assert.equal(MIN_HUB_PROTOCOL, 2)
   assert.equal(HUB_PROTOCOL, PROTOCOL)
   assert.equal(createHub({ stateDir: 'x' }).protocol, PROTOCOL)
 })

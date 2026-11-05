@@ -159,7 +159,7 @@ test('the hub gone and back: the client degrades, keeps its ops, and syncs when 
 })
 
 test('an older client than the hub is told to upgrade and stops talking', async (t) => {
-  const { port } = await startHub(t, { protocol: 3 })
+  const { port } = await startHub(t, { protocol: 4 })
   const spy = spyFetch()
   const { client } = setup(t, port, { fetch: spy.fetch })
   client.start()

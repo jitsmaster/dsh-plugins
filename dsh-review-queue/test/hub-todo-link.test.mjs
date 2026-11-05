@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { agentOf } from './hub-agent-helpers.mjs'
+import { agentOf, startHub, sync } from './hub-agent-helpers.mjs'
 import { P, startPhoneHub } from './hub-device-helpers.mjs'
 import { act, autopilot, kinds, nothingQueued, twoApps, ws } from './hub-follow-up-helpers.mjs'
 
@@ -63,6 +63,19 @@ test('a trusted todo-link with a workspace and no requireConfirm starts at once 
   const sent = [...seenA, ...seenB]
   assert.deepEqual(sent.map((c) => c.kind), ['todo-start'])
   assert.deepEqual([sent[0].args.source, 'requireConfirm' in sent[0].args], [SOURCE, false])
+})
+
+test('a requireConfirm todo-link never goes to an app of protocol 1: it would drop the flag and start the session at once', async (t) => {
+  const ctx = await startHub(t)
+  const old = agentOf(ctx.port, { protocol: 1 })
+  await old.register({ sync: sync({ workspaces: [ws('w1', 'alpha', 'D:/a')] }) })
+  const seen = autopilot(t, old, () => ({ ok: true, id: old.itemId(9), state: 'starting' }))
+  const withWs = await act(ctx.port, 'todo-link', { ...BODY, workspaceId: 'aaaa/w1' }, { 'x-rq-instance': old.id })
+  assert.deepEqual(withWs.json, { ok: false, error: 'coordinator-too-old' })
+  const { workspaceId, ...open } = BODY
+  const noWs = await act(ctx.port, 'todo-link', open, { 'x-rq-instance': old.id })
+  assert.deepEqual(noWs.json, { ok: false, error: 'coordinator-too-old' })
+  assert.deepEqual(kinds(seen), [])
 })
 
 test('an untrusted todo never forwards requireConfirm or source, with a workspace or without', async (t) => {

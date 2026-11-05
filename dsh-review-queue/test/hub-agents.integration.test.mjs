@@ -202,7 +202,7 @@ test('the hub is killed and its state is gone when it returns: the outbox kept w
 })
 
 test('a hub of a newer protocol: the app is told to upgrade, keeps working on its own items, and its hub queue is the local service', async (t) => {
-  const { port, dir, clock } = await startHub(t, { protocol: 3, roleOf })
+  const { port, dir, clock } = await startHub(t, { protocol: 4, roleOf })
   const A = makeApp(t, { port, dir, clock, key: 'kA', id: 'aaaa1111', label: 'DSH :1' })
   const permission = await A.permission('sa1')
   A.client.start()
