@@ -70,7 +70,7 @@ export function createSender({ get, now = Date.now, log = () => {}, limits = LIM
       if (own.some((s) => s.text === envelope && (!target || !s.targetSessionId || s.targetSessionId === target.sessionId))) return reject('duplicate')
       const followUp = target ? target.sessionId : (isSessionId(words) ? words + ' session' : words)
       let res
-      try { res = await queue.addTodo(envelope, { followUp, mode, excludeSessionIds: [agent.id], source: { sessionId: agent.id, title: titleOf(agent) } }) } catch (e) { log('session-link: addTodo failed'); return reject('queue-failed') }
+      try { res = await queue.addTodo(envelope, { followUp, mode, excludeSessionIds: [agent.id], source: { sessionId: agent.id, title: cleanTitle(titleOf(agent)) } }) } catch (e) { log('session-link: addTodo failed'); return reject('queue-failed') }
       if (!res?.ok) return reject(String(res?.error ?? 'queue-failed'))
       state.keep = true
       guards.keepCard(agent.id, res.id)

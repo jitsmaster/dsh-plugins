@@ -11,6 +11,8 @@ const bodyHash = (text) => sha(normalizeText(text))
 const cardBody = (text) => { const s = String(text ?? ''); const i = s.indexOf(CARD_BODY_END); return i < 0 ? s : s.slice(0, i) }
 const PICK = 'the user will pick'
 const MAX_WORKSPACE = 200
+// A log value from the queue: no control characters, at most 40 characters.
+const plain = (v) => String(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, 40)
 
 // perMinute and windowMs apply only to the guards instance (its minute window); hourly and waiting apply here.
 export function createStarter({ get, guards = createGuards(), now = Date.now, log = () => {}, limits = LIMITS, titleOf = (agent) => { try { return get('sessionTitle')?.get(agent.session)?.title ?? agent.id } catch { return agent?.id } } }) {
@@ -21,6 +23,8 @@ export function createStarter({ get, guards = createGuards(), now = Date.now, lo
     const body = String(text ?? '').trim()
     if (!body) return reject('empty')
     if (body.length > MAX_RAW) return reject('too-long')
+    // A text of only invisible characters would show an empty card.
+    if (!normalizeText(body)) return reject('empty')
     if (hasTrailer(body) || hasEnvelope(body)) return reject('loop-guard')
     if (sparc !== undefined && typeof sparc !== 'boolean') return reject('bad-sparc')
     if (workspace !== undefined && (typeof workspace !== 'string' || workspace.length > MAX_WORKSPACE)) return reject('bad-workspace')
@@ -44,7 +48,7 @@ export function createStarter({ get, guards = createGuards(), now = Date.now, lo
     let keep = false
     try {
       const res = await run(args, queue, final, othersInFlight, bodyHash(body))
-      keep = res.status === 'queued-for-confirmation'
+      keep = res.status === 'queued-for-confirmation' || res.reason === 'not-confirmed'
       return res
     } finally {
       if (!keep) { guards.releaseMinute(agent.id, slot); guards.releaseHour(agent.id, mark) }
@@ -75,10 +79,12 @@ export function createStarter({ get, guards = createGuards(), now = Date.now, lo
 
     let res
     try {
-      res = await queue.addTodo(final, { ...(workspaceId !== undefined ? { workspaceId } : {}), sparc: sparc === true, ...(effort !== undefined ? { effort } : {}), requireConfirm: true, source: { sessionId: agent.id, title: titleOf(agent) } })
+      res = await queue.addTodo(final, { ...(workspaceId !== undefined ? { workspaceId } : {}), sparc: sparc === true, ...(effort !== undefined ? { effort } : {}), requireConfirm: true, source: { sessionId: agent.id, title: cleanTitle(titleOf(agent)) } })
     } catch { log('session-link: addTodo failed'); return reject('queue-failed') }
     if (!res?.ok) return reject(String(res?.error ?? 'queue-failed'))
-    guards.keepCard(agent.id, res.id)
+    if (typeof res.id === 'string') guards.keepCard(agent.id, res.id)
+    // A queue that honors requireConfirm answers awaiting-confirm; any other answer (or none) means the session may have started without the user's confirm.
+    if (res.state !== 'awaiting-confirm') { log('session-link: start_session card ' + plain(res.id) + ' not awaiting confirm (state ' + plain(res.state) + ')'); return reject('not-confirmed', { cardId: res.id }) }
     return { status: 'queued-for-confirmation', cardId: res.id, offers, sparc: sparc === true, ...(effort !== undefined ? { effort } : {}) }
   }
 

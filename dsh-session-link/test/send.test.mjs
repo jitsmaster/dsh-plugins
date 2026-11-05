@@ -34,6 +34,14 @@ test('one match: a card with the exact id, the envelope text, the sender as sour
   assert.equal(s.calls.prompt.length, 0, 'nothing is sent before the user confirms')
 })
 
+test('the card source title is cleaned of bidi and invisible characters before it reaches the queue', async () => {
+  const s = setup()
+  const sender = createSender({ get: (n) => s.svc[n], now: () => 1_000_000, titleOf: () => '\u202eevil\u200b "title"\u3164 [x]' })
+  const r = await sender.send({ agent, session: 'fix 25883', text: 'rerun the tests', callId: 'c1' })
+  assert.equal(r.status, 'queued-for-confirmation')
+  assert.deepEqual(s.calls.addTodo[0].source, { sessionId: 'me', title: 'evil title x' })
+})
+
 test('several matches: the words go to the queue, never an id-shaped single word', async () => {
   const s = setup()
   const r = await go(s, { session: 'ctnp' })

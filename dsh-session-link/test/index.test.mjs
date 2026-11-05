@@ -6,7 +6,7 @@ import { createGuards } from '../guards.js'
 function load(extra = {}, config = {}) {
   const tools = []
   const items = [{ sessionId: 's1', updatedAt: 2, cwd: 'D:\\a', projections: { values: { title: 'Fix 25883' } } }, { sessionId: 'me', updatedAt: 3, cwd: 'D:\\b' }]
-  const svc = { sessionController: { list: async () => ({ items }), prompt: async () => ({}) }, workspaceRegistry: { archivedSessionIds: new Set() }, agents: { list: () => [] }, sessionTitle: { get: () => ({ title: 'Me' }) }, reviewQueue: { addTodo: async () => ({ ok: true, id: 'c1' }), todoStates: () => [], supports: { requireConfirm: true } }, ...extra }
+  const svc = { sessionController: { list: async () => ({ items }), prompt: async () => ({}) }, workspaceRegistry: { archivedSessionIds: new Set() }, agents: { list: () => [] }, sessionTitle: { get: () => ({ title: 'Me' }) }, reviewQueue: { addTodo: async () => ({ ok: true, id: 'c1', state: 'awaiting-confirm' }), todoStates: () => [], supports: { requireConfirm: true } }, ...extra }
   apply({ tools: { register: (t) => tools.push(t) }, get: (n) => svc[n] }, config)
   return Object.fromEntries(tools.map((t) => [t.name, t]))
 }

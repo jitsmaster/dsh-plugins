@@ -50,6 +50,22 @@ test('validation rejects', async () => {
   assert.equal(s.calls.addTodo.length, 0)
 })
 
+test('a text made only of characters that render as nothing is empty', async () => {
+  const s = setup()
+  assert.equal((await start(s, { text: '\u200b\u3164\u2800\ufe0f' })).reason, 'empty')
+  assert.equal((await start(s, { text: ' \u00ad \u{e0041}' })).reason, 'empty')
+  assert.equal(s.calls.addTodo.length, 0)
+  assert.equal(s.calls.todoStates, 0)
+  assert.equal(s.guards.hourly(ME), 0)
+})
+
+test('the card source title is cleaned of bidi and invisible characters before it reaches the queue', async () => {
+  const s = setup()
+  const starter = createStarter({ get: s.get, guards: s.guards, now: s.now, limits: s.limits, titleOf: () => '\u202eevil\u200b "title"\u3164 [x]' })
+  assert.equal((await starter.start({ agent, text: 'Do the thing' })).status, 'queued-for-confirmation')
+  assert.deepEqual(s.calls.addTodo[0].opts.source, { sessionId: ME, title: 'evil title x' })
+})
+
 test('an oversized workspace string is rejected before any queue call', async () => {
   const s = setup()
   assert.equal((await start(s, { workspace: 'w'.repeat(201) })).reason, 'bad-workspace')
@@ -153,6 +169,43 @@ test('addTodo call shape and success result', async () => {
   const plain = await start(s, { text: 'second' })
   assert.equal(plain.sparc, false)
   assert.equal(s.calls.addTodo[1].opts.sparc, false)
+})
+
+test('a queue that starts the session instead of waiting is reported as not-confirmed and keeps the budget', async () => {
+  const logs = []
+  const s = setup({ queue: { addTodo: async () => ({ ok: true, id: 'card-x', state: 'starting' }) } })
+  const starter = createStarter({ get: s.get, guards: s.guards, now: s.now, log: (l) => logs.push(l), titleOf: () => 'My Session' })
+  const res = await starter.start({ agent, text: 'Do the thing', workspace: 'app1/ws-alpha' })
+  assert.equal(res.status, 'rejected')
+  assert.equal(res.reason, 'not-confirmed')
+  assert.equal(res.cardId, 'card-x')
+  assert.equal(s.guards.hourly(ME), 1)
+  assert.equal(s.guards.flightsOf(ME), 0)
+  assert.ok(logs.length >= 1)
+})
+
+test('the not-confirmed log line carries no control characters from the queue answer', async () => {
+  const logs = []
+  const s = setup({ queue: { addTodo: async () => ({ ok: true, id: 'card\nx', state: 'sta\r\nrt\u0007ing' }) } })
+  const starter = createStarter({ get: s.get, guards: s.guards, now: s.now, log: (l) => logs.push(l), titleOf: () => 'My Session' })
+  await starter.start({ agent, text: 'Do the thing' })
+  assert.ok(logs.length >= 1)
+  for (const l of logs) assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(l), JSON.stringify(l))
+})
+
+test('a queue answer without a state is not-confirmed too', async () => {
+  const s = setup({ queue: { addTodo: async () => ({ ok: true, id: 'card-y' }) } })
+  const res = await start(s, {})
+  assert.equal(res.reason, 'not-confirmed')
+  assert.equal(res.cardId, 'card-y')
+})
+
+test('a not-confirmed answer without a card id still keeps the hourly slot', async () => {
+  const s = setup({ queue: { addTodo: async () => ({ ok: true }) } })
+  const res = await start(s, {})
+  assert.equal(res.reason, 'not-confirmed')
+  assert.equal(s.guards.hourly(ME), 1)
+  assert.equal(s.guards.flightsOf(ME), 0)
 })
 
 const waiting = (n, kind = 'newsession') => Array.from({ length: n }, (_, i) => ({ id: 'w' + i, kind, state: 'awaiting-confirm', status: 'open', text: 'w' + i }))
@@ -273,7 +326,7 @@ for (const kind of ['throw', 'not-ok']) {
 
 test('failure does not consume the budget: retries after failures still succeed', async () => {
   let fail = 4
-  const s = setup({ queue: { addTodo: async () => (fail-- > 0 ? { ok: false, error: 'nope' } : { ok: true, id: 'c' }) } })
+  const s = setup({ queue: { addTodo: async () => (fail-- > 0 ? { ok: false, error: 'nope' } : { ok: true, id: 'c', state: 'awaiting-confirm' }) } })
   for (let i = 0; i < 4; i++) assert.equal((await start(s, {})).reason, 'nope')
   assert.equal((await start(s, {})).status, 'queued-for-confirmation')
 })
