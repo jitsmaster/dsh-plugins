@@ -171,6 +171,7 @@
   "test/mobile-sessions.test.mjs",
   "test/agent-proxy-tip.test.mjs",
   "test/agent-hub-queue-tip.test.mjs",
+  "test/triage-hub-queue.test.mjs",
   "test/agent-client-sessions.test.mjs",
   "test/plugin-tip-sessions.integration.test.mjs",
   "test/client-action-text.test.mjs",

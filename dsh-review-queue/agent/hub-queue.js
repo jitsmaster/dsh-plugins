@@ -58,7 +58,11 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     const hub = hubMode()
     const snap = (hub ? view : local).snapshot(opts)
     const own = hub && snap.reading === undefined ? local.readingId?.() : undefined
-    return typeof own === 'string' && own.startsWith(TIP_READING) ? { ...snap, reading: own } : snap
+    const base = typeof own === 'string' && own.startsWith(TIP_READING) ? { ...snap, reading: own } : snap
+    if (!hub) return base
+    // The AI-triage switch and the hourly report chip are this app's own (the hub view has no triage): only those two fields come from the local service.
+    const mine = local.snapshot({})
+    return { ...base, ...(mine.triage ? { triage: mine.triage } : {}), ...(mine.aiReport ? { aiReport: mine.aiReport } : {}) }
   }
 
   return {
@@ -124,5 +128,10 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     tuneTodo: (text) => local.tuneTodo(text), // this app's own model: never asked of the hub
     modelEfforts: () => local.modelEfforts(), // this app's own default model: never asked of the hub
     runningSessions: () => local.runningSessions(), // the sessions are this app's: never asked of the hub
+    triageRules: () => local.triageRules(), // this app's own triage rules: never asked of the hub
+    triageRuleMode: (ruleId, mode, opts) => local.triageRuleMode(ruleId, mode, opts), // this app's own triage rules: never asked of the hub
+    triageEnabled: (value) => local.triageEnabled(value), // this app's own triage rules: never asked of the hub
+    triageReview: (id, opts) => local.triageReview(id, opts), // this app's own triage rules: never asked of the hub
+    triageForget: (lessonId) => local.triageForget(lessonId), // this app's own triage rules: never asked of the hub
   }
 }

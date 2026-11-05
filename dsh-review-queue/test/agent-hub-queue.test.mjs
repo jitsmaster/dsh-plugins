@@ -51,7 +51,7 @@ test('connected: reads come from the mirror, in hub order with global positions,
   assert.deepEqual(queue.count(), { total: 2, byType: { question: 0, permission: 0, completed: 2, 'pr-merged': 0, archive: 0, todo: 0, paused: 0, onhold: 0 } })
   assert.equal(queue.first().id, 'a')
   assert.equal(queue.openTarget().sessionId, 's1')
-  assert.deepEqual(local.calls, [])
+  assert.deepEqual(local.calls.filter((c) => c[0] !== 'snapshot'), [], 'only the local snapshot is read (for its triage and aiReport fields)')
 })
 
 test('reading and focus work on any item of the mirror, because the speakers and the screen are here', () => {
