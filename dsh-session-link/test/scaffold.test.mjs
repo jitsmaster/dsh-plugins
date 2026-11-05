@@ -19,3 +19,8 @@ test('package.json also lists starter.js, added with the start_session tool', ()
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.ok(pkg.files.includes('starter.js'))
 })
+
+test('package.json also lists archiver.js, added with the archive_self tool', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.ok(pkg.files.includes('archiver.js'))
+})

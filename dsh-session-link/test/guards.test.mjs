@@ -130,12 +130,41 @@ test('kept cards are independent per sender', () => {
 
 test('senders that never return are swept once a map grows past 256, live ones are kept', () => {
   const { g, clock } = make()
-  for (let i = 0; i < 300; i++) { g.reserveMinute('m' + i); g.markHour('h' + i, clock.t); g.keepCard('k' + i, 'c') }
+  for (let i = 0; i < 300; i++) { g.reserveMinute('m' + i); g.markHour('h' + i, clock.t); g.keepCard('k' + i, 'c'); g.reserveArchive('a' + i) }
   g.reserveMinute('m-extra')
-  assert.deepEqual(g.sizes(), { minutes: 301, hours: 300, kept: 300, flights: 0 }, 'nothing is stale yet')
+  assert.deepEqual(g.sizes(), { minutes: 301, hours: 300, kept: 300, flights: 0, archives: 300 }, 'nothing is stale yet')
   clock.t += 3_600_001
-  g.reserveMinute('x'); g.markHour('y', clock.t); g.keepCard('z', 'c')
-  assert.deepEqual(g.sizes(), { minutes: 1, hours: 1, kept: 1, flights: 0 })
+  g.reserveMinute('x'); g.markHour('y', clock.t); g.keepCard('z', 'c'); g.reserveArchive('w')
+  assert.deepEqual(g.sizes(), { minutes: 1, hours: 1, kept: 1, flights: 0, archives: 1 })
+})
+
+test('reserveArchive gives one slot per session per minute; a repeat is null until the window passes', () => {
+  const { g, clock } = make()
+  assert.equal(typeof g.reserveArchive('s'), 'number')
+  assert.equal(g.reserveArchive('s'), null)
+  clock.t += 59_999
+  assert.equal(g.reserveArchive('s'), null)
+  clock.t += 1
+  assert.equal(typeof g.reserveArchive('s'), 'number')
+})
+
+test('releaseArchive frees the slot; ids are independent; an unknown slot changes nothing', () => {
+  const { g } = make()
+  const slot = g.reserveArchive('s')
+  assert.equal(typeof g.reserveArchive('other'), 'number')
+  g.releaseArchive('s', slot + 1)
+  assert.equal(g.reserveArchive('s'), null)
+  g.releaseArchive('s', slot)
+  assert.equal(typeof g.reserveArchive('s'), 'number')
+  g.releaseArchive('nobody', 1)
+})
+
+test('limits.archiveMs sets the archive window', () => {
+  const clock = { t: 1_000_000 }
+  const g = createGuards({ now: () => clock.t, limits: { ...LIMITS, archiveMs: 10_000 } })
+  assert.equal(typeof g.reserveArchive('s'), 'number')
+  clock.t += 10_000
+  assert.equal(typeof g.reserveArchive('s'), 'number')
 })
 
 test('the sweep leaves a sender whose newest entry is still inside its window', () => {

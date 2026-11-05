@@ -5,6 +5,7 @@ import { listPeers, isSubagent } from './sessions.js'
 import { matchSessions } from './match.js'
 import { readResult } from './result.js'
 import { cleanTitle } from './envelope.js'
+import { createArchiver } from './archiver.js'
 
 // No import of @deepseek-ai/dsh-tools: a plugin linked from D:/dev/ai/dsh-plugins has no node_modules, so the bare import would fail in production (review finding).
 // This local helper builds the same ToolDefinition shape defineTool returns (D:/dev/DSH/packages/core/tools/src/contracts.ts): name, description, parameters as JSON Schema
@@ -57,6 +58,7 @@ export function apply(ctx, config = {}) {
   const guards = config.guards ?? createGuards({ now: config.now ?? Date.now, limits: LIMITS })
   const sender = createSender({ get, titleOf, log: config.log, guards })
   const starter = createStarter({ get, titleOf, log: config.log, guards })
+  const archiver = createArchiver({ get, titleOf, log: config.log, guards })
   const caller = (exec) => {
     if (!exec.agent) throw new Error('no sender: these tools need a calling session')
     if (isSubagent(exec.agent)) throw new Error('only top-level sessions can use session-link tools')
@@ -117,6 +119,17 @@ export function apply(ctx, config = {}) {
     async execute(args, exec) {
       const me = caller(exec)
       return json(await starter.start({ agent: me, text: args.text, workspace: args.workspace, sparc: args.sparc, effort: args.effort, signal: exec.signal }))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'archive_self',
+    description: "Offer to archive THIS session when its work is finished and nothing is waiting. Write the message first: what was done and why it can be archived (one line, 200 characters). Nothing is archived by this call: it puts an Archive card in the user's Review Queue and the user presses Archive session or Keep session. Do not keep working after the call except to answer the user. Limits: 1 offer per minute.",
+    parameters: { message: { type: 'string', required: true, description: 'What was done and why this session can be archived (one line, 200 characters).' } },
+    output: out,
+    async execute(args, exec) {
+      const me = caller(exec)
+      return json(await archiver.offer({ agent: me, message: args.message }))
     },
   }))
 }

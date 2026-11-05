@@ -12,9 +12,10 @@ function load(extra = {}, config = {}) {
 }
 const exec = { agent: { id: 'me', session: { header: {} } }, signal: new AbortController().signal, callId: 'c' }
 
-test('registers the four tools; reads are concurrency safe, send and start are not', async () => {
+test('registers the five tools; reads are concurrency safe, send, start and archive are not', async () => {
   const t = load()
-  assert.deepEqual(Object.keys(t).sort(), ['list_sessions', 'read_session_result', 'send_to_session', 'start_session'])
+  assert.deepEqual(Object.keys(t).sort(), ['archive_self', 'list_sessions', 'read_session_result', 'send_to_session', 'start_session'])
+  assert.ok(!t.archive_self.isConcurrencySafe?.({}))
   assert.ok(!t.start_session.isConcurrencySafe?.({}))
   assert.equal(t.list_sessions.isConcurrencySafe?.({}), true)
   assert.equal(t.read_session_result.isConcurrencySafe?.({}), true)
@@ -89,4 +90,53 @@ test('send_to_session and start_session share one guards instance', async () => 
   const r = JSON.parse(await t.start_session.execute({ text: 'new task' }, exec))
   assert.equal(r.status, 'rejected')
   assert.equal(r.reason, 'rate-limit')
+})
+
+const archiveQueue = (over = {}) => {
+  const calls = []
+  return { calls, offerArchive: (info) => { calls.push(info); return { ok: true, id: 'a1' } }, archiveOfferEnabled: () => true, supports: { requireConfirm: true, offerArchive: true }, ...over }
+}
+
+test('archive_self parameters: message is required, nothing else is accepted', async () => {
+  const t = load()
+  const p = t.archive_self.parameters
+  assert.deepEqual(p.required, ['message'])
+  assert.deepEqual(Object.fromEntries(Object.entries(p.properties).map(([k, v]) => [k, v.type])), { message: 'string' })
+  assert.equal(p.additionalProperties, false)
+  await assert.rejects(t.archive_self.execute({}, exec), /invalid arguments/)
+  await assert.rejects(t.archive_self.execute({ message: '  ' }, exec), /invalid arguments/)
+  await assert.rejects(t.archive_self.execute({ message: 'done', sessionId: 'other' }, exec), /unknown argument sessionId/)
+  await assert.rejects(t.archive_self.execute({ message: 5 }, exec), /invalid arguments/)
+})
+
+test('archive_self description says nothing is archived by the call and states the limit', () => {
+  const d = load().archive_self.description
+  assert.match(d, /nothing is archived/i)
+  assert.match(d, /Archive session or Keep session/)
+  assert.match(d, /1 offer per minute/)
+})
+
+test('archive_self offers the caller only: JSON of the archiver result, fails closed without a caller, refuses sub-agents', async () => {
+  const q = archiveQueue()
+  const t = load({ reviewQueue: q })
+  assert.deepEqual(JSON.parse(await t.archive_self.execute({ message: 'All done, nothing waiting.' }, exec)), { status: 'offered', cardId: 'a1', updated: false })
+  assert.equal(q.calls.length, 1)
+  assert.equal(q.calls[0].sessionId, 'me')
+  assert.equal(q.calls[0].reason, 'All done, nothing waiting.')
+  await assert.rejects(t.archive_self.execute({ message: 'x' }, { ...exec, agent: undefined }), /sender/)
+  await assert.rejects(t.archive_self.execute({ message: 'x' }, { ...exec, agent: { id: 'sub', session: { header: { origin: 'subagent' } } } }), /top-level/)
+  assert.equal(q.calls.length, 1)
+})
+
+test('archive_self answers disabled when the queue switch is off, and queue-unsupported for an older queue', async () => {
+  const off = load({ reviewQueue: archiveQueue({ archiveOfferEnabled: () => false }) })
+  assert.deepEqual(JSON.parse(await off.archive_self.execute({ message: 'done' }, exec)), { status: 'rejected', reason: 'disabled' })
+  const old = load()
+  assert.deepEqual(JSON.parse(await old.archive_self.execute({ message: 'done' }, exec)), { status: 'rejected', reason: 'queue-unsupported' })
+})
+
+test('archive_self shares the guards instance: a second call inside the window is rate limited', async () => {
+  const t = load({ reviewQueue: archiveQueue() })
+  assert.equal(JSON.parse(await t.archive_self.execute({ message: 'done' }, exec)).status, 'offered')
+  assert.equal(JSON.parse(await t.archive_self.execute({ message: 'done again' }, exec)).reason, 'rate-limit')
 })

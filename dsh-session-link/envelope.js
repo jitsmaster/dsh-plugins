@@ -21,6 +21,9 @@ export const normalizeText = (text) => fold(text).replace(/\s+/g, ' ').trim()
 // Line breaks stay so the header is found at the start of any line, not just of the text.
 const foldLines = (text) => fold(text).replace(/\r\n|[\r\v\f\u2028\u2029]/g, '\n').replace(/[^\S\n]+/g, ' ')
 export const hasEnvelope = (text) => HEADER.test(foldLines(text))
+// A free-text message shown on a card: invisible and control characters dropped, whitespace collapsed to one line, clipped (by code point) to `max`.
+// Only the first max * 20 characters are read, so a huge model-supplied string cannot cost more than a bounded amount of CPU and memory.
+export const cleanLine = (t, max = 200) => Array.from(String(t ?? '').slice(0, max * 20).replace(INVISIBLE, '').replace(/\s+/g, ' ').trim()).slice(0, max).join('').trim()
 
 export function buildEnvelope({ senderId, senderTitle, text }) {
   if (!isSessionId(senderId)) throw new Error('invalid sender session id')

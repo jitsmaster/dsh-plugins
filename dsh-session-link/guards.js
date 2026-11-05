@@ -2,13 +2,15 @@ const HOUR_MS = 60 * 60_000
 const KEEP_MS = 30_000
 const SWEEP_ABOVE = 256
 
-export const LIMITS = { perMinute: 5, windowMs: 60_000, pairMs: 60_000, waiting: 3, hourly: 3 }
+export const LIMITS = { perMinute: 5, windowMs: 60_000, pairMs: 60_000, waiting: 3, hourly: 3, archiveMs: 60_000 }
 
 export function createGuards({ now = Date.now, limits = LIMITS } = {}) {
   const minutes = new Map() // senderId -> slot timestamps (a slot is reserved before the first await, so parallel calls cannot all pass the limit)
   const hours = new Map() // senderId -> marks
   const kept = new Map() // senderId -> Map(cardId -> time), cards queued a moment ago that a lagging hub mirror may not list yet
   const flights = new Map() // key -> senderId, only while a call is between reservation and its queue/prompt result
+  const archives = new Map() // sessionId -> slot timestamps of archive offers (1 per archiveMs; reserved before the first await)
+  const archiveMs = () => limits.archiveMs ?? LIMITS.archiveMs
 
   const prune = (map, id, span) => {
     const t = (map.get(id) ?? []).filter((x) => now() - x < span)
@@ -22,7 +24,17 @@ export function createGuards({ now = Date.now, limits = LIMITS } = {}) {
   const drop = (map, id, t) => { const a = map.get(id); if (!a) return; const i = a.indexOf(t); if (i >= 0) a.splice(i, 1); if (!a.length) map.delete(id) }
 
   return {
-    sizes: () => ({ minutes: minutes.size, hours: hours.size, kept: kept.size, flights: flights.size }),
+    sizes: () => ({ minutes: minutes.size, hours: hours.size, kept: kept.size, flights: flights.size, archives: archives.size }),
+    reserveArchive(id) {
+      sweep(archives, archiveMs(), newestOf)
+      const used = prune(archives, id, archiveMs())
+      if (used.length >= 1) return null
+      const slot = now()
+      used.push(slot)
+      archives.set(id, used)
+      return slot
+    },
+    releaseArchive: (id, slot) => drop(archives, id, slot),
     reserveMinute(id) {
       sweep(minutes, limits.windowMs, newestOf)
       const used = prune(minutes, id, limits.windowMs)

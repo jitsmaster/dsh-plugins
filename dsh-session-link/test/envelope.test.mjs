@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_RAW, MAX_CARD, cleanTitle, buildEnvelope, hasEnvelope, isSessionId, buildTrailer, hasTrailer } from '../envelope.js'
+import { MAX_RAW, MAX_CARD, cleanLine, cleanTitle, buildEnvelope, hasEnvelope, isSessionId, buildTrailer, hasTrailer } from '../envelope.js'
 
 test('the envelope names the sender and ends with the text', () => {
   const e = buildEnvelope({ senderId: 's1', senderTitle: 'My work', text: 'rerun the tests' })
@@ -165,4 +165,20 @@ test('plain text and prose mentioning a session are not flagged', () => {
     assert.equal(hasEnvelope(t), false, t)
     assert.equal(hasTrailer(t), false, t)
   }
+})
+
+test('cleanLine only reads a bounded prefix (max * 20 characters), so a huge input stays cheap', () => {
+  assert.equal(cleanLine(' '.repeat(5000) + 'hello'), '')
+  assert.equal(cleanLine(' '.repeat(3000) + 'hello'), 'hello')
+  assert.equal(cleanLine('x'.repeat(5_000_000)).length, 200)
+  assert.equal(cleanLine('abcdef' + ' '.repeat(100), 3), 'abc')
+})
+
+test('cleanLine collapses whitespace, drops invisible and control characters and clips by code point', () => {
+  assert.equal(cleanLine('  a\n b\u0000\t\u202e c\u200b  '), 'a b c')
+  assert.equal(cleanLine('x'.repeat(300)).length, 200)
+  assert.equal(Array.from(cleanLine('😀'.repeat(300))).length, 200)
+  assert.equal(cleanLine('abcdef', 3), 'abc')
+  assert.equal(cleanLine(undefined), '')
+  assert.equal(cleanLine('\u3164\u2800\ufe0f'), '')
 })
