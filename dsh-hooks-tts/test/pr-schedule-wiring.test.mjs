@@ -151,7 +151,8 @@ test('register creates exactly one "PR <id> comment poll" task for the session',
   const { sessionId, request } = w.schedule.calls.create[0]
   assert.equal(sessionId, 'a1')
   assert.equal(request.title, taskTitle('5'))
-  assert.equal(request.every_seconds, 600)
+  assert.deepEqual(request.timing, { kind: 'every', every_seconds: 600 })
+  assert.deepEqual(request.target, { kind: 'session', sessionId: 'a1' })
   assert.equal(request.prompt.trim().split('\n').at(-1), marker('a1', '5'))
   assert.equal(w.schedule.tasksOf('a1').length, 1)
 })
@@ -410,7 +411,7 @@ test('stop on agent/disposed is memory-only: the task is NOT deleted (it fires o
   await w.emit('agent/disposed', { agent: w.agent })
   await flush()
   assert.equal(w.poller.has('a1'), false)
-  assert.equal(w.schedule.calls.delete.length, 0)
+  assert.equal(w.schedule.calls.edit.length, 0)
   assert.equal(w.schedule.tasksOf('a1').length, 1)
 })
 
@@ -419,7 +420,7 @@ test('plugin shutdown (abort signal) does not delete the tasks either', async (t
   await w.register()
   w.controller.abort()
   await flush()
-  assert.equal(w.schedule.calls.delete.length, 0)
+  assert.equal(w.schedule.calls.edit.length, 0)
   assert.equal(w.schedule.tasksOf('a1').length, 1)
 })
 
@@ -490,7 +491,7 @@ test('archive filter hides our task from the schedule activity entry but keeps t
   const mine = w.schedule.addForeign('a1', { title: 'standup' })
   const result = await w.sessionActivity('a1')
   assert.deepEqual(result, [{ kind: 'schedule', items: [{ id: mine.id, label: 'standup' }] }])
-  assert.equal(w.schedule.calls.delete.length, 0)
+  assert.equal(w.schedule.calls.edit.length, 0)
   assert.equal(w.schedule.tasksOf('a1').length, 2)
 })
 
@@ -501,7 +502,7 @@ test('archive filter drops the schedule entry entirely when only our task was in
   const turn = { kind: 'turn' }
   assert.deepEqual(await w.sessionActivity('a1'), [])
   assert.deepEqual(await w.sessionActivity('a1', [job, turn]), [job, turn])
-  assert.equal(w.schedule.calls.delete.length, 0)
+  assert.equal(w.schedule.calls.edit.length, 0)
 })
 
 test('archive filter leaves a session without our task untouched', async (t) => {
@@ -543,7 +544,7 @@ test('domain/changed for other domains, deletions or values without archivedSess
   await w.emit('domain/changed', { domain: 'workspace', table: '', key: '', operation: 'deleted' })
   await w.emit('domain/changed', { domain: 'workspace', table: '', key: '', operation: 'put', value: { pinnedSessionIds: ['a1'] } })
   await flush()
-  assert.equal(w.schedule.calls.delete.length, 0)
+  assert.equal(w.schedule.calls.edit.length, 0)
   assert.equal(w.schedule.tasksOf('a1').length, 1)
 })
 
@@ -566,7 +567,7 @@ test('a title change that still reads "PR <n>" keeps the task, and other session
   await w.emit('session/event', { id: 'a1' }, { type: 'session/title', data: { title: 'PR 5 - tidy' } })
   await w.emit('session/event', { id: 'a2' }, { type: 'user/message', data: {} })
   await flush()
-  assert.equal(w.schedule.calls.delete.length, 0)
+  assert.equal(w.schedule.calls.edit.length, 0)
   w.state.title = 'unrelated'
   await w.emit('session/event', { id: 'a1' }, { type: 'session/title', data: { title: 'unrelated' } })
   assert.ok(await until(() => w.schedule.tasksOf('a1').length === 0))
@@ -672,7 +673,7 @@ test('archive stops the in-memory entry; unarchive then the next step creates ex
   await w.emit('domain/changed', { domain: 'workspace', table: '', key: '', operation: 'put', value: { archivedSessionIds: ['a1'] } })
   assert.ok(await until(() => w.schedule.tasksOf('a1').length === 0))
   assert.equal(w.poller.has('a1'), false, 'the archived session is no longer registered in memory')
-  assert.equal(w.schedule.calls.delete.length, 1, 'no extra delete beyond the task deletion')
+  assert.equal(w.schedule.calls.edit.length, 1, 'no extra delete beyond the task deletion')
   await w.emit('domain/changed', { domain: 'workspace', table: '', key: '', operation: 'put', value: { archivedSessionIds: [] } }) // unarchived
   await w.preStep(w.agent, [scheduleMessage('welcome back', { kind: 'user' })])
   assert.ok(await until(() => w.schedule.tasksOf('a1').length === 1), 'the next step must re-register and create the task')
