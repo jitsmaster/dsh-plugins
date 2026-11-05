@@ -522,6 +522,8 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     },
     /** The follow-up cards a session created by a link, with their states (todo-states.js). */
     todoStates: (opts) => todoStatesOf(store.snapshot(), opts),
+    /** Capabilities a trusted plugin can check: an older queue lacks this and would ignore addTodo's requireConfirm. */
+    supports: { requireConfirm: true },
     /** The oldest open item (position 1), or undefined. */
     first: () => store.snapshot().open[0],
     /** Reads the open item at a 1-based queue position (what the card's play button reads) and focuses it. */

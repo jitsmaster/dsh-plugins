@@ -283,6 +283,7 @@ export function createTodos({ store, controllerOf, registryOf = () => undefined,
         const query = typeof followUp === 'string' ? followUp.trim() : ''
         if (!query) return { ok: false, error: 'empty-query' }
         if (query.length > MAX_QUERY) return { ok: false, error: 'too-long' }
+        // requireConfirm is not read here: a follow-up always waits for the user's confirm.
         const link = checkLinkOptions({ mode, source, excludeSessionIds })
         if (!link.ok) return { ok: false, error: link.error }
         return followUps.add(body, query, sessions, skippedApps, attached.ids, { mode: link.mode, source: link.source, exclude: link.exclude })

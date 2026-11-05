@@ -128,3 +128,8 @@ test('sparc and effort are stored with requireConfirm and applied on confirm', a
   assert.equal(calls[0][0], 'create')
   assert.match(store.get(r.id).error ?? '', /effort|not available/)
 })
+
+test('the service declares requireConfirm support, so dsh-session-link can refuse an older queue', () => {
+  const { queue } = setup()
+  assert.deepEqual(queue.supports, { requireConfirm: true })
+})

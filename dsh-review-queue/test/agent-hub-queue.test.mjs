@@ -36,6 +36,13 @@ function make() {
   return { local, client, queue, spoken }
 }
 
+test('the hub queue declares requireConfirm support, in hub mode and not', () => {
+  const { queue, client } = make()
+  assert.deepEqual(queue.supports, { requireConfirm: true })
+  client.setState('disconnected')
+  assert.deepEqual(queue.supports, { requireConfirm: true })
+})
+
 test('connected: reads come from the mirror, in hub order with global positions, and carry the owner', () => {
   const { queue, local } = make()
   const s = queue.snapshot()

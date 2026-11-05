@@ -78,6 +78,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     markArchivable: (open, ownerId) => local.markArchivable?.(open, ownerId) ?? open, // the running sessions and the PR guard are this app's own
     watchSessions: () => local.watchSessions?.(),
     todoStates: (opts) => todoStatesOf(active().snapshot(), opts), // the hub's mirror when connected (every app's cards), else the local store
+    supports: { requireConfirm: true }, // the hub honors requireConfirm on todo-link, and so does the local fallback
     count: () => active().count(),
     first: () => active().first(),
     openTarget: () => active().openTarget(),
