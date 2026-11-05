@@ -29,7 +29,7 @@ test('hub mode: a resolved todo of the mirror is read like any item', () => {
   const spoken = []
   const listeners = new Set()
   const client = { state: 'connected', mirror: { ready: true, snap: undefined, snapshot: () => client.mirror.snap, workspaces: () => [], onChange: (l) => { listeners.add(l); return () => listeners.delete(l) } }, onState: () => () => {}, call: async () => ({ ok: true }) }
-  const local = { onChange: () => () => {}, stopTip() {}, uiState: () => undefined }
+  const local = { onChange: () => () => {}, stopTip() {}, uiState: () => undefined, snapshot: () => ({ open: [], resolved: [] }) } // hub mode also reads this app's own triage and aiReport fields from it
   const speaker = { speak: (chunks) => { spoken.push(chunks); return { ok: true } }, stop() {} }
   const queue = createHubQueue({ local, client, speaker, controllerOf: () => ({}), now: () => 5000 })
   const todo = { id: 't1', seq: 1, type: 'todo', status: 'resolved', createdAt: 100, resolvedAt: 200, text: 'Fix the login redirect', sparc: false, state: 'started', workspaceTitle: 'dsh-plugins', sessionId: 's1', resolution: { kind: 'started' } }
