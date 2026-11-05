@@ -70,16 +70,29 @@ const defaultIo = { real, stat, readdir: (p) => readdir(p) }
 const PLANT_EXTS = ['', '.exe', '.bat', '.cmd', '.com', '.ps1', '.js', '.vbs']
 /**
  * cmd.exe (and a PATH holding `.`) runs a file of the current directory before the real binary, so a workspace file named like the command's first word
- * (`rg.bat`, `git.cmd`, `cat.exe`, ...) would run instead of it. True when the workspace root holds one (names compared case-insensitively). An unreadable
- * root also returns true (fail closed). `io.readdir` is the directory listing (injectable for tests). Never throws.
+ * (`rg.bat`, `git.cmd`, `cat.exe`, ...) would run instead of it. True when the workspace root holds one (names compared case-insensitively). Each candidate
+ * name is probed with `io.stat` (win32, or when injected; any error but not-found returns true, fail closed); elsewhere the root is listed with `io.readdir`
+ * (an unreadable root returns true). Both injectable for tests. Never throws.
  */
-export async function plantedBinary(workspace, bin, io = defaultIo) {
+export async function plantedBinary(workspace, bin, io = {}) {
   try {
     const name = String(bin ?? '').trim().toLowerCase()
     if (!name) return true
-    const names = await (io.readdir ?? defaultIo.readdir)(workspace)
-    const wanted = new Set(PLANT_EXTS.map((e) => name + e))
-    return names.some((n) => wanted.has(String(n).toLowerCase()))
+    const wanted = PLANT_EXTS.map((e) => name + e)
+    // Exact-name probes (one stat per candidate; a missing file is the normal case) when a probe is injected or the file system is case-insensitive (win32);
+    // otherwise the case-insensitive directory listing (also what an injected io.readdir gets).
+    const probe = io.stat ?? (io.readdir || process.platform !== 'win32' ? null : defaultIo.stat)
+    if (!probe) {
+      const names = await (io.readdir ?? defaultIo.readdir)(workspace)
+      const set = new Set(wanted)
+      return names.some((n) => set.has(String(n).toLowerCase()))
+    }
+    for (const w of wanted) {
+      try { await probe(resolve(workspace, w)); return true } catch (error) {
+        if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') return true // anything but "not there" fails closed
+      }
+    }
+    return false
   } catch { return true }
 }
 /** rg and grep recurse into a directory and read secret-named files the argument does not show, so Auto refuses a directory for them. */

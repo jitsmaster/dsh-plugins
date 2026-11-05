@@ -800,6 +800,14 @@ function imageFilesOf(data) {
 			if (countsMemo.snap !== snap) countsMemo = { snap, counts: { waiting: waitingCount(snap.open), paused: pausedCount(snap.open), held: heldCount(snap.open), unseen: aiUnseenCount(snap.resolved), aiN: snap.resolved.filter(isAiResolved).length, resolved: snap.resolved.length } };
 			return countsMemo.counts;
 		}
+		let resolvedMemo = { snap: null, type: null, query: null, counts: null };
+		/** resolvedCounts for the Resolved sub-tabs, kept for the same snapshot, Type and search so a re-render does not walk every resolved card again. */
+		function resolvedCountsMemo(snap, type, query) {
+			const q = query == null ? "" : String(query);
+			if (!snap) return resolvedCounts([], { type, query: q });
+			if (resolvedMemo.snap !== snap || resolvedMemo.type !== type || resolvedMemo.query !== q) resolvedMemo = { snap, type, query: q, counts: resolvedCounts(snap.resolved, { type, query: q }) };
+			return resolvedMemo.counts;
+		}
 		/** The selected card: the chosen one, else the one the voice focus is on, else the oldest. */
 		function currentItem() {
 			const open = visibleOpen();
@@ -1957,7 +1965,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				const c = snapCounts(snap);
 				const unseen = c.unseen;
 				const rt = f.resolvedType || "all";
-				const counts = resolvedCounts(snap ? snap.resolved : [], { type: rt, query: f.query }); // the counts follow the Type select and the search, as on the phone
+				const counts = resolvedCountsMemo(snap, rt, f.query); // the counts follow the Type select and the search, as on the phone
 				const tabs = RESOLVED_BY.map((v) => ({ id: v, label: RESOLVED_LABELS[v], attrs: { "data-resolved-by": v }, badges: [{ text: String(counts[v]) }].concat(v === "ai" && unseen > 0 ? [{ text: unseen + " new", cls: "hot", title: "Resolved by AI, not looked at yet" }] : []) }));
 				return h("div", { className: "rq-tabs sub" },
 					tabList("Resolved by", "", tabs, f.resolvedBy, (id) => set({ filter: { ...state.filter, resolvedBy: id }, dialog: null })),
@@ -2296,7 +2304,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
-		exports.__test = { visibleOpen, detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
+		exports.__test = { visibleOpen, detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, resolvedCountsMemo, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll });

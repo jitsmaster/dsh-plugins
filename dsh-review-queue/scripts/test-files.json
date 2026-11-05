@@ -288,5 +288,6 @@
   "test/triage-hardening.test.mjs",
   "test/triage-robustness.test.mjs",
   "test/triage-pass4.test.mjs",
-  "test/triage-pass5.test.mjs"
+  "test/triage-pass5.test.mjs",
+  "test/triage-pass6.test.mjs"
 ]

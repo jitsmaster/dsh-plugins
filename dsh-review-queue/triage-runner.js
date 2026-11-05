@@ -41,7 +41,7 @@ export function payloadFingerprint(item) {
 export const ruleVersion = (rule) => createHash('sha1').update(JSON.stringify([rule.id, rule.class, rule.instruction ?? '', rule.closedSet ?? null, rule.threshold ?? null])).digest('hex').slice(0, 8)
 
 /** An error message for the log: secrets redacted, one line, capped. */
-const safeMsg = (e) => oneLine(redact(String(e?.message ?? e))).slice(0, 300)
+const safeMsg = (e) => oneLine(redact(String(e?.message ?? e).slice(0, 2000))).slice(0, 300)
 
 const norm = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 
@@ -209,7 +209,9 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
       const cmdText = typeof p.detail === 'string' && p.detail ? p.detail : p.summary
       const bin = String(cmdText ?? '').trim().split(/\s+/)[0]
       // A workspace file named like the binary (cmd.exe runs the current directory first) fails the same fact as a path outside the workspace.
-      verdictFacts = { ...verdictFacts, pathsContained: verdictFacts.readOnly === true && await containedInWorkspace(cmdText, latest.workspace, undefined, bin) && !(await plantedBinary(latest.workspace, bin)) }
+      // The cheap vetoes (autoCommandOk, commandIntact) come first: when one is already false the file-system checks cannot change the verdict, so they are skipped.
+      const cheapOk = verdictFacts.readOnly === true && verdictFacts.autoCommandOk !== false && verdictFacts.commandIntact !== false
+      verdictFacts = { ...verdictFacts, pathsContained: cheapOk && await containedInWorkspace(cmdText, latest.workspace, undefined, bin) && !(await plantedBinary(latest.workspace, bin)) }
     }
     const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts: verdictFacts, sources, marks: marksOf(item), relax: { sessionFinished: true } })
     const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: rule?.mode ?? 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtraOf(verdictFacts) }
