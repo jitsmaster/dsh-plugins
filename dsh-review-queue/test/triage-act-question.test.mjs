@@ -297,3 +297,111 @@ test('an AI-answered question card renders with the answer and the quote through
   assert.equal(d.ruleName, 'Straightforward questions')
   assert.equal(S.answerText(answers), YES)
 })
+
+// --- recommended-option basis (no user quote) ---------------------------------------------------------------------------------------
+const RASK = 'Use the shorter helper name?'
+const RYES = 'Yes, rename it (Recommended)'
+const RNO = 'No, keep the old name'
+const RJ = { needs_decision: false, answer_basis: 'recommended-option', answer: RYES, evidence_quote: null, evidence_source: null, matched_rule: RULE_ID, attention: 8, reversible: true, touches_outside_workspace: false }
+const rq = (over = {}) => ({ id: 'q1', question: RASK, options: [{ label: RYES }, { label: RNO }], ...over })
+const rv = (mode, { item = question([rq()]), judgment = RJ } = {}) => triageOutcome({ item, judgment, rule: rule(mode), facts: factsOf(item), sources: [] })
+
+for (const mode of ['observe', 'auto']) {
+  test(mode + ': recommended-option with a reversible in-workspace action and no quote is handled', () => {
+    const v = rv(mode)
+    assert.deepEqual([v.verdict, v.act, v.reasons], ['handle', mode === 'auto', []])
+  })
+  test(mode + ': recommended-option is not low risk unless reversible and inside the workspace (missing fails closed)', () => {
+    for (const over of [{ reversible: false }, { touches_outside_workspace: true }, { reversible: undefined }, { touches_outside_workspace: undefined }]) {
+      assert.deepEqual(rv(mode, { judgment: { ...RJ, ...over } }).reasons, ['not-low-risk'], JSON.stringify(over))
+    }
+  })
+  test(mode + ': recommended-option on a destructive or external option or question is risky-option', () => {
+    const del = question([rq({ options: [{ label: 'Delete the old branch (Recommended)' }, { label: RNO }] })])
+    assert.deepEqual(rv(mode, { item: del, judgment: { ...RJ, answer: 'Delete the old branch (Recommended)' } }).reasons, ['risky-option'])
+    const dep = question([rq({ question: 'Deploy to production?' })])
+    assert.deepEqual(rv(mode, { item: dep }).reasons, ['risky-option'])
+    const force = question([rq({ options: [{ label: 'Force-push it (Recommended)' }, { label: RNO }] })])
+    assert.deepEqual(rv(mode, { item: force, judgment: { ...RJ, answer: 'Force-push it (Recommended)' } }).reasons, ['risky-option'])
+    const reset = question([rq({ question: 'Run git reset --hard first?' })])
+    assert.deepEqual(rv(mode, { item: reset }).reasons, ['risky-option'])
+  })
+  test(mode + ': recommended-option needs the answer to be the recommended label, and a recommended option on the card', () => {
+    assert.deepEqual(rv(mode, { judgment: { ...RJ, answer: RNO } }).reasons, ['answer-not-recommended'])
+    const plain = question([rq({ options: [{ label: 'Yes' }, { label: RNO }] })])
+    assert.deepEqual(rv(mode, { item: plain, judgment: { ...RJ, answer: 'Yes' } }).reasons, ['no-recommended-option'])
+  })
+  test(mode + ': recommended-option still vetoes needs_decision true and a score above the threshold', () => {
+    assert.deepEqual(rv(mode, { judgment: { ...RJ, needs_decision: true } }).reasons, ['needs-decision'])
+    assert.deepEqual(rv(mode, { judgment: { ...RJ, attention: 60 } }).reasons, ['score-above-threshold'])
+  })
+}
+test('auto: recommended-option on a multi-question card is question-not-simple', () => {
+  const v = rv('auto', { item: question([rq(), rq({ id: 'q2' })]) })
+  assert.equal(v.verdict, 'ask')
+  assert.ok(v.reasons.includes('question-not-simple'))
+})
+test('observe: recommended-option needs the exact recommended label (case variants are refused)', () => {
+  assert.deepEqual(rv('observe', { judgment: { ...RJ, answer: RYES.toLowerCase() } }).reasons, ['answer-not-recommended'])
+})
+
+const rrbase = { kind: 'ai-resolved', by: 'ai', ruleId: RULE_ID, ruleVersion: 'abcd1234', threshold: 25, score: 8, decidedAt: 5000, basis: 'recommended-option' }
+const radd = (store, qs = [rq()], payload = {}, over = {}) => store.add({ type: 'question', sessionId: 's1', workspace: 'D:/w', payload: { questions: qs, callId: 'c1', ...payload }, ...over })
+const rrun = (store, item, answer, judgment = RJ, sources) => createQuestionActor({ store, answer })({ item, judgment, resolutionBase: rrbase, sources })
+
+test('judge: parses the recommended-option basis, and the prompt tells the model about it', async () => {
+  const { parseJudgment } = await import('../triage-judge.js')
+  const out = parseJudgment(JSON.stringify({ ...RJ, evidence_quote: null }))
+  assert.equal(out.judgment?.answer_basis, 'recommended-option')
+  assert.equal(out.judgment.answer, RYES)
+  assert.equal(out.judgment.reversible, true)
+})
+
+test('actor: recommended-option answers with the exact label and no quote', async () => {
+  const store = fakeStore()
+  const item = radd(store)
+  const calls = []
+  const res = await rrun(store, item, (...a) => { calls.push(a); return true })
+  assert.deepEqual(res, { ok: true, action: 'answered', answer: RYES, basis: 'recommended-option' })
+  const answers = [{ id: 'q1', selected: [RYES] }]
+  assert.deepEqual(calls, [[item.id, answers, { ...rrbase, action: 'answered', answer: RYES, answers }]])
+})
+
+test('actor: recommended-option refuses a non-recommended label, a risky card as stored now, a changed card and a detached card', async () => {
+  const never = () => { throw new Error('must not answer') }
+  const store = fakeStore()
+  const item = radd(store)
+  assert.deepEqual(await rrun(store, item, never, { ...RJ, answer: RNO }), { ok: false, reason: 'refused' })
+  const risky = radd(store, [rq({ options: [{ label: 'Delete the old branch (Recommended)' }, { label: RNO }] })])
+  assert.deepEqual(await rrun(store, risky, never, { ...RJ, answer: 'Delete the old branch (Recommended)' }), { ok: false, reason: 'refused' })
+  const deploy = radd(store, [rq({ question: 'Deploy to production?' })])
+  assert.deepEqual(await rrun(store, deploy, never), { ok: false, reason: 'refused' })
+  // card changed after judging: the stored card is now risky, so the shape differs
+  const orig = radd(store, [rq()])
+  store.update(orig.id, { payload: { questions: [rq({ question: 'Deploy to production?' })], callId: 'c1' } })
+  assert.deepEqual(await rrun(store, orig, never), { ok: false, reason: 'changed' })
+  const det = radd(store, [rq()], {}, { detached: true })
+  assert.deepEqual(await rrun(store, det, never), { ok: false, reason: 'refused' })
+  const multi = radd(store, [rq(), rq({ id: 'q2' })])
+  assert.deepEqual(await rrun(store, multi, never), { ok: false, reason: 'refused' })
+  const plain = radd(store, [rq({ options: [{ label: 'Yes' }, { label: RNO }] })])
+  assert.deepEqual(await rrun(store, plain, never, { ...RJ, answer: 'Yes' }), { ok: false, reason: 'refused' })
+})
+
+test('actor: the quoted-source path still needs its 20-char quote even beside recommended-option', async () => {
+  const store = fakeStore()
+  const item = radd(store)
+  assert.deepEqual(await rrun(store, item, () => true, { ...RJ, answer_basis: 'quoted-source', evidence_quote: 'short' }), { ok: false, reason: 'refused' })
+})
+
+test('an AI-answered question picked by the recommended option renders without a quote', () => {
+  const { mod } = loadClient()
+  const S = mod.shared
+  const answers = [{ id: 'q1', selected: [RYES] }]
+  const item = { id: 'x', type: 'question', status: 'resolved', title: RASK, resolution: { ...rrbase, action: 'answered', answer: RYES, answers }, triage: { ruleName: 'Straightforward questions' } }
+  const text = S.resolutionText(item)
+  assert.equal(text, 'AI picked the recommended option: ' + RYES)
+  assert.ok(!/undefined|\[object/.test(text))
+  assert.equal(S.aiDetail(item).quote, '')
+  assert.equal(S.resolutionText({ ...item, resolution: { ...item.resolution, review: 'agreed' } }), 'AI picked the recommended option: ' + RYES + ' (you agreed)')
+})

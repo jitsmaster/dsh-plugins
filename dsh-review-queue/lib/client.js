@@ -88,7 +88,7 @@ window.__ModuleLoader__.load({
 		/** What the AI did, plus how the user judged it afterwards. */
 		function aiResolvedText(r) {
 			const answer = capText(r.answer, 200);
-			const base = r.action === "answered" ? "AI answered" + (answer ? ": " + answer : "") : AI_ACTIONS[r.action] || "Resolved by AI";
+			const base = r.action === "answered" ? (r.basis === "recommended-option" ? "AI picked the recommended option" : "AI answered") + (answer ? ": " + answer : "") : AI_ACTIONS[r.action] || "Resolved by AI";
 			return base + (r.review === "agreed" || r.review === "matched-user" ? " (you agreed)" : r.review === "overruled" ? " (you marked it wrong)" : "");
 		}
 		const isAiResolved = (it) => !!(it && typeof it === "object" && it.status === "resolved" && it.resolution && it.resolution.kind === "ai-resolved");

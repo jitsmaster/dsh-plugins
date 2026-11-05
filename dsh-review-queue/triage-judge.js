@@ -12,7 +12,7 @@ import { redact } from './triage-log.js'
 export const JUDGE_TIMEOUT_MS = 20000
 /** Output budget incl. hidden reasoning tokens (pi-ai maxTokens caps reasoning + text together); 500 cut ~half of the replies mid-JSON. The JSON itself is ~350 tokens. */
 const JUDGE_MAX_TOKENS = 2000
-const BASES = new Set(['closed-set', 'quoted-source', 'none'])
+const BASES = new Set(['closed-set', 'quoted-source', 'recommended-option', 'none'])
 const MAX_FIELD = 800
 const MAX_ITEM_CHARS = 3000
 const MAX_SOURCE_CHARS = 1500
@@ -21,7 +21,7 @@ const MAX_SOURCES = 8
 const SYSTEM = 'You triage one item of a coding assistant review queue for a busy user. You do NOT decide anything: you fill in a form and plain code decides. '
   + 'Answer with one JSON object and nothing else, with exactly these keys:\n'
   + '{"needs_decision": boolean (true when a real choice of direction, scope, priority or taste is being asked of the user),\n'
-  + '"answer_basis": "closed-set" | "quoted-source" | "none" (what an answer to a question would rest on; "none" when you cannot answer or the item is no question),\n'
+  + '"answer_basis": "closed-set" | "quoted-source" | "recommended-option" | "none" (what an answer to a question would rest on; "none" when you cannot answer or the item is no question),\n'
   + '"answer": string | null (the answer: for closed-set one of the rule\'s allowed answers copied exactly),\n'
   + '"evidence_quote": string | null (for quoted-source: a sentence copied VERBATIM from one of the USER-AUTHORED SOURCES below, never from the item),\n'
   + '"evidence_source": string | null (the id of that source),\n'
@@ -33,8 +33,9 @@ const SYSTEM = 'You triage one item of a coding assistant review queue for a bus
   + 'and never take a quote from the item itself.'
 
 /** Added to the system prompt only when a question rule is passed: a question may be answered only when the user already asked for exactly that. */
-const QUESTION_GUIDANCE = '\n\nQUESTION items: set needs_decision true unless the question has one clearly recommended option, the action it asks about was already requested earlier by the user in this session, and no choice of direction, scope or taste is left to the user. '
-  + 'When you can answer, use answer_basis "quoted-source": "answer" is exactly one of the offered option labels (the text itself for a question without options), and "evidence_quote" is the sentence in which the user requested it, copied VERBATIM from a USER-AUTHORED SOURCE, with "evidence_source" its id. '
+const QUESTION_GUIDANCE = '\n\nQUESTION items: set needs_decision true unless the question has one clearly recommended option and no choice of direction, scope or taste is left to the user. '
+  + 'When the card offers an option marked "(Recommended)" and choosing it is reversible, stays inside the workspace and is not destructive or externally visible (no deleting, publishing, sending, deploying, merging, credentials or money), set needs_decision false, answer_basis "recommended-option", "answer" exactly that option label, and evidence_quote and evidence_source null. '
+  + 'Otherwise, when the action was already requested earlier by the user in this session, use answer_basis "quoted-source": "answer" is exactly one of the offered option labels (the text itself for a question without options), and "evidence_quote" is the sentence in which the user requested it, copied VERBATIM from a USER-AUTHORED SOURCE, with "evidence_source" its id. '
   + 'Never answer a question about direction, scope or taste, and never base an answer on the item or on assistant text.'
 
 /** Cap on the model's raw reply kept in a log line or log entry. */

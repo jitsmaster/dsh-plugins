@@ -232,7 +232,8 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     if (fresh?.status !== 'open' || payloadFingerprint(fresh) !== judgedPrint || !enabled() || live?.mode !== 'auto' || live.enabled === false || marks.onHold || marks.neverAuto) return refuse('changed-meanwhile')
     const str = (v, cap) => (typeof v === 'string' ? v.slice(0, cap) : undefined)
     const basis = judgment.answer_basis
-    const resolutionBase = { kind: 'ai-resolved', by: 'ai', ruleId: rule.id, ruleVersion: base.ruleVersion, threshold: outcome.threshold, score: outcome.score, decidedAt: now(), basis, ...(str(judgment.evidence_source, 100) ? { evidenceSource: judgment.evidence_source.slice(0, 100) } : {}), ...(str(judgment.evidence_quote, 300) ? { quote: redact(judgment.evidence_quote.slice(0, 300)) } : {}) }
+    const quoted = basis !== 'recommended-option' // the recommended-option basis rests on no quote, so none is recorded even if the model sent one
+    const resolutionBase = { kind: 'ai-resolved', by: 'ai', ruleId: rule.id, ruleVersion: base.ruleVersion, threshold: outcome.threshold, score: outcome.score, decidedAt: now(), basis, ...(quoted && str(judgment.evidence_source, 100) ? { evidenceSource: judgment.evidence_source.slice(0, 100) } : {}), ...(quoted && str(judgment.evidence_quote, 300) ? { quote: redact(judgment.evidence_quote.slice(0, 300)) } : {}) }
     const p = fresh.payload ?? {}
     let res
     try { res = await actors[cls]({ item: fresh, rule, outcome, judgment, sources, resolutionBase }) } catch (error) { log('triage: actor ' + cls + ' ' + item.id + ' failed: ' + safeMsg(error)); return refuse('error') }

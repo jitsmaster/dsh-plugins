@@ -142,9 +142,31 @@ function isOfferedExactly(answer, item) {
   return typeof answer === 'string' && Array.isArray(options) && options.some((o) => o?.label === answer)
 }
 
+/**
+ * Words and phrases that make an option or question destructive, externally visible or sensitive (whole words, case-insensitive, with a plain plural / past /
+ * -ing form). Shared with the question actor. Conservative on purpose: a match means the card is never answered through the recommended-option basis.
+ */
+const RISKY_WORDS = ['delete', 'remove', 'drop', 'destroy', 'wipe', 'overwrite', 'discard', 'revert', 'merge', 'deploy', 'release', 'publish', 'push', 'send', 'email', 'notify', 'post',
+  'production', 'prod', 'billing', 'payment', 'credential', 'secret', 'password', 'token', 'rotate', 'truncate', 'uninstall', 'migrate']
+const inflected = (w) => (w.endsWith('e') ? `${w}s?|${w}d|${w.slice(0, -1)}ing` : `${w}(?:e?s|ed|ing)?`)
+export const RISKY_OPTION = new RegExp(`\\b(?:force[\\s-]push|reset\\s+--hard|rm\\s+-rf|${RISKY_WORDS.map(inflected).join('|')})\\b`, 'i')
+
+/** True when the text names a destructive, external or sensitive action (see RISKY_OPTION). */
+export const isRiskyOption = (text) => typeof text === 'string' && RISKY_OPTION.test(text)
+
+/** The recommended-option basis: the exact recommended label, judged reversible and inside the workspace, and nothing destructive or external in the label or question. */
+function recommendedBasis(judgment, reasons, item) {
+  const question = item?.payload?.questions?.[0]
+  const refusal = autoAnswerRefusal(judgment.answer, question)
+  if (refusal) reasons.push(refusal)
+  if (judgment.reversible !== true || judgment.touches_outside_workspace !== false) reasons.push('not-low-risk')
+  if (isRiskyOption(judgment.answer) || isRiskyOption(question?.question)) reasons.push('risky-option')
+}
+
 function questionBasis(judgment, rule, sources, reasons, item) {
   const auto = rule.mode === 'auto'
   const basis = judgment.answer_basis
+  if (basis === 'recommended-option') return recommendedBasis(judgment, reasons, item)
   if (basis === 'closed-set') {
     if (!Array.isArray(rule.closedSet) || !rule.closedSet.includes(judgment.answer)) reasons.push('answer-not-in-set')
     if (auto) reasons.push('inadmissible-evidence') // auto answers only from a quote the user wrote
