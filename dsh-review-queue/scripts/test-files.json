@@ -299,5 +299,10 @@
   "test/limit-card-ui.test.mjs",
   "test/limit-shutdown.test.mjs",
   "test/limit-recover.test.mjs",
-  "test/archive-offer-switch.test.mjs"
+  "test/archive-offer-switch.test.mjs",
+  "test/ado-create.test.mjs",
+  "test/tip-survey.test.mjs",
+  "test/tip-survey-limits.test.mjs",
+  "test/tip-survey-wiring.test.mjs",
+  "test/client-tip-survey.test.mjs"
 ]
