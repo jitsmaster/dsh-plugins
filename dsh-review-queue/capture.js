@@ -517,6 +517,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
      * Answer a pending question from the card. answers: [{ id, selected, custom? }], one per question. A detached question (its live
      * request ended, the item is still open) is answered through the session instead; that call is asynchronous.
      */
+    // `resolution` is a pass-through for the internal Auto actors only; routes never supply it.
     answerQuestion(itemId, answers, { resolution } = {}) {
       const entry = pending.get(itemId)
       if (!entry) {
@@ -557,6 +558,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       lateInFlight.delete(itemId)
       return { ok: true, sent: true }
     },
+    // `resolution` is a pass-through for the internal Auto actors only; routes never supply it.
     decidePermission(itemId, decision, { resolution } = {}) {
       const entry = pending.get(itemId)
       if (!entry || entry.type !== 'permission') return { ok: false, error: 'not-pending' }
