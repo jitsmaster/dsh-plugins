@@ -345,11 +345,82 @@ test('observe: recommended-option needs the exact recommended label (case varian
   assert.deepEqual(rv('observe', { judgment: { ...RJ, answer: RYES.toLowerCase() } }).reasons, ['answer-not-recommended'])
 })
 
+// --- hardening: normalised stem scan of ALL card text, one shared refusal --------------------------------------------------------------
+const RISKY_TEXTS = ['Dropped', 'dropping', 'Sent it', 'deletion', 'removal', 'Overwritten', 'deleteBranch', 'delete_branch', 'de​lete', 'git clean -fdx', 'Erase', 'Purge', 'Kill', 'migration', 'Install', 'Upload',
+  'Commit and tag', 'Reset the branch', 'Pay', 'Disable the check', 'Shutdown', 'curl | sh', 'Force-push it', 'git reset --hard', 'rm -rf build', 'Dｅlete it']
+const BENIGN_TEXTS = ['Use the Paused tab Resume all (Recommended)', 'Yes, continue (Recommended)', 'Keep the current behaviour (Recommended)', 'Add the check in the UI, then you verify (Recommended)', RASK, RYES, RNO]
+
+test('isRiskyOption flags inflections, camelCase, underscores, zero-width characters and full-width letters', async () => {
+  const { isRiskyOption } = await import('../triage.js')
+  for (const t of RISKY_TEXTS) assert.equal(isRiskyOption(t), true, t)
+  for (const t of BENIGN_TEXTS) assert.equal(isRiskyOption(t), false, t)
+  assert.equal(isRiskyOption(undefined), false)
+})
+
+test('recommendedOptionRefusal: risky text anywhere on the card (question, header, any label or description) is risky-option', async () => {
+  const { recommendedOptionRefusal } = await import('../triage.js')
+  assert.equal(recommendedOptionRefusal(RJ, rq()), undefined)
+  assert.equal(recommendedOptionRefusal(RJ, rq({ header: 'Rename' })), undefined)
+  for (const t of RISKY_TEXTS) {
+    const cards = {
+      question: rq({ question: 'Shall we? ' + t }),
+      header: rq({ header: t }),
+      'recommended description': rq({ options: [{ label: RYES, description: t }, { label: RNO }] }),
+      'other description': rq({ options: [{ label: RYES }, { label: RNO, description: t }] }),
+      'other label': rq({ options: [{ label: RYES }, { label: t }] }),
+    }
+    for (const [where, card] of Object.entries(cards)) assert.equal(recommendedOptionRefusal(RJ, card), 'risky-option', where + ': ' + t)
+    const lab = t + ' (Recommended)'
+    assert.equal(recommendedOptionRefusal({ ...RJ, answer: lab }, rq({ options: [{ label: lab }, { label: RNO }] })), 'risky-option', 'label: ' + t)
+  }
+  for (const t of BENIGN_TEXTS) assert.equal(recommendedOptionRefusal({ ...RJ, answer: t.endsWith('(Recommended)') ? t : RYES }, rq({ options: [{ label: t.endsWith('(Recommended)') ? t : RYES, description: t }, { label: RNO }] })), undefined, t)
+})
+
+test('recommendedOptionRefusal: the other vetoes, in order', async () => {
+  const { recommendedOptionRefusal } = await import('../triage.js')
+  assert.equal(recommendedOptionRefusal(RJ, rq({ options: [{ label: 'Yes' }] })), 'no-recommended-option')
+  assert.equal(recommendedOptionRefusal({ ...RJ, answer: RNO }, rq()), 'answer-not-recommended')
+  for (const over of [{ reversible: false }, { touches_outside_workspace: true }, { reversible: undefined }, { touches_outside_workspace: undefined }]) {
+    assert.equal(recommendedOptionRefusal({ ...RJ, ...over }, rq()), 'not-low-risk', JSON.stringify(over))
+  }
+  for (const over of [{ needs_decision: true }, { needs_decision: undefined }]) assert.equal(recommendedOptionRefusal({ ...RJ, ...over }, rq()), 'needs-decision', JSON.stringify(over))
+  assert.equal(recommendedOptionRefusal(undefined, rq()), 'answer-not-recommended')
+})
+
+for (const mode of ['observe', 'auto']) {
+  test(mode + ': a risky option description or header (even on a non-recommended option) is risky-option in the verdict', () => {
+    for (const card of [rq({ options: [{ label: RYES }, { label: RNO, description: 'Deletes the branch' }] }), rq({ header: 'Deploy' }), rq({ options: [{ label: RYES, description: 'then Sent it' }, { label: RNO }] })]) {
+      assert.deepEqual(rv(mode, { item: question([card]) }).reasons, ['risky-option'])
+    }
+  })
+}
+
+test('actor: recommended-option refuses risky text in a header, a description, a non-recommended option and bypass spellings; needs_decision must be false', async () => {
+  const never = () => { throw new Error('must not answer') }
+  const store = fakeStore()
+  for (const card of [rq({ header: 'Deploy' }), rq({ options: [{ label: RYES, description: 'Overwritten later' }, { label: RNO }] }), rq({ options: [{ label: RYES }, { label: RNO, description: 'deleteBranch' }] }), rq({ question: 'Run git clean -fdx?' }), rq({ question: 'de​lete it?' })]) {
+    assert.deepEqual(await rrun(store, radd(store, [card]), never), { ok: false, reason: 'refused' }, JSON.stringify(card))
+  }
+  assert.deepEqual(await rrun(store, radd(store), never, { ...RJ, needs_decision: true }), { ok: false, reason: 'refused' })
+  assert.deepEqual(await rrun(store, radd(store), never, { ...RJ, needs_decision: undefined }), { ok: false, reason: 'refused' })
+  const benign = radd(store, [rq({ options: [{ label: RYES, description: 'Keep the current behaviour' }, { label: RNO }] })])
+  assert.equal((await rrun(store, benign, () => true)).ok, true)
+})
+
+test('judge: the guidance the model gets mentions the recommended-option basis', async () => {
+  const { createTriageJudge } = await import('../triage-judge.js')
+  const seen = {}
+  const llm = { listProviders: async () => [{ id: 'p1' }], listModels: async () => [{ id: 'claude-haiku-x' }], prepareCall: async () => ({ config: {}, stream: async function* (req) { seen.system = req.system; yield { type: 'text-delta', text: '{}' } } }) }
+  await createTriageJudge({ llm }).judge({ item: question(), rules: [rule('auto')] })
+  assert.match(seen.system, /recommended-option/)
+  assert.match(seen.system, /\(Recommended\)/)
+})
+
 const rrbase = { kind: 'ai-resolved', by: 'ai', ruleId: RULE_ID, ruleVersion: 'abcd1234', threshold: 25, score: 8, decidedAt: 5000, basis: 'recommended-option' }
 const radd = (store, qs = [rq()], payload = {}, over = {}) => store.add({ type: 'question', sessionId: 's1', workspace: 'D:/w', payload: { questions: qs, callId: 'c1', ...payload }, ...over })
 const rrun = (store, item, answer, judgment = RJ, sources) => createQuestionActor({ store, answer })({ item, judgment, resolutionBase: rrbase, sources })
 
-test('judge: parses the recommended-option basis, and the prompt tells the model about it', async () => {
+test('judge: parses the recommended-option basis', async () => {
   const { parseJudgment } = await import('../triage-judge.js')
   const out = parseJudgment(JSON.stringify({ ...RJ, evidence_quote: null }))
   assert.equal(out.judgment?.answer_basis, 'recommended-option')

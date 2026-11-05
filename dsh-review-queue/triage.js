@@ -143,24 +143,45 @@ function isOfferedExactly(answer, item) {
 }
 
 /**
- * Words and phrases that make an option or question destructive, externally visible or sensitive (whole words, case-insensitive, with a plain plural / past /
- * -ing form). Shared with the question actor. Conservative on purpose: a match means the card is never answered through the recommended-option basis.
+ * Stems (matched at a word start, case-insensitive, on text normalised by `normaliseRisky`) that make an option or question destructive, externally visible or
+ * sensitive. A stem is a prefix, so every inflection is covered (drop / dropped / dropping, delete / deletion, send / sent). Conservative on purpose: a match
+ * means the card is never answered through the recommended-option basis, and false positives (e.g. "tokenizer", "cleanup") are accepted. Deliberately NOT
+ * stems: check, keep, use, add, resume, continue, rename (harmless everyday words).
  */
-const RISKY_WORDS = ['delete', 'remove', 'drop', 'destroy', 'wipe', 'overwrite', 'discard', 'revert', 'merge', 'deploy', 'release', 'publish', 'push', 'send', 'email', 'notify', 'post',
-  'production', 'prod', 'billing', 'payment', 'credential', 'secret', 'password', 'token', 'rotate', 'truncate', 'uninstall', 'migrate']
-const inflected = (w) => (w.endsWith('e') ? `${w}s?|${w}d|${w.slice(0, -1)}ing` : `${w}(?:e?s|ed|ing)?`)
-export const RISKY_OPTION = new RegExp(`\\b(?:force[\\s-]push|reset\\s+--hard|rm\\s+-rf|${RISKY_WORDS.map(inflected).join('|')})\\b`, 'i')
+const RISKY_STEMS = ['delet', 'remov', 'drop', 'destroy', 'wipe', 'erase', 'purge', 'kill', 'terminat', 'shut\\s*down', 'overwr', 'discard', 'revert', 'reset', 'clean', 'merg', 'deploy', 'releas',
+  'publish', 'push', 'send', 'sent\\b', 'email', 'notif', 'posts?\\b', 'posted\\b', 'posting\\b', 'upload', 'install', 'uninstall', 'migrat', 'commit', 'tags?\\b', 'pay(?!load)', 'charg', 'bill',
+  'credential', 'secret', 'password', 'passwd', 'token', 'keys?\\b', 'ssh', 'sudo', 'chmod', 'chown', 'rotat', 'truncat', 'disabl', 'production', 'prods?\\b', 'force', 'rm\\s+[rf]', 'curl', 'wget']
+const RISKY_RE = new RegExp(`\\b(?:${RISKY_STEMS.join('|')})|\\|\\s*(?:ba|z)?sh\\b`, 'i')
 
-/** True when the text names a destructive, external or sensitive action (see RISKY_OPTION). */
-export const isRiskyOption = (text) => typeof text === 'string' && RISKY_OPTION.test(text)
+/** NFKC (full-width and compatibility letters), no format characters (zero-width and the like), camelCase / snake / kebab / dotted words split, lower case. */
+const normaliseRisky = (text) => text.normalize('NFKC').replace(/\p{Cf}/gu, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_.-]+/g, ' ').toLowerCase()
 
-/** The recommended-option basis: the exact recommended label, judged reversible and inside the workspace, and nothing destructive or external in the label or question. */
+/** True when the text names a destructive, external or sensitive action (see RISKY_STEMS). */
+export const isRiskyOption = (text) => typeof text === 'string' && RISKY_RE.test(normaliseRisky(text))
+
+/** Every text a card shows the user: the question and header, each option's label and description. */
+function cardTexts(question) {
+  const options = Array.isArray(question?.options) ? question.options : []
+  return [question?.question, question?.header, ...options.flatMap((o) => (o && typeof o === 'object' ? [o.label, o.description] : [o]))]
+}
+
+/**
+ * The recommended-option basis, shared by the verdict and the question actor so they cannot drift: the answer is exactly the "(Recommended)" label, the model
+ * judged the action reversible, inside the workspace and needing no decision, and no text on the card (question, header, every option label and description,
+ * recommended or not) reads as destructive, external or sensitive. Returns the veto code, or undefined when it holds.
+ */
+export function recommendedOptionRefusal(judgment, question) {
+  const refusal = autoAnswerRefusal(judgment?.answer, question)
+  if (refusal) return refusal
+  if (judgment?.needs_decision !== false) return 'needs-decision'
+  if (judgment.reversible !== true || judgment.touches_outside_workspace !== false) return 'not-low-risk'
+  if ([judgment.answer, ...cardTexts(question)].some(isRiskyOption)) return 'risky-option'
+  return undefined
+}
+
 function recommendedBasis(judgment, reasons, item) {
-  const question = item?.payload?.questions?.[0]
-  const refusal = autoAnswerRefusal(judgment.answer, question)
-  if (refusal) reasons.push(refusal)
-  if (judgment.reversible !== true || judgment.touches_outside_workspace !== false) reasons.push('not-low-risk')
-  if (isRiskyOption(judgment.answer) || isRiskyOption(question?.question)) reasons.push('risky-option')
+  const refusal = recommendedOptionRefusal(judgment, item?.payload?.questions?.[0])
+  if (refusal && !reasons.includes(refusal)) reasons.push(refusal)
 }
 
 function questionBasis(judgment, rule, sources, reasons, item) {

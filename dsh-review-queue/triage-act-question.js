@@ -4,7 +4,7 @@
  * `custom`, and never throws.
  */
 import { clipAnswer } from './triage-clip.js'
-import { AUTO_MIN_QUOTE_CHARS, autoAnswerRefusal, isRiskyOption, normalizeQuote, quoteSource } from './triage.js'
+import { AUTO_MIN_QUOTE_CHARS, autoAnswerRefusal, normalizeQuote, quoteSource, recommendedOptionRefusal } from './triage.js'
 import { redact } from './triage-log.js'
 
 const QUOTE_CAP = 300
@@ -33,9 +33,8 @@ export function createQuestionActor({ store, answer }) {
       if (autoAnswerRefusal(label, questions[0])) return { ok: false, reason: 'refused' }
       const basis = judgment.answer_basis === 'recommended-option' ? 'recommended-option' : 'quoted-source'
       if (basis === 'recommended-option') {
-        // No quote: the option must be low risk. Re-checked on the card as stored NOW (same shared word list as the verdict).
-        if (isRiskyOption(label) || isRiskyOption(questions[0].question)) return { ok: false, reason: 'refused' }
-        if (judgment.reversible !== true || judgment.touches_outside_workspace !== false) return { ok: false, reason: 'refused' }
+        // No quote: the same shared refusal as the verdict, re-checked on the card as stored NOW (all card text, needs_decision must be false).
+        if (recommendedOptionRefusal(judgment, questions[0])) return { ok: false, reason: 'refused' }
       } else {
         if (normalizeQuote(judgment.evidence_quote).length < AUTO_MIN_QUOTE_CHARS) return { ok: false, reason: 'refused' }
         if (Array.isArray(sources) && quoteSource(judgment.evidence_quote, sources, AUTO_MIN_QUOTE_CHARS) !== judgment.evidence_source) return { ok: false, reason: 'refused' }
@@ -43,7 +42,7 @@ export function createQuestionActor({ store, answer }) {
       const answers = [{ id: questions[0].id, selected: [label] }]
       const quote = basis === 'quoted-source' && typeof judgment.evidence_quote === 'string' ? redact(judgment.evidence_quote.slice(0, QUOTE_CAP)) : undefined
       const shown = clipAnswer(label)
-      const res = await answer(current.id, answers, { ...resolutionBase, basis, action: 'answered', answer: shown, answers, ...(quote ? { quote } : {}) })
+      const res = await answer(current.id, answers, { ...resolutionBase, action: 'answered', answer: shown, answers, ...(quote ? { quote } : {}) })
       return res === true || res?.ok === true
         ? { ok: true, action: 'answered', answer: shown, ...(quote ? { quote } : {}), ...(basis === 'quoted-source' && typeof judgment.evidence_source === 'string' ? { evidenceSource: judgment.evidence_source } : {}), basis }
         : { ok: false, reason: 'not-pending' }
