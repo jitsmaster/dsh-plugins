@@ -3,6 +3,7 @@
  * the command we judged is the whole command. Observe mode never uses these.
  */
 import { realpath } from 'node:fs'
+import { stat as fsStat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 
@@ -61,17 +62,23 @@ export const MAX_CANDIDATES = 64
 /** A UNC / device / NT-namespace path: reaching it would open a network or device handle (an SMB connection leaks NTLM credentials). Never touched. */
 const UNSAFE_PATH = /^[\\/]{2}|^[\\/]\?\?[\\/]/
 
-const defaultIo = { real }
+const stat = (p) => fsStat(p)
+const defaultIo = { real, stat }
+/** rg and grep recurse into a directory and read secret-named files the argument does not show, so Auto refuses a directory for them. */
+const SEARCH_BINS = new Set(['rg', 'grep'])
 
 /**
  * Every path-like argument of the command resolves (symlinks, junctions and 8.3 names followed) to a place inside the real workspace.
  * A path-looking argument that does not resolve is a veto; a plain word that does not exist (a subcommand, a pattern, a number) is not a path.
  * Relative paths resolve against the workspace. A missing or unresolvable workspace is a veto. Never throws.
  * Before ANY file-system call: a UNC / device candidate is a veto (no I/O at all), and so is any candidate that lexically lies outside the workspace
- * (it is never resolved). More than MAX_CANDIDATES distinct candidates is a veto. `io.real` is the resolver (injectable for tests).
+ * (it is never resolved). More than MAX_CANDIDATES distinct candidates is a veto. `io.real` is the resolver and `io.stat` the stat (injectable for tests).
+ * For rg and grep (`name`, default the command's first word) a candidate that resolves to a directory is a veto, and so is a stat that fails.
  */
-export async function containedInWorkspace(command, workspace, io = defaultIo) {
+export async function containedInWorkspace(command, workspace, io = defaultIo, name = String(command ?? '').trim().split(/\s+/)[0]) {
   try {
+    const noDirs = SEARCH_BINS.has(name)
+    const statOf = io.stat ?? defaultIo.stat
     if (typeof workspace !== 'string' || !workspace.trim()) return false
     const list = candidates(command)
     if (list.length > MAX_CANDIDATES || list.some(({ value }) => UNSAFE_PATH.test(value))) return false
@@ -83,6 +90,7 @@ export async function containedInWorkspace(command, workspace, io = defaultIo) {
       let target
       try { target = await io.real(lexical) } catch { if (certain) return false; continue }
       if (!isInside(root, target)) return false
+      if (noDirs && (await statOf(target)).isDirectory()) return false // a stat error throws to the outer catch: fail closed
       // The resolved real path is tested again: a link to `.env` or an 8.3 name that expands to it only shows its protected name after resolution.
       const rel = slashes(target).slice(slashes(root).replace(/\/+$/, '').length).replace(/^\/+/, '')
       if (SHORT_NAME.test(rel) || PROTECTED_AUTO.some((re) => re.test(rel))) return false

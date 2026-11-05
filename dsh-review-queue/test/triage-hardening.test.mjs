@@ -236,6 +236,25 @@ test('S8: a candidate that resolves to a protected name is vetoed in containedIn
   assert.equal(await containedInWorkspace('cat top.txt', ws, { real: async (p) => p }), true)
 })
 
+// --- S10: rg / grep never search a named directory (they recurse into secret-named files the argument does not show) -------------------
+test('S10: rg and grep are vetoed when a path argument is a directory; a file, ls and the observe default are not', async () => {
+  const io = (isDir) => ({ real: async (p) => p, stat: async () => ({ isDirectory: () => isDir }) })
+  for (const c of ['rg password src', 'grep x src']) {
+    assert.equal(await containedInWorkspace(c, ws, io(true)), false, c + ' on a directory')
+    assert.equal(await containedInWorkspace(c, ws, io(false)), true, c + ' on a file')
+  }
+  assert.equal(await containedInWorkspace('rg password src', ws, io(true), 'rg'), false, 'explicit command name')
+  assert.equal(await containedInWorkspace('ls src', ws, io(true)), true, 'ls may list a directory')
+  assert.equal(await containedInWorkspace('cat src', ws, io(true)), true, 'other commands are unchanged')
+})
+
+test('S10: a stat error fails closed for rg and grep', async () => {
+  const io = { real: async (p) => p, stat: async () => { throw new Error('EACCES') } }
+  assert.equal(await containedInWorkspace('rg password src', ws, io), false)
+  assert.equal(await containedInWorkspace('grep x src', ws, io), false)
+  assert.equal(await containedInWorkspace('ls src', ws, io), true, 'ls never stats')
+})
+
 test('S8: .git. and .git<space> variants and 8.3 names are protected in auto only', () => {
   for (const c of ['cat .git./config', 'cat .git /config', 'cat ENV~1', 'cat a/PROGRA~2/b']) assert.equal(auto(c).ok, false, c)
   assert.equal(parseReadOnlyCommand('cat ENV~1').ok, true, 'observe unchanged')

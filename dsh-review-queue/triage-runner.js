@@ -206,7 +206,8 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     // Auto, permission: the real-path containment is async I/O, so it is computed here as one more fact (never for observe).
     if (rule?.mode === 'auto' && latest && cls === 'permission') {
       const p = latest.payload ?? {}
-      verdictFacts = { ...verdictFacts, pathsContained: verdictFacts.readOnly === true && await containedInWorkspace(typeof p.detail === 'string' && p.detail ? p.detail : p.summary, latest.workspace) }
+      const cmdText = typeof p.detail === 'string' && p.detail ? p.detail : p.summary
+      verdictFacts = { ...verdictFacts, pathsContained: verdictFacts.readOnly === true && await containedInWorkspace(cmdText, latest.workspace, undefined, String(cmdText ?? '').trim().split(/\s+/)[0]) }
     }
     const outcome = triageOutcome({ item, judgment: result.judgment, rule, facts: verdictFacts, sources, marks: marksOf(item), relax: { sessionFinished: true } })
     const entry = { itemId: item.id, type: item.type, stage: 'judge', verdict: outcome.verdict, mode: rule?.mode ?? 'observe', score: outcome.score, threshold: outcome.threshold, reasons: outcome.reasons, ruleId: rule?.id, ...(rule ? { ruleVersion: ruleVersion(rule) } : {}), judgment: result.judgment, ...doneExtraOf(verdictFacts) }
