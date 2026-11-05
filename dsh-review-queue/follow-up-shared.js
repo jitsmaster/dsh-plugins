@@ -121,6 +121,13 @@ export function stripLinkOptions(body) {
   return copy
 }
 
+// The requester title is shown on a card: controls, bidi and zero-width characters and the frame characters become a space; characters that render as nothing are dropped.
+// The England, Scotland and Wales flags (a black flag plus tag characters) are kept; any other tag run is hidden text. Same rules as dsh-session-link's cleanTitle (a separate plugin, so repeated).
+const SOURCE_NOISE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff"\[\]\uff02\uff3b\uff3d\u201c\u201d\u300c-\u300f]/g
+const SOURCE_SPOOF = /(\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f})|[\u00ad\u115f\u1160\u3164\uffa0\u{e0000}-\u{e007f}]/gu
+const keepFlag = (m, flag) => flag ?? ''
+const cleanSourceTitle = (t) => Array.from(String(t ?? '').replace(SOURCE_SPOOF, keepFlag).replace(SOURCE_NOISE, ' ').replace(/\s+/g, ' ').trim()).slice(0, 80).join('').replace(SOURCE_SPOOF, keepFlag).trim()
+
 /**
  * The one check of the three link options (todo.js, and the hub): { ok: false, error: 'bad-mode' | 'bad-source' } or { ok: true, mode ('steer' or undefined), source ({ sessionId, title } or undefined),
  * exclude (the distinct string ids, at most 20) }.
@@ -131,7 +138,7 @@ export function checkLinkOptions({ mode, source, excludeSessionIds, requireConfi
   let src
   if (source !== undefined) {
     if (!source || typeof source !== 'object' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(String(source.sessionId))) return { ok: false, error: 'bad-source' }
-    src = { sessionId: String(source.sessionId), title: String(source.title ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) }
+    src = { sessionId: String(source.sessionId), title: cleanSourceTitle(source.title) }
   }
   const exclude = Array.isArray(excludeSessionIds) ? [...new Set(excludeSessionIds.filter((x) => typeof x === 'string'))].slice(0, 20) : []
   return { ok: true, mode: mode === 'steer' ? 'steer' : undefined, source: src, exclude, requireConfirm }

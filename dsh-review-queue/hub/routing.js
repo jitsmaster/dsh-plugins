@@ -126,6 +126,8 @@ export function createRouting({ store, queue, instances, commands, log = () => {
     if (!link.ok) return { ok: false, error: link.error }
     const linked = { ...(link.requireConfirm === true ? { requireConfirm: true } : {}), ...(link.source ? { source: link.source } : {}) }
     const waiting = link.requireConfirm === true
+    // An app that predates requireConfirm (protocol 1) drops the flag and would start the session at once.
+    const tooOld = (inst) => waiting && !(inst.protocol >= 2)
     if (wanted !== undefined) {
       const target = findWorkspace(wanted)
       if (!target) return { ok: false, error: instances.list().some((i) => i.state === 'online') ? 'unknown-workspace' : 'no-registry' }
@@ -134,10 +136,12 @@ export function createRouting({ store, queue, instances, commands, log = () => {
       if (!waiting) return send(to.inst, { kind: 'todo-start', args: { ...base, ...(link.source ? { source: link.source } : {}), workspaceId: target.workspaceId } })
       const coordinator = instances.coordinator(caller)
       if (!coordinator) return { ok: false, error: 'no-registry' }
+      if (tooOld(coordinator)) return { ok: false, error: 'coordinator-too-old' }
       return send(coordinator, { kind: 'todo-suggest', args: { ...base, ...linked, workspaceId: instances.short(target.inst.id) + '/' + target.workspaceId, workspaces: instances.workspaces({ caller: coordinator.id, full: true }) } })
     }
     const coordinator = instances.coordinator(caller)
     if (!coordinator) return { ok: false, error: 'no-registry' }
+    if (tooOld(coordinator)) return { ok: false, error: 'coordinator-too-old' }
     return send(coordinator, { kind: 'todo-suggest', args: { ...base, ...linked, workspaces: instances.workspaces({ caller: coordinator.id, full: true }) } })
   }
 
