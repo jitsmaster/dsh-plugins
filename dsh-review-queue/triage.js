@@ -49,14 +49,15 @@ const SHELL_SYNTAX = /[;&|`$(){}<>\r\n"'\\*?!]/
 const SHELL_SYNTAX_AUTO = /[;&|`$(){}<>\r\n"'\\*?!%^]/ // Auto also refuses cmd's %VAR% expansion and the ^ escape
 const GIT_BAD_FLAG = /^--(output|exec-path|open-files-in-pager|ext-diff|textconv|upload-pack|receive-pack)/
 const RG_BAD_FLAG = /^--(pre|hostname-bin)/
-// Auto only: flags that make rg/grep walk directories or reach beyond the named files (long flags; short flags are checked per letter).
-const SEARCH_BAD_LONG = /^--(recursive|dereference-recursive|follow|hidden|no-ignore|search-zip|unrestricted|directories|files|regexp|file)(=|$|-)/
-const SEARCH_BAD_SHORT = /^-[^-]*[rRLuzefd]/
-// Auto only: git options that print file contents or reach history by pickaxe.
-const GIT_BAD_AUTO = /^(--(patch|pickaxe|cc|textconv)|-[^-]*[pucGS])/
 // Auto only: git is `status`, or `log` / `diff` with a summary flag (log and diff print patches by default, show always does).
 const GIT_AUTO_SUBCOMMANDS = new Set(['status', 'log', 'diff'])
-const GIT_SUMMARY_FLAGS = { log: new Set(['--oneline', '--stat', '--name-only', '--name-status']), diff: new Set(['--stat', '--name-only', '--name-status', '--shortstat', '--numstat']) }
+// Auto only: git takes just these flags (an explicit allow-list; every other flag is refused, so no patch / context / pickaxe / word-diff option can pass).
+const GIT_OK_FLAGS = {
+  status: { long: new Set(['-s', '-b', '--short', '--branch', '--porcelain']) },
+  log: { long: new Set(['--oneline', '--stat', '--name-only', '--name-status']), short: /^-\d+$/ },
+  diff: { long: new Set(['--stat', '--name-only', '--name-status', '--shortstat', '--numstat', '--cached', '--staged']) },
+}
+const GIT_SUMMARY_FLAGS ={ log: new Set(['--oneline', '--stat', '--name-only', '--name-status']), diff: new Set(['--stat', '--name-only', '--name-status', '--shortstat', '--numstat']) }
 // Auto only: rg/grep take just these flags, none of which takes a value (so no flag value can pass for the named file).
 const SEARCH_OK_LONG = new Set(['--line-number', '--ignore-case', '--invert-match', '--count', '--files-with-matches', '--word-regexp', '--fixed-strings', '--with-filename', '--no-filename', '--no-messages'])
 const SEARCH_OK_SHORT = /^-[nivclwHhFs]+$/
@@ -88,9 +89,11 @@ export function parseReadOnlyCommand(command, { auto = false } = {}) {
     if (!GIT_READ.has(tokens[1])) return fail('git subcommand not allowed')
     args = tokens.slice(2)
     if (args.some((t) => GIT_BAD_FLAG.test(t))) return fail('git flag not allowed')
-    if (auto && args.some((t) => t.includes(':') || GIT_BAD_AUTO.test(t))) return fail('git revision path or patch option not allowed in auto')
+    if (auto && args.some((t) => t.includes(':'))) return fail('git revision path not allowed in auto')
     if (auto) {
       if (!GIT_AUTO_SUBCOMMANDS.has(tokens[1])) return fail('git subcommand not allowed in auto')
+      const okFlags = GIT_OK_FLAGS[tokens[1]]
+      if (args.some((t) => t.startsWith('-') && !(okFlags.long.has(t) || okFlags.short?.test(t)))) return fail('git flag not allowed in auto')
       const summary = GIT_SUMMARY_FLAGS[tokens[1]]
       if (summary && !args.some((t) => summary.has(t))) return fail('git log and diff need a summary flag in auto')
     }
@@ -103,8 +106,7 @@ export function parseReadOnlyCommand(command, { auto = false } = {}) {
       if (bin !== 'ls' && !args.some((t) => !t.startsWith('-'))) return fail(bin + ' needs a named file in auto')
     }
     if (auto && (bin === 'rg' || bin === 'grep')) {
-      if (args.some((t) => SEARCH_BAD_LONG.test(t) || SEARCH_BAD_SHORT.test(t))) return fail('recursive or hidden search not allowed in auto')
-      // Only flags that take no value: a value-taking flag would put its value where the named file is counted.
+      // Only flags that take no value: a value-taking flag would put its value where the named file is counted. Recursive, hidden and every other flag is refused.
       if (args.some((t) => t.startsWith('-') && !(SEARCH_OK_LONG.has(t) || SEARCH_OK_SHORT.test(t)))) return fail('search flag not allowed in auto')
       // A pattern and at least one named file: without a file rg/grep read the whole working directory (or stdin).
       if (args.filter((t) => !t.startsWith('-')).length < 2 || args.some((t) => /^\.{1,2}[\\/]?$/.test(t) || /[\\/]$/.test(t))) return fail('search needs a pattern and a named file')

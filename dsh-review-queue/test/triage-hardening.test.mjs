@@ -83,8 +83,8 @@ test('S2: git in auto: no revision:path, no patch / pickaxe options', () => {
 
 test('S2: git in auto is status and summary-only log / diff: nothing that prints file contents', () => {
   const ok = ['git status', 'git status -s', 'git status --short -b', 'git status --porcelain', 'git log --oneline', 'git log --stat', 'git log --name-only', 'git log --name-status', 'git log --oneline -5',
-    'git diff --stat', 'git diff --name-only', 'git diff --name-status', 'git diff --shortstat', 'git diff --numstat', 'git diff HEAD~1 --stat']
-  const bad = ['git show HEAD', 'git show HEAD --stat', 'git show', 'git diff', 'git diff HEAD~1', 'git log', 'git log -5', 'git log -p', 'git log --stat -p', 'git diff --stat -p', 'git diff --stat --patch', 'git diff --stat -u',
+    'git diff --stat', 'git diff --name-only', 'git diff --name-status', 'git diff --shortstat', 'git diff --numstat', 'git diff HEAD~1 --stat', 'git diff --stat --cached', 'git diff --name-only HEAD~1']
+  const bad = ['git diff --stat -U5', 'git diff --stat --unified=3', 'git log --oneline --stat -U1', 'git diff --stat --word-diff', 'git diff --stat --color-words', 'git diff --stat -W','git show HEAD', 'git show HEAD --stat', 'git show', 'git diff', 'git diff HEAD~1', 'git log', 'git log -5', 'git log -p', 'git log --stat -p', 'git diff --stat -p', 'git diff --stat --patch', 'git diff --stat -u',
     'git blame a.js', 'git grep foo', 'git cat-file -p HEAD', 'git log --oneline -Gx', 'git diff --stat -c', 'git log --oneline HEAD:a.js', 'git diff --stat -S x']
   for (const c of ok) assert.equal(auto(c).ok, true, c)
   for (const c of bad) assert.equal(auto(c).ok, false, c)

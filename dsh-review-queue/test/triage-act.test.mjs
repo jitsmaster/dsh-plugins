@@ -51,7 +51,7 @@ test('an observe rule with an actor never calls it', async () => {
 
 test('actor success: act entry with preState, resolutionBase handed over, no note, not watched', async () => {
   const { store, runner, calls, entries } = setup({ actor: approve, now: () => 5000 })
-  const item = store.add(perm('git status --token=abcdef123456 ' + 'x'.repeat(600)))
+  const item = store.add(perm('git status token=abcdef123456 ' + 'x'.repeat(600)))
   await runner.idle()
   assert.equal(calls.length, 1)
   const base = calls[0].resolutionBase
