@@ -46,7 +46,7 @@ export function quoteSource(quote, sources, minChars = MIN_QUOTE_CHARS) {
 const PLAIN = new Set(['pwd', 'ls', 'cat', 'rg', 'grep', 'head', 'tail', 'wc'])
 const GIT_READ = new Set(['status', 'diff', 'log', 'show'])
 const SHELL_SYNTAX = /[;&|`$(){}<>\r\n"'\\*?!]/
-const SHELL_SYNTAX_AUTO = /[;&|`$(){}<>\r\n"'\\*?!%^]/ // Auto also refuses cmd's %VAR% expansion and the ^ escape
+const SHELL_SYNTAX_AUTO = /[;&|`$(){}<>\r\n"'\\*?!%^[\]@#]/ // Auto also refuses cmd's %VAR% expansion and the ^ escape, PowerShell's [..] wildcards, the @ splat / array and # comments
 const GIT_BAD_FLAG = /^--(output|exec-path|open-files-in-pager|ext-diff|textconv|upload-pack|receive-pack)/
 const RG_BAD_FLAG = /^--(pre|hostname-bin)/
 // Auto only: git is `status`, or `log` / `diff` with a summary flag (log and diff print patches by default, show always does).
@@ -57,7 +57,8 @@ const GIT_OK_FLAGS = {
   log: { long: new Set(['--oneline', '--stat', '--name-only', '--name-status']), short: /^-\d+$/ },
   diff: { long: new Set(['--stat', '--name-only', '--name-status', '--shortstat', '--numstat', '--cached', '--staged']) },
 }
-const GIT_SUMMARY_FLAGS ={ log: new Set(['--oneline', '--stat', '--name-only', '--name-status']), diff: new Set(['--stat', '--name-only', '--name-status', '--shortstat', '--numstat']) }
+// The summary flags are the allowed long flags of log / diff, but for the revision selectors of diff (`--cached` / `--staged` alone still print a patch).
+const GIT_SUMMARY_FLAGS = { log: GIT_OK_FLAGS.log.long, diff: new Set([...GIT_OK_FLAGS.diff.long].filter((f) => f !== '--cached' && f !== '--staged')) }
 // Auto only: rg/grep take just these flags, none of which takes a value (so no flag value can pass for the named file).
 const SEARCH_OK_LONG = new Set(['--line-number', '--ignore-case', '--invert-match', '--count', '--files-with-matches', '--word-regexp', '--fixed-strings', '--with-filename', '--no-filename', '--no-messages'])
 const SEARCH_OK_SHORT = /^-[nivclwHhFs]+$/
@@ -150,11 +151,13 @@ function isOfferedExactly(answer, item) {
  */
 const RISKY_STEMS = ['delet', 'remov', 'drop', 'destroy', 'wipe', 'erase', 'purge', 'kill', 'terminat', 'shut\\s*down', 'overwr', 'discard', 'revert', 'reset', 'clean', 'merg', 'deploy', 'releas',
   'publish', 'push', 'send', 'sent\\b', 'email', 'notif', 'posts?\\b', 'posted\\b', 'posting\\b', 'upload', 'install', 'uninstall', 'migrat', 'commit', 'tags?\\b', 'pay(?!load)', 'charg', 'bill',
-  'credential', 'secret', 'password', 'passwd', 'token', 'keys?\\b', 'ssh', 'sudo', 'chmod', 'chown', 'rotat', 'truncat', 'disabl', 'production', 'prods?\\b', 'force', 'rm\\s+[rf]', 'curl', 'wget']
+  'credential', 'secret', 'password', 'passwd', 'token', 'keys?\\b', 'ssh', 'sudo', 'chmod', 'chown', 'rotat', 'truncat', 'disabl', 'production', 'prods?\\b', 'force', 'rm\\s+[rf]', 'curl', 'wget',
+  'replac', 'rewrit', 'appl(?:y|ie)', 'run', 'execut', 'restart', 'stop', 'rebas', 'amend', 'squash', 'enabl', 'grant', 'approv', 'shar', 'expos', 'upgrad', 'downgrad', 'overrid', 'unlock', 'lock',
+  'ignor', 'skip', 'bypass']
 const RISKY_RE = new RegExp(`\\b(?:${RISKY_STEMS.join('|')})|\\|\\s*(?:ba|z)?sh\\b`, 'i')
 
-/** NFKC (full-width and compatibility letters), no format characters (zero-width and the like), camelCase / snake / kebab / dotted words split, lower case. */
-const normaliseRisky = (text) => text.normalize('NFKC').replace(/\p{Cf}/gu, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_.-]+/g, ' ').toLowerCase()
+/** NFKD then NFKC (full-width and compatibility letters), no format characters (zero-width and the like) and no combining marks,camelCase / snake / kebab / dotted words split, lower case. */
+const normaliseRisky = (text) => text.normalize('NFKD').replace(/\p{Cf}|\p{M}/gu, '').normalize('NFKC').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_.-]+/g, ' ').toLowerCase()
 
 /** True when the text names a destructive, external or sensitive action (see RISKY_STEMS). */
 export const isRiskyOption = (text) => typeof text === 'string' && RISKY_RE.test(normaliseRisky(text))
@@ -170,7 +173,7 @@ function cardTexts(question) {
  * judged the action reversible, inside the workspace and needing no decision, and no text on the card (question, header, every option label and description,
  * recommended or not) reads as destructive, external or sensitive. Returns the veto code, or undefined when it holds.
  */
-export function recommendedOptionRefusal(judgment, question) {
+export function recommendedOptionRefusal(judgment, question) { // (autoAnswerRefusal below also vetoes a card that marks more than one option)
   const refusal = autoAnswerRefusal(judgment?.answer, question)
   if (refusal) return refusal
   if (judgment?.needs_decision !== false) return 'needs-decision'
@@ -210,6 +213,9 @@ function questionBasis(judgment, rule, sources, reasons, item) {
 export function autoAnswerRefusal(answer, question) {
   const rec = recommendedOf(question)
   if (rec === undefined) return 'no-recommended-option'
+  // Exactly one label may carry the marker: with two, "the recommended option" is ambiguous (recommendedOf just takes the first).
+  const marked = (Array.isArray(question?.options) ? question.options : []).filter((o) => typeof o?.label === 'string' && /\(recommended\)/i.test(o.label))
+  if (marked.length !== 1) return 'ambiguous-recommended'
   return answer === rec ? undefined : 'answer-not-recommended'
 }
 
