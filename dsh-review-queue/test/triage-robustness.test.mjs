@@ -55,18 +55,18 @@ test('R2: triageEnabled tolerates a rules stub without setEnabled', () => {
 test('R3: a done card that is itself actionable never wastes a model call under an auto rule; summary-pending still waits for the model', async () => {
   const rules = DEFAULT_RULES.map((r) => ({ ...r, mode: 'auto' }))
   const judgment = { ...GOOD, matched_rule: 'green-done' }
-  const mk = () => setup({ rules, sessionContinuesOf: () => true, judge: { judge: async (arg) => { mk.calls.push(arg); return { judgment, raw: '' } } } })
-  mk.calls = []
+  const calls = []
+  const mk = () => setup({ rules, sessionContinuesOf: () => true, judge: { judge: async (arg) => { calls.push(arg); return { judgment, raw: '' } } } })
   const a = mk()
   a.store.add(done({ actionable: true }))
   await a.runner.idle()
-  assert.equal(mk.calls.length, 0, 'no model call')
+  assert.equal(calls.length, 0, 'no model call')
   const veto = a.entries.find((e) => e.stage === 'code-veto')
   assert.ok(veto?.reasons.includes('action-item'), JSON.stringify(a.entries))
   const b = mk()
   b.store.add(done())
   await b.runner.idle()
-  assert.equal(mk.calls.length, 1, 'a card whose summary has not settled is still judged')
+  assert.equal(calls.length, 1,'a card whose summary has not settled is still judged')
 })
 
 // --- R4 ------------------------------------------------------------------------------------------------------------------------------

@@ -210,7 +210,7 @@ test('S5: a glued short-option value that is a path is checked as a candidate', 
   assert.equal(await containedInWorkspace('cat -f../up', ws, io), false)
   assert.equal(await containedInWorkspace('head -n5 top.txt', ws, io), true, 'a number glued to a flag is not a path')
   assert.equal(await containedInWorkspace('git log -5', ws, io), true)
-  assert.equal(await containedInWorkspace('cat -ftop.txt', ws, io), true, 'a bare name is not a path character candidate')
+  assert.equal(await containedInWorkspace('cat -ftop.txt', ws, io), true, 'a glued value that is a bare existing name in the workspace is contained')
 })
 
 // --- S7: cat/head/tail/wc/ls flags in auto -------------------------------------------------------------------------------------------
@@ -225,7 +225,8 @@ test('S7: auto allows only a small no-value flag set for cat/head/tail/wc/ls and
 
 // --- S8: protected names are re-checked on the resolved real path ---------------------------------------------------------------------
 test('S8: a candidate that resolves to a protected name is vetoed in containedInWorkspace', async () => {
-  const resolveTo = (map) => ({ real: async (p) => (p === ws ? ws : (map[p.replace(/\\/g, '/').replace(ws.replace(/\\/g, '/') + '/', '')] ? join(ws, map[p.replace(/\\/g, '/').replace(ws.replace(/\\/g, '/') + '/', '')]) : p)) })
+  // map: link name (relative to ws) -> real target (relative to ws); anything not in the map resolves to itself
+  const resolveTo = (map) => ({ real: async (p) => { const name = Object.keys(map).find((k) => join(ws, k) === p); return name === undefined ? p : join(ws, map[name]) } })
   assert.equal(await containedInWorkspace('cat link-to-env', ws, resolveTo({ 'link-to-env': '.env' })), false, 'symlink to .env')
   assert.equal(await containedInWorkspace('cat link-to-key', ws, resolveTo({ 'link-to-key': 'sub/server.pem' })), false, 'symlink to a .pem')
   assert.equal(await containedInWorkspace('cat link-to-git', ws, resolveTo({ 'link-to-git': '.git/config' })), false, 'symlink into .git')

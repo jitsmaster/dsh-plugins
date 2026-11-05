@@ -65,6 +65,16 @@ test('a junction/symlink that leads outside is vetoed, through any path form', {
   assert.equal(await inside('ls link'), false, 'an existing bare name that is the link')
 })
 
+test('a real link whose target is a protected name (.env) is vetoed on the resolved path', async (t) => {
+  const wsEnv = join(base, 'ws-env')
+  mkdirSync(wsEnv)
+  writeFileSync(join(wsEnv, '.env'), 'SECRET=1')
+  let skip
+  try { symlinkSync(join(wsEnv, '.env'), join(wsEnv, 'link-to-env'), 'file') } catch (e) { skip = 'the OS refused to create a symlink: ' + e.code }
+  if (skip) return t.skip(skip)
+  assert.equal(await containedInWorkspace('cat link-to-env', wsEnv), false)
+})
+
 test('a missing, empty or unresolvable workspace is a veto', async () => {
   for (const w of [undefined, '', null, 42, join(base, 'no-such-dir')]) assert.equal(await containedInWorkspace('git status', w), false, String(w))
 })
