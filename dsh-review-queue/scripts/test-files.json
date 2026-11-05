@@ -115,6 +115,7 @@
   "test/android-adb-parse.test.mjs",
   "test/android-project.test.mjs",
   "test/paused-detect.test.mjs",
+  "test/paused-limit.test.mjs",
   "test/paused-service.test.mjs",
   "test/paused-hub.test.mjs",
   "test/paused-plugin.test.mjs",
@@ -290,5 +291,12 @@
   "test/triage-robustness.test.mjs",
   "test/triage-pass4.test.mjs",
   "test/triage-pass5.test.mjs",
-  "test/triage-pass6.test.mjs"
+  "test/triage-pass6.test.mjs",
+  "test/limit-card.test.mjs",
+  "test/limit-browser.test.mjs",
+  "test/limit-signin.test.mjs",
+  "test/limit-routes.test.mjs",
+  "test/limit-card-ui.test.mjs",
+  "test/limit-shutdown.test.mjs",
+  "test/limit-recover.test.mjs"
 ]

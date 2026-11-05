@@ -164,8 +164,12 @@ window.__ModuleLoader__.load({
 			if (!d || !(d.custom || "").trim()) return undefined;
 			return buildAnswers(questions, drafts);
 		}
+		/** The pinned sign-in card (paused.js LIMIT_SIGNIN) is a paused item that is not a session: it waits on the user and is never resumed. */
+		const isLimitSigninItem = (item) => !!(item && item.type === "paused" && item.payload && Array.isArray(item.payload.kinds) && item.payload.kinds.indexOf("limit-signin") >= 0);
+		/** An item that stands for a session (everything but the pinned sign-in card). */
+		const isSessionItem = (item) => !isLimitSigninItem(item);
 		/** Heading of a card: the task title, else the session title. */
-		const cardTitle = (item) => plainAction(item && (item.title || (isFollowUp(item) ? followUpTitle(item) : item.sessionTitle))) || "Untitled";
+		const cardTitle = (item) => (isLimitSigninItem(item) ? "Session limit reached" : plainAction(item && (item.title || (isFollowUp(item) ? followUpTitle(item) : item.sessionTitle))) || "Untitled");
 
 		/** Id of the item to select once `id` leaves the list: the next one, else the previous one. */
 		function nextAfter(items, id) {
@@ -414,6 +418,8 @@ window.__ModuleLoader__.load({
 
 		const TYPE = { question: "Question", permission: "Permission", completed: "Done", "pr-merged": "PR merged", archive: "Archive", todo: "Todo", paused: "Paused", onhold: "On hold" };
 		const typeLabel = (t) => TYPE[t] || t;
+		/** The chip text of one item: the pinned session-limit card says "Session limit", every other item its type's label. */
+		const itemTypeLabel = (item) => (isLimitSigninItem(item) ? "Session limit" : typeLabel(item && item.type));
 		const recommended = (q, label) => /\(recommended\)/i.test(label);
 
 		// ---- Todo: start a new session from the list ----------------------------------------------------
@@ -541,7 +547,9 @@ function imageFilesOf(data) {
 				case "permission": return row("permission", "Awaiting your approval", "user", true);
 				case "completed": return row("review", "Awaiting your review", "user", true);
 				case "pr-merged": case "archive": return row("archive-offer", "Archive offer", "user", true);
-				case "paused": return row("paused", "Paused by a restart", "session", false);
+				case "paused":
+						if (isLimitSigninItem(item)) return row("limit-signin", "Session limit reached", "user", true);
+						return row("paused", "Paused by a restart", "session", false);
 				case "onhold": return row("held", "On hold", "ticket", false);
 				case "todo":
 					switch (item.state) {
@@ -906,7 +914,7 @@ function imageFilesOf(data) {
 			"owner-offline": "That app is not running, so this cannot be sent.", "session-unavailable": "That session is not available in this app, so this cannot be sent.", "owner-away": "That app is not answering at the moment, so this cannot be sent.", "owner-timeout": "That app did not answer in time. Try again.", "unknown-outcome": "Sent, but no confirmation: refresh to check.", "local-only": "That can only be done in the DSH app on the computer.",
 			"session-gone": "That session no longer exists, so it cannot be resumed.", "not-paused": "That only applies to a paused session.", "no-scanner": "The scan for paused sessions is switched off in this app.", "no-power": "Pausing and quitting is not available in this app.",
 			"excluded-session": "That session sent this message, so it cannot be the target. Pick another one.", "bad-source": "The sending session is not valid, so this message was not queued.", "no-workspace": "Pick a workspace first.", "no model available": "No model is available to write that right now.", "LLM error": "The model could not do that. Try again.", "unknown-workspace": "That workspace no longer exists.", "empty-query": "Say which session this is for.", "unknown-session": "That session is not in the list any more. Pick another one.", "too-many-follow-ups": "Too many follow-ups are waiting: confirm or cancel one first.", "not-confirmable": "That todo is already being started or is done.", "not-todo": "That only applies to a todo.", "no-handoff": "That session has no handoff note to follow.", "not-followable": "That card has no handoff to follow.", "unavailable": "Following a handoff is not available in this app.", "follow-busy": "A follow-up is already in progress for that card.", "failed": "The follow-up session could not be started. Try again.", "pr-open": "Its pull request is still open, so the session keeps polling it. Archive it once the PR is merged or abandoned.",
-			"post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "onhold": "That session is on hold. Continue it first (or release it).", "not-holdable": "Only finished work or a paused session can be put on hold.", "no-onhold": "Putting a session on hold is not available in this app.", "busy": "A message to that session is already on its way. Try again in a moment.",
+			"bad-email": "That email address is not valid.", "bad-code": "That code is not valid.", "no-run": "No sign-in is running. Start it again.", "no-limit-signin": "Signing in after a session limit is not available in this app.", "post-failed": "The message could not be sent to the session.", "not-a-session": "That item is not a session, so nothing can be sent to it.", "paused": "That session was paused by a restart. Resume it at the PC first.", "onhold": "That session is on hold. Continue it first (or release it).", "not-holdable": "Only finished work or a paused session can be put on hold.", "no-onhold": "Putting a session on hold is not available in this app.", "busy": "A message to that session is already on its way. Try again in a moment.",
 			"triage-off": "AI handling is switched off in this app.", "not-ai-resolved": "That item was not handled by the AI.", "already-reviewed": "That AI decision was already reviewed.", "bad-review": "That review is not valid.", "bad-rule": "That rule no longer exists.", "bad-mode": "That mode is not valid.", "bad-input": "That request was incomplete. Refresh and try again.",
 				"bad-images": "An attached image is not valid. Remove it and paste it again.", "too-many-images": "At most " + IMAGE_MAX + " images can be attached.", "unknown-image": "An attached image is no longer on the PC. Remove it and paste it again.", "bad-image": "That is not an image the session can take (png, jpeg, webp or gif).", "too-large": "That image is over 8 MB.",
 		};
@@ -1425,7 +1433,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			runningCall = call;
 			return call.promise;
 		}
-		const pausedOpen = () => (state.snap ? state.snap.open.filter((i) => i.type === "paused") : []);
+		const pausedOpen = () => (state.snap ? state.snap.open.filter((i) => i.type === "paused" && isSessionItem(i)) : []);
 		const closeResumeAll = () => set({ resumeAll: null });
 		let resumeAbort;
 		/** Resumes every paused session at once (no confirm step), a few at a time; each place is held until its session reports back. A second click while a run is open does nothing. */
@@ -1698,6 +1706,59 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					h("button", { className: "rq-btn", disabled: busy, title: "Keep the session and clear this item", onClick: () => act("/v1/reviewed", { id: item.id }, item.id, { advance: true }) }, "Keep session")));
 		}
 
+		/** The pinned "Claude session limit reached" card: sign in with another account, then resume what the limit stopped. The email and the code live only in this
+		 *  component's own state (never the store, the saved drafts or a snapshot); the code field is cleared the moment it is sent. */
+		function LimitSigninBody({ item }) {
+			const st = useStore();
+			const busy = !!st.busy[item.id];
+			const p = item.payload || {};
+			const state = p.state || "idle";
+			const n = typeof p.count === "number" ? p.count : 0;
+			const stopped = n + " session" + (n === 1 ? "" : "s");
+			const [email, setEmail] = useState("");
+			const [code, setCode] = useState("");
+			const [again, setAgain] = useState(false);
+			const notNow = h("button", { key: "later", className: "rq-btn", disabled: busy, title: "Do not sign in now; this card stays out of the list until the limit comes back", onClick: () => act("/v1/paused-dismiss", { id: item.id }, item.id, { advance: true }) }, "Not now");
+			const cancel = h("button", { key: "cancel", className: "rq-btn", title: "Stop the sign-in and restore the previous login", onClick: () => act("/v1/limit-signin-cancel", {}, item.id) }, "Cancel");
+			const note = p.note ? h("div", { className: state === "failed" ? "rq-err" : "rq-sub", "data-limit-note": item.id }, p.note) : null;
+			const signIn = async () => {
+				const e = String(email || "").trim();
+				if (!e) return;
+				setAgain(false);
+				await act("/v1/limit-signin-start", { email: e }, item.id);
+			};
+			const submit = async () => {
+				const c = String(code || "").trim();
+				if (!c) return;
+				setCode("");
+				await act("/v1/limit-signin-code", { code: c }, item.id);
+			};
+			const emailForm = h(React.Fragment, null,
+				h("div", { className: "rq-text" }, "Claude session limit reached. " + stopped + " stopped. Sign in with a different account?"),
+				note,
+				h("div", { className: "rq-row" },
+					h("input", { className: "rq-input", type: "email", value: email, placeholder: "Email of the account to sign in with", "aria-label": "Email of the account to sign in with", disabled: busy, onChange: (e) => setEmail(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") signIn(); } }),
+					h("button", { className: "rq-btn pri", disabled: busy, title: "Sign this computer in to Claude with that account", onClick: signIn }, "Sign in"),
+					notNow));
+			if (state === "opening" || state === "verifying") return h(React.Fragment, null, note || h("div", { className: "rq-sub" }, state === "opening" ? "Opening the sign-in page…" : "Checking the new login…"), h("div", { className: "rq-row" }, cancel));
+			if (state === "awaiting-code") return h(React.Fragment, null,
+				note,
+				h("div", { className: "rq-row" },
+					h("input", { className: "rq-input", type: "text", value: code, placeholder: "Code from the sign-in page", "aria-label": "Code from the sign-in page", autoComplete: "off", spellCheck: false, disabled: busy, onChange: (e) => setCode(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") submit(); } }),
+					h("button", { className: "rq-btn pri", disabled: busy, onClick: submit }, "Submit code"),
+					cancel));
+			if (state === "signed-in") return h(React.Fragment, null,
+				h("div", { className: "rq-text" }, "Signed in. Resume the " + stopped + " the limit stopped?"),
+				note,
+				h("div", { className: "rq-row" },
+					h("button", { className: "rq-btn pri", disabled: busy, title: "Prompt each session the limit stopped to continue where it stopped", onClick: () => act("/v1/limit-resume", {}, item.id) }, "Resume all (" + n + ")"),
+					notNow));
+			if (state === "failed" && !again) return h(React.Fragment, null,
+				note || h("div", { className: "rq-err" }, "The sign-in failed."),
+				h("div", { className: "rq-row" }, h("button", { className: "rq-btn pri", disabled: busy, onClick: () => setAgain(true) }, "Try again"), notNow));
+			return emailForm;
+		}
+
 		/** A todo: confirm where it starts (nothing is created before), watch it start, retry a failure. The session is never opened by itself; Open session is a button. */
 		function TodoBody({ item, full }) {
 			const st = useStore();
@@ -1759,13 +1820,13 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const now = useNow(item.type === "question" && !!item.expiresAt);
 			const full = forceFull || !!st.expanded[item.id];
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
-			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "archive" ? ArchiveBody : item.type === "todo" ? (isFollowUp(item) ? FollowUpBody : TodoBody) : item.type === "paused" ? PausedBody : item.type === "onhold" ? OnHoldBody : CompletedBody;
+			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "archive" ? ArchiveBody : item.type === "todo" ? (isFollowUp(item) ? FollowUpBody : TodoBody) : item.type === "paused" ? (isLimitSigninItem(item) ? LimitSigninBody : PausedBody) : item.type === "onhold" ? OnHoldBody : CompletedBody;
 			const reading = !!(st.snap && st.snap.reading === item.id);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },
 				h("div", { className: "rq-card-h", onClick: toggle },
 					h("span", { className: "rq-pos" }, "#" + item.position),
-					h("span", { className: "rq-chip " + item.type }, typeLabel(item.type)),
+					h("span", { className: "rq-chip " + item.type }, itemTypeLabel(item)),
 					h("span", { className: "rq-title", title: cardTitle(item) }, cardTitle(item)),
 					h("span", { className: "rq-meta" },
 						left !== undefined ? h("span", { className: "rq-left" + (left < 30000 ? " soon" : ""), title: "Time left before this question expires" }, fmtLeft(left)) : null,
@@ -2005,7 +2066,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const risky = it.risks && it.risks.length;
 			return h("div", { ref, role: "option", tabIndex: selected ? 0 : -1, "aria-selected": !!selected, className: "rq-row-i" + (selected ? " sel" : ""), onClick: () => set({ selected: it.id }),
 				onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); set({ selected: it.id }); } } },
-				h("span", { className: "rq-row" }, h("span", { className: "rq-pos" }, "#" + it.position), h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), h("span", { className: "rq-title" }, cardTitle(it)),
+				h("span", { className: "rq-row" }, h("span", { className: "rq-pos" }, "#" + it.position), h("span", { className: "rq-chip " + it.type }, itemTypeLabel(it)), h("span", { className: "rq-title" }, cardTitle(it)),
 					left !== undefined || risky ? h("span", { className: "rq-meta" },
 						left !== undefined ? h("span", { className: "rq-left" + (left < 30000 ? " soon" : ""), title: "Time left before this question expires" }, fmtLeft(left)) : null,
 						risky ? h("span", { className: "rq-risk-dot", title: it.risks.map((r) => r.label).join("; ") }, "⚠") : null) : null),
@@ -2300,14 +2361,14 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { todoSendLabel, handoffFollowable, isAiResolved, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
+		exports.shared = { todoSendLabel, handoffFollowable, isAiResolved, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, itemTypeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { visibleOpen, detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, resolvedCountsMemo, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
 		Object.assign(exports.__test, { uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
-		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll });
+		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
 		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });

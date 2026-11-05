@@ -92,6 +92,10 @@ export function pausedNote(n) {
 
 /** The card of a paused session: the facts the desktop card shows (core.pausedFacts) and where to act. Resume is for the PC; Dismiss is on the card (views.js PausedBody). */
 export function pausedView(core, item, now) {
+  if (item?.payload?.kinds?.includes?.('limit-signin')) { // the pinned session-limit card: status only, signing in and resuming are done at the PC
+    const n = Number(item.payload.count) || 0
+    return { facts: [`Claude session limit reached, ${n} session${n === 1 ? '' : 's'} stopped. Sign in at the PC.`], note: '' }
+  }
   return { facts: core.pausedFacts(item, now), note: 'To resume this session, use the Coding Boss Review Queue on the PC. If it needs no action, dismiss it here.' }
 }
 

@@ -38,7 +38,7 @@ const ageOf = (item, key = 'createdAt') => getCore().fmtAge(now() - (item[key] |
 
 // ---- small pieces -------------------------------------------------------------------------------------------------
 
-function Chip({ type }) { return html`<span class=${'chip ' + type}>${getCore().typeLabel(type)}</span>` }
+function Chip({ type, item }) { return html`<span class=${'chip ' + type}>${item ? getCore().itemTypeLabel(item) : getCore().typeLabel(type)}</span>` }
 
 export function inlineNodes(s) {
   return getCore().mdInline(s).map((tok) => {
@@ -331,7 +331,7 @@ function PausedBody({ item }) {
   const v = pausedView(getCore(), item, now())
   return html`<div>
     ${v.facts.map((f, i) => html`<div class=${i === 0 ? 'text' : 'sub'} key=${i}>${f}</div>`)}
-    <div class="sub">${v.note}</div>
+    ${v.note ? html`<div class="sub">${v.note}</div>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/paused-dismiss', { id: item.id }, item.id)) go('/') }}>Dismiss</button>
       <${OnHoldButton} item=${item} />
@@ -615,7 +615,7 @@ function ItemRow({ item }) {
   const c = getCore()
   const risky = item.type === 'permission' && item.risks && item.risks.length
   return html`<a class="rowitem" href=${'#/item/' + item.id}>
-    <div class="top"><${Chip} type=${item.type} />${risky ? html`<span class="risk small">⚠ risky</span>` : null}<span class="age">${ageOf(item)}</span></div>
+    <div class="top"><${Chip} type=${item.type} item=${item} />${risky ? html`<span class="risk small">⚠ risky</span>` : null}<span class="age">${ageOf(item)}</span></div>
     <div class="title">${c.cardTitle(item)}</div>
     ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}</div>` : null}
   </a>`
@@ -705,7 +705,7 @@ export function ResolvedBody({ st }) {
     <div id="rpanel" role="tabpanel" aria-labelledby=${'rtab-' + (f.resolvedBy || 'all')}>
       ${shown.length ? shown.map((i) => html`<div class="resolved-row" key=${i.id}>
         <a class="rowitem" href=${'#/item/' + i.id}>
-          <div class="top"><${Chip} type=${i.type} /><${AiBadge} item=${i} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
+          <div class="top"><${Chip} type=${i.type} item=${i} /><${AiBadge} item=${i} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
           <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>
         <${ArchiveSessionButton} item=${i} />
       </div>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved recently.'}</div>`}
@@ -805,7 +805,7 @@ function ItemView({ id }) {
   const chat = hasThread(item) // every item with a session (not a todo): its conversation below the actions
   const writable = canPost(item) // and a composer at the bottom, except for a paused one (it is resumed at the PC)
   return html`<article class="card">
-    <div class="top"><${Chip} type=${item.type} /><span class="age">${resolved ? ageOf(item, 'resolvedAt') : ageOf(item)}</span></div>
+    <div class="top"><${Chip} type=${item.type} item=${item} /><span class="age">${resolved ? ageOf(item, 'resolvedAt') : ageOf(item)}</span></div>
     <h2>${c.cardTitle(item)}</h2>
     ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}${item.workspace ? ' · ' + item.workspace : ''}</div>` : null}
     ${c.triageNote(item) ? html`<div class="sub ai-note">${c.triageNote(item)}</div>` : null}
