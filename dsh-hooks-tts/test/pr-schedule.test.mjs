@@ -19,7 +19,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,7 +45,8 @@ test('ensureTask creates one every-10-minutes task titled "PR <id> comment poll"
   const { sessionId, request } = schedule.calls.create[0]
   assert.equal(sessionId, 's1')
   assert.equal(request.title, taskTitle('5'))
-  assert.equal(request.every_seconds, 600)
+  assert.deepEqual(request.timing, { kind: 'every', every_seconds: 600 })
+  assert.deepEqual(request.target, { kind: 'session', sessionId: 's1' })
   assert.equal(schedule.tasksOf('s1').length, 1)
   assert.equal(id, schedule.tasksOf('s1')[0].id)
 })
@@ -104,7 +105,7 @@ test('ensureTask for a different PR in the same session replaces the old task', 
   assert.equal(tasks.length, 1)
   assert.equal(tasks[0].title, taskTitle('7'))
   assert.notEqual(tasks[0].id, old)
-  assert.ok(schedule.calls.delete.some((d) => d.id === old))
+  assert.ok(schedule.calls.edit.some((d) => d.id === old))
 })
 
 test('ensureTask recreates the task when the user deleted it (no suppression)', async () => {
@@ -147,7 +148,7 @@ test('a failing create leaves no stale registry entry and the next ensureTask re
 
 test('ensureTask adopts an existing task with the exact title and marker instead of creating a second one', async () => {
   const { api, schedule } = await make()
-  const seeded = await schedule.service.create('s1', { title: taskTitle('5'), prompt: `some older wording\n${marker('s1', '5')}`, every_seconds: 600 })
+  const seeded = await schedule.seed('s1', { title: taskTitle('5'), prompt: `some older wording\n${marker('s1', '5')}` })
   schedule.calls.create.length = 0
   const id = await api.ensureTask('s1', '5')
   assert.equal(id, seeded.id)
@@ -156,8 +157,8 @@ test('ensureTask adopts an existing task with the exact title and marker instead
 
 test('ensureTask does not adopt a task with the right title but another marker, or no marker', async () => {
   const { api, schedule } = await make()
-  await schedule.service.create('s1', { title: taskTitle('5'), prompt: `mine\n${marker('other-session', '5')}`, every_seconds: 600 })
-  await schedule.service.create('s1', { title: taskTitle('5'), prompt: 'a user task that only shares the title', every_seconds: 600 })
+  await schedule.seed('s1', { title: taskTitle('5'), prompt: `mine\n${marker('other-session', '5')}` })
+  await schedule.seed('s1', { title: taskTitle('5'), prompt: 'a user task that only shares the title' })
   schedule.calls.create.length = 0
   await api.ensureTask('s1', '5')
   assert.equal(schedule.calls.create.length, 1)
@@ -192,7 +193,7 @@ test('deleteTasks removes the session\'s task and its registry entry', async () 
   const id = await api.ensureTask('s1', '5')
   await api.deleteTasks('s1')
   assert.equal(schedule.tasksOf('s1').length, 0)
-  assert.ok(schedule.calls.delete.some((d) => d.id === id && d.sessionId === 's1'))
+  assert.ok(schedule.calls.edit.some((d) => d.id === id && d.sessionId === 's1'))
   assert.equal(readFileSync(registryPath(dir), 'utf8').includes(id), false)
 })
 
@@ -216,7 +217,7 @@ test('deleteTasks only touches our tasks, never the user\'s own reminders in the
 
 test('deleteTasks also removes an unregistered task found by its marker (registry lost)', async () => {
   const { api, schedule } = await make()
-  await schedule.service.create('s1', { title: taskTitle('5'), prompt: `orphan\n${marker('s1', '5')}`, every_seconds: 600 })
+  await schedule.seed('s1', { title: taskTitle('5'), prompt: `orphan\n${marker('s1', '5')}` })
   await api.deleteTasks('s1')
   assert.equal(schedule.tasksOf('s1').length, 0)
 })
@@ -363,10 +364,10 @@ test('README describes the PR poll as an Automation task named "PR <id> comment 
 test('ensureTask creates the wanted task BEFORE deleting a stale one: a failing create deletes nothing', async () => {
   const { api, schedule } = await make()
   const stale = await api.ensureTask('s1', '4')
-  schedule.calls.delete.length = 0
+  schedule.calls.edit.length = 0
   schedule.hooks.createError = Object.assign(new Error('boom-create'), { once: true })
   await assert.rejects(api.ensureTask('s1', '5'), /boom-create/)
-  assert.equal(schedule.calls.delete.length, 0, 'the stale task is kept while the new one could not be created')
+  assert.equal(schedule.calls.edit.length, 0, 'the stale task is kept while the new one could not be created')
   assert.deepEqual(schedule.tasksOf('s1').map((t) => t.id), [stale])
 })
 
@@ -383,10 +384,167 @@ test('a stale task that cannot be deleted does not fail ensureTask; the next cal
 
 test('a duplicate of the wanted task that cannot be deleted still returns the kept task', async () => {
   const { api, schedule } = await make()
-  const a = await schedule.service.create('s1', { title: taskTitle('5'), prompt: `one\n${marker('s1', '5')}`, every_seconds: 600 })
-  await schedule.service.create('s1', { title: taskTitle('5'), prompt: `two\n${marker('s1', '5')}`, every_seconds: 600 })
+  const a = await schedule.seed('s1', { title: taskTitle('5'), prompt: `one\n${marker('s1', '5')}` })
+  await schedule.seed('s1', { title: taskTitle('5'), prompt: `two\n${marker('s1', '5')}` })
   schedule.hooks.deleteError = Object.assign(new Error('boom-delete'), { once: true })
   assert.equal(await api.ensureTask('s1', '5'), a.id)
+})
+
+// ---- the host-wide schedule API (list is a page of ALL tasks; tasks belong to a session by their target) ----
+
+test('a task that only involves the session but delivers to another session is not its task', async () => {
+  const { api, schedule } = await make()
+  schedule.addOtherTarget('s2', { title: taskTitle('5'), prompt: `mine\n${marker('s1', '5')}` })
+  const id = await api.ensureTask('s1', '5')
+  assert.equal(schedule.calls.create.length, 1, 'a task aimed at s2 is neither adopted nor counted for s1')
+  assert.equal(schedule.tasksOf('s1').length, 1)
+  assert.equal(id, schedule.tasksOf('s1')[0].id)
+})
+
+test('every page of list({ active: true }) is read (never catalog(), which also sends paused and ended tasks), so a task beyond the first page is still found', async () => {
+  const schedule = fakeSchedule()
+  for (let i = 0; i < 501; i++) schedule.addOtherTarget('other', { title: `filler ${i}` })
+  const { api } = await make({ schedule })
+  const id = await api.ensureTask('s1', '5') // created last: on the second page of 500
+  assert.equal(await api.ensureTask('s1', '5'), id)
+  assert.equal(schedule.calls.create.length, 1, 'the second call found the task on page two instead of creating another')
+  assert.equal(schedule.calls.catalog, 0, 'catalog() is never used')
+  assert.ok(schedule.calls.list.length >= 2, 'more than one page was read')
+  assert.ok(schedule.calls.list.every((c) => c.active === true && c.limit <= 500), 'only active tasks, never a page above the host limit')
+})
+
+test('paging goes on until a short page when the result has no total', async () => {
+  const schedule = fakeSchedule()
+  for (let i = 0; i < 501; i++) schedule.addOtherTarget('other', { title: `filler ${i}` })
+  const noTotal = { ...schedule.service, list: async (request) => { const { total, ...rest } = await schedule.service.list(request); return rest } }
+  const { api } = await make({ schedule, getSchedule: () => noTotal })
+  const id = await api.ensureTask('s1', '5')
+  assert.equal(await api.ensureTask('s1', '5'), id)
+  assert.equal(schedule.calls.create.length, 1, 'the task on page two was found without a total')
+})
+
+test('a task listed on two pages (the list moved between page reads) counts once: no duplicate delete', async () => {
+  const schedule = fakeSchedule()
+  const { api } = await make({ schedule })
+  const id = await api.ensureTask('s1', '5')
+  const mine = schedule.tasksOf('s1')[0]
+  schedule.calls.edit.length = 0
+  const overlapping = { ...schedule.service, list: async () => ({ items: [mine, { ...mine }], shown: 2, total: 2, limit: 500, offset: 0 }) }
+  const again = await make({ schedule, getSchedule: () => overlapping })
+  assert.equal(await again.api.ensureTask('s1', '5'), id)
+  assert.equal(schedule.calls.edit.length, 0, 'the second copy of the same id is not a stale duplicate')
+})
+
+test('paging is capped: a host that never stops listing makes ensureTask fail closed (nothing created)', async () => {
+  let n = 0
+  const endless = { ...fakeSchedule().service, list: async () => ({ items: Array.from({ length: 500 }, () => ({ id: `t-${n++}`, status: 'active', target: { kind: 'session', sessionId: 'other' } })), shown: 500, total: Number.MAX_SAFE_INTEGER, limit: 500, offset: 0 }) }
+  const { api, schedule } = await make({ getSchedule: () => endless })
+  await assert.rejects(api.ensureTask('s1', '5'), /too many/)
+  assert.equal(schedule.calls.create.length, 0)
+})
+
+test('a host task whose id is not a safe id is never adopted or remembered, even with our title and marker', async () => {
+  const schedule = fakeSchedule()
+  const evil = { id: 'x\nforged', kind: 'every', title: taskTitle('5'), prompt: `p\n${marker('s1', '5')}`, status: 'active', target: { kind: 'session', sessionId: 's1' } }
+  const svc = { ...schedule.service, list: async (r) => { const page = await schedule.service.list(r); return { ...page, items: [evil, ...page.items] } } }
+  const { api, dir } = await make({ schedule, getSchedule: () => svc })
+  const id = await api.ensureTask('s1', '5')
+  assert.equal(schedule.calls.create.length, 1)
+  assert.notEqual(id, evil.id)
+  assert.equal(readFileSync(registryPath(dir), 'utf8').includes('forged'), false)
+})
+
+test('a list that fails while ensuring rejects ensureTask and creates nothing', async () => {
+  const { api, schedule } = await make()
+  schedule.hooks.listError = new Error('boom-list')
+  await assert.rejects(api.ensureTask('s1', '5'), /boom-list/)
+  assert.equal(schedule.calls.create.length, 0)
+})
+
+test('a list that fails while deleting fails closed: nothing is deleted from the registry alone, the entry stays and a later deleteTasks retries', async () => {
+  const { api, schedule, dir } = await make()
+  const id = await api.ensureTask('s1', '5')
+  schedule.calls.edit.length = 0
+  schedule.hooks.listError = new Error('boom-list')
+  await assert.rejects(api.deleteTasks('s1'), /boom-list/)
+  assert.equal(schedule.calls.edit.length, 0, 'no delete without having verified the task')
+  assert.ok(readFileSync(registryPath(dir), 'utf8').includes(id), 'the registry still remembers the task')
+  schedule.hooks.listError = undefined
+  await api.deleteTasks('s1')
+  assert.equal(schedule.tasksOf('s1').length, 0)
+})
+
+test('with several tasks carrying our title and marker the registered one is kept, even when a planted one is listed first', async () => {
+  const { api, schedule, again: restart } = await make()
+  const id = await api.ensureTask('s1', '5')
+  const planted = { id: 'planted-1', kind: 'every', title: taskTitle('5'), prompt: `evil\n${marker('s1', '5')}`, status: 'active', target: { kind: 'session', sessionId: 's1' } }
+  const svc = { ...schedule.service, list: async (r) => { const page = await schedule.service.list(r); return { ...page, items: [planted, ...page.items] } } }
+  const again = await restart({ getSchedule: () => svc }) // same state dir: it knows the registered id
+  assert.equal(await again.api.ensureTask('s1', '5'), id, 'the registered task stays the poll')
+  assert.equal(schedule.calls.create.length, 1)
+  assert.equal(schedule.tasksOf('s1').length, 1, 'the registered task was not deleted as stale')
+})
+
+test('a paused task of ours is not active: it is not adopted (a new one is created) and deleteTasks leaves it alone', async () => {
+  const { api, schedule } = await make()
+  const first = await api.ensureTask('s1', '5')
+  schedule.pauseTask(first)
+  const second = await api.ensureTask('s1', '5')
+  assert.notEqual(second, first)
+  assert.equal(schedule.calls.create.length, 2)
+  await api.deleteTasks('s1')
+  assert.deepEqual(schedule.all().map((t) => t.id), [first], 'only the paused task is left; the active one was deleted')
+})
+
+test('a delete the schedule service refuses (a result that is neither deleted nor not-found) keeps the registry entry and throws', async () => {
+  const { api, schedule, dir } = await make()
+  const id = await api.ensureTask('s1', '5')
+  const { list, create } = schedule.service
+  const refusing = await make({ dir, schedule, getSchedule: () => ({ list, create, edit: async (r) => ({ id: r.id, code: 'schedule_conflict' }) }) })
+  await assert.rejects(refusing.api.deleteTasks('s1'), /refused the delete \(schedule_conflict\)/)
+  assert.ok(readFileSync(registryPath(dir), 'utf8').includes(id), 'still remembered, so a later deleteTasks retries')
+})
+
+test('the acting session of a create and of a delete is the poll session itself (no change notice to it)', async () => {
+  const { api, schedule } = await make()
+  await api.ensureTask('s1', '5')
+  await api.deleteTasks('s1')
+  assert.equal(schedule.calls.create[0].actorSessionId, 's1')
+  assert.deepEqual(schedule.calls.edit.map((d) => [d.action, d.actorSessionId]), [['delete', 's1']])
+})
+
+test('a created task whose id is not a safe id is never remembered: ensureTask rejects and the registry stays clean', async () => {
+  const schedule = fakeSchedule()
+  const svc = { ...schedule.service, create: async (r, actor) => ({ ...(await schedule.service.create(r, actor)), id: 'x\nforged' }) }
+  const { api, dir } = await make({ schedule, getSchedule: () => svc })
+  await assert.rejects(api.ensureTask('s1', '5'), /unusable task id/)
+  assert.equal(existsSync(registryPath(dir)) && readFileSync(registryPath(dir), 'utf8').includes('forged'), false)
+})
+
+test('trace lines quote the ids (they are external text): created and deleted lines carry JSON-quoted ids', async () => {
+  const { api, logs } = await make()
+  const id = await api.ensureTask('s1', '5')
+  await api.deleteTasks('s1')
+  assert.ok(logs.some((l) => /created Automation task/.test(l) && l.includes(JSON.stringify(id)) && l.includes(JSON.stringify('s1'))), logs.join('\n'))
+  assert.ok(logs.some((l) => /deleted Automation task/.test(l) && l.includes(JSON.stringify(id)) && l.includes(JSON.stringify('s1'))), logs.join('\n'))
+})
+
+test('the registry is written through a temp file and renamed: a failing write leaves the old file intact', async () => {
+  const { api, dir, logs } = await make()
+  const id = await api.ensureTask('s1', '5')
+  const before = readFileSync(registryPath(dir), 'utf8')
+  mkdirSync(`${registryPath(dir)}.tmp`) // the temp path cannot be written
+  await api.ensureTask('s2', '6')
+  assert.equal(readFileSync(registryPath(dir), 'utf8'), before, 'the registry file was not touched by the failed write')
+  assert.ok(before.includes(id))
+  assert.ok(logs.some((l) => /could not save poll tasks/.test(l)), logs.join('\n'))
+})
+
+test('a successful registry write leaves no temp file behind', async () => {
+  const { api, dir } = await make()
+  await api.ensureTask('s1', '5')
+  await api.deleteTasks('s1')
+  assert.deepEqual(readdirSync(dir), ['pr-poll-tasks.json'])
 })
 
 // ---- registry validation ----

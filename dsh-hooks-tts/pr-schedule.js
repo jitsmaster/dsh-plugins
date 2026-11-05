@@ -14,7 +14,7 @@
  * Security: nothing here reads or logs the Azure DevOps PAT. Tasks are only ever deleted from fire-and-forget calls
  * (never inside an archive-admission or pre-step path that awaits them), and only our own tasks are touched.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
 const DEFAULT_INTERVAL_SECONDS = 600
@@ -91,6 +91,33 @@ function markerOf(record, spec) {
   return marker
 }
 
+/** Largest page the host list accepts (ScheduleListRequest.limit: 1..500). */
+const LIST_PAGE = 500
+/** Pages read at most per lookup (10 000 tasks): a larger or endless listing fails the call instead of being acted on partially. */
+const MAX_PAGES = 20
+
+/**
+ * The ACTIVE tasks that deliver to one session, as the host schedule service (commit 341ea6eea4 onwards) exposes them: every page of
+ * `list({ active: true, limit, offset })` (never `catalog()`, which also sends paused and ended tasks). Tasks belong to a session by
+ * their delivery `target`, not by who created them. Best effort: the pages are not one snapshot, so items are de-duplicated by id.
+ */
+async function activeTasksOf(service, sessionId) {
+  const byId = new Map()
+  for (let offset = 0, pages = 0; ; pages++) {
+    if (pages >= MAX_PAGES) throw new Error(`the schedule service lists too many tasks (more than ${MAX_PAGES * LIST_PAGE})`) // fail closed: never act on a partial view
+    const page = await service.list({ active: true, limit: LIST_PAGE, offset })
+    const items = Array.isArray(page?.items) ? page.items : []
+    for (const r of items) {
+      // Only the tasks of this session are kept (not the whole store), and only with a safe string id (it ends up in registry, traces and delete calls).
+      if (typeof r?.id === 'string' && SAFE_ID.test(r.id) && r.status === 'active' && r.target?.kind === 'session' && r.target.sessionId === sessionId) byId.set(r.id, r)
+    }
+    offset += items.length
+    const done = Number.isSafeInteger(page?.total) ? offset >= page.total : items.length < LIST_PAGE
+    if (!items.length || done) break
+  }
+  return [...byId.values()]
+}
+
 /** Whether a registry record read from disk is well formed (it ends up in task titles, URLs and delete calls). */
 const isValidRecord = (t) => typeof t?.id === 'string' && SAFE_ID.test(t.id) && typeof t.sessionId === 'string' && SAFE_ID.test(t.sessionId) && typeof t.prId === 'string' && PR_ID.test(t.prId)
 
@@ -148,8 +175,16 @@ export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, inte
     for (const t of Array.isArray(saved) ? saved : []) if (isValidRecord(t)) registry.set(t.id, { sessionId: t.sessionId, prId: t.prId })
   } catch { /* none yet, or unreadable: adoption by marker rebuilds it */ }
 
+  /** Atomic: written to a temp file and renamed over the registry, so a crash or a failed write never leaves a truncated file. */
   const save = () => {
-    try { writeFileSync(registryPath, JSON.stringify({ tasks: [...registry].map(([id, t]) => ({ id, ...t })) })) } catch (error) { trace(`could not save poll tasks: ${error?.message ?? error}`) }
+    const temp = `${registryPath}.tmp`
+    try {
+      writeFileSync(temp, JSON.stringify({ tasks: [...registry].map(([id, t]) => ({ id, ...t })) }))
+      renameSync(temp, registryPath)
+    } catch (error) {
+      trace(`could not save poll tasks: ${error?.message ?? error}`)
+      try { unlinkSync(temp) } catch { /* no temp file to remove */ }
+    }
   }
   const remember = (id, sessionId, prId) => {
     const known = registry.get(id)
@@ -177,7 +212,9 @@ export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, inte
   async function removeOne(service, sessionId, id) {
     retire(id)
     try {
-      await service.delete({ sessionId, id })
+      // The acting session is the task's own session: the host does not send it a [SCHEDULE CHANGE] notice about its own poll task.
+      const result = await service.edit({ id, action: 'delete' }, sessionId)
+      if (result?.deleted !== true && result?.code !== 'schedule_not_found') throw new Error(`the schedule service refused the delete (${result?.code ?? 'unknown'})`)
     } catch (error) {
       retired.delete(id)
       throw error
@@ -191,9 +228,11 @@ export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, inte
   async function ensure(sessionId, prId) {
     const service = getSchedule()
     if (!service) return undefined
-    const active = await service.list({ sessionId })
+    const active = await activeTasksOf(service, sessionId)
     const mine = active.filter((r) => isOurs(r, sessionId))
-    const wanted = mine.find((r) => r.title === taskTitle(prId) && markerOf(r, spec)?.prId === prId)
+    const matching = mine.filter((r) => r.title === taskTitle(prId) && markerOf(r, spec)?.prId === prId)
+    // Several candidates (a duplicate, or a task another actor planted for this session): the one we registered wins, so a planted one never displaces ours.
+    const wanted = matching.find((r) => registry.get(r.id)?.sessionId === sessionId && registry.get(r.id)?.prId === prId) ?? matching[0]
     // A task the user deleted in the Automation UI is forgotten and, below, recreated (no suppression).
     const live = new Set(active.map((r) => r.id))
     for (const id of idsOf(sessionId)) if (!live.has(id)) { retire(id); forget(id) }
@@ -201,15 +240,17 @@ export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, inte
     let id = wanted?.id
     if (wanted) remember(wanted.id, sessionId, prId)
     else {
-      const created = await service.create(sessionId, { prompt: taskPrompt(sessionId, prId), title: taskTitle(prId), every_seconds: every })
+      const created = await service.create({ title: taskTitle(prId), prompt: taskPrompt(sessionId, prId), timing: { kind: 'every', every_seconds: every }, target: { kind: 'session', sessionId } }, sessionId)
+      // The id comes from the host and ends up in the registry, traces and delete calls: refuse an unusable one.
+      if (typeof created?.id !== 'string' || !SAFE_ID.test(created.id)) throw new Error('the schedule service returned an unusable task id')
       remember(created.id, sessionId, prId)
-      trace(`created Automation task "${taskTitle(prId)}" (${created.id}) for ${sessionId}`)
+      trace(`created Automation task "${taskTitle(prId)}" (${JSON.stringify(created.id)}) for ${JSON.stringify(sessionId)}`)
       id = created.id
     }
     // Our tasks for another PR (or a duplicate) are stale: the session has exactly one poll task. A failure is retried by the next call.
     for (const stale of mine) {
       if (stale === wanted) continue
-      try { await removeOne(service, sessionId, stale.id) } catch (error) { trace(`could not delete the stale poll task ${stale.id} of ${sessionId}: ${error?.message ?? error}`) }
+      try { await removeOne(service, sessionId, stale.id) } catch (error) { trace(`could not delete the stale poll task ${JSON.stringify(stale.id)} of ${JSON.stringify(sessionId)}: ${error?.message ?? error}`) }
     }
     return id
   }
@@ -218,14 +259,15 @@ export function createPrSchedule({ getSchedule, stateDir, trace = () => {}, inte
     const service = getSchedule()
     if (!service) return
     let active
-    try { active = await service.list({ sessionId }) } catch (error) { trace(`could not list tasks of ${sessionId}: ${error?.message ?? error}`) }
-    // A failed listing falls back to the registry; a registered task that no longer exists is simply forgotten.
-    const live = active ? new Set(active.filter((r) => isOurs(r, sessionId)).map((r) => r.id)) : undefined
-    const ids = new Set([...(live ?? []), ...idsOf(sessionId)])
+    // Fail closed: a task is only deleted after it was seen in the listing as ours. A failed listing deletes nothing (the registry keeps the ids, a later call retries).
+    try { active = await activeTasksOf(service, sessionId) } catch (error) { trace(`could not list tasks of ${JSON.stringify(sessionId)}: ${error?.message ?? error}`); throw error }
+    // A registered task that no longer exists is simply forgotten.
+    const live = new Set(active.filter((r) => isOurs(r, sessionId)).map((r) => r.id))
+    const ids = new Set([...live, ...idsOf(sessionId)])
     let failure
     for (const id of ids) {
-      if (live && !live.has(id)) { retire(id); forget(id); continue }
-      try { await removeOne(service, sessionId, id); trace(`deleted Automation task ${id} of ${sessionId}`) } catch (error) { failure ??= error }
+      if (!live.has(id)) { retire(id); forget(id); continue }
+      try { await removeOne(service, sessionId, id); trace(`deleted Automation task ${JSON.stringify(id)} of ${JSON.stringify(sessionId)}`) } catch (error) { failure ??= error }
     }
     if (failure) throw failure
   }

@@ -1,12 +1,14 @@
 /**
  * Shared fakes for the PR-poll-as-Automation-task tests (pr-schedule.test.mjs, pr-schedule-wiring.test.mjs).
  *
- * The fake schedule service mirrors the REAL DSH Schedule service (D:/dev/DSH/packages/schedule/schedule/src/index.ts):
- *   create(sessionId, request, signal?) -> ScheduleRecord   (positional session id; request: { prompt, title, every_seconds })
- *   list({ sessionId })                 -> ScheduleRecord[] (active tasks of that session only; NOT serialized)
- *   delete({ sessionId, id })           -> { id, deleted: true } | { id, deleted: false, code: 'schedule_not_found' }  (never throws for an unknown id)
- * create/delete go through one FIFO chain like the real service; list reads immediately.
- * An 'every' record carries { id, kind: 'every', title, prompt, everySeconds, scheduledAt }.
+ * The fake schedule service mirrors the REAL DSH Schedule service (D:/dev/DSH/packages/schedule/schedule/src/index.ts, host commit 341ea6eea4 onwards):
+ *   create({ title, prompt, timing, target? }, actorSessionId?, signal?) -> ScheduleCatalogEntry
+ *   list({ active?, limit?, offset? })  -> { items, shown, total, limit, offset }   (ALL host tasks, paged, limit <= 500)
+ *   catalog()                           -> ScheduleCatalogEntry[]                    (ALL host tasks, no page)
+ *   edit({ id, action: 'delete' }, actorSessionId?, signal?) -> { id, deleted: true } | { id, code: 'schedule_not_found' }  (never throws for an unknown id)
+ * create/edit go through one FIFO chain like the real service; list/catalog read immediately.
+ * An 'every' entry carries { id, kind: 'every', title, prompt, everySeconds, scheduledAt, target, involvedSessionIds, status }.
+ * A task belongs to a session by its delivery target ({ kind: 'session', sessionId }).
  *
  * This file has no tests of its own (node --test runs it as an empty file).
  */
@@ -53,41 +55,55 @@ export const scheduleError = (code, message = code) => Object.assign(new Error(m
 export function fakeSchedule() {
   /** id -> { sessionId, record, status } */
   const rows = new Map()
-  const calls = { create: [], list: [], delete: [] }
+  const calls = { create: [], list: [], catalog: 0, edit: [] }
+  const entryOf = (record, sessionId) => ({ ...record, target: { kind: 'session', sessionId }, involvedSessionIds: [sessionId], status: 'active' })
   const hooks = { createGate: undefined, deleteGate: undefined, createError: undefined, listError: undefined, deleteError: undefined }
   let counter = 0
   let chain = Promise.resolve()
   const serialize = (work) => { const run = chain.then(work); chain = run.catch(() => {}); return run }
 
   const service = {
-    async create(sessionId, request, signal) {
-      calls.create.push({ sessionId, request, signal })
+    async create(request, actorSessionId, signal) {
+      const sessionId = request?.target?.kind === 'session' ? request.target.sessionId : undefined
+      calls.create.push({ sessionId, actorSessionId, request, signal })
       return serialize(async () => {
         if (hooks.createGate) await hooks.createGate
         if (hooks.createError) { const e = hooks.createError; if (hooks.createError.once) hooks.createError = undefined; throw e }
         if (typeof request?.title !== 'string' || !request.title.trim()) throw scheduleError('invalid_prompt', 'title is required')
         if (typeof request?.prompt !== 'string' || !request.prompt.trim()) throw scheduleError('invalid_prompt', 'prompt is required')
-        if (!Number.isSafeInteger(request.every_seconds) || request.every_seconds < 60) throw scheduleError('invalid_rule', 'every_seconds must be at least 60')
+        if (request.timing?.kind !== 'every') throw scheduleError('invalid_selector', 'only every timing is faked')
+        const every = request.timing.every_seconds
+        if (!Number.isSafeInteger(every) || every < 60) throw scheduleError('invalid_rule', 'every_seconds must be at least 60')
         const id = `schedule-${++counter}-${Math.random().toString(16).slice(2, 10)}`
-        const record = { id, kind: 'every', title: request.title.trim(), prompt: request.prompt.trim(), everySeconds: request.every_seconds, scheduledAt: new Date(Date.now() + request.every_seconds * 1000).toISOString() }
-        rows.set(id, { sessionId, record, status: 'active' })
-        return record
+        const record = { id, kind: 'every', title: request.title.trim(), prompt: request.prompt.trim(), everySeconds: every, scheduledAt: new Date(Date.now() + every * 1000).toISOString() }
+        const entry = entryOf(record, sessionId)
+        rows.set(id, { sessionId, record: entry, status: 'active' })
+        return entry
       })
     },
-    async list({ sessionId }) {
-      calls.list.push({ sessionId })
+    async list({ active, limit = 100, offset = 0 } = {}) {
+      calls.list.push({ active, limit, offset })
       if (hooks.listError) throw hooks.listError
-      return [...rows.values()].filter((r) => r.sessionId === sessionId && r.status === 'active').map((r) => r.record)
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500 || !Number.isSafeInteger(offset) || offset < 0) throw scheduleError('invalid_rule', 'limit must be 1..500 and offset >= 0') // host resolveListPage
+      const matching = [...rows.values()].filter((r) => active === undefined || (r.status === 'active') === active).map((r) => r.record)
+      const items = matching.slice(offset, offset + limit)
+      return { items, shown: items.length, total: matching.length, limit, offset }
     },
-    async delete({ sessionId, id }) {
-      calls.delete.push({ sessionId, id })
+    async catalog() {
+      calls.catalog++
+      if (hooks.listError) throw hooks.listError
+      return [...rows.values()].map((r) => r.record)
+    },
+    async edit(request, actorSessionId, signal) {
+      const row = rows.get(request?.id)
+      calls.edit.push({ sessionId: row?.sessionId, id: request?.id, action: request?.action, actorSessionId, signal })
       return serialize(async () => {
         if (hooks.deleteGate) await hooks.deleteGate
         if (hooks.deleteError) { const e = hooks.deleteError; if (hooks.deleteError.once) hooks.deleteError = undefined; throw e }
-        const row = rows.get(id)
-        if (!row || row.sessionId !== sessionId) return { id, deleted: false, code: 'schedule_not_found' }
-        rows.delete(id)
-        return { id, deleted: true }
+        if (request.action !== 'delete') throw scheduleError('invalid_rule', 'only delete is faked')
+        if (!rows.has(request.id)) return { id: request.id, code: 'schedule_not_found' }
+        rows.delete(request.id)
+        return { id: request.id, deleted: true }
       })
     },
   }
@@ -102,9 +118,27 @@ export function fakeSchedule() {
     /** A task some other party created (a user's own reminder): never ours. */
     addForeign(sessionId, { title = 'standup', prompt = 'say hi' } = {}) {
       const id = `schedule-foreign-${++counter}`
-      const record = { id, kind: 'every', title, prompt, everySeconds: 3600, scheduledAt: new Date(Date.now() + 3_600_000).toISOString() }
+      const record = entryOf({ id, kind: 'every', title, prompt, everySeconds: 3600, scheduledAt: new Date(Date.now() + 3_600_000).toISOString() }, sessionId)
       rows.set(id, { sessionId, record, status: 'active' })
       return record
+    },
+    /** A task of ours as it exists in the store (same shape create() makes), e.g. left over from an earlier process. */
+    seed(sessionId, { title, prompt }) {
+      return service.create({ title, prompt, timing: { kind: 'every', every_seconds: 600 }, target: { kind: 'session', sessionId } }, sessionId)
+    },
+    /** A task that targets another session but was created by (involves) this one: not a task of this session. */
+    addOtherTarget(targetSessionId, { title = 'elsewhere', prompt = 'p' } = {}) {
+      const id = `schedule-other-${++counter}`
+      const record = entryOf({ id, kind: 'every', title, prompt, everySeconds: 3600, scheduledAt: new Date(Date.now() + 3_600_000).toISOString() }, targetSessionId)
+      rows.set(id, { sessionId: targetSessionId, record, status: 'active' })
+      return record
+    },
+    /** The user pauses a task in the Automation UI: it stays in catalog()/list() with status 'paused' (not active). */
+    pauseTask(id) {
+      const row = rows.get(id)
+      if (!row) return
+      row.status = 'paused'
+      row.record = { ...row.record, status: 'paused' }
     },
     /** The user deletes a task in the Automation UI. */
     userDelete: (id) => { rows.delete(id) },

@@ -28,9 +28,10 @@ function harness({ withSchedule = false } = {}) {
   const handlers = {}
   const prompts = []
   const service = {
-    list: async () => state.tasks.slice(),
-    create: async (sessionId, input) => { const t = { id: 't' + (state.tasks.length + 1), sessionId, ...input }; state.tasks.push(t); return t },
-    delete: async ({ id }) => { state.tasks = state.tasks.filter((t) => t.id !== id) },
+    // the real host API (commit 341ea6eea4 onwards): list is a Host-wide page, create takes one request, delete goes through edit
+    list: async ({ active, limit = 100, offset = 0 } = {}) => { const items = state.tasks.filter(() => active !== false).slice(offset, offset + limit); return { items, shown: items.length, total: state.tasks.length, limit, offset } },
+    create: async (request) => { const t = { id: 't' + (state.tasks.length + 1), kind: 'every', title: request.title, prompt: request.prompt, everySeconds: request.timing.every_seconds, target: request.target, involvedSessionIds: [], status: 'active' }; state.tasks.push(t); return t },
+    edit: async ({ id, action }) => { if (action !== 'delete') throw new Error('only delete is faked'); state.tasks = state.tasks.filter((t) => t.id !== id); return { id, deleted: true } },
   }
   const ctx = {
     logger: { warn() {}, info() {} },
@@ -67,7 +68,8 @@ test('with a Schedule service the waiting session gets ONE "PR <id> approval wai
   h.poller.addWait('f1', '5')
   await settle()
   assert.deepEqual(h.state.tasks.map((t) => t.title), ['PR 5 approval wait'])
-  assert.equal(h.state.tasks[0].every_seconds, 600)
+  assert.equal(h.state.tasks[0].everySeconds, 600)
+  assert.deepEqual(h.state.tasks[0].target, { kind: 'session', sessionId: 'f1' })
   assert.match(h.state.tasks[0].prompt, /pr-approval v1 session=f1 pr=5/)
   h.poller.addWait('f1', '5')
   await settle()
