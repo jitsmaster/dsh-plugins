@@ -16,6 +16,8 @@ const AGENT_PREFIX = '/hub/v1/agent/'
 const SHUTDOWN = '/hub/v1/shutdown'
 /** The desktop app owns the speakers, the screen and its own selection (D7): never the hub's business. */
 const LOCAL_ONLY = new Set(['read', 'read-tip', 'tip-next', 'tip-current', 'tip-peek', 'tip-deeper', 'tip-todo', 'stop', 'ui', 'focus'])
+/** The session-limit sign-in and Resume all: run by the desktop app that serves the request (its own paused scan and sessions), never by the hub; a phone is refused as desktop-only. */
+const DESKTOP_LOCAL = new Set(['limit-signin-start', 'limit-signin-code', 'limit-signin-cancel', 'limit-resume'])
 /**
  * What a paired phone may do with an item. It may start todos (todo, todo-confirm, todo-cancel: hub/routing.js sends them to the
  * owner app, or for "Choose for me" to the most recently desktop-active one). It cannot open a session directly: open-session, and every action
@@ -133,6 +135,7 @@ export function createHttp({ hub, log = () => {} }) {
       return await hub.pushRoutes(req, res, path, { readJson, send }, who)
     }
     const kind = path.slice('/v1/'.length)
+    if (DESKTOP_LOCAL.has(kind)) return who.role === 'device' ? send(res, 403, { error: 'desktop-only' }) : send(res, 403, { ok: false, error: 'local-only' })
     if (LOCAL_ONLY.has(kind)) return send(res, 403, { ok: false, error: 'local-only' })
     if (!hub.actionKinds.includes(kind)) return send(res, 404, { error: 'unknown-action' })
     if (who.role === 'device' && !DEVICE_ACTIONS.has(kind)) return send(res, 403, { error: 'desktop-only' })

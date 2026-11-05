@@ -84,6 +84,27 @@ export function parseLogFrames(bytes, { unzip = zlib.zstdDecompressSync } = {}) 
 
 // ---- classifying a log ---------------------------------------------------------------------------------------------
 
+const LIMIT_MESSAGE = /session limit|usage limit reached|weekly limit|5-hour limit|opus limit/i
+
+/**
+ * Is a turn/end reason a stop by the Claude subscription limit (not a transient 429 rate limit)? The code is PROVIDER_ERROR for the
+ * session limit ("... You've hit your session limit · resets 1pm (America/Los_Angeles)"), QUOTA for the older wording; the message decides.
+ * @returns {{ resetText?: string } | null}
+ */
+function limitStop(reason) {
+  if (reason?.kind !== 'error') return null
+  const message = String(reason.error?.message ?? '')
+  if (reason.error?.code !== 'QUOTA' && !LIMIT_MESSAGE.test(message)) return null
+  const epoch = /usage limit reached\s*\|\s*(\d{9,13})/i.exec(message)
+  if (epoch) {
+    const ms = Number(epoch[1]) * (epoch[1].length > 11 ? 1 : 1000)
+    return { resetText: Number.isFinite(new Date(ms).getTime()) ? new Date(ms).toISOString() : undefined }
+  }
+  // Short and plain only (the text goes onto a card, the hub and the phone): a time, plus a zone like "(America/Los_Angeles)"; anything else in the parentheses is dropped.
+  const reset = /resets\s+(\d{1,2}(?::\d{2})?\s*[ap]m)(?:\s*\(([A-Za-z_]{1,30}(?:\/[A-Za-z_+-]{1,30}){0,2})\))?/i.exec(message)
+  return { resetText: reset ? (reset[2] ? `${reset[1].trim()} (${reset[2]})` : reset[1].trim()) : undefined }
+}
+
 /**
  * Folds the records of one session: is its last work cut off, and what did it look like.
  * @returns {{ head?: { id?: string, cwd?: string, origin?: string, parent?: string }, kinds: string[], turn: number,
@@ -137,18 +158,21 @@ export function classifyLog(records, { torn = false } = {}) {
   else if (lastEnd?.kind === 'interrupted') kinds.push('interrupted')
   // A DSH restart disposes the agent and ends every running turn aborted/disposed (the next load does not rewrite it as interrupted).
   else if (lastEnd?.kind === 'aborted' && lastEnd.reason?.kind === 'disposed') kinds.push('disposed')
+  const limit = openTurn === null ? limitStop(lastEnd) : null
+  if (limit) kinds.push('limit')
   if (inbox.length > 0) kinds.push('pending-inbox')
   if (torn) kinds.push('torn')
   return {
-    head, kinds, turn: lastTurn, endKind: lastEnd?.kind, pending: inbox.length, title,
+    head, kinds, limitResetText: limit?.resetText, turn: lastTurn, endKind: lastEnd?.kind, pending: inbox.length, title,
     danglingCalls: [...calls.values()], lastUser: clip(lastUser), lastAssistant: clip(lastAssistant),
     lastTime: records.at(-1)?.time,
   }
 }
 
 /** Why a session is listed, in words for the card. */
-export function reasonText({ kinds, pending }) {
+export function reasonText({ kinds, pending, limitResetText }) {
   const parts = []
+  if (kinds.includes('limit')) parts.push('Stopped by the Claude usage limit' + (limitResetText ? ' (resets ' + limitResetText + ')' : ''))
   if (kinds.includes('open-turn')) parts.push('Cut off in the middle of a turn')
   if (kinds.includes('interrupted')) parts.push('The last turn was interrupted by a crash or restart')
   if (kinds.includes('disposed')) parts.push('The turn was ended by a DSH restart')
@@ -201,7 +225,7 @@ export async function scanSessionLogs({
       const c = classifyLog(parsed.records, { torn: parsed.torn })
       if (!c.head || c.head.origin === 'subagent' || !c.kinds.length) continue
       candidates.push({
-        sessionId: id, cwd: c.head.cwd ?? '', title: c.title ?? '', lastWrite, kinds: c.kinds, reason: reasonText(c),
+        sessionId: id, cwd: c.head.cwd ?? '', title: c.title ?? '', lastWrite, kinds: c.kinds, limitResetText: c.limitResetText, reason: reasonText(c),
         turn: c.turn, danglingCalls: c.danglingCalls, pending: c.pending, lastUser: c.lastUser, lastAssistant: c.lastAssistant,
       })
     }
@@ -241,11 +265,17 @@ export function createDismissals({ io, now = Date.now, retentionMs = DISMISS_RET
   }
 }
 
+/** payload.kinds of the one pinned "Session limit reached" item (not a session: its sessionId is ''). */
+export const LIMIT_SIGNIN = 'limit-signin'
+export const LIMIT_STATES = ['idle', 'awaiting-email', 'opening', 'awaiting-code', 'verifying', 'signed-in', 'failed']
+export const isLimitSignin = (item) => item?.type === 'paused' && Array.isArray(item.payload?.kinds) && item.payload.kinds.includes(LIMIT_SIGNIN)
+
 // ---- the list ------------------------------------------------------------------------------------------------------
 
 const payloadOf = (c) => ({
   lastWrite: c.lastWrite, kinds: c.kinds, reason: c.reason, turn: c.turn, danglingCalls: c.danglingCalls,
   pending: c.pending, lastUser: c.lastUser, lastAssistant: c.lastAssistant,
+  ...(c.limitResetText ? { limitResetText: c.limitResetText } : {}),
 })
 
 /**
@@ -253,8 +283,14 @@ const payloadOf = (c) => ({
  * place, one that is not cut off any more (or was dismissed) is resolved. A failed scan changes nothing. Scans never overlap.
  * @param {{ store: any, scan: () => Promise<any>, dismissals: ReturnType<typeof createDismissals>, log?: (line: string) => void }} deps
  */
-export function createPausedTracker({ store, scan, dismissals, heldIds = () => new Set(), log = () => {} }) {
+export function createPausedTracker({ store, scan, dismissals, heldIds = () => new Set(), limitRunning = () => false, log = () => {} }) {
   let running
+  // The pinned item is dismissed ('Not now') until no limit card is left; kept in memory (an app restart brings the card back, which is harmless).
+  let pinnedDismissed = false
+  // The store is persisted but a sign-in run is not: a pinned card restored mid-run has no run behind it (Cancel and Submit would answer no-run forever).
+  // The first successful scan of this tracker (app start) resets such a state to idle; later scans leave the run's state alone.
+  let pinnedChecked = false
+  const IN_FLIGHT = ['awaiting-email', 'opening', 'awaiting-code', 'verifying']
   async function run() {
     let result
     try { result = await scan() } catch (error) {
@@ -264,7 +300,19 @@ export function createPausedTracker({ store, scan, dismissals, heldIds = () => n
     if (!result?.ok) return { ok: false, error: result?.error ?? 'scan-failed' }
     const held = heldIds() // a session on hold is parked on purpose, not cut off
     const wanted = result.candidates.filter((c) => !dismissals.has(c.sessionId, c.lastWrite) && !held.has(c.sessionId))
-    const open = new Map(store.list({ status: 'open' }).filter((i) => i.type === 'paused').map((i) => [i.sessionId, i]))
+    const openPaused = store.list({ status: 'open' }).filter((i) => i.type === 'paused')
+    let pinned = openPaused.find(isLimitSignin)
+    // A live sign-in run in this process owns the pinned card: its logout makes every limit session look recovered, so the scan must not close or reset it.
+    const runLive = Boolean(limitRunning())
+    if (!pinnedChecked && !runLive) {
+      pinnedChecked = true
+      if (pinned && IN_FLIGHT.includes(pinned.payload?.state)) {
+        const reset = { ...pinned.payload, state: 'idle', note: '' }
+        store.update(pinned.id, { payload: reset })
+        pinned = { ...pinned, payload: reset }
+      }
+    }
+    const open = new Map(openPaused.filter((i) => !isLimitSignin(i)).map((i) => [i.sessionId, i]))
     let added = 0
     let updated = 0
     let resolved = 0
@@ -281,16 +329,39 @@ export function createPausedTracker({ store, scan, dismissals, heldIds = () => n
     }
     // A card of the idle check (kinds ['idle']) is about a session that is NOT cut off: the scan never closes it (the user, a resume or the session itself does).
     for (const gone of open.values()) if (!gone.payload?.kinds?.includes('idle') && store.resolve(gone.id, { kind: 'recovered', by: 'scan' })) resolved++
+    // The pinned sign-in card: one per app while at least one limit card is open; count follows, state and note belong to the sign-in run.
+    const limitCount = wanted.filter((c) => c.kinds.includes('limit')).length
+    if (limitCount === 0) pinnedDismissed = false
+    if (pinned && limitCount === 0 && runLive) { /* keep the card (code box, Cancel) until the run ends; the next scan resolves it */ }
+    else if (pinned && limitCount === 0) store.resolve(pinned.id, { kind: 'recovered', by: 'scan' })
+    else if (pinned) {
+      if (pinned.payload?.count !== limitCount) store.update(pinned.id, { payload: { ...pinned.payload, count: limitCount } })
+    } else if (limitCount > 0 && !pinnedDismissed) {
+      store.add({ type: 'paused', sessionId: '', sessionTitle: 'Session limit reached', workspace: '', payload: { kinds: [LIMIT_SIGNIN], count: limitCount, state: 'idle', note: '' } })
+    }
     if (added || resolved) log('paused sessions: ' + added + ' new, ' + resolved + ' no longer cut off')
     return { ok: true, added, updated, resolved, total: wanted.length }
   }
   return {
+    /**
+     * Sets state and/or note on the open pinned item (the sign-in run calls this). state must be one of LIMIT_STATES, note is clipped text.
+     * @returns {boolean} false when there is no open pinned item or the state is unknown
+     */
+    setPinned({ state, note } = {}) {
+      const pinned = store.list({ status: 'open' }).find(isLimitSignin)
+      if (!pinned || (state !== undefined && !LIMIT_STATES.includes(state))) return false
+      const next = { ...pinned.payload }
+      if (state !== undefined) next.state = state
+      if (note !== undefined) next.note = clip(String(note), 300)
+      return store.update(pinned.id, { payload: next })
+    },
     scan() {
       running ??= run().finally(() => { running = undefined })
       return running
     },
     /** The item was resumed or dismissed: its session stays out of the list until its log is written again. */
     markHandled(item) {
+      if (isLimitSignin(item)) { pinnedDismissed = true; return }
       if (typeof item?.sessionId === 'string' && Number.isFinite(item.payload?.lastWrite)) {
         dismissals.add(item.sessionId, item.payload.lastWrite)
       }

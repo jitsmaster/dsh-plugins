@@ -58,6 +58,7 @@ import { createRouter, PREFIX } from './server.js'
 import { createPushStore, loadOrCreateVapid, jsonFileIo } from './hub/push.js'
 import { createPushRoutes } from './hub/push-routes.js'
 import { createFileLog } from './filelog.js'
+import { activeAccountSetter, createLimitSignIn } from './limit-signin.js'
 import { STALE_MS, createDismissals, createPausedTracker, scanSessionLogs } from './paused.js'
 import { readThread } from './thread.js'
 import { sourcesForItem } from './triage-sources.js'
@@ -210,10 +211,24 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   const heldIds = () => onHold?.heldSessionIds() ?? new Set()
   const paused = pausedWanted
     ? createPausedTracker({
-      store, scan: pausedScan, log, heldIds,
+      store, scan: pausedScan, log, heldIds, limitRunning: () => limitSignIn?.state().running === true,
       dismissals: createDismissals({ io: stateDir ? fileIo(join(stateDir, 'paused-dismissed.json')) : undefined }),
     })
     : undefined
+  // The session-limit sign-out/sign-in run (limit-signin.js); the routes are in server.js. It does nothing until start({ email }) is called.
+  // llm-claude-code's optional 'claudeAccounts' service is read per call (that plugin may load later or not at all); activeAccount is written through the host's
+  // server-side settings service (ctx.get('settings').mutate; else the card tells the user to set it). config.limitSignInDeps replaces parts (tests).
+  const claudeAccountsOf = () => { try { return ctx.get?.('claudeAccounts') ?? undefined } catch { return undefined } }
+  const settingsOf = () => { try { return ctx.get?.('settings') ?? undefined } catch { return undefined } }
+  const limitSignIn = createLimitSignIn({
+    get accounts() { return claudeAccountsOf() },
+    get setActiveAccount() { return activeAccountSetter(settingsOf()) },
+    pinned: { set: (p) => paused?.setPinned(p) ?? false },
+    dshHome, log, claudeExecutable: config.claudeExecutable,
+    ...(config.limitSignInDeps ?? {}),
+  })
+  // A sign-in run that died (crash, kill, power loss) after the logout left the user signed out with the token backup on disk: undo it now. Never blocks or breaks the start.
+  void Promise.resolve().then(() => limitSignIn.recoverStranded()).catch((error) => log('limit-signin: recovery at start failed: ' + String(error?.message ?? error)))
   // The chat view of the phone reads the thread of a session from the same folder.
   const threadOf = (opts) => readThread({ root: join(dshHome, 'sessions'), log, ...opts })
   // The tip of the day of the empty list (tip.js): this app's own model (none while the llm service is missing: built-in tips), steered by the recent work topics. config.tipDeps overrides parts for tests.
@@ -253,7 +268,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
     : undefined
   // dsh-hooks-tts's 'handoffFollowUp' service (read per call: that plugin may load later or not at all).
   const handoffFollowOf = () => { try { return ctx.get?.('handoffFollowUp') ?? undefined } catch { return undefined } }
-  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, limitSignIn, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
   // Observe mode only: every new item is judged in the background and an open card that is safe to handle gets the note "AI would have handled this". Nothing is ever done to an item.
   let triage
   if (triageWanted) {
@@ -354,7 +369,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
   const sessionsTimer = setInterval(() => { void queue.refreshSessions() }, config.sessionsRefreshMs ?? 5000)
   sessionsTimer.unref?.()
   let wiring
-  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); triage?.stop(); aiReporter?.stop(); pausedTimers.forEach(clearTimeout); idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
+  ctx.effect?.(() => async () => { clearInterval(autoClearTimer); clearInterval(pruneTimer); clearInterval(sessionsTimer); triage?.stop(); aiReporter?.stop(); pausedTimers.forEach(clearTimeout); try { let cancelTimer; await Promise.race([(async () => { await limitSignIn.cancel(); await limitSignIn.whenDone() })(), new Promise((resolve) => { cancelTimer = setTimeout(() => { log('limit-signin: cancel at shutdown timed out'); resolve() }, config.limitCancelTimeoutMs ?? 10_000); cancelTimer.unref?.() })]).finally(() => clearTimeout(cancelTimer)) } catch (error) { log('limit-signin: cancel at shutdown failed: ' + String(error?.message ?? error)) } idleTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); askTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); holdTimers.forEach((t) => { clearTimeout(t); clearInterval(t) }); capture.dispose(); reader.stop(); await taskbar?.dispose(); await wiring?.dispose() }, 'review-queue: stop')
 
   // Dev route: drive the real handlers with a fake agent so the whole path (item, card answer, expiry) can be tried
   // without a model. Off unless asked for.
@@ -419,7 +434,7 @@ installArchiveOffer(ctx, { queueOf: () => queue, log, enabled: () => config.arch
 
   // Other plugins (voice) reach the queue through the context.
   try { ctx.provide?.('reviewQueue', provided) } catch { /* optional */ }
-  return { queue: provided, local: queue, agent: wiring?.client, proxy: wiring?.proxy, store, idle, aiReporter }
+  return { queue: provided, local: queue, agent: wiring?.client, proxy: wiring?.proxy, store, idle, aiReporter, limitSignIn }
 }
 
 export function apply(ctx, config = {}) {

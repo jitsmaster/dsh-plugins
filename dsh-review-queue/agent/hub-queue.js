@@ -127,6 +127,11 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     saveTodoImage: (bytes) => local.saveTodoImage(bytes), // the files are on this PC (a folder every app and the hub share): never asked of the hub
     tuneTodo: (text) => local.tuneTodo(text), // this app's own model: never asked of the hub
     modelEfforts: () => local.modelEfforts(), // this app's own default model: never asked of the hub
+    // The session-limit sign-in and Resume all are desktop-only and this app's own (its paused scan owns the pinned card and its sessions): never asked of the hub.
+    limitSignInStart: (input) => local.limitSignInStart(input),
+    limitSignInCode: (input) => local.limitSignInCode(input),
+    limitSignInCancel: () => local.limitSignInCancel(),
+    limitResume: () => local.limitResume(),
     runningSessions: () => local.runningSessions(), // the sessions are this app's: never asked of the hub
     triageRules: () => local.triageRules(), // this app's own triage rules: never asked of the hub
     triageRuleMode: (ruleId, mode, opts) => local.triageRuleMode(ruleId, mode, opts), // this app's own triage rules: never asked of the hub

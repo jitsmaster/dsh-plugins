@@ -4,6 +4,8 @@
  * the user hears is what is on screen. Also feeds the card summary fallback.
  */
 
+import { isLimitSignin } from './paused.js'
+
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\u{E0000}-\u{E007F}\u115F\u1160\u3164\uFFA0\uFE00-\uFE0F]/gu
 
 // An action item is written <u>**text**</u> (shown bold and larger by the screens). Plain text drops the tags; keepAction carries them through as
@@ -158,6 +160,11 @@ function bodyParts(item) {
       full: 'Session' + (session ? ' ' + session : '') + ' is on hold.' + (reason ? ' ' + sentence(reason) : '') + ticket,
     }
   }
+  if (item.type === 'paused' && isLimitSignin(item)) {
+    const n = Number(item.payload?.count) || 0
+    const line = `Claude session limit reached, ${n} session${n === 1 ? '' : 's'} stopped.`
+    return { headline: line, full: line }
+  }
   if (item.type === 'paused') {
     const session = cleanText(item.sessionTitle, { maxWords: 8, maxChars: 80 })
     const reason = cleanText(item.payload?.reason, { maxChars: 200 })
@@ -195,6 +202,7 @@ export function titleFor(item) {
   }
   if (item.type === 'archive') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Archive this session?'
   if (item.type === 'pr-merged') return 'PR ' + cleanText(String(item.payload?.prId ?? ''), { maxChars: 12 }) + ' merged'
+  if (item.type === 'paused' && isLimitSignin(item)) return 'Session limit reached'
   if (item.type === 'paused') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Paused session'
   if (item.type === 'onhold') return cleanText(item.sessionTitle, { maxWords: 10 }) || 'Session on hold'
   if (item.type === 'todo') {

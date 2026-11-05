@@ -9,7 +9,7 @@ import { riskOf } from './risk.js'
 import { createTodos } from './todo.js'
 import { MAX_TODO, PROMPT_TIMEOUT_MS, codeOf, isSentFollowUp } from './follow-up-shared.js'
 import { listFollowUpSessions } from './follow-up.js'
-import { RESUME_PROMPT } from './paused.js'
+import { RESUME_CONCURRENCY, RESUME_PROMPT, isLimitSignin } from './paused.js'
 import { listRunningSessions } from './userpause.js'
 import { isSessionId } from './thread.js'
 import { postKeyOf } from './post-key.js'
@@ -29,21 +29,23 @@ const RUNNING_SHARE_MS = 1_500 // an answer of runningSessions is reused this lo
 const RUNNING_LIST_LIMIT_MS = RUNNING_POLL_LIST_MS + 1_000 // a list call that has not answered by then fails for every caller sharing it
 const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'archive', 'todo', 'paused', 'onhold']
 /** A todo being started, a session paused by a restart, or a session on hold (each has its own count or queue), is not waiting on the user. */
-const needsUser = (item) => item.type !== 'paused' && item.type !== 'onhold' && !(item.type === 'todo' && item.state === 'starting')
+const needsUser = (item) => (item.type !== 'paused' || isLimitSignin(item)) && item.type !== 'onhold' && !(item.type === 'todo' && item.state === 'starting')
 
 // Show/hide commands for the browsers. The default state is module-level so that re-creating the queue inside one server run
 // (a plugin reload) does not reset the sequence: a tab that already saw seq N would otherwise ignore every later command.
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, paused, onHold, threadOf, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, paused, limitSignIn, onHold, threadOf, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
   const listMemory = {} // the last good session list: given when the host is too busy to list sessions
   const followUpSessions = (opts = {}) => listFollowUpSessions({ memory: listMemory, now, controller: attempt(controllerOf, 'controller'), registry: attempt(registryOf, 'registry'), titlesOf, snippetsOf: opts?.snippets === false ? undefined : snippetsOf, query: opts?.query, log })
   const todos = createTodos({ store, controllerOf, registryOf, defaultModelOf, images: todoImages, llm, titlesOf, sessionsOf: followUpSessions, now, sparcText, suggestTimeoutMs, uuid, log, ticketTitleOf })
+  const NO_LIMIT_SIGNIN = { ok: false, error: 'no-limit-signin' }
   const resuming = new Set() // paused items whose resume prompt is on its way
+  let limitResumeRun // the limit Resume all in flight (a second call shares it)
   // posting: sessions whose phone follow-up or mark-wrong correction is on its way (a second post would send the prompt twice)
   const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
   let runningCall // the last runningSessions list: { done, doneAt, promise }
@@ -211,7 +213,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const triagePart = () => {
     try { const e = triageApi?.rules?.enabled?.(); return typeof e === 'boolean' ? { triage: { enabled: e } } : {} } catch { return {} }
   }
-  return {
+  const service = {
     ...triageReview,
     /** The done card's Follow handoff button: a new session resumes the latest handoff note (the source session is archived by that follow-up). */
     followHandoff: (id) => handoffFollow.follow(id),
@@ -419,6 +421,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const item = openItem(id)
       if (!item || resuming.has(id)) return { ok: false, error: 'not-open' }
       if (item.type !== 'paused') return { ok: false, error: 'not-paused' }
+      if (isLimitSignin(item)) return { ok: false, error: 'not-a-session' } // the pinned sign-in card is not a session
       const controller = controllerOf()
       if (!controller?.prompt) return { ok: false, error: 'no-controller' }
       resuming.add(id)
@@ -433,6 +436,37 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       paused?.markHandled(item)
       store.resolve(id, { kind: 'resumed', by: 'card' })
       return { ok: true }
+    },
+    // The session-limit sign-in (limit-signin.js). The code is passed straight on: it is never stored, logged or put in a result.
+    // An app with no open pinned card of its own (hub mode: another app owns it) cannot show the run (no code box, no Cancel), so it does not start one.
+    limitSignInStart: async (input) => {
+      if (!limitSignIn) return NO_LIMIT_SIGNIN
+      if (!store.list({ status: 'open' }).some(isLimitSignin)) return { ok: false, error: 'no-limit-card' }
+      return limitSignIn.start({ email: input?.email })
+    },
+    limitSignInCode: async (input) => (limitSignIn ? limitSignIn.code(input?.code) : NO_LIMIT_SIGNIN),
+    limitSignInCancel: async () => (limitSignIn ? limitSignIn.cancel() : NO_LIMIT_SIGNIN),
+    /**
+     * Resume all of the pinned limit card: only the open paused items stopped by the usage limit (kind 'limit'; not restart items, not the pinned item),
+     * RESUME_CONCURRENCY at a time, each through resumePaused (RESUME_PROMPT). -> { ok: true, resumed, failed }
+     */
+    limitResume() {
+      if (limitSignIn?.state?.().running) return Promise.resolve({ ok: false, error: 'sign-in-running' }) // the login is being changed: sessions would fail again
+      if (limitResumeRun) return limitResumeRun // a second click shares the run in flight
+      const ids = store.list({ status: 'open' }).filter((i) => i.type === 'paused' && !isLimitSignin(i) && Array.isArray(i.payload?.kinds) && i.payload.kinds.includes('limit')).map((i) => i.id)
+      let resumed = 0; let failed = 0; let next = 0
+      const worker = async () => {
+        while (next < ids.length) {
+          const id = ids[next++]
+          let r
+          try { r = await service.resumePaused(id) } catch { r = { ok: false } }
+          if (r?.ok) resumed++; else failed++
+        }
+      }
+      limitResumeRun = Promise.all(Array.from({ length: Math.min(RESUME_CONCURRENCY, ids.length) }, worker))
+        .then(() => ({ ok: true, resumed, failed }))
+        .finally(() => { limitResumeRun = undefined })
+      return limitResumeRun
     },
     /**
      * The running top-level sessions of THIS app (Resume all polls it to give a place back when a resumed session stopped without a visible item).
@@ -466,6 +500,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const item = openItem(id)
       if (!item) return { ok: false, error: 'not-open' }
       if (item.type !== 'paused') return { ok: false, error: 'not-paused' }
+      if (isLimitSignin(item) && limitSignIn?.state?.().running) return { ok: false, error: 'sign-in-running' } // hiding the card would strand the run (no code box, no Cancel)
       paused?.markHandled(item)
       store.resolve(id, { kind: 'dismissed', by: 'card' })
       return { ok: true }
@@ -478,7 +513,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       if (!onHold) return { ok: false, error: 'no-onhold' }
       const item = openItem(id)
       if (!item) return { ok: false, error: 'not-open' }
-      if (item.type !== 'completed' && item.type !== 'paused') return { ok: false, error: 'not-holdable' }
+      if ((item.type !== 'completed' && item.type !== 'paused') || isLimitSignin(item)) return { ok: false, error: 'not-holdable' }
       const held = await onHold.hold({ sessionId: item.sessionId, sessionTitle: item.sessionTitle, workspace: item.workspace, reason })
       if (!held.ok) return held
       if (item.type === 'paused') paused?.markHandled(item)
@@ -521,7 +556,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const byType = Object.fromEntries(TYPES.map((t) => [t, 0]))
       const all = store.snapshot().open
       for (const item of all) if (item.type in byType && needsUser(item)) byType[item.type]++
-      byType.paused = all.filter((i) => i.type === 'paused').length
+      byType.paused = all.filter((i) => i.type === 'paused' && !isLimitSignin(i)).length // stopped sessions only; the pinned sign-in card counts as waiting
       byType.onhold = all.filter((i) => i.type === 'onhold').length
       return { total: all.filter(needsUser).length, byType }
     },
@@ -700,4 +735,5 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       return true
     },
   }
+  return service
 }

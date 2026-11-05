@@ -48,7 +48,7 @@ async function readImage(req, max = MAX_IMAGE_BYTES) {
 }
 
 // Logical outcomes: malformed input is a 400, a request that cannot apply now (gone, already answered) is a 409.
-const BAD_INPUT = new Set(['bad-images', 'bad-effort', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session', 'bad-mode', 'bad-source', 'bad-require-confirm', 'bad-review', 'bad-rule', 'bad-input'])
+const BAD_INPUT = new Set(['bad-images', 'bad-effort', 'too-many-images', 'unknown-image', 'bad-image', 'too-large', 'bad-answer', 'bad-decision', 'empty', 'too-long', 'bad-command', 'needs-confirm', 'needs-hold', 'unknown-workspace', 'no-workspace', 'empty-query', 'unknown-session', 'bad-mode', 'bad-source', 'bad-require-confirm', 'bad-review', 'bad-rule', 'bad-input', 'bad-email', 'bad-code'])
 // 'no-session' is a 409 for a reply or an archive (this app's controller does not know the session) but a 400 for a follow-up confirm with no session to send to.
 /** An id the triage routes accept: a string or a finite number (coerced with String); anything else never reaches the queue. */
 const validId = (v) => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v))
@@ -117,6 +117,10 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/approve-similar': (b) => queue.approveSimilar(String(b.id), { via: b.via, confirmed: b.confirmed === true }),
     '/v1/paused-resume': (b) => queue.resumePaused(String(b.id)),
     '/v1/paused-dismiss': (b) => queue.dismissPaused(String(b.id)),
+    '/v1/limit-signin-start': (b) => (typeof b.email === 'string' ? queue.limitSignInStart({ email: b.email }) : { ok: false, error: 'bad-email' }),
+    '/v1/limit-signin-code': (b) => (typeof b.code === 'string' ? queue.limitSignInCode({ code: b.code }) : { ok: false, error: 'bad-code' }), // the code is never logged or echoed
+    '/v1/limit-signin-cancel': () => queue.limitSignInCancel(),
+    '/v1/limit-resume': () => queue.limitResume(),
     '/v1/paused-scan': () => queue.scanPaused(),
     '/v1/hold': (b) => queue.holdItem(String(b.id), { reason: b.reason }),
     '/v1/hold-release': (b) => queue.releaseHold(String(b.id)),

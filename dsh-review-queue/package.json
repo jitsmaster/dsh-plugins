@@ -51,6 +51,8 @@
       "tip-window.js",
     "reader.js",
     "paused.js",
+    "limit-signin.js",
+    "limit-browser.js",
     "onhold.js",
     "onhold-command.js",
     "idle-resume.js",

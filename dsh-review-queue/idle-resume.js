@@ -229,7 +229,7 @@ export function createIdleResumer({ controllerOf, registryOf = () => undefined, 
       const texts = lastTexts(log1.records)
       const c = { sessionId: item.sessionId, title: classified.title ?? '', cwd: classified.head?.cwd ?? item.cwd ?? '', lastWrite: item.updatedAt, endKind: classified.endKind,
         danglingCalls: classified.danglingCalls, ...texts }
-      const cutOff = classified.kinds.some((k) => k !== 'torn')
+      const cutOff = classified.kinds.some((k) => k !== 'torn' && k !== 'limit')
       let verdict
       if (cutOff) verdict = { verdict: 'resume', reason: 'it was cut off in the middle of a turn' }
       else {
