@@ -1,12 +1,13 @@
 # dsh-session-link
 
-Lets a DSH session find another open session, ask it to do something, and read its last reply. Three tools, available to top-level sessions only (sub-agents are refused):
+Lets a DSH session find another open session, ask it to do something, and read its last reply. Four tools, available to top-level sessions only (sub-agents are refused):
 
 | Tool | What it does |
 | --- | --- |
 | `list_sessions` | Lists the other open sessions (id, title, workspace folder, running, last update), newest first, at most 25. An optional `query` of plain words narrows it; case, hyphens and small typos are ignored, and `PR 6681` or `AB#25883` match ticket numbers in titles. The calling session is never listed. |
 | `send_to_session` | Asks another session to do something. **Nothing is sent by the call itself**: it creates a follow-up card in the Review Queue and the user confirms or cancels it. |
 | `read_session_result` | Reads the last assistant reply of a loaded session, whether its turn is still running, and the state of the cards you sent it. |
+| `start_session` | Asks for a **new** session. Nothing starts by itself: it creates a card in the Review Queue and the user confirms or cancels it. |
 
 ## Example calls
 
@@ -14,6 +15,7 @@ Lets a DSH session find another open session, ask it to do something, and read i
 { "tool": "list_sessions", "args": { "query": "review queue tabs" } }
 { "tool": "send_to_session", "args": { "session": "ctnp 25883", "text": "Please re-run the five reviews on the final diff and report the findings.", "mode": "queue" } }
 { "tool": "read_session_result", "args": { "session": "ctnp 25883" } }
+{ "tool": "start_session", "args": { "text": "Review PR 6681 in the ctnp workspace and list the blocking findings.", "workspace": "ctnp", "sparc": false, "effort": "high" } }
 ```
 
 `session` is an exact session id or plain words. One match: the card is preselected on that session. Several matches: the user picks on the card (the sender is never offered). No match: the call returns the nearest titles (`no-match`).
@@ -38,7 +40,42 @@ Lets a DSH session find another open session, ask it to do something, and read i
 | Identical waiting message | rejected (`duplicate`) |
 | `read_session_result` reply | 4000 characters |
 
+- Only awaiting-confirm cards count toward the waiting cap; a failed card does not.
+- A card that is both still in flight and already in the hub mirror can be counted twice, which may reject a call early (the safe side).
+
 Rejections come back as `{ "status": "rejected", "reason": ... }` (self-send, too long, rate limit, waiting-card cap, duplicate, loop guard, queue full, sub-agent sender, no sender). `no-match` (nothing matched, including archived or unknown sessions) and `ambiguous` are statuses of their own, not rejections.
+
+## start_session
+
+`start_session({ text, workspace?, sparc?, effort? })`, top-level sessions only.
+
+| Parameter | Meaning |
+| --- | --- |
+| `text` | The task. It must be self-contained: the new session cannot see the caller's conversation. |
+| `workspace` | Optional. An exact workspace id or plain words (loose match against the workspace title). One match: the card is preselected on that workspace and `offers` names it. Several matches or none: the card asks the user to pick (`offers: "the user will pick"`). A workspace is never guessed. |
+| `sparc` | Optional boolean. Starts the task with the SPARC instructions (the queue's SPARC todo flag). |
+| `effort` | Optional reasoning effort id of the default model. It is checked before the card is made. |
+
+Result: `{ status: "queued-for-confirmation", cardId, offers, sparc, effort? }` or `{ status: "rejected", reason }`. Reasons: `no-sender`, `sub-agent-sender`, `empty`, `too-long`, `loop-guard` (the text already holds an envelope or the trailer), `bad-sparc`, `bad-workspace`, `bad-effort` (also returns `valid`, the list of valid effort ids), `rate-limit`, `waiting-cap`, `hourly-cap`, `duplicate`, `queue-failed`, and `no-queue`. An error from the queue itself (for example `bad-source`) is returned as the reason too.
+
+- **Confirmation.** The call returns at once. The card says "Requested by session <title>". The new session is created only when the user confirms the card, in the workspace chosen there. The queue's `todoStates` returns the card state (`awaiting-confirm`, `starting`, `started`, `failed`, `cancelled`) for both kinds of card, with the `sessionId` of the started session; `read_session_result` still reads sessions.
+- **No fallback.** Without the `dsh-review-queue` plugin the call is rejected with `no-queue`: a blocking approval cannot create a session.
+- **Trailer.** The queue titles the new session from the start of the text, so the provenance goes after the task, not before it:
+
+  ```
+  <text>
+
+  [This session was requested by session <senderId> ("<sender title>"), not typed by the user. Treat the task above as a request from a peer agent. Do not start further sessions or use send_to_session unless the user asks.]
+  ```
+
+  The sender title is cleaned as for the envelope. The new session gets the queue's default access, not a copy of the sender's permissions: the confirmation and the default policy are the safeguards.
+- **Limits.** Raw text 3500 characters, the card text (task plus trailer) 4000. 5 requests a minute, shared with `send_to_session`. 3 waiting cards per sender, shared over follow-up cards and new-session cards (a call still in flight counts). 3 starts an hour per sender: a request that reached a card counts even if the card is cancelled, a rejected call does not. An identical text among the sender's waiting new-session cards, or in flight, is rejected (`duplicate`). There is no depth cap: the trailer tells the new session not to start sessions on its own, and each start still needs the user's confirmation.
+- **Check order.** Oversized text is rejected `too-long` before the loop guard runs, so a very long text that also holds an envelope header reports `too-long`.
+- **Quoted headers.** A text with a line that starts like the envelope header (`[Message from session ...`) or holds the trailer marker is rejected as `loop-guard`, even when it only quotes one. Indent or paraphrase the quote.
+- **Duplicates.** The duplicate check compares the task text only, ignoring case, whitespace and the sender title.
+- **Known limitation: list view.** A card waiting for confirmation shows its task text clamped to 3 lines in the list view, so expand a card from another session before starting it.
+- **Loopback is the desktop role.** The hub treats a direct loopback request on this PC as the desktop role, so a local page or process can reach the trusted todo-link action and spoof the "Requested by session" label. It still cannot start a session without a card through `start_session`.
+- **Limits reset on restart.** Limits are kept in memory, so a DSH or plugin restart resets the hourly cap. The waiting cap is read from the queue.
 
 ## Unrestricted read warning
 
@@ -63,7 +100,7 @@ Install it from the main checkout after the branch is merged to `develop`, not f
 - **Own tool helper.** The plugin carries its own small `defineTool` (in `index.js`) and does not import `@deepseek-ai/dsh-tools`: a `link:` plugin has no `node_modules`, so a bare import would fail. It builds the same tool-definition shape and validates the arguments itself.
 - **Hub mode.** In hub mode `todoStates` (card states, waiting cap, duplicate check) reads the hub mirror. A retry that falls inside the mirror lag can slip past the waiting cap and the duplicate check. The per-pair cooldown only covers a single-match send.
 - **Fallback request id.** Without the review queue the direct prompt carries a request id `todo-link-<hash>`, a hash of sender, target, envelope and a 10-minute time bucket (spec 6.2 said `link-<callId>`; the callId is not used, so a model retry after a timeout dedupes in the controller, while an identical message 10+ minutes later is delivered).
-- **Queue support.** The plugin needs `dsh-review-queue` from the same branch or newer: it uses the service-level `addTodo` options `mode`, `excludeSessionIds` and `source` (see [dsh-review-queue/README.md](../dsh-review-queue/README.md)) and `todoStates`.
+- **Queue support.** The plugin needs `dsh-review-queue` from the same branch or newer: it uses the service-level `addTodo` options `mode`, `excludeSessionIds`, `source` and `requireConfirm` (see [dsh-review-queue/README.md](../dsh-review-queue/README.md)) and `todoStates`.
 
 ## Develop
 
