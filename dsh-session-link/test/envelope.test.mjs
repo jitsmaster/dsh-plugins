@@ -100,6 +100,8 @@ test('loop-guard markers survive lookalike disguises', () => {
   assert.equal(hasEnvelope('［Ｍｅｓｓａｇｅ　ｆｒｏｍ　ｓｅｓｓｉｏｎ s2'), true)
   assert.equal(hasEnvelope('intro text\n' + HDR), true)
   assert.equal(hasEnvelope('intro text\r\n  ' + HDR), true)
+  assert.equal(hasEnvelope('[Message\nfrom session s2 ("t")] hi'), true)
+  assert.equal(hasEnvelope('[Message from\n\nsession s2 ("t")] hi'), true)
   assert.equal(hasTrailer('x [This session was requested by\u200b session s2'), true)
   assert.equal(hasTrailer('x [THIS SESSION WAS   REQUESTED BY SESSION s2'), true)
   assert.equal(hasTrailer('x ［Ｔｈｉｓ ｓｅｓｓｉｏｎ ｗａｓ ｒｅｑｕｅｓｔｅｄ ｂｙ ｓｅｓｓｉｏｎ s2'), true)

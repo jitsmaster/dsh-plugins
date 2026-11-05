@@ -23,6 +23,7 @@ function setup({ states = [], queue: over, limits = LIMITS } = {}) {
     todoStates: async () => { calls.todoStates++; return states },
     workspaces: () => WORKSPACES,
     modelEfforts: async () => { calls.modelEfforts++; return EFFORTS },
+    supports: { requireConfirm: true },
     ...over,
   }
   const get = (name) => (name === 'reviewQueue' ? queue : undefined)
@@ -49,6 +50,14 @@ test('validation rejects', async () => {
   assert.equal(s.calls.addTodo.length, 0)
 })
 
+test('an oversized workspace string is rejected before any queue call', async () => {
+  const s = setup()
+  assert.equal((await start(s, { workspace: 'w'.repeat(201) })).reason, 'bad-workspace')
+  assert.equal(s.calls.addTodo.length, 0)
+  assert.equal(s.calls.todoStates, 0)
+  assert.equal((await start(s, { workspace: 'Alpha ' + 'x'.repeat(190) })).status, 'queued-for-confirmation')
+})
+
 test('a maximal raw text with the trailer still fits the card', async () => {
   const s = setup()
   const overhead = buildTrailer({ senderId: ME, senderTitle: 'My Session', text: '' }).length
@@ -63,6 +72,16 @@ test('no queue or missing todoStates gives no-queue', async () => {
   assert.equal((await noAdd.start({ agent, text: 'x' })).reason, 'no-queue')
   const noStates = createStarter({ get: () => ({ addTodo: async () => ({ ok: true, id: 'c' }) }), guards: createGuards(), titleOf: () => 't' })
   assert.equal((await noStates.start({ agent, text: 'x' })).reason, 'no-queue')
+})
+
+test('a queue that does not declare requireConfirm support is queue-unsupported and queues nothing', async () => {
+  const s = setup({ queue: { supports: undefined } })
+  assert.equal((await start(s, { workspace: 'app1/ws-beta' })).reason, 'queue-unsupported')
+  const off = setup({ queue: { supports: { requireConfirm: false } } })
+  assert.equal((await start(off, {})).reason, 'queue-unsupported')
+  assert.equal(s.calls.addTodo.length, 0)
+  assert.equal(off.calls.addTodo.length, 0)
+  assert.equal(s.guards.hourly(ME), 0)
 })
 
 test('workspace: exact id preselects', async () => {

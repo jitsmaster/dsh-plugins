@@ -52,7 +52,7 @@ Rejections come back as `{ "status": "rejected", "reason": ... }` (self-send, to
 | Parameter | Meaning |
 | --- | --- |
 | `text` | The task. It must be self-contained: the new session cannot see the caller's conversation. |
-| `workspace` | Optional. An exact workspace id or plain words (loose match against the workspace title). One match: the card is preselected on that workspace and `offers` names it. Several matches or none: the card asks the user to pick (`offers: "the user will pick"`). A workspace is never guessed. |
+| `workspace` | Optional, at most 200 characters (longer is rejected `bad-workspace`). An exact workspace id or plain words (loose match against the workspace title). One match: the card is preselected on that workspace and `offers` names it. Several matches or none: the card asks the user to pick (`offers: "the user will pick"`). A workspace is never guessed. |
 | `sparc` | Optional boolean. Starts the task with the SPARC instructions (the queue's SPARC todo flag). |
 | `effort` | Optional reasoning effort id of the default model. It is checked before the card is made. |
 

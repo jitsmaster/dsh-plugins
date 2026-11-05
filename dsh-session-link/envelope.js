@@ -1,7 +1,7 @@
 export const MAX_RAW = 3500
 export const MAX_CARD = 4000
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
-const HEADER = /(?:^|\n) ?\[message from session /
+const HEADER = /(?:^|\n) ?\[message[ \n]+from[ \n]+session /
 const INVISIBLE = /[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g
 
 export const isSessionId = (s) => typeof s === 'string' && SESSION_ID.test(s)

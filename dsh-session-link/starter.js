@@ -10,6 +10,7 @@ const CARD_BODY_END = '\n\n[This session was requested by session '
 const bodyHash = (text) => sha(normalizeText(text))
 const cardBody = (text) => { const s = String(text ?? ''); const i = s.indexOf(CARD_BODY_END); return i < 0 ? s : s.slice(0, i) }
 const PICK = 'the user will pick'
+const MAX_WORKSPACE = 200
 
 // perMinute and windowMs apply only to the guards instance (its minute window); hourly and waiting apply here.
 export function createStarter({ get, guards = createGuards(), now = Date.now, log = () => {}, limits = LIMITS, titleOf = (agent) => { try { return get('sessionTitle')?.get(agent.session)?.title ?? agent.id } catch { return agent?.id } } }) {
@@ -22,10 +23,12 @@ export function createStarter({ get, guards = createGuards(), now = Date.now, lo
     if (body.length > MAX_RAW) return reject('too-long')
     if (hasTrailer(body) || hasEnvelope(body)) return reject('loop-guard')
     if (sparc !== undefined && typeof sparc !== 'boolean') return reject('bad-sparc')
-    if (workspace !== undefined && typeof workspace !== 'string') return reject('bad-workspace')
+    if (workspace !== undefined && (typeof workspace !== 'string' || workspace.length > MAX_WORKSPACE)) return reject('bad-workspace')
     if (effort !== undefined && typeof effort !== 'string') return reject('bad-effort')
     const queue = get('reviewQueue')
     if (typeof queue?.addTodo !== 'function' || typeof queue.todoStates !== 'function') return reject('no-queue')
+    // An older queue ignores requireConfirm and would start the session without a card.
+    if (queue.supports?.requireConfirm !== true) return reject('queue-unsupported')
     const final = buildTrailer({ senderId: agent.id, senderTitle: titleOf(agent), text: body })
     if (final.length > MAX_CARD) return reject('too-long')
 
