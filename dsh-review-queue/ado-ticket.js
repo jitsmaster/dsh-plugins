@@ -26,7 +26,7 @@ const URL_RE = /https?:\/\/[^\s<>"'`)\]]+/gi
 const AB_RE = /(?<![\p{L}\p{N}_])AB#(\d+)/iu
 const WORD_RE = /(?<![\p{L}\p{N}_])(?:(?:ADO|Azure DevOps|DevOps)\s+)?(?:ticket|work[ -]?item|PBI|user story|bug|task)s?\s*(?:number|no\.?|id)?\s*[:#]?\s*#?(\d{3,9})(?!\d)/iu
 
-const trustedHost = (host) => host === 'dev.azure.com' || host.endsWith('.visualstudio.com')
+export const trustedHost = (host) => host === 'dev.azure.com' || host.endsWith('.visualstudio.com')
 
 /** { id, base } for a work item URL (base = origin + the path before _workitems), else undefined. */
 function refOfUrl(raw) {

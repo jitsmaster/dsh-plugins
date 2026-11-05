@@ -13,9 +13,10 @@ import { Readable } from 'node:stream'
 import { PROTOCOL } from '../hub/protocol.js'
 import { MAX_WAIT_MS, PREFIX, archKeyOf, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
 import { spokenFor } from '../speech.js'
+import { surveyKeyOf } from '../tip-survey.js'
 
 const MODES = ['starting', 'hub', 'standalone', 'degraded']
-const LOCAL_ROUTES = new Set(['/v1/read', '/v1/read-tip', '/v1/tip-next', '/v1/tip-current', '/v1/tip-peek', '/v1/tip-deeper', '/v1/tip-todo', '/v1/stop', '/v1/ui', '/v1/focus'])
+const LOCAL_ROUTES = new Set(['/v1/read', '/v1/read-tip', '/v1/tip-next', '/v1/tip-current', '/v1/tip-peek', '/v1/tip-deeper', '/v1/tip-todo', '/v1/tip-survey', '/v1/stop', '/v1/ui', '/v1/focus'])
 const HUB_ACTIONS = new Set(['/v1/answer', '/v1/late-answer', '/v1/approve', '/v1/deny', '/v1/reviewed', '/v1/archive', '/v1/archive-session', '/v1/follow-handoff', '/v1/paused-resume', '/v1/paused-dismiss', '/v1/hold', '/v1/hold-release', '/v1/hold-continue', '/v1/reply', '/v1/reopen', '/v1/approve-similar', '/v1/todo', '/v1/todo-confirm', '/v1/todo-cancel', '/v1/thread', '/v1/post'])
 /** A hub that answers one of these is as good as gone for this request (wrong secret, newer hub, shutting down). */
 const GONE_STATUS = new Set([401, 426, 503])
@@ -83,7 +84,7 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
    */
   const nothingWaits = (open) => Array.isArray(open) && !open.some((i) => i.type !== 'onhold') // held sessions wait for nobody
   const tipIdFor = (snapshotId) => ((lastFull && lastFull.id === snapshotId ? lastFull.empty : nothingWaits(mirror()?.open)) ? tipOf()?.id ?? '' : '')
-  const localState = () => { const s = queue.snapshot(); return { focusId: s.focusId, reading: s.reading, ui: s.ui } }
+  const localState = () => { const s = queue.snapshot(); return { focusId: s.focusId, reading: s.reading, ui: s.ui, tipSurvey: s.tipSurvey } }
 
   // ---- the hub ----
   async function callHub(method, path, { body, signal, extraMs = 0, hubPath = false } = {}) {
@@ -165,7 +166,7 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     const parts = since?.split('|')
     const tipId = want.tip ? tipIdFor(parts?.[0]) : ''
     // A client that knows the tip part (six parts) must have the tip that is current now; an older page is not held to it.
-    const sameLocal = parts !== undefined && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId) && (parts.length < 7 || archKeyNow() === undefined || parts[6] === archKeyNow())
+    const sameLocal = parts !== undefined && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId) && (parts.length < 7 || archKeyNow() === undefined || parts[6] === archKeyNow()) && (parts.length < 8 || parts[7] === surveyKeyOf(local.tipSurvey))
     const query = new URLSearchParams()
     if (sameLocal) { query.set('since', parts[0] + '|||0' + (parts.length > 4 ? '|' + parts[4] : '')); query.set('wait', String(remaining)) }
     if (visible) query.set('visible', '1')
@@ -186,7 +187,7 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     if (!r.json.unchanged && r.json.open.some((i) => i.type !== 'onhold')) { try { queue.stopTip?.() } catch { /* nothing to stop */ } }
     const now = localState()
     if (r.json.unchanged) {
-      const same = now.focusId === local.focusId && now.reading === local.reading && now.ui?.seq === local.ui?.seq && (want.tip ? tipIdFor(parts?.[0]) : '') === tipId
+      const same = now.focusId === local.focusId && now.reading === local.reading && now.ui?.seq === local.ui?.seq && surveyKeyOf(now.tipSurvey) === surveyKeyOf(local.tipSurvey) && (want.tip ? tipIdFor(parts?.[0]) : '') === tipId
       return same ? send(res, 200, { unchanged: true, snapshotId: r.json.snapshotId }) : AGAIN
     }
     const empty = nothingWaits(r.json.open) // the tip still shows
@@ -195,7 +196,7 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     // The hub's items carry no archivable flag: this app adds it to its own (it knows which of its sessions run), and the other apps' items get none.
     const open = typeof queue.markArchivable === 'function' ? queue.markArchivable(r.json.open, instanceId()) : r.json.open
     lastHubOpen = r.json.open
-    return send(res, 200, { ...r.json, open, archKey: archKeyOf(open), focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}) })
+    return send(res, 200, { ...r.json, open, archKey: archKeyOf(open), focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}), ...(now.tipSurvey?.length ? { tipSurvey: now.tipSurvey } : {}) })
   }
 
   async function snapshot(req, res, url) {

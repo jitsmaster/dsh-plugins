@@ -15,7 +15,7 @@ const ASSETLINKS = '/.well-known/assetlinks.json'
 const AGENT_PREFIX = '/hub/v1/agent/'
 const SHUTDOWN = '/hub/v1/shutdown'
 /** The desktop app owns the speakers, the screen and its own selection (D7): never the hub's business. */
-const LOCAL_ONLY = new Set(['read', 'read-tip', 'tip-next', 'tip-current', 'tip-peek', 'tip-deeper', 'tip-todo', 'stop', 'ui', 'focus'])
+const LOCAL_ONLY = new Set(['read', 'read-tip', 'tip-next', 'tip-current', 'tip-peek', 'tip-deeper', 'tip-todo', 'tip-survey', 'stop', 'ui', 'focus'])
 /** The session-limit sign-in and Resume all: run by the desktop app that serves the request (its own paused scan and sessions), never by the hub; a phone is refused as desktop-only. */
 const DESKTOP_LOCAL = new Set(['limit-signin-start', 'limit-signin-code', 'limit-signin-cancel', 'limit-resume'])
 /**

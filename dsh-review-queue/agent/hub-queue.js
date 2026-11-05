@@ -60,9 +60,15 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     const own = hub && snap.reading === undefined ? local.readingId?.() : undefined
     const base = typeof own === 'string' && own.startsWith(TIP_READING) ? { ...snap, reading: own } : snap
     if (!hub) return base
-    // The AI-triage switch and the hourly report chip are this app's own (the hub view has no triage): only those two fields come from the local service.
+    // The AI-triage switch, the hourly report chip and the Find places surveys are this app's own (the hub view has none of them): only those fields come from the local service.
     const mine = local.snapshot({})
-    return { ...base, ...(mine.triage ? { triage: mine.triage } : {}), ...(mine.aiReport ? { aiReport: mine.aiReport } : {}) }
+    return { ...base, ...(mine.triage ? { triage: mine.triage } : {}), ...(mine.aiReport ? { aiReport: mine.aiReport } : {}), ...(mine.tipSurvey ? { tipSurvey: hubIds(mine.tipSurvey) } : {}) }
+  }
+  /** In hub mode the client's workspace list holds "<instanceId>/<id>": survey records get that form (copies, never double-prefixed). */
+  const hubIds = (records) => {
+    const prefix = hubMode() && typeof client.instanceId === 'string' && client.instanceId ? client.instanceId + '/' : undefined
+    if (!prefix || !Array.isArray(records)) return records
+    return records.map((r) => (r && typeof r.workspaceId === 'string' && !r.workspaceId.startsWith(prefix) ? { ...r, workspaceId: prefix + r.workspaceId } : r))
   }
 
   return {
@@ -78,6 +84,16 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
       const listed = hubMode() && typeof workspaceId === 'string' ? client.mirror.workspaces()?.find((w) => w && w.id === workspaceId) : undefined
       return local.tipTodo(id, workspaceId, typeof listed?.title === 'string' ? { title: listed.title } : undefined)
     },
+    // A survey needs a local path (git origin) and a session of this app: in hub mode this app's own "<instanceId>/<id>" is stripped to the bare local id, a workspace of another app is refused (no title is passed on).
+    tipSurvey: (id, workspaceId) => {
+      if (hubMode() && typeof workspaceId === 'string' && workspaceId.includes('/')) {
+        const prefix = typeof client.instanceId === 'string' && client.instanceId ? client.instanceId + '/' : undefined
+        if (!prefix || !workspaceId.startsWith(prefix)) return { ok: false, error: 'other-app' }
+        return local.tipSurvey(id, workspaceId.slice(prefix.length))
+      }
+      return local.tipSurvey(id, workspaceId)
+    },
+    tipSurveyState: () => { const s = local.tipSurveyState(); return s && Array.isArray(s.surveys) ? { ...s, surveys: hubIds(s.surveys) } : s },
     stopTip: () => local.stopTip?.(),
     markArchivable: (open, ownerId) => local.markArchivable?.(open, ownerId) ?? open, // the running sessions and the PR guard are this app's own
     watchSessions: () => local.watchSessions?.(),

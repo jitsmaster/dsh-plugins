@@ -17,6 +17,7 @@ import { archKeyOf } from './sessions.js'
 import { todoStatesOf } from './todo-states.js'
 import { createTriageReview } from './triage-review.js'
 import { createHandoffFollow } from './handoff-follow.js'
+import { createTipSurveys, surveyCard } from './tip-survey.js'
 
 const MAX_REPLY = 4000
 /** reading === 'tip:<id>' while the tip of the day is read aloud (lib/client.js keeps its own copy of the string: it is one self-contained script). */
@@ -36,7 +37,7 @@ const needsUser = (item) => (item.type !== 'paused' || isLimitSignin(item)) && i
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, paused, limitSignIn, onHold, threadOf, archiveOfferEnabled = () => true, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, tipSurvey: givenSurvey, tipSurveyDeps, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, paused, limitSignIn, onHold, threadOf, archiveOfferEnabled = () => true, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
@@ -59,6 +60,9 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const emit = () => { for (const l of [...listeners]) { try { l() } catch { /* ignore */ } } }
   // A tip that a model call finished and new session numbers wake the long polls (neither touches the store, so the snapshotId stays).
   try { tips?.onChange?.(emit) } catch { /* the tip is a bonus */ }
+  // "Find places" surveys (tip-survey.js): one handed in (tests, subscribed like the tips), else built over this service's own todos and store from tipSurveyDeps; a change wakes the long polls.
+  let tipSurvey = givenSurvey
+  try { if (tipSurvey) tipSurvey.onChange?.(emit); else if (tipSurveyDeps) tipSurvey = createTipSurveys({ todos, store, ...tipSurveyDeps, onChange: emit }) } catch { /* the survey is a bonus */ }
   // The numbers have a listener set of their own: only a screen that shows THIS app's numbers (the standalone long poll) waits for them. In hub mode the screen shows the hub's sum,
   // so a local change must not wake (and re-issue) the hub long poll through the ordinary listeners.
   const sessionListeners = new Set()
@@ -213,6 +217,9 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const triagePart = () => {
     try { const e = triageApi?.rules?.enabled?.(); return typeof e === 'boolean' ? { triage: { enabled: e } } : {} } catch { return {} }
   }
+  // The survey cards for the snapshot: only when there is a record (the shape is unchanged otherwise); a failing survey never breaks the snapshot.
+  const tipSurveyCards = () => { try { return (tipSurvey?.state?.() ?? []).map(surveyCard) } catch { return [] } }
+  const tipSurveyPart = () => { const cards = tipSurveyCards(); return cards.length ? { tipSurvey: cards } : {} }
   const service = {
     ...triageReview,
     /** The done card's Follow handoff button: a new session resumes the latest handoff note (the source session is archived by that follow-up). */
@@ -237,6 +244,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
         serverNow: now(),
         ...aiReportPart(),
         ...triagePart(),
+        ...tipSurveyPart(),
         focusId,
         reading,
         ui: { seq: ui.seq, cmd: ui.cmd },
@@ -310,6 +318,25 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     tipDeeper: (id) => tipCall(() => tipExpand.deeper(String(id)), 'deeper'),
     /** "Use in my code": a todo text that applies the current tip in a workspace (it only fills the New todo form): { ok, text, workspaceId, source } | { ok: false, error }. */
     tipTodo: (id, workspaceId, opts) => tipCall(() => tipExpand.draft(String(id), workspaceId, opts), 'draft'),
+    /**
+     * "Find places": starts a read-only survey todo in a workspace of this app (tip-survey.js): { ok, survey } | { ok: false, error } with error not-found | no-workspace | unknown-workspace |
+     * todo-failed | stopped | 'no survey available'. Never throws; only a code or name is logged. This app's own workspaces and session, so never forwarded to the hub.
+     */
+    tipSurvey(id, workspaceId) {
+      if (typeof tipSurvey?.start !== 'function') return { ok: false, error: 'no survey available' }
+      try {
+        const result = tipSurvey.start(String(id), workspaceId)
+        if (!result?.ok) return { ok: false, error: typeof result?.error === 'string' ? result.error : 'todo-failed' }
+        return { ok: true, survey: surveyCard(result.survey), ...(result.existing ? { existing: true } : {}) }
+      } catch (error) {
+        log?.('service: tip survey failed: ' + safeReason(error, new Set())) // the code or name only
+        return { ok: false, error: 'todo-failed' }
+      }
+    },
+    /** The surveys as the card shows them (the snapshot carries the same): { ok, surveys }. */
+    tipSurveyState: () => ({ ok: true, surveys: tipSurveyCards() }),
+    /** Stops the survey poll for good (the plugin is stopping); a start after it is refused with 'stopped'. */
+    stopTipSurvey() { try { tipSurvey?.stop?.() } catch { /* nothing to stop */ } },
     /** Ends the reading of the tip (not of an item): the hub list stopped being empty, so the tip is gone from the screen. */
     stopTip() {
       if (!isTipReading()) return { ok: true, stopped: false }
