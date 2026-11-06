@@ -48,8 +48,8 @@ export function buildGitEnv(source = process.env) {
   return { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat', NoDefaultCurrentDirectoryInExePath: '1' }
 }
 const ENV = buildGitEnv()
-/** Whether a relative path (from path.relative) leaves its base: `..` or `..<sep>x`, but not a name like `..foo`. */
-export const escapesRoot = (rel) => rel === '..' || rel.startsWith('..' + sep)
+/** Whether a relative path (from path.relative) leaves its base: `..` or `..<sep>x` with either separator, but not a name like `..foo`. */
+export const escapesRoot = (rel) => rel === '..' || /^\.\.[\\/]/.test(rel)
 /** At most 4 git processes at once; 64 more may queue, the rest are refused (DoS guard). */
 const limiter = createLimiter(4, 64)
 export const gitSaturated = () => limiter.saturated()
