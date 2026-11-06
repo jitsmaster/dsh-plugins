@@ -7,6 +7,7 @@ import { installContextCap } from '../cap.js'
 import { createSettings } from '../settings.js'
 import { createGroups, deriveGroupName } from '../groups.js'
 import { createHandoffTracker } from '../handoffs.js'
+import { withHandover } from '../pr-archive-guard.js'
 
 function harness({ cap = 400_000, prLines, archiveFails = false, noArchive = false, archiveGuard, ...extra } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cap-'))
@@ -49,7 +50,7 @@ function harness({ cap = 400_000, prLines, archiveFails = false, noArchive = fal
     return (await handlers['agent/pre-step']({ agent }, async () => ({ kind: 'enter', messages: [] }))).messages
   }
   const stop = async (tokens) => { state.tokens = tokens; await handlers['agent/turn-stopping']({ agent }) }
-  return { archives, settled: cap_.settled, agentRef: agent, groups, handoffs, dir, prCreated: cap_.prCreated, followUp: cap_.followUp, controller, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
+  return { handlers, archives, settled: cap_.settled, agentRef: agent, groups, handoffs, dir, prCreated: cap_.prCreated, handingOver: cap_.handingOver, followUp: cap_.followUp, controller, step, stepFull, stop, steered, settings, state, calls, setPromptSink: (s) => { sink = s } }
 }
 
 test('warns once at warnPercent, then hands off at the cap', async () => {
@@ -662,7 +663,7 @@ test('several PRs: a PR created after the notes were requested is not added', as
   const h = harness({ autoResumeHandoff: false })
   await startMultiHandover(h, ['42'])
   await h.prCreated(h.agentRef, '43')
-  assert.doesNotMatch(h.steered[0].text, /43/)
+  assert.doesNotMatch(h.steered[0].text, /\b43\b/) // whole number only: the note paths carry a HHMM timestamp that may end in 43
 })
 
 // ---- ticket sessions: "Fix: <ticket title> - <number>" ----
@@ -834,4 +835,121 @@ test('archive: a source session that is not protected, or whose guard throws, is
   await broken.settled()
   assert.equal(broken.calls.create, 1)
   assert.deepEqual(broken.archives, [], 'an unreadable verdict keeps the session')
+})
+
+// ---- a session handing over a just-created PR must not be archived (it is neither polling nor titled "PR <n>" yet) ----
+
+test('handingOver: names the PR from the moment it is created until its sessions exist', async () => {
+  const h = harness()
+  assert.equal(h.handingOver('a'), undefined)
+  h.state.title = 'feature'
+  await h.prCreated(h.agentRef, '42')
+  assert.equal(h.handingOver('a'), '42', 'right after the PR was created, before the turn ends')
+  assert.equal(h.handingOver('other'), undefined)
+  await h.stop(10_000) // notes requested
+  assert.equal(h.handingOver('a'), '42', 'still handing over while the notes are written')
+  const p = pathsOf(h.steered[0])
+  writeFileSync(p.pr, '# pr\n')
+  writeFileSync(p.rest, 'NO-REMAINING-WORK\n')
+  await h.stop(10_000) // sessions spawned
+  assert.equal(h.handingOver('a'), undefined, 'the hand-over is over')
+})
+
+test('handingOver: a stale entry (session gone before the notes pass) expires after an hour, so it cannot block archiving forever', async () => {
+  const realNow = Date.now
+  let now = 1_000_000
+  Date.now = () => now
+  try {
+    const h = harness()
+    await h.prCreated(h.agentRef, '42')
+    assert.equal(h.handingOver('a'), '42')
+    now += 59 * 60_000
+    assert.equal(h.handingOver('a'), '42', 'still within the hour')
+    now += 2 * 60_000
+    assert.equal(h.handingOver('a'), undefined, 'older than an hour: ignored')
+  } finally { Date.now = realNow }
+})
+
+test('handingOver: the hour counts from the last hand-over step, not from the PR creation (a long turn keeps its protection)', async () => {
+  const realNow = Date.now
+  let now = 1_000_000
+  Date.now = () => now
+  try {
+    const h = harness()
+    h.state.title = 'feature'
+    await h.prCreated(h.agentRef, '42')
+    now += 90 * 60_000 // the rest of the PR skill ran for 90 minutes
+    await h.stop(10_000) // notes requested
+    assert.equal(h.handingOver('a'), '42', 'asking for the notes restarts the hour')
+    now += 30 * 60_000
+    assert.equal(h.handingOver('a'), '42')
+    await h.stop(10_000) // reminder (notes still missing)
+    now += 59 * 60_000
+    assert.equal(h.handingOver('a'), '42', 'the reminder restarted it again')
+  } finally { Date.now = realNow }
+})
+
+test('handingOver: a second PR joining the hand-over restarts the hour', async () => {
+  const realNow = Date.now
+  let now = 1_000_000
+  Date.now = () => now
+  try {
+    const h = harness()
+    h.state.title = 'feature'
+    await h.prCreated(h.agentRef, '42')
+    now += 50 * 60_000
+    await h.prCreated(h.agentRef, '43')
+    now += 50 * 60_000
+    assert.equal(h.handingOver('a'), '42', '100 minutes after the first PR, 50 after the second')
+  } finally { Date.now = realNow }
+})
+
+test('handingOver: a context-cap handoff that replaces the PR hand-over job ends the hand-over (it cannot block the cap handoff archive)', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  await h.prCreated(h.agentRef, '42')
+  assert.equal(h.handingOver('a'), '42')
+  assert.deepEqual(await h.step(400_000), ['CONTEXT CAP REACHED'])
+  assert.equal(h.handingOver('a'), undefined, 'the plain handoff took over; the archive after it must not be refused')
+})
+
+test('handingOver: a disposed session drops its hand-over entry at once', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  await h.prCreated(h.agentRef, '42')
+  assert.equal(h.handingOver('a'), '42')
+  await h.handlers['agent/disposed']({ agent: h.agentRef })
+  assert.equal(h.handingOver('a'), undefined)
+})
+
+test('handingOver: a disposed payload that carries only an id drops the entry too', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  await h.prCreated(h.agentRef, '42')
+  assert.equal(h.handingOver('a'), '42')
+  await h.handlers['agent/disposed']({ id: 'a' })
+  assert.equal(h.handingOver('a'), undefined)
+})
+
+test('handingOver + withHandover wired like index.js: the session is protected during the hand-over and archived after it (the entry is cleared before the delayed guard check)', async () => {
+  let ref
+  const guard = withHandover({ check: async () => ({ protected: false }) }, { handoverOf: (id) => ref.handingOver(id) })
+  const h = harness({ archiveGuard: (id) => guard.check(id) })
+  ref = h
+  const p = await startHandover(h)
+  assert.deepEqual(await guard.check('a'), { protected: true, prId: '42', status: 'handover' }, 'protected while the notes are written')
+  writeFileSync(p.pr, '# pr\n')
+  writeFileSync(p.rest, 'NO-REMAINING-WORK\n')
+  await h.stop(10_000) // sessions spawned, archive scheduled
+  await h.settled()
+  assert.deepEqual(h.archives, [['a', { stopActivity: true }]], 'the hand-over does not block its own archive')
+})
+
+test('handingOver: a failed hand-over (fallback note path) also ends', async () => {
+  const h = harness()
+  await startHandover(h)
+  await h.stop(10_000) // reminder
+  assert.equal(h.handingOver('a'), '42')
+  await h.stop(10_000) // fallback, spawn
+  assert.equal(h.handingOver('a'), undefined)
 })

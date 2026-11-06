@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import { startStatusService } from './status.js'
 import { installContextCap } from './cap.js'
 import { installPrPoller } from './pr.js'
+import { withHandover } from './pr-archive-guard.js'
 import { installAskUserTuning } from './ask.js'
 import { installActionItemFormatting } from './action-items.js'
 import { createWorktreeTracker } from './worktrees.js'
@@ -319,10 +320,12 @@ export function apply(ctx, baseConfig = {}) {
     controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
   }
   // The Archive buttons of the review queue (a separate plugin) ask this service before archiving a session of an open PR.
-  try { ctx.provide?.('prArchiveGuard', prPoller.archiveGuard) } catch { /* optional */ }
+  // A session that just created a PR is handing it over (neither polling nor titled "PR <n>" yet): the cap knows it (lazy, installed below), so it is protected as well.
+  const archiveGuard = withHandover(prPoller.archiveGuard, { handoverOf: (sessionId) => contextCap?.handingOver(sessionId), enabled: () => settings.get().protectPrSessions !== false })
+  try { ctx.provide?.('prArchiveGuard', archiveGuard) } catch { /* optional */ }
   // The review queue's Follow handoff button: the latest note of a session and the same follow-up as the session menu's. Provided after contextCap exists; calls are lazy.
   try { ctx.provide?.('handoffFollowUp', { latest: (id) => handoffs.latest(id), followUp: (id) => contextCap.followUp(id) }) } catch { /* optional */ }
-  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, handoffs, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId), archiveGuard: (sessionId) => prPoller.archiveGuard.check(sessionId) })
+  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, handoffs, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId), archiveGuard: (sessionId) => archiveGuard.check(sessionId) })
   installAskUserTuning(ctx, { skip, makeMessage })
   installActionItemFormatting(ctx, { skip, makeMessage })
   installHoldTitles(ctx, { skip, stateDir: dirname(settings.path) })

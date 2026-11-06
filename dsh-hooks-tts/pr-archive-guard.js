@@ -56,3 +56,24 @@ export function createPrArchiveGuard({ enabled = () => true, prIdOf, statusOf, f
     },
   }
 }
+
+/**
+ * The guard plus the sessions that are handing over a PR they just created: such a session is neither polling yet nor titled "PR <n>", so the
+ * wrapped guard cannot see it, but archiving it now would lose the hand-over notes still to be written. Answered without a lookup, as { protected: true, prId, status: 'handover' }.
+ * @param {{ check(sessionId: string): Promise<object> }} guard
+ * @param {object} deps
+ * @param {(sessionId: string) => string | undefined} deps.handoverOf - the PR the session is handing over, if any (may throw: then the wrapped guard decides).
+ * @param {() => boolean} [deps.enabled] - the protectPrSessions setting.
+ */
+export function withHandover(guard, { handoverOf, enabled = () => true }) {
+  return {
+    async check(sessionId) {
+      if (enabled()) {
+        let prId
+        try { prId = handoverOf(String(sessionId)) } catch { prId = undefined }
+        if (prId) return { protected: true, prId: String(prId), status: 'handover' }
+      }
+      return guard.check(sessionId)
+    },
+  }
+}

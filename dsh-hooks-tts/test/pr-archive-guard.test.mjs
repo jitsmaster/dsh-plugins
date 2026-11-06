@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createPrArchiveGuard } from '../pr-archive-guard.js'
+import { createPrArchiveGuard, withHandover } from '../pr-archive-guard.js'
 
 function make({ prs = { a1: '5' }, status = 'active', ...extra } = {}) {
   const calls = { status: [] }
@@ -98,4 +98,23 @@ test('the status cache is bounded: the oldest entry is dropped, so its PR is loo
   assert.equal(calls.status.length, 4, 'recent entries are still cached')
   await guard.check('s1')
   assert.deepEqual(calls.status.slice(4), ['1'], 'the oldest was evicted')
+})
+
+// ---- withHandover: a session handing over a just-created PR is protected too ----
+
+test('withHandover: a session handing over a PR is protected without a lookup; others go to the wrapped guard', async () => {
+  const { guard, calls } = make()
+  const wrapped = withHandover(guard, { handoverOf: (id) => (id === 'h1' ? '42' : undefined) })
+  assert.deepEqual(await wrapped.check('h1'), { protected: true, prId: '42', status: 'handover' })
+  assert.equal(calls.status.length, 0)
+  assert.deepEqual(await wrapped.check('a1'), { protected: true, prId: '5', status: 'active' })
+  assert.deepEqual(await wrapped.check('other'), { protected: false })
+})
+
+test('withHandover: switched off protects nothing extra, a throwing lookup falls back to the wrapped guard', async () => {
+  const { guard } = make()
+  const off = withHandover(guard, { handoverOf: () => '42', enabled: () => false })
+  assert.deepEqual(await off.check('h1'), { protected: false })
+  const broken = withHandover(guard, { handoverOf: () => { throw new Error('boom') } })
+  assert.deepEqual(await broken.check('a1'), { protected: true, prId: '5', status: 'active' })
 })

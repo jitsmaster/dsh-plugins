@@ -147,6 +147,9 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const ageMs = origin ? Date.now() - origin.startedAt : undefined
     const streak = origin && ageMs < SHORT_SESSION_MS ? origin.streak + 1 : 0
     const forward = streak >= SHORT_STREAK_FOR_FORWARD
+    // A cap handoff replaces a pending PR hand-over job (handleHandover never runs for it): that hand-over is over, so its entry must not veto the archive after this handoff.
+    // prHandovers keeps the id on purpose: a second PR created after this cap handoff is not protected (as before), because the PR job is gone and nothing re-arms the entry.
+    if (pending.get(agent.id)?.prId) handingOverPrs.delete(String(agent.id))
     pending.set(agent.id, { path, cwd: agent.session?.header?.cwd, streak })
     handoffs?.record(agent.id, path) // offered by the session menu once the note exists
     ctx.logger.warn(`hooks-tts: context ${tokens} ${headline ? 'is close to' : 'exceeds'} cap ${cap}; requesting handoff`)
@@ -332,7 +335,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         try {
           // A session that polls a PR which is still open keeps its poll: it stays. A verdict that cannot be read keeps it as well (the throw lands below).
           const verdict = await archiveGuard?.(agent.id)
-          if (verdict?.protected) { trace(`not archived ${agent.id} after its handoff: PR ${verdict.prId} is still open`); return resolve() }
+          if (verdict?.protected) { trace(`not archived ${agent.id} after its handoff: ${verdict.status === 'handover' ? `hand-over of PR ${verdict.prId} is in progress` : `PR ${verdict.prId} is still open`}`); return resolve() }
           await ctx.get('workspaceRegistry').archiveSession(agent.id, { stopActivity: true })
           trace(`archived ${agent.id} after its handoff`)
         } catch (error) { trace(`archive of ${agent.id} failed: ${error?.stack ?? error}`) }
@@ -353,6 +356,20 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
   }
 
   const prHandovers = new Set()
+  /** agent.id -> { prId, at }: the (first) PR it is handing over, from the moment the PR is created until the sessions that take over exist (or the hand-over failed). */
+  const handingOverPrs = new Map()
+  /** An entry older than this is stale (the session was disposed, or never reached the second hand-over pass) and no longer blocks archiving. */
+  const HANDOVER_MAX_AGE_MS = 60 * 60_000
+  /** Restarts the hour of a live hand-over (a joined PR, the notes asked for, the reminder): the age limit is an idle timeout, not a deadline from the PR creation. */
+  const touchHandover = (agent) => { const entry = handingOverPrs.get(String(agent.id)); if (entry) entry.at = Date.now() }
+  /** The PR a session is handing over right now, else undefined: such a session is neither polling yet nor titled "PR <n>", so the archive guard asks this. */
+  const handingOver = (sessionId) => {
+    const key = String(sessionId)
+    const entry = handingOverPrs.get(key)
+    if (!entry) return undefined
+    if (Date.now() - entry.at > HANDOVER_MAX_AGE_MS) { handingOverPrs.delete(key); return undefined }
+    return entry.prId
+  }
   const NO_REMAINING = /^\s*NO-REMAINING-WORK\s*$/
 
   /**
@@ -367,12 +384,14 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       const job = pending.get(agent.id)
       if (job?.prIds && job.attempts === 0 && !job.prIds.includes(id)) {
         job.prIds.push(id)
+        touchHandover(agent)
         job.prNotes[id] = `${job.base}-pr-${id}${job.stamp}-handoff.md`
         trace(`PR ${id} joined the hand-over of ${agent.id}`)
       }
       return
     }
     prHandovers.add(agent.id)
+    handingOverPrs.set(String(agent.id), { prId: id, at: Date.now() })
     groupFor(agent) // the PR starts the group; the spawned PR and follow-up sessions join it
     const base = handoffPath(dir, agent).replace(/-\d{8}-\d{4}-handoff\.md$/, '')
     const stamp = /(-\d{8}-\d{4})-handoff\.md$/.exec(handoffPath(dir, agent))?.[1] ?? ''
@@ -414,6 +433,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
   async function handleHandover(agent, job) {
     if (job.attempts === 0) {
       job.attempts = 1
+      touchHandover(agent)
       agent.steer(makeMessage(prInstruction(job)))
       trace(`requested hand-over notes for PR ${job.prId} from ${agent.id}`)
       return
@@ -422,11 +442,19 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const missing = [...notes, ['Remaining-work handoff note', job.rest]].filter(([, p]) => !existsSync(p))
     if (missing.length && job.attempts === 1) {
       job.attempts = 2
+      touchHandover(agent)
       agent.steer(makeMessage(`REMINDER: these ${prList(job.prIds)} hand-over notes are still missing, write them now and then stop:\n${missing.map(([label, p]) => `${label} path: ${p}`).join('\n')}`))
       trace(`reminded ${agent.id} about ${missing.length} missing hand-over note(s)`)
       return
     }
     pending.delete(agent.id)
+    // Over once the sessions exist (or it failed). archiveSource() inside finishHandover only runs its guard check after archiveDelayMs (2 s),
+    // by when this entry is already cleared: the archive after a hand-over is not blocked by its own entry.
+    try { await finishHandover(agent, job) } finally { handingOverPrs.delete(String(agent.id)) }
+  }
+
+  /** The last step of the PR hand-over: fallback notes, then the PR session(s) and the remaining-work session, then the archive of the source. */
+  async function finishHandover(agent, job) {
     for (const id of job.prIds) {
       const note = job.prNotes[id]
       if (existsSync(note)) continue
@@ -545,6 +573,9 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     } catch { return '' }
   }
 
+  // A disposed session can no longer finish its hand-over: drop its entry now instead of waiting for the lazy hour expiry.
+  ctx.on('agent/disposed', (payload) => { const id = payload?.agent?.id ?? payload?.id; if (id !== undefined) handingOverPrs.delete(String(id)) })
+
   ctx.on('agent/turn-stopping', async ({ agent }) => {
     // A reply that says "Handoff written to <path>" (the SPARC stop message) makes the session offer a follow-up.
     if (handoffs && !skip(agent)) handoffs.observeText(agent.id, lastReply(agent))
@@ -579,5 +610,5 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     } finally { followingUp.delete(sessionId) }
   }
 
-  return { prCreated, followUp, settled }
+  return { prCreated, handingOver, followUp, settled }
 }
