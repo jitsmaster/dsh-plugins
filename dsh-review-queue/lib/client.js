@@ -927,7 +927,7 @@ function imageFilesOf(data) {
 		};
 
 		/** The sentences of a Find places survey only (its end codes are generic words that other actions use too); anything else falls back to ERRORS. */
-		const SURVEY_ERRORS = { "todo-failed": "The survey could not be started. Try again.", "too-many-running": "Three surveys are already running. Wait for one to finish.", "timeout": "The survey took too long and was stopped. Try again.", "todo-gone": "The survey todo was removed before it finished.", "cancelled": "The survey was cancelled before it finished.", "interrupted": "The survey session was interrupted before it finished.", "error": "The survey session ran into an error. Try again.", "log-too-large": "The survey session log got too large to read.","stopped": "The app is stopping, so the survey was not started.", "no survey available": "Finding places is not available in this app.", "other-app": "Finding places works only for workspaces of this app." };
+		const SURVEY_ERRORS = { "todo-failed": "The survey could not be started. Try again.", "too-many-running": "Three surveys are running or still creating tickets. Wait for one to finish.", "timeout": "The survey took too long and was stopped. Try again.", "todo-gone": "The survey todo was removed before it finished.", "cancelled": "The survey was cancelled before it finished.", "interrupted": "The survey session was interrupted before it finished.", "error": "The survey session ran into an error. Try again.", "log-too-large": "The survey session log got too large to read.", "stopped": "The app is stopping, so the survey was not started.", "no survey available": "Finding places is not available in this app.", "other-app": "Finding places works only for workspaces of this app." };
 		function surveyErrorText(code) {
 			if (typeof code === "string" && Object.prototype.hasOwnProperty.call(SURVEY_ERRORS, code)) return SURVEY_ERRORS[code];
 			if (typeof code === "string" && Object.prototype.hasOwnProperty.call(ERRORS, code)) return ERRORS[code];
@@ -1429,7 +1429,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					h("span", null, h("code", { className: "rq-code" }, p.path), " ", typeof p.what === "string" ? p.what : "", " ",
 						p.ticket && Number.isSafeInteger(p.ticket.id) ? (typeof p.ticket.url === "string" && p.ticket.url.startsWith("https://") ? h("a", { href: p.ticket.url, target: "_blank", rel: "noopener noreferrer" }, "AB#" + p.ticket.id) : h("span", { className: "rq-sub" }, "AB#" + p.ticket.id))
 							: p.ticket && typeof p.ticket.error === "string" ? h("span", { className: "rq-sub" }, "No ticket: " + p.ticket.error) : null))),
-					rec.ticketNote === "not-linked" ? h("span", { key: "note", className: "rq-sub" }, "No ticket: workspace not linked to Azure DevOps") : null,
+					rec.ticketNote === "not-linked" ? h("span", { key: "note", className: "rq-sub" }, "No ticket: workspace not linked to Azure DevOps")
+						: rec.ticketNote === "origin-changed" ? h("span", { key: "note", className: "rq-sub" }, "No ticket: workspace origin changed during the survey") : null,
 					rec.ticketsPending ? h("span", { key: "pending", className: "rq-sub" }, "Creating tickets…") : null,
 					h("div", { key: "go", className: "rq-row" },
 						h("button", { type: "button", className: "rq-btn pri", disabled: !tickedPlaces(rec).length || !!rec.ticketsPending || !!state.todoForm.busy || !!state.todoForm.tuning, title: "Put one todo for the ticked places in the New todo form; nothing is sent", onClick: () => draftFromTicked(rec) }, "Draft todo from ticked"))];

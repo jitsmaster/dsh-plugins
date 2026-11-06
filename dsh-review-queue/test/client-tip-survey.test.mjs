@@ -296,7 +296,7 @@ test('the long-poll token carries the survey key as 8th part, identical to surve
 test('too-many-running reads as a survey sentence, not the generic fallback', async () => {
   const { T } = load()
   const msg = T.surveyErrorText('too-many-running')
-  assert.match(msg, /already running/)
+  assert.match(msg, /running or still creating tickets/)
   assert.ok(!msg.startsWith('Could not do that'), msg)
 })
 test('hub mode: prefixed workspace ids ("<instanceId>/<id>") match the survey record, and the draft puts the prefixed id into the form', async () => {
@@ -324,4 +324,10 @@ test('the survey key never contains "|" and is identical on server and client, a
     assert.equal(T.surveyKeyOf(cards), server, JSON.stringify(cards))
     assert.ok(!server.includes('|'), 'no pipe in ' + server)
   }
+})
+
+test('a survey whose workspace origin changed says so on the card', async () => {
+  const a = await ready({}, [rec({ places: [{ path: 'a.js', what: 'one' }], ticketNote: 'origin-changed' })])
+  assert.match(text(card(a.T)), /No ticket: workspace origin changed during the survey/)
+  assert.doesNotMatch(text(card(a.T)), /not linked/)
 })
