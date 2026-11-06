@@ -271,10 +271,10 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
     : undefined
   // dsh-hooks-tts's 'handoffFollowUp' service (read per call: that plugin may load later or not at all).
   const handoffFollowOf = () => { try { return ctx.get?.('handoffFollowUp') ?? undefined } catch { return undefined } }
-  // "Find places" (tip-survey.js): the survey is built by the queue over its own todos; the session log is read like the idle check reads it, the workspaces are this app's own registry (a hub workspace is refused),
+  // "Find places" (tip-survey.js): the survey is built by the queue over its own todos; the session log is read by the survey's own settled-log reader (createSurveyLogReader), the workspaces are this app's own registry (a hub workspace is refused),
   // the tip is looked up by id while it is the current one, and the ADO calls read the PAT from the environment inside ado-create.js only. config.tipSurveyDeps replaces parts (tests).
   const tipSurveyDeps = {
-    readLog: config.idleDeps?.readLog ?? createSurveyLogReader({ root: sessionsRoot }),
+    readLog: createSurveyLogReader({ root: sessionsRoot }),
     workspacesOf: () => listWorkspaces(registryOf) ?? [],
     tipOf: (id) => { try { const tip = tipper.peek(); return tip && tip.id === id ? tip : undefined } catch { return undefined } },
     adoBaseOf: (path) => adoBaseOf(path),

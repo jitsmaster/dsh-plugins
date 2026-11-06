@@ -333,7 +333,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
         return { ok: false, error: 'todo-failed' }
       }
     },
-    /** The surveys as the card shows them (the snapshot carries the same): { ok, surveys }. */
+    /** The surveys as the card shows them (the snapshot carries the same): { ok, surveys }. No caller in the app today (the card reads the snapshot's tipSurvey field); kept as the read API for tests and tools. */
     tipSurveyState: () => ({ ok: true, surveys: tipSurveyCards() }),
     /** Stops the survey poll for good (the plugin is stopping); a start after it is refused with 'stopped'. */
     stopTipSurvey() { try { tipSurvey?.stop?.() } catch { /* nothing to stop */ } },

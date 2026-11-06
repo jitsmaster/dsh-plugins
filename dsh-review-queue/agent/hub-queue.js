@@ -64,9 +64,11 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     const mine = local.snapshot({})
     return { ...base, ...(mine.triage ? { triage: mine.triage } : {}), ...(mine.aiReport ? { aiReport: mine.aiReport } : {}), ...(mine.tipSurvey ? { tipSurvey: hubIds(mine.tipSurvey) } : {}) }
   }
+  /** This app's "<instanceId>/" workspace prefix in hub mode, else undefined. */
+  const prefixOf = () => (typeof client.instanceId === 'string' && client.instanceId ? client.instanceId + '/' : undefined)
   /** In hub mode the client's workspace list holds "<instanceId>/<id>": survey records get that form (copies, never double-prefixed). */
   const hubIds = (records) => {
-    const prefix = hubMode() && typeof client.instanceId === 'string' && client.instanceId ? client.instanceId + '/' : undefined
+    const prefix = hubMode() ? prefixOf() : undefined
     if (!prefix || !Array.isArray(records)) return records
     return records.map((r) => (r && typeof r.workspaceId === 'string' && !r.workspaceId.startsWith(prefix) ? { ...r, workspaceId: prefix + r.workspaceId } : r))
   }
@@ -87,7 +89,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     // A survey needs a local path (git origin) and a session of this app: in hub mode this app's own "<instanceId>/<id>" is stripped to the bare local id, a workspace of another app is refused (no title is passed on).
     tipSurvey: (id, workspaceId) => {
       if (hubMode() && typeof workspaceId === 'string' && workspaceId.includes('/')) {
-        const prefix = typeof client.instanceId === 'string' && client.instanceId ? client.instanceId + '/' : undefined
+        const prefix = prefixOf()
         if (!prefix || !workspaceId.startsWith(prefix)) return { ok: false, error: 'other-app' }
         return local.tipSurvey(id, workspaceId.slice(prefix.length))
       }

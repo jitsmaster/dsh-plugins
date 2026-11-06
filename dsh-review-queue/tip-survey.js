@@ -21,6 +21,9 @@ import { findSessionLog } from './thread.js'
 export const SURVEY_LOG_BYTES = 16 * 1024 * 1024
 const MAX_CACHED_LOGS = 20
 const READ_TIMEOUT_MS = 15_000
+const BASE_READ_MS = 5_000 // the git origin read of a workspace (start and ticket time); a read that does not answer counts as no base
+const SETTLE_MS = 30_000 // a log is parsed only after it has not changed for this long; each parse of the same log doubles it
+const SETTLE_MAX_MS = 60_000
 
 /** The first `limit` bytes of a file, read through an open handle (never the whole file); the handle is always closed. */
 async function fsReadFile(file, limit) {
@@ -40,15 +43,16 @@ async function fsReadFile(file, limit) {
 }
 
 /**
- * The survey's own log reader: readLog(sessionId) -> { records, torn } | { unchanged: true } (same size and mtime as the last read: nothing read or parsed) |
+ * The survey's own log reader: readLog(sessionId) -> { records, torn } (only when size and mtime have not changed for 30 s, doubling with every earlier parse of that log up to 60 s, i.e. the log has settled; a growing log is never parsed) |
+ * { unchanged: true } (first look, still moving or not quiet long enough, or already parsed at this size and mtime: nothing read or parsed) |
  * { tooLarge: true } | undefined (missing or unreadable). The log's path is found once per session; later polls only stat it.
  */
-export function createSurveyLogReader({ root, maxBytes = SURVEY_LOG_BYTES, io = {}, readTimeoutMs = READ_TIMEOUT_MS, timers = defaultTimers } = {}) {
-  const fs ={ stat: fsStat, readFile: fsReadFile, parse: parseLog, ...io }
-  const seen = new Map() // sessionId -> { file, size, mtimeMs }
+export function createSurveyLogReader({ root, maxBytes = SURVEY_LOG_BYTES, now = Date.now, io = {}, readTimeoutMs = READ_TIMEOUT_MS, timers = defaultTimers } = {}) {
+  const fs = { stat: fsStat, readFile: fsReadFile, parse: parseLog, ...io }
+  const seen = new Map() // sessionId -> { file, size, mtimeMs, parsed, since (when this size and mtime were first seen), parses (parses of this log so far) }
   const remember = (sessionId, entry) => { seen.delete(sessionId); seen.set(sessionId, entry); while (seen.size > MAX_CACHED_LOGS) seen.delete(seen.keys().next().value) }
   let chain = Promise.resolve() // reads and parses of different sessions never overlap: one at a time, in call order
-  const readOne = async (sessionId) => {
+  const readOne = async (sessionId, ctx = {}) => {
     try {
       let known = seen.get(sessionId)
       let info
@@ -60,20 +64,27 @@ export function createSurveyLogReader({ root, maxBytes = SURVEY_LOG_BYTES, io = 
         known = { file }
       }
       if (info.size > maxBytes) return { tooLarge: true }
-      if (known.size === info.size && known.mtimeMs === info.mtimeMs) return { unchanged: true }
+      const same = known.size === info.size && known.mtimeMs === info.mtimeMs
+      const parses = known.parses ?? 0
+      if (!same) { remember(sessionId, { file: known.file, size: info.size, mtimeMs: info.mtimeMs, parsed: false, since: now(), parses }); return { unchanged: true } } // new or still growing (a running session writes all the time): never parse a log that moved since the last look
+      if (known.parsed) return { unchanged: true }
+      if (now() - known.since < Math.min(SETTLE_MS * 2 ** parses, SETTLE_MAX_MS)) return { unchanged: true } // quiet for a poll tick or two is a model thinking, not a finished session: every parse of this log doubles the quiet time the next one needs
       const data = await fs.readFile(known.file, maxBytes + 1) // one byte more than the cap detects a log that grew after the stat
       if (data.length > maxBytes) return { tooLarge: true }
+      if (ctx.abandoned) return undefined // the caller gave up on this read (timeout): do not spend CPU parsing a result that is dropped
       const { records, torn } = fs.parse(data)
-      remember(sessionId, { file: known.file, size: info.size, mtimeMs: info.mtimeMs })
+      if (ctx.abandoned) return undefined // the caller already gave up on this read (timeout): its result is dropped, so the log must not look parsed; the next look reads it again
+      remember(sessionId, { file: known.file, size: info.size, mtimeMs: info.mtimeMs, parsed: true, since: known.since, parses: parses + 1 })
       return { records, torn }
     } catch { return undefined }
   }
   const guarded = async (sessionId) => { // a read that never returns must not block the chain: it resolves undefined after the timeout, its late result is dropped
     let handle
-    const work = readOne(sessionId)
+    const ctx = { abandoned: false }
+    const work = readOne(sessionId, ctx)
     work.catch(() => {})
     try {
-      return await Promise.race([work, new Promise((resolve) => { handle = timers.set(() => resolve(undefined), readTimeoutMs) })])
+      return await Promise.race([work, new Promise((resolve) => { handle = timers.set(() => { ctx.abandoned = true; resolve(undefined) }, readTimeoutMs) })])
     } finally { try { timers.clear(handle) } catch { /* nothing to clear */ } }
   }
   return (sessionId) => {
@@ -133,7 +144,9 @@ const FENCE =/```([A-Za-z]*)[ \t]*\r?\n([\s\S]*?)```/g
 
 function cleanPath(raw) {
   if (typeof raw !== 'string') return undefined
-  const path = raw.trim().replace(/\\/g, '/')
+  const slashed = raw.trim().replace(/\\/g, '/')
+  if (slashed.startsWith('/')) return undefined // absolute (also //host/share)
+  const path = slashed.replace(/^(?:\.\/+)+/, '').replace(/\/{2,}/g, '/').replace(/\/$/, '') // models often write ./src/a.js; a//b and a/b are one place, so one ledger key
   if (!path || path.length > MAX_PATH || !PATH_CHARS.test(path) || path.startsWith('/')) return undefined
   if (path.includes('#')) return undefined
   if (path.split('/').some((segment) => segment === '..' || segment.startsWith('.'))) return undefined // no parent segment, no hidden one (.git, .env, .github)
@@ -213,7 +226,7 @@ export function surveyKeyOf(cards) {
  *   tipOf: (tipId: string) => { id: string, title: string, body: string } | undefined, adoBaseOf?: (path: string) => Promise<string | undefined>,
  *   createTask?: (base: string, task: { title: string, description: string }) => Promise<{ ok: boolean, id?: number, error?: string }>,
  *   now?: () => number, log?: (line: string) => void, timers?: { set: (fn: () => void, ms: number) => any, clear: (handle: any) => void },
- *   uuid?: () => string, pollMs?: number, maxMs?: number, onChange?: () => void }} deps
+ *   uuid?: () => string, pollMs?: number, maxMs?: number, baseReadMs?: number, onChange?: () => void }} deps
  *   onChange: called after every change of a record (start, ready / none / failed, tickets made); never breaks a survey. todoItemOf (or store.get): the todo item by id; its sessionId and state tell the survey's session. tipOf: the tip with that id while it is the current one.
  * @returns {{ start: (tipId: string, workspaceId: string) => object, state: () => object[], poll: () => Promise<void>, stop: () => void }}
  *   start: { ok: true, survey, existing? } | { ok: false, error: 'not-found' | 'no-workspace' | 'unknown-workspace' | 'todo-failed' | 'stopped' | 'too-many-running' }.
@@ -221,7 +234,7 @@ export function surveyKeyOf(cards) {
  *   places?: [{ path, what, ticket?: { id, url } | { error } }], error?, ticketsDone, ticketNote?, startedAt }.
  */
 export function createTipSurveys({ todos, todoItemOf, store, readLog, workspacesOf, tipOf, adoBaseOf, createTask, now = Date.now, log = () => {}, timers = defaultTimers,
-  uuid = () => randomUUID().slice(0, 8), pollMs = POLL_MS, maxMs = MAX_SURVEY_MS, onChange } = {}) {
+  uuid = () => randomUUID().slice(0, 8), pollMs = POLL_MS, maxMs = MAX_SURVEY_MS, baseReadMs = BASE_READ_MS, onChange } = {}) {
   const say = (line) => { try { log(line) } catch { /* a log is a bonus */ } }
   const changed = () => { try { onChange?.() } catch { /* a hook must not break a survey */ } }
   const itemOf = (id) => (typeof todoItemOf === 'function' ? todoItemOf(id) : store?.get(id))
@@ -238,6 +251,19 @@ export function createTipSurveys({ todos, todoItemOf, store, readLog, workspaces
   }
   const anyRunning = () => records.some((r) => r.state === 'running')
   let ticketsMade = 0 // Task create attempts by this app run, over all tips and workspaces
+  const startBase = new WeakMap() // record -> Promise of the ADO base of the workspace when the survey started: the origin is read again for the tickets and must not have changed meanwhile
+  const UNKNOWN = Symbol('origin-unknown') // an origin read that failed or did not answer in time: neither "linked" nor "changed", so no tickets and the note not-linked
+  /** The ADO base of a workspace path (undefined when the workspace has none), or UNKNOWN when the read failed or did not answer within baseReadMs. Never rejects, never hangs. */
+  const baseNow = (path) => new Promise((resolve) => {
+    let handle
+    const done = (value) => { if (handle !== undefined) clearTimeout(handle); resolve(value) }
+    try {
+      if (typeof adoBaseOf !== 'function') return resolve(undefined)
+      handle = setTimeout(() => resolve(UNKNOWN), baseReadMs)
+      handle.unref?.()
+      Promise.resolve(adoBaseOf(path)).then(done, () => done(UNKNOWN))
+    } catch { done(UNKNOWN) }
+  })
 
   function arm() {
     if (stopped || timer !== undefined || !anyRunning()) return
@@ -261,9 +287,14 @@ export function createTipSurveys({ todos, todoItemOf, store, readLog, workspaces
     let base
     try {
       const ws = (workspacesOf() ?? []).find((w) => w && w.id === record.workspaceId)
-      base = ws && typeof ws.path === 'string' && ws.path && typeof adoBaseOf === 'function' ? await adoBaseOf(ws.path) : undefined
-    } catch { base = undefined }
+      base = ws && typeof ws.path === 'string' && ws.path ? await baseNow(ws.path) : UNKNOWN // a workspace that is gone or has no path: the origin cannot be read again
+    } catch { base = UNKNOWN }
     if (stopped) return
+    let first = UNKNOWN // a record without a start read has no baseline to compare with
+    try { if (startBase.has(record)) first = await startBase.get(record) } catch { first = UNKNOWN }
+    if (stopped) return
+    if (first === UNKNOWN || base === UNKNOWN) { record.ticketNote = 'not-linked'; say('tip-survey: ' + record.id + ' no tickets: the workspace origin could not be read'); return } // fail closed
+    if (first !== base) { record.ticketNote = 'origin-changed'; say('tip-survey: ' + record.id + ' no tickets: the workspace origin changed during the survey'); return } // a survey session could have rewritten .git/config
     if (!base || typeof createTask !== 'function') { record.ticketNote = 'not-linked'; return }
     const root = String(base).replace(/\/+$/, '')
     const entry = ledgerOf(record)
@@ -338,10 +369,11 @@ export function createTipSurveys({ todos, todoItemOf, store, readLog, workspaces
         const same = (r) => r.tipId === tip.id && r.workspaceId === ws.id
         const existing = records.find((r) => same(r) && (r.state === 'running' || r.ticketsPending === true))
         if (existing) return { ok: true, survey: copy(existing), existing: true }
-        if (records.filter((r) => r.state === 'running' && !same(r)).length >= MAX_RECORDS) return { ok: false, error: 'too-many-running' } // else eviction could drop a running survey and orphan its session
+        if (records.filter((r) => r.state === 'running' || r.ticketsPending === true).length >= MAX_RECORDS) return { ok: false, error: 'too-many-running' } // else eviction could drop a running survey and orphan its session (a record still making its tickets cannot be evicted either)
         const tipTitle = plain(tip.title ?? '').slice(0, MAX_TIP_TITLE)
         const tipBody = plain(tip.body ?? '').slice(0, MAX_TIP_BODY)
         const workspaceTitle = cleanTitle(ws.title)
+        const base0 = typeof ws.path === 'string' && ws.path ? baseNow(ws.path) : Promise.resolve(UNKNOWN) // no path: nothing to read, so no baseline (a path gained later is not a change); read before the todo exists, so the session cannot change the origin first
         let added
         try { added = todos.add(buildSurveyPrompt({ title: tipTitle, body: tipBody, workspaceTitle }), { workspaceId: ws.id, sparc: false }) } catch (error) { say('tip-survey: the todo was not added: ' + String(error?.name ?? 'error')); added = undefined }
         if (!added?.ok || typeof added.id !== 'string' || !added.id) return { ok: false, error: 'todo-failed' }
@@ -355,6 +387,7 @@ export function createTipSurveys({ todos, todoItemOf, store, readLog, workspaces
         while (known.size > MAX_PLACES) known.delete(known.keys().next().value)
         if (known.size) memo.set(record, known)
         records = records.filter((r) => !same(r))
+        startBase.set(record, base0)
         records.push(record)
         while (records.length > MAX_RECORDS) { const done = records.findIndex((r) => r.state !== 'running' && r.ticketsPending !== true); records.splice(done < 0 ? 0 : done, 1) } // the oldest finished record first; a running one only when all are running
         arm()

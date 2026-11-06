@@ -384,22 +384,58 @@ async function readerEnv(over = {}) {
   await writeFile(file, 'aaaa')
   const calls = { readdir: 0, readFile: 0, parse: 0 }
   const { readdir, readFile } = await import('node:fs/promises')
-  const reader = createSurveyLogReader({ root, io: { readdir: (...a) => { calls.readdir++; return readdir(...a) }, readFile: (file) => { calls.readFile++; return readFile(file) }, parse: () => { calls.parse++; return { records: [{ type: 'x' }], torn: false } } }, ...over })
-  return { reader, calls, file, writeFile, cleanup: () => rm(root, { recursive: true, force: true }) }
+  const clock = { t: 1_000_000 }
+  const reader = createSurveyLogReader({ root, now: () => clock.t, io: { readdir: (...a) => { calls.readdir++; return readdir(...a) }, readFile: (file) => { calls.readFile++; return readFile(file) }, parse: () => { calls.parse++; return { records: [{ type: 'x' }], torn: false } } }, ...over })
+  return { reader, calls, file, writeFile, clock, cleanup: () => rm(root, { recursive: true, force: true }) }
 }
 
-test('survey log reader: the first read parses, a second read of the same size and mtime is "unchanged" without reading or listing again', async () => {
+test('survey log reader: a log is parsed only after it stayed unchanged for 30 s; a parsed one is "unchanged" without reading or listing again', async () => {
   const e = await readerEnv()
   try {
-    const first = await e.reader('sess1')
-    assert.deepEqual(first, { records: [{ type: 'x' }], torn: false })
+    assert.deepEqual(await e.reader('sess1'), { unchanged: true }, 'the first look only remembers the size and mtime (the log may still be growing)')
+    e.clock.t += 10_000
+    assert.deepEqual(await e.reader('sess1'), { unchanged: true }, 'quiet for one poll tick only: a running session that thinks for 10 s is not parsed')
+    assert.deepEqual(e.calls, { readdir: 1, readFile: 0, parse: 0 })
+    e.clock.t += 20_000
+    assert.deepEqual(await e.reader('sess1'), { records: [{ type: 'x' }], torn: false }, 'quiet for 30 s: settled, parsed')
     assert.deepEqual(e.calls, { readdir: 1, readFile: 1, parse: 1 })
+    e.clock.t += 600_000
     assert.deepEqual(await e.reader('sess1'), { unchanged: true })
     assert.deepEqual(e.calls, { readdir: 1, readFile: 1, parse: 1 }, 'path cached, nothing read again')
     await e.writeFile(e.file, 'aaaaaaaa')
+    assert.deepEqual(await e.reader('sess1'), { unchanged: true }, 'a changed file waits')
+    e.clock.t += 60_000
     const again = await e.reader('sess1')
     assert.deepEqual(again.records, [{ type: 'x' }])
-    assert.deepEqual(e.calls, { readdir: 1, readFile: 2, parse: 2 }, 'a changed file is read again, still without listing')
+    assert.deepEqual(e.calls, { readdir: 1, readFile: 2, parse: 2 }, 'once settled it is read again, still without listing')
+  } finally { await e.cleanup() }
+})
+
+test('survey log reader: a log that grows between every look (a running session) is never read or parsed', async () => {
+  const e = await readerEnv()
+  try {
+    for (let i = 1; i <= 6; i++) {
+      await e.writeFile(e.file, 'a'.repeat(4 + i * 3))
+      assert.deepEqual(await e.reader('sess1'), { unchanged: true })
+      e.clock.t += 10_000
+    }
+    assert.deepEqual(e.calls, { readdir: 1, readFile: 0, parse: 0 }, 'no whole-log parse per poll tick while the session still writes')
+    e.clock.t += 20_000
+    assert.deepEqual((await e.reader('sess1')).records, [{ type: 'x' }], 'parsed once it stopped growing for 30 s')
+    assert.deepEqual(e.calls, { readdir: 1, readFile: 1, parse: 1 })
+  } finally { await e.cleanup() }
+})
+
+test('survey log reader: every parse of the same log doubles the quiet time the next one needs (30 s, then 60 s, capped at 60 s)', async () => {
+  const e = await readerEnv()
+  try {
+    const quietThenLook = async (ms, grow) => { await e.writeFile(e.file, 'a'.repeat(grow)); await e.reader('sess1'); e.clock.t += ms; return e.reader('sess1') }
+    assert.ok((await quietThenLook(30_000, 5)).records, 'first parse after 30 s')
+    assert.deepEqual(await quietThenLook(59_000, 6), { unchanged: true }, '59 s is not enough for the second parse')
+    assert.ok((await quietThenLook(60_000, 7)).records, 'second parse after 60 s')
+    assert.deepEqual(await quietThenLook(59_000, 8), { unchanged: true }, 'the wait is capped at 60 s (a finished session shows its places within about 70 s), not longer')
+    assert.ok((await quietThenLook(60_000, 9)).records, 'third parse after 60 s: capped')
+    assert.ok((await quietThenLook(60_000, 10)).records, 'fourth after 60 s: capped')
   } finally { await e.cleanup() }
 })
 
@@ -412,7 +448,7 @@ test('survey log reader: a missing log is undefined, a log over maxBytes is { to
   } finally { await e.cleanup() }
 })
 
-test('survey log reader: the default limit is 64 MB', async () => {
+test('survey log reader: the default limit is 16 MB', async () => {
   const { SURVEY_LOG_BYTES } = await load()
   assert.equal(SURVEY_LOG_BYTES, 16 * 1024 * 1024)
 })
@@ -757,6 +793,26 @@ test('start while the previous record is ready but its tickets are still being m
   await polling
 })
 
+test('start refuses with too-many-running while two surveys run and a third is still making its tickets (no running survey is evicted unseen)', async () => {
+  let release
+  const gate = new Promise((r) => { release = r })
+  const m = await make({ adoBaseOf: async () => { await gate; return BASE } })
+  m.surveys.start('t1', 'w1')
+  m.surveys.start('t1', 'w2')
+  const c = m.surveys.start('t1', 'w3')
+  m.state.logs[m.session(c.survey.todoId)] = finished(reply())
+  const polling = m.timers.fire()
+  for (let i = 0; i < 20 && !m.surveys.state().some((r) => r.ticketsPending); i++) await new Promise((x) => setImmediate(x))
+  assert.equal(m.surveys.state().filter((r) => r.state === 'running').length, 2)
+  assert.equal(m.surveys.state().some((r) => r.ticketsPending === true), true)
+  const before = m.state.added.length
+  assert.deepEqual(m.surveys.start('t1', 'w4'), { ok: false, error: 'too-many-running' })
+  assert.equal(m.state.added.length, before, 'no todo was added')
+  assert.deepEqual(m.surveys.state().map((r) => r.workspaceId).sort(), ['w1', 'w2', 'w3'], 'nothing was evicted')
+  release()
+  await polling
+})
+
 // ---- review fixes: hidden paths, '#', ticket cap, failed paths ----------------------------------------------------------------------
 
 test('parsePlaces drops paths with a hidden segment (.git, .env, .github) and any path with #', async () => {
@@ -830,6 +886,8 @@ test('survey log reader: reads at most maxBytes + 1 and a read that returns more
   const limits = []
   const e = await readerEnv({ maxBytes: 10, io: { stat: async () => ({ size: 4, mtimeMs: 1 }), readFile: async (file, limit) => { limits.push(limit); return Buffer.alloc(50, 97) }, parse: () => { throw new Error('must not parse') } } })
   try {
+    assert.deepEqual(await e.reader('sess1'), { unchanged: true }, 'first look: only remembered')
+    e.clock.t += 30_000
     assert.deepEqual(await e.reader('sess1'), { tooLarge: true })
     assert.deepEqual(limits, [11])
   } finally { await e.cleanup() }
@@ -846,8 +904,116 @@ test('survey log reader: the default read goes through a bounded handle and stil
     await mkdir(join(root, 'proj', 'sess1'), { recursive: true })
     await writeFile(join(root, 'proj', 'sess1', SESSION_LOG), 'abcdef')
     let seen
-    const reader = createSurveyLogReader({ root, maxBytes: 100, io: { parse: (buf) => { seen = Buffer.from(buf).toString(); return { records: [], torn: false } } } })
+    const clock = { t: 1_000_000 }
+    const reader = createSurveyLogReader({ root, maxBytes: 100, now: () => clock.t, io: { parse: (buf) => { seen = Buffer.from(buf).toString(); return { records: [], torn: false } } } })
+    assert.deepEqual(await reader('sess1'), { unchanged: true }, 'first look: only remembered')
+    clock.t += 30_000
     assert.deepEqual(await reader('sess1'), { records: [], torn: false })
     assert.equal(seen, 'abcdef')
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('parsePlaces accepts a leading ./ (models emit it) and still drops hidden and parent segments after it', async () => {
+  const { parsePlaces } = await load()
+  const one = (path) => '```json\n' + JSON.stringify({ places: [{ path, what: 'use it here' }] }) + '\n```'
+  assert.deepEqual(parsePlaces(one('./src/a.js')), [{ path: 'src/a.js', what: 'use it here' }])
+  assert.deepEqual(parsePlaces(one('././src/a.js')), [{ path: 'src/a.js', what: 'use it here' }])
+  assert.deepEqual(parsePlaces(one('./.env')), [])
+  assert.deepEqual(parsePlaces(one('./../x.js')), [])
+  assert.deepEqual(parsePlaces(one('src/./a.js')), [])
+  assert.deepEqual(parsePlaces(one('./')), [])
+})
+
+test('tickets: an origin that changed between the survey start and the ticket creation creates nothing (origin-changed)', async () => {
+  const m = await make()
+  await started(m, finished(reply(paths(0, 2))))
+  await new Promise((r) => setImmediate(r)) // the base read at start settles
+  m.state.bases['D:/dev/ctnp'] = 'https://dev.azure.com/other-org/Other'
+  await m.surveys.poll()
+  assert.equal(rec(m).state, 'ready')
+  assert.equal(rec(m).ticketNote, 'origin-changed')
+  assert.equal(m.state.tasks.length, 0)
+  assert.ok(!(rec(m).places ?? []).some((p) => p.ticket))
+})
+
+test('tickets: an origin that appears after a survey started on a workspace without one creates nothing (origin-changed)', async () => {
+  const m = await make()
+  m.state.bases['D:/dev/ctnp'] = undefined
+  await started(m, finished(reply(paths(0, 2))))
+  await new Promise((r) => setImmediate(r))
+  m.state.bases['D:/dev/ctnp'] = BASE
+  await m.surveys.poll()
+  assert.equal(rec(m).state, 'ready')
+  assert.equal(rec(m).ticketNote, 'origin-changed')
+  assert.equal(m.state.tasks.length, 0)
+})
+
+test('tickets: the origin baseline is read before the survey todo is added, so the session cannot change it first', async () => {
+  const events = []
+  const m = await make({ adoBaseOf: async () => { events.push('base'); return BASE } })
+  const add = m.deps.todos.add
+  m.deps.todos.add = (...args) => { events.push('add'); return add(...args) }
+  assert.equal(m.surveys.start('t1', 'w1').ok, true)
+  assert.deepEqual(events, ['base', 'add'])
+})
+
+test('tickets: an origin read that never settles is cut off, so the poll finishes and the slot is released', { timeout: 5000 }, async () => {
+  const m = await make({ baseReadMs: 20, adoBaseOf: () => new Promise(() => {}) })
+  await started(m, finished(reply(paths(0, 2))))
+  await m.surveys.poll()
+  assert.equal(rec(m).state, 'ready')
+  assert.equal(rec(m).ticketNote, 'not-linked')
+  assert.equal(rec(m).ticketsPending, undefined)
+  assert.equal(m.state.tasks.length, 0)
+})
+
+test('tickets: a start-time origin read that timed out is unknown, not a changed origin (no tickets, note not-linked)', { timeout: 5000 }, async () => {
+  let calls = 0
+  const m = await make({ baseReadMs: 20, adoBaseOf: () => (++calls === 1 ? new Promise(() => {}) : Promise.resolve(BASE)) })
+  await started(m, finished(reply(paths(0, 2))))
+  await m.surveys.poll()
+  assert.equal(calls, 2)
+  assert.equal(rec(m).state, 'ready')
+  assert.equal(rec(m).ticketNote, 'not-linked')
+  assert.equal(m.state.tasks.length, 0)
+})
+
+test('tickets: a ticket-time origin read that timed out is unknown, not a changed origin', { timeout: 5000 }, async () => {
+  let calls = 0
+  const m = await make({ baseReadMs: 20, adoBaseOf: () => (++calls === 1 ? Promise.resolve(BASE) : new Promise(() => {})) })
+  await started(m, finished(reply(paths(0, 2))))
+  await m.surveys.poll()
+  assert.equal(rec(m).ticketNote, 'not-linked')
+  assert.equal(m.state.tasks.length, 0)
+})
+
+test('tickets: a workspace that vanished before the ticket-time read is unknown, not a changed origin', async () => {
+  let present = true
+  const m = await make({ workspacesOf: () => (present ? WS : []) })
+  await started(m, finished(reply(paths(0, 2))))
+  present = false
+  await m.surveys.poll()
+  assert.equal(rec(m).state, 'ready')
+  assert.equal(rec(m).ticketNote, 'not-linked')
+  assert.equal(m.state.tasks.length, 0)
+})
+
+test('parsePlaces collapses repeated slashes so a//b and a/b are one place, and drops a trailing slash', async () => {
+  const { parsePlaces } = await load()
+  const one = (path) => '```json\n' + JSON.stringify({ places: [{ path, what: 'use it here' }] }) + '\n```'
+  assert.deepEqual(parsePlaces(one('src//a.js')), [{ path: 'src/a.js', what: 'use it here' }])
+  assert.deepEqual(parsePlaces(one('./src///lib//a.js')), [{ path: 'src/lib/a.js', what: 'use it here' }])
+  assert.deepEqual(parsePlaces(one('src/lib/')), [{ path: 'src/lib', what: 'use it here' }])
+  assert.deepEqual(parsePlaces(one('//etc/passwd')), [])
+})
+
+test('tickets: a workspace without a path at start that gains one later is unknown, not a changed origin', async () => {
+  let withPath = false
+  const m = await make({ workspacesOf: () => (withPath ? WS : WS.map((w) => ({ ...w, path: undefined }))) })
+  await started(m, finished(reply(paths(0, 2))))
+  withPath = true
+  await m.surveys.poll()
+  assert.equal(rec(m).state, 'ready')
+  assert.equal(rec(m).ticketNote, 'not-linked')
+  assert.equal(m.state.tasks.length, 0)
 })

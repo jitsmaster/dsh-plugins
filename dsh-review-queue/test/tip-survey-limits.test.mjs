@@ -106,7 +106,9 @@ test('survey log reader: a read that never returns times out to undefined and th
   try {
     let n = 0
     const readFile = () => (++n === 1 ? new Promise(() => {}) : Promise.resolve(Buffer.from('x')))
-    const reader = createSurveyLogReader({ root, readTimeoutMs: 30, io: { readFile, parse: () => ({ records: [{ ok: 1 }], torn: false }) } })
+    const clock = { t: 1_000_000 }
+    const reader = createSurveyLogReader({ root, now: () => clock.t, readTimeoutMs: 30, io: { readFile, parse: () => ({ records: [{ ok: 1 }], torn: false }) } })
+    await settle(reader, clock, 'a', 'b')
     const p1 = reader('a')
     const p2 = reader('b')
     assert.equal(await p1, undefined)
@@ -124,7 +126,9 @@ test('survey log reader: a late result of an abandoned read is ignored without a
   try {
     let fail
     const readFile = () => new Promise((_, reject) => { fail = reject })
-    const reader = createSurveyLogReader({ root, readTimeoutMs: 20, io: { readFile, parse: () => ({ records: [], torn: false }) } })
+    const clock = { t: 1_000_000 }
+    const reader = createSurveyLogReader({ root, now: () => clock.t, readTimeoutMs: 20, io: { readFile, parse: () => ({ records: [], torn: false }) } })
+    await settle(reader, clock, 'a')
     assert.equal(await reader('a'), undefined)
     fail(new Error('late'))
     await new Promise((r) => setTimeout(r, 50))
@@ -167,12 +171,16 @@ test('survey log reader: a log under the cap parses and one over it is tooLarge'
     await writeFile(join(root, 'p', 'a', SESSION_LOG), 'x'.repeat(100))
     await writeFile(join(root, 'p', 'b', SESSION_LOG), 'x'.repeat(101))
     await writeFile(join(root, 'p', 'c', SESSION_LOG), 'x'.repeat(500))
-    const reader = createSurveyLogReader({ root, maxBytes: 100, io: { parse: (buf) => ({ records: [{ len: buf.length }], torn: false }) } })
+    const clock = { t: 1_000_000 }
+    const reader = createSurveyLogReader({ root, maxBytes: 100, now: () => clock.t, io: { parse: (buf) => ({ records: [{ len: buf.length }], torn: false }) } })
+    await settle(reader, clock, 'a')
     assert.deepEqual(await reader('a'), { records: [{ len: 100 }], torn: false })
     assert.deepEqual(await reader('b'), { tooLarge: true })
     assert.deepEqual(await reader('c'), { tooLarge: true })
     // a stat that lies (small) while the file is over the cap: the read itself detects it
-    const lying = createSurveyLogReader({ root, maxBytes: 100, io: { stat: async () => ({ size: 1, mtimeMs: 1 }), parse: () => ({ records: [], torn: false }) } })
+    const lyingClock = { t: 1_000_000 }
+    const lying = createSurveyLogReader({ root, maxBytes: 100, now: () => lyingClock.t, io: { stat: async () => ({ size: 1, mtimeMs: 1 }), parse: () => ({ records: [], torn: false }) } })
+    await settle(lying, lyingClock, 'c')
     assert.deepEqual(await lying('c'), { tooLarge: true })
   } finally { await rm(root, { recursive: true, force: true }) }
 })
@@ -189,8 +197,10 @@ test('survey log reader: the read buffer is bounded by the file size, not by the
   try {
     await mkdir(join(root, 'p', 'a'), { recursive: true })
     await writeFile(join(root, 'p', 'a', SESSION_LOG), 'x'.repeat(300))
+    const clock = { t: 1_000_000 }
+    const reader = createSurveyLogReader({ root, now: () => clock.t, io: { parse: (buf) => ({ records: [{ len: buf.length }], torn: false }) } })
+    await settle(reader, clock, 'a')
     Buffer.allocUnsafe = (size, ...rest) => { sizes.push(size); return real(size, ...rest) }
-    const reader = createSurveyLogReader({ root, io: { parse: (buf) => ({ records: [{ len: buf.length }], torn: false }) } })
     const out = await reader('a')
     Buffer.allocUnsafe = real
     assert.deepEqual(out, { records: [{ len: 300 }], torn: false })
@@ -214,6 +224,12 @@ test('survey log reader: the default cap is 16 MB and a log over it is tooLarge'
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+/** The reader parses a log only after it stayed unchanged for 30 s: look once at each, then let 30 s pass. */
+async function settle(reader, clock, ...ids) {
+  for (const id of ids) await reader(id)
+  clock.t += 30_000
+}
+
 async function twoLogs(prefix) {
   const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
@@ -234,7 +250,9 @@ test('survey log reader: reads for different sessions run one at a time, in call
     const gate = new Promise((r) => { release = r })
     let n = 0
     const readFile = async () => { const id = ++n; events.push('start' + id); if (id === 1) await gate; events.push('end' + id); return Buffer.from('x') }
-    const reader = createSurveyLogReader({ root, io: { readFile, parse: () => ({ records: [], torn: false }) } })
+    const clock = { t: 1_000_000 }
+    const reader = createSurveyLogReader({ root, now: () => clock.t, io: { readFile, parse: () => ({ records: [], torn: false }) } })
+    await settle(reader, clock, 'a', 'b')
     const p1 = reader('a')
     const p2 = reader('b')
     await new Promise((r) => setTimeout(r, 100))
@@ -252,7 +270,9 @@ test('survey log reader: a failing first read does not stop the second', async (
   try {
     let n = 0
     const readFile = async () => { if (++n === 1) throw new Error('boom'); return Buffer.from('x') }
-    const reader = createSurveyLogReader({ root, io: { readFile, parse: () => ({ records: [{ ok: 1 }], torn: false }) } })
+    const clock = { t: 1_000_000 }
+    const reader = createSurveyLogReader({ root, now: () => clock.t, io: { readFile, parse: () => ({ records: [{ ok: 1 }], torn: false }) } })
+    await settle(reader, clock, 'a', 'b')
     const p1 = reader('a')
     const p2 = reader('b')
     assert.equal(await p1, undefined)
@@ -275,4 +295,43 @@ test('parsePlaces: 200 KB of unmatched fence openers is rejected quickly', async
   const start = Date.now()
   assert.deepEqual(parsePlaces(reply), [])
   assert.ok(Date.now() - start < 2000, 'took ' + (Date.now() - start) + ' ms')
+})
+
+test('survey log reader: a read abandoned by the timeout does not mark the log parsed, so the next look reads it again', async () => {
+  const { createSurveyLogReader } = await load()
+  const { rm } = await import('node:fs/promises')
+  const root = await twoLogs('tip-aband-')
+  try {
+    let n = 0
+    let finish
+    const readFile = () => (++n === 1 ? new Promise((resolve) => { finish = resolve }) : Promise.resolve(Buffer.from('x')))
+    const clock = { t: 1_000_000 }
+    const timers = { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h) }
+    const reader = createSurveyLogReader({ root, now: () => clock.t, timers, readTimeoutMs: 20, io: { readFile, parse: () => ({ records: [{ ok: 1 }], torn: false }) } })
+    await settle(reader, clock, 'a')
+    assert.equal(await reader('a'), undefined, 'the first read timed out')
+    finish(Buffer.from('x'))
+    await new Promise((r) => setTimeout(r, 30))
+    assert.deepEqual(await reader('a'), { records: [{ ok: 1 }], torn: false }, 'the late result must not make the log look parsed')
+    assert.equal(n, 2)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('survey log reader: a read that finishes after the timeout is not parsed (its result is dropped anyway)', async () => {
+  const { createSurveyLogReader } = await load()
+  const { rm } = await import('node:fs/promises')
+  const root = await twoLogs('tip-noparse-')
+  try {
+    let finish
+    let parses = 0
+    const readFile = () => new Promise((resolve) => { finish = resolve })
+    const clock = { t: 1_000_000 }
+    const timers = { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h) }
+    const reader = createSurveyLogReader({ root, now: () => clock.t, timers, readTimeoutMs: 20, io: { readFile, parse: () => { parses += 1; return { records: [], torn: false } } } })
+    await settle(reader, clock, 'a')
+    assert.equal(await reader('a'), undefined)
+    finish(Buffer.from('x'))
+    await new Promise((r) => setTimeout(r, 30))
+    assert.equal(parses, 0)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
