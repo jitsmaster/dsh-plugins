@@ -12,7 +12,22 @@ const COMMAND = /^\/archive-offer(?:\s+([\s\S]*))?$/i
 const MARKER = /^ARCHIVE-OFFER(?:[ \t]+(.*?))?[ \t\r]*$/gm
 const MARKER_TOOLS = /^(bash|pwsh|powershell|shell|run_code)$/i
 const textOf = (content) => (typeof content === 'string' ? content : Array.isArray(content) ? content.map((p) => (typeof p === 'string' ? p : p?.type === 'text' && typeof p.text === 'string' ? p.text : '')).join('') : '')
-const withoutReminders = (text) => text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+/** Drops every closed <system-reminder> block; an unterminated one stays. indexOf scan: linear, unlike a lazy regex that rescans to the end from each unclosed tag. */
+export function withoutReminders(text) {
+  const OPEN = '<system-reminder>'
+  const CLOSE = '</system-reminder>'
+  let out = ''
+  let from = 0
+  for (;;) {
+    const start = text.indexOf(OPEN, from)
+    if (start < 0) break
+    const end = text.indexOf(CLOSE, start + OPEN.length)
+    if (end < 0) break // no closing tag after this one means none after any later opening tag either
+    out += text.slice(from, start)
+    from = end + CLOSE.length
+  }
+  return out + text.slice(from)
+}
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
 
 /** { reason } for a message that starts with /archive-offer (the rest, on one line); undefined otherwise. */

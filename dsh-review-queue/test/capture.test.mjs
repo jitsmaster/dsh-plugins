@@ -858,3 +858,103 @@ test('a new question in a session removes that session\'s older detached questio
   assert.equal(store.snapshot().resolved.find((i) => i.key === 'old').resolution.kind, 'expired')
   void other
 })
+
+
+test('a finished turn adds no done card while the session has an open archive card (one message is enough)', async () => {
+  const { store, fire, agent } = setup()
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'all pushed' } })
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Done. I asked to be archived.') })
+  assert.deepEqual(store.snapshot().open.map((i) => i.type), ['archive'])
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+  await fire('agent/turn-stopping', { agent: agent('a2', 'Another session still gets its done card.') })
+  assert.deepEqual(store.snapshot().open.filter((i) => i.sessionId === 'a2').map((i) => i.type), ['completed'])
+})
+
+test('only the turn that follows the archive offer is silent: a later finished turn adds its done card even while the archive card stays open', async () => {
+  const { store, fire, agent } = setup()
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'all pushed' } })
+  await fire('agent/turn-stopping', { agent: agent('a1', 'First turn after the offer.') })
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Kept working after the offer.') })
+  assert.deepEqual(store.snapshot().open.filter((i) => i.sessionId === 'a1').map((i) => i.type).sort(), ['archive', 'completed'])
+})
+
+test('the offer turn consumes the silence even when it ends without text, so the next real result is not hidden', async () => {
+  const { store, fire, agent } = setup()
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'all pushed' } })
+  await fire('agent/turn-stopping', { agent: agent('a1', '') }) // the offer's own turn: tool calls only, no closing text
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Real work finished later.') })
+  assert.deepEqual(store.snapshot().open.filter((i) => i.sessionId === 'a1').map((i) => i.type).sort(), ['archive', 'completed'])
+})
+
+test('a real message the user types while the archive card is open makes the next finished turn add its done card', async () => {
+  const { store, fire, agent } = setup()
+  const step = (messages) => fire('agent/pre-step', { agent: agent('a1'), messages }, async () => ({ kind: 'enter', messages: [] }))
+  await step([{ role: 'user', content: 'wrap up' }]) // the turn that ends with the offer
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'all pushed' } })
+  await step([{ role: 'user', content: 'wrap up' }, { role: 'assistant', content: 'offered' }, { role: 'user', content: 'now fix the other bug' }])
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Fixed the other bug.') })
+  assert.deepEqual(store.snapshot().open.filter((i) => i.sessionId === 'a1').map((i) => i.type).sort(), ['archive', 'completed'])
+})
+
+test('assistant and tool messages without a source are not newly typed messages: repeated steps of one turn keep the silence', async () => {
+  const { store, fire, agent } = setup()
+  const step = (messages) => fire('agent/pre-step', { agent: agent('a1'), messages }, async () => ({ kind: 'enter', messages: [] }))
+  const typed = { role: 'user', content: 'tidy up and offer to archive' }
+  await step([typed])
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'tidy' } })
+  await step([typed, { role: 'assistant', content: 'calling the tool' }, { role: 'tool', content: 'offered' }])
+  await step([typed, { role: 'assistant', content: 'calling the tool' }, { role: 'tool', content: 'offered' }, { role: 'assistant', content: 'one more' }, { role: 'tool', content: 'result two' }])
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Offered to archive.') })
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+})
+
+test('the first step seen for a session (no earlier fingerprint, e.g. after a reload with a card open) does not count as a newly typed message', async () => {
+  const { store, fire, agent } = setup()
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'tidy' } })
+  await fire('agent/pre-step', { agent: agent('a1'), messages: [{ role: 'user', content: 'tidy up and offer to archive' }] }, async () => ({ kind: 'enter', messages: [] }))
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Offered to archive.') })
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+})
+
+test('the /archive-offer message itself does not use up the silence of the turn that follows it', async () => {
+  const { store, fire, agent } = setup()
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'done' } })
+  await fire('agent/pre-step', { agent: agent('a1'), messages: [{ role: 'user', content: '/archive-offer done' }] }, async () => ({ kind: 'enter', messages: [] }))
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Asked to be archived.') })
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+})
+
+test('a card opened mid-turn (marker) keeps the silence: later steps of the same turn do not count as a newly typed message', async () => {
+  const { store, fire, agent } = setup()
+  const step = () => fire('agent/pre-step', { agent: agent('a1'), messages: [{ role: 'user', content: 'tidy up and offer to archive' }] }, async () => ({ kind: 'enter', messages: [] }))
+  await step() // the turn starts, no card yet
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'tidy' } }) // the marker opens it mid-turn
+  await step() // next step of the same turn, same history
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Offered to archive.') })
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+})
+
+test('an /archive-offer message with a system-reminder prefix is still the offer, not new work', async () => {
+  const { store, fire, agent } = setup()
+  store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'done' } })
+  await fire('agent/pre-step', { agent: agent('a1'), messages: [{ role: 'user', content: '<system-reminder>ctx</system-reminder>/archive-offer done' }] }, async () => ({ kind: 'enter', messages: [] }))
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Asked to be archived.') })
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+})
+
+test('a disposed payload that carries only an id still closes the session\'s open cards as session-ended', async () => {
+  const { store, fire } = setup()
+  const card = store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'done' } })
+  fire('agent/disposed', { id: 'a1' })
+  assert.equal(store.get(card.id).resolution?.kind, 'session-ended')
+})
+
+test('once the archive card is closed, the next finished turn adds its done card again', async () => {
+  const { store, fire, agent } = setup()
+  const card = store.add({ type: 'archive', sessionId: 'a1', payload: {} })
+  store.resolve(card.id, { kind: 'reviewed', by: 'card' })
+  await fire('agent/turn-stopping', { agent: agent('a1', 'More work done.') })
+  assert.deepEqual(store.snapshot().open.map((i) => i.type), ['completed'])
+})

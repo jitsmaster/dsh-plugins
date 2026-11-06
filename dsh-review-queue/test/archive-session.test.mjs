@@ -85,5 +85,7 @@ test('archiveSession and archive still archive a session the guard does not prot
 
 test('the card and the phone word the pr-open refusal', async () => {
   const { readFileSync } = await import('node:fs')
-  assert.match(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8'), /"pr-open": "[^"]*pull request[^"]*"/)
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  assert.match(client, /"pr-open": "[^"]*pull request[^"]*"/)
+  assert.match(client, /"pr-open": "[^"]*handed over[^"]*"/, 'the wording also covers a PR that was just created and is being handed over')
 })

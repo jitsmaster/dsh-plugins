@@ -9,6 +9,7 @@ import { fallbackSummary } from './summary.js'
 import { toolDetail, hasExtraToolArgs } from './risk.js'
 import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
 import { MAY_HAVE_BEEN_SENT } from './follow-up-shared.js'
+import { parseArchiveCommand, withoutReminders } from './archive-offer.js'
 import { DEFAULT_AUTO_ANSWER_LEAD_MS, autoAnswerText, recommendedAnswers, shownLabel } from './autoanswer.js'
 
 const TOOL_ARG_KEYS = ['command', 'file_path', 'path', 'url', 'pattern', 'query']
@@ -153,6 +154,8 @@ function answerWindowMs(req, seconds, defaultWindowMs) {
 export function installCapture(ctx, { store, summarizer, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS }) {
   const keep = Number.isInteger(keepDone) && keepDone > 0 ? keepDone : DEFAULT_KEEP_DONE
   const children = new Set()
+  const lastHuman = new Map() // session id -> "<human message count>:<last text>" seen at the previous step (tells a newly typed message from the same history)
+  const silencedBy = new Map() // session id -> id of the archive card whose following done card was already skipped (one message is enough, once per card)
   const autoTimers = new Set() // pending auto-answer timers, cleared when their question ends and on dispose
   const pending = new Map() // item id -> { type, ... }
   const timeouts = boundedMap(MAX_NOTES) // question callId -> the ask's timeout in seconds, or -1 (no deadline)
@@ -357,6 +360,11 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
       request = textOf(messages.filter((m) => m.role === 'user').at(-1)?.content).trim().slice(0, MAX_REQUEST)
       return textOf(messages.filter((m) => m.role === 'assistant').at(-1)?.content).trim()
     }, '')
+    // One message is enough: the finished turn that follows an archive offer adds no done card next to the open archive card.
+    // Only that one turn is silent (per archive card): a session that keeps working after the offer must not hide its later results.
+    // The token is taken before the empty-reply return: a tool-only offer turn still uses it up.
+    const offer = guard(() => openOf(agent.id).find((i) => i.type === 'archive'))
+    if (offer && silencedBy.get(agent.id) !== offer.id) { silencedBy.set(agent.id, offer.id); return }
     if (!reply) return
     const item = guard(() => store.add({ type: 'completed', ...baseOf(agent), payload: { reply, ...(request ? { request } : {}) } }))
     if (!item) return
@@ -397,7 +405,9 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
   on('agent/pre-step', async ({ agent, messages } = {}, next) => {
     guard(() => {
       if (!agent || !messages?.length) return
-      const human = messages.some(isHumanMessage)
+      // Only role 'user' messages: isHumanMessage alone accepts any message without a source (assistant and tool messages included).
+      const humans = messages.filter((m) => m?.role === 'user' && isHumanMessage(m))
+      const human = humans.length > 0
       const open = openOf(agent.id)
       // A question of that session the user answered there: a reply to it, or a plain message of their own.
       for (const item of open) {
@@ -406,6 +416,21 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
         if (answered && !detachedInFlight.has(item.id)) closeOpen(item.id, { kind: 'answered', by: 'session' }, 'the user answered in the session')
       }
       if (!human) return
+      // Real work typed while an archive card is open: that turn's result must get its done card (the silence belongs to the offer's own turn only).
+      // The /archive-offer message itself is the offer, so it keeps the silence for the turn that follows.
+      // Only a message that is NEW since the previous step counts (every step carries the whole history, and a marker can open the card mid-turn).
+      const archiveCard = open.find((i) => i.type === 'archive')
+      const raw = textOf(humans.at(-1)?.content)
+      // A fixed-size fingerprint (count, length, head and tail), not the text: a huge pasted message must not be kept per live session.
+      const key = humans.length + ':' + raw.length + ':' + raw.slice(0, 64) + ':' + raw.slice(-64)
+      // The first step seen for a session (e.g. after a reload with a card open) has nothing to compare with: it records the key, it does not re-arm.
+      const previous = lastHuman.get(agent.id)
+      const isNew = previous !== undefined && previous !== key
+      lastHuman.set(agent.id, key)
+      if (archiveCard && isNew) {
+        const typed = (raw.includes('<system-reminder>') ? withoutReminders(raw) : raw).trim()
+        if (!parseArchiveCommand(typed)) silencedBy.set(agent.id, archiveCard.id)
+      }
       const grace = Number.isFinite(replyGraceMs) && replyGraceMs > 0 ? replyGraceMs : 0
       for (const item of open) {
         if (item.type === 'completed' && now() - item.createdAt >= grace && store.resolve(item.id, { kind: 'replied', by: 'session' })) log('capture: done item "' + nameOf(item) + '" closed: the user replied in the session')
@@ -504,12 +529,15 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     }
   }
 
-  on('agent/disposed', ({ agent } = {}) => {
-    if (!agent) return
-    children.delete(agent.id)
-    seen.delete(agent.id)
-    const open = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === agent.id).length, 0)
-    if (guard(() => store.resolveSession(agent.id, { kind: 'session-ended' }), false)) log('capture: session-ended: closed ' + open + ' open item(s) of session ' + agent.id)
+  on('agent/disposed', (payload) => {
+    const id = payload?.agent?.id ?? payload?.id // the other plugins accept both payload shapes
+    if (id === undefined) return
+    children.delete(id)
+    seen.delete(id)
+    silencedBy.delete(id)
+    lastHuman.delete(id)
+    const open = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === id).length, 0)
+    if (guard(() => store.resolveSession(id, { kind: 'session-ended' }), false)) log('capture: session-ended: closed ' + open + ' open item(s) of session ' + id)
   })
 
   return {

@@ -138,6 +138,20 @@ test('an Archive answer does not archive the poll session of a still-open PR (on
   assert.equal(r.archived.length, 1)
 })
 
+test('an Archive answer for a session that is handing over a just-created PR is not archived and the log says hand-over', async () => {
+  const logs = []
+  const guard = { check: async () => ({ protected: true, prId: '7', status: 'handover' }) }
+  const r = rig([S('a', 1 * H)], { prGuardOf: () => guard, log: (line) => logs.push(line) })
+  await r.asker.check()
+  r.setNow(10 * H + 5000)
+  const q = r.store.add({ type: 'question', sessionId: 'a', questions: [] })
+  r.store.resolve(q.id ?? q, { kind: 'answered', by: 'card', answers: [{ id: 'q', selected: ['Archive'] }] })
+  assert.deepEqual(await r.asker.archiveAnswered(), [])
+  assert.equal(r.archived.length, 0)
+  assert.ok(logs.some((l) => /not archived a: .*hand(ing)?[- ]?over.*PR 7/i.test(l)), logs.join(' | '))
+  assert.ok(!logs.some((l) => /still open/.test(l)), 'no "still open" wording for a hand-over')
+})
+
 test('a guard that throws does not stop a requested archive from being handled', async () => {
   const r = rig([S('a', 1 * H)], { prGuardOf: () => ({ check: async () => { throw new Error('guard broke') } }) })
   await r.asker.check()

@@ -145,7 +145,7 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, pr
       rec.archived = true
       save()
       const open = await prOpenOf(item.sessionId)
-      if (open) { log('idle-ask: not archived ' + item.sessionId + ': PR ' + open.prId + ' is still open'); continue }
+      if (open) { log('idle-ask: not archived ' + item.sessionId + ': ' + (open.status === 'handover' ? 'hand-over of PR ' + open.prId + ' is in progress' : 'PR ' + open.prId + ' is still open')); continue }
       try { await registry.archiveSession(item.sessionId, { stopActivity: true }); done.push(item.sessionId); log('idle-ask: archived ' + item.sessionId + ' on your answer') } catch (error) { log('idle-ask: archiving ' + item.sessionId + ' failed: ' + reasonOf(error)) }
     }
     return done

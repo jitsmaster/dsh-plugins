@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
 import { createReviewQueue } from '../service.js'
-import { parseArchiveCommand, parseArchiveMarker, installArchiveOffer } from '../archive-offer.js'
+import { parseArchiveCommand, parseArchiveMarker, installArchiveOffer, withoutReminders } from '../archive-offer.js'
 import { spokenFor, titleFor } from '../speech.js'
 
 function make({ archiveError } = {}) {
@@ -20,6 +20,20 @@ test('parsers: the command and the marker line', () => {
   assert.equal(parseArchiveCommand('please /archive-offer'), undefined)
   assert.deepEqual(parseArchiveMarker('x\nARCHIVE-OFFER work is pushed\ny'), { reason: 'work is pushed' })
   assert.equal(parseArchiveMarker('no ARCHIVE-OFFER inside a line'), undefined)
+})
+
+test('withoutReminders strips closed reminder blocks and keeps an unterminated one as it is', () => {
+  assert.equal(withoutReminders('<system-reminder>a</system-reminder>/archive-offer x'), '/archive-offer x')
+  assert.equal(withoutReminders('a<system-reminder>1</system-reminder>b<system-reminder>2</system-reminder>c'), 'abc')
+  assert.equal(withoutReminders('keep <system-reminder>never closed'), 'keep <system-reminder>never closed')
+  assert.equal(withoutReminders('no tags'), 'no tags')
+})
+
+test('withoutReminders is linear: tens of thousands of unterminated opening tags do not stall the event loop', () => {
+  const text = '<system-reminder>'.repeat(30000)
+  const t0 = Date.now()
+  assert.equal(withoutReminders(text), text)
+  assert.ok(Date.now() - t0 < 500, 'took ' + (Date.now() - t0) + ' ms')
 })
 
 test('offerArchive adds ONE open archive card per session; a second offer only updates the reason', async () => {
@@ -100,4 +114,14 @@ test('the plugin hook: a marker the call itself wrote makes an offer; one it onl
   handlers['subagent/start'][0]({ id: 'a1' })
   await run({ name: 'pwsh', agent, arguments: { command: 'echo ARCHIVE-OFFER x' } }, 'ARCHIVE-OFFER x')
   assert.equal(offers.length, 1)
+})
+
+test('offerArchive refusal for a PR hand-over in progress says so (still pr-open, no card)', async () => {
+  const { store, queue } = makeGuarded({ check: async () => ({ protected: true, prId: '77', status: 'handover' }) })
+  const res = await queue.offerArchive({ sessionId: 's1', reason: 'done' })
+  assert.equal(res.ok, false)
+  assert.equal(res.error, 'pr-open')
+  assert.match(res.message, /PR 77 was just created/)
+  assert.match(res.message, /hand/i)
+  assert.equal(store.snapshot().open.filter((i) => i.type === 'archive').length, 0)
 })

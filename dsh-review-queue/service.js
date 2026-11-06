@@ -107,7 +107,11 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const prOpenRefusal = async (sessionId) => {
     try {
       const verdict = await prGuardOf()?.check(sessionId)
-      return verdict?.protected ? { ok: false, error: 'pr-open', message: `PR ${verdict.prId} is still open: its session keeps polling for review comments until the PR is merged or abandoned.` } : undefined
+      if (!verdict?.protected) return undefined
+      const message = verdict.status === 'handover'
+        ? `PR ${verdict.prId} was just created: this session is still handing it over (hand-over notes, PR session and follow-up session), so it is not archived yet.`
+        : `PR ${verdict.prId} is still open: its session keeps polling for review comments until the PR is merged or abandoned.`
+      return { ok: false, error: 'pr-open', message }
     } catch { return undefined }
   }
 
