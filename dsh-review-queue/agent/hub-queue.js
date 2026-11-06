@@ -64,9 +64,9 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     const mine = local.snapshot({})
     return { ...base, ...(mine.triage ? { triage: mine.triage } : {}), ...(mine.aiReport ? { aiReport: mine.aiReport } : {}), ...(mine.tipSurvey ? { tipSurvey: hubIds(mine.tipSurvey) } : {}) }
   }
-  /** This app's "<instanceId>/" workspace prefix in hub mode, else undefined. */
-  const prefixOf = () => (typeof client.instanceId === 'string' && client.instanceId ? client.instanceId + '/' : undefined)
-  /** In hub mode the client's workspace list holds "<instanceId>/<id>": survey records get that form (copies, never double-prefixed). */
+  /** This app's "<short>/" workspace prefix in hub mode (the first 4 characters of the instance id, as hub/instances.js short() lists them), else undefined. */
+  const prefixOf = () => (typeof client.instanceId === 'string' && client.instanceId ? client.instanceId.slice(0, 4) + '/' : undefined)
+  /** In hub mode the client's workspace list holds "<short>/<id>": survey records get that form (copies, never double-prefixed). */
   const hubIds = (records) => {
     const prefix = hubMode() ? prefixOf() : undefined
     if (!prefix || !Array.isArray(records)) return records
@@ -86,7 +86,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
       const listed = hubMode() && typeof workspaceId === 'string' ? client.mirror.workspaces()?.find((w) => w && w.id === workspaceId) : undefined
       return local.tipTodo(id, workspaceId, typeof listed?.title === 'string' ? { title: listed.title } : undefined)
     },
-    // A survey needs a local path (git origin) and a session of this app: in hub mode this app's own "<instanceId>/<id>" is stripped to the bare local id, a workspace of another app is refused (no title is passed on).
+    // A survey needs a local path (git origin) and a session of this app: in hub mode this app's own "<short>/<id>" is stripped to the bare local id, a workspace of another app is refused (no title is passed on).
     tipSurvey: (id, workspaceId) => {
       if (hubMode() && typeof workspaceId === 'string' && workspaceId.includes('/')) {
         const prefix = prefixOf()

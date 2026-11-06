@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createHubQueue } from '../agent/hub-queue.js'
 
 // The hub queue keeps the tip with the local service (it is this app's model and speaker), whatever the mode.
-function make(connected = true) {
+function make(connected = true, instanceId = 'ab12') {
   const listeners = new Set()
   const local = {
     tip: () => ({ id: 't1' }), stopTip: () => { local.stopped++ ; return { ok: true } }, stopped: 0, watched: 0, watchSessions: () => { local.watched++ }, snapshotArgs: [], tipDeeper: (id) => ({ ok: true, deeper: id }), tipTodo: (id, ws, opts) => ({ ok: true, id, ws, ...(opts ? { opts } : {}) }), readTip: (id) => ({ ok: true, from: 'local', id }), readingId: () => localReading, tipSurvey: (id, ws) => { local.surveyCalls.push([id, ws]); return { ok: true, survey: { id: 's1', tipId: id, workspaceId: ws } } }, surveyCalls: [], tipSurveyState: () => ({ ok: true, surveys: [] }),
@@ -18,7 +18,7 @@ function make(connected = true) {
   const client = {
     state: connected ? 'connected' : 'stopped',
     mirror: { ready: connected, snapshot: () => mirrorSnap, workspaces: () => hubWorkspaces, onChange: (l) => { mirrorListeners.add(l); return () => mirrorListeners.delete(l) } },
-    instanceId: 'ab12', onState: () => () => {}, call: async () => ({ ok: true }),
+    instanceId, onState: () => () => {}, call: async () => ({ ok: true }),
   }
   const queue = createHubQueue({ local, client, speaker: { speak: () => ({ ok: true }), stop() {} }, controllerOf: () => ({}) })
   return { queue, local, setHubWorkspaces: (list) => { hubWorkspaces = list }, setReading: (v) => { localReading = v }, setSurvey: (v) => { localSurvey = v }, setMirror: (snap) => { mirrorSnap = snap; mirrorListeners.forEach((l) => l()) } }
@@ -161,4 +161,24 @@ test('tipSurveyState() maps the workspaceId the same way in hub mode only', () =
   const plain = make(false)
   plain.local.tipSurveyState = () => ({ ok: true, surveys: [{ id: 's1', workspaceId: 'w1' }] })
   assert.deepEqual(plain.queue.tipSurveyState(), { ok: true, surveys: [{ id: 's1', workspaceId: 'w1' }] })
+})
+
+// The hub lists workspaces as "<first 4 characters of the instance id>/<id>" (hub/instances.js short()), while the real instance id has 16 hex characters.
+const FULL = 'ab12cd34ef56ab78'
+test('tipSurvey() in hub mode: the own workspace listed as "<4-char short>/<id>" is accepted for a full-length instance id', () => {
+  const { queue, local } = make(true, FULL)
+  assert.deepEqual(queue.tipSurvey('t1', 'ab12/w1'), { ok: true, survey: { id: 's1', tipId: 't1', workspaceId: 'w1' } })
+  assert.deepEqual(local.surveyCalls, [['t1', 'w1']])
+})
+
+test('tipSurvey() in hub mode: another app (different short) is still refused for a full-length instance id', () => {
+  const { queue, local } = make(true, FULL)
+  assert.deepEqual(queue.tipSurvey('t1', 'cd34/w2'), { ok: false, error: 'other-app' })
+  assert.deepEqual(local.surveyCalls, [])
+})
+
+test('in hub mode the survey records carry "<4-char short>/<workspaceId>" for a full-length instance id', () => {
+  const { queue, setSurvey } = make(true, FULL)
+  setSurvey([{ id: 's1', workspaceId: 'w1', state: 'running' }, { id: 's2', workspaceId: 'ab12/w2', state: 'ready' }])
+  assert.deepEqual(queue.snapshot().tipSurvey.map((r) => r.workspaceId), ['ab12/w1', 'ab12/w2'])
 })
