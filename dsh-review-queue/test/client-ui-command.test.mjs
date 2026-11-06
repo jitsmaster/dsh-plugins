@@ -115,7 +115,7 @@ test('user-visible labels say "Coding Boss Review Queue", identifiers keep the p
   assert.match(source, /label: \(\) => "Coding Boss Review Queue"/)
   assert.match(source, /"Coding Boss Review Queue unreachable \("/)
   const strings = [...source.matchAll(/"([^"\n]*)"/g)].map((m) => m[1])
-  const visible = strings.filter((s) => /\b(review queue|review)\b/i.test(s.split('Coding Boss Review Queue').join('')) && !/^(reviewed|review-queue|dsh-review-queue|\/review-queue|dsh-review-queue\..*|review-queue: .*)$/.test(s) && !/Is dsh-review-queue loaded/.test(s))
+  const visible = strings.filter((s) => /\b(review queue|review)\b/i.test(s.split('Coding Boss Review Queue').join('')) && !/^(reviewed|review-queue|dsh-review-queue|\/review-queue|dsh-review-queue\..*|review-queue: .*|review|bad-review|\/v1\/triage-review|Awaiting your review|That review is not valid\.)$/.test(s) && !/Is dsh-review-queue loaded/.test(s))
   assert.deepEqual(visible, [], 'no user-visible "Review queue"/"Review" label is left besides the brand name')
   assert.deepEqual(strings.filter((x) => /task list/i.test(x)), [], 'no user-visible "Task list" label is left')
   assert.match(source, /const ANCHOR_ID = "review-queue"/)

@@ -568,7 +568,7 @@ async function postReview(id, body) {
   if (ok && state.sheet && state.sheet.id === id) set({ sheet: null })
   return ok
 }
-/** Mark wrong confirmed: sends the trimmed correction (never a blank one) and closes the sheet. False when nothing was sent or it failed. */
+/** Mark wrong confirmed: sends the correction without surrounding whitespace (never a blank one) and closes the sheet. False when nothing was sent or it failed. */
 export function confirmMarkWrong(item, text) {
   const { correction } = markWrongView(item, text, false)
   return correction ? postReview(item.id, { review: 'mark-wrong', text: correction }) : Promise.resolve(false)

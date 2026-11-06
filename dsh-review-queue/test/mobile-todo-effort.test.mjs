@@ -59,7 +59,7 @@ test('dropStaleEffort: an effort the model no longer has is dropped once the lis
 
 test('the todo card model names the effort the todo asked for', async () => {
   const { todoCardModel } = await import('../lib/mobile/model.js')
-  const core = { todoSelect: () => ({ value: 'w', options: [], placeholder: '' }), todoCardState: () => 'confirm', todoLine: () => '' }
+  const core = { todoSelect: () => ({ value: 'w', options: [], placeholder: '' }), todoCardState: () => 'confirm', todoLine: () => '', stageOf: () => ({ canAct: true }) }
   assert.equal(todoCardModel(core, { id: 't', type: 'todo', text: 'x', state: 'awaiting-confirm', effort: 'high' }, [], undefined).effort, 'high')
   assert.equal(todoCardModel(core, { id: 't', type: 'todo', text: 'x', state: 'awaiting-confirm' }, [], undefined).effort, '')
 })
