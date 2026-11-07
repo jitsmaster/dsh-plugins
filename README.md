@@ -1,12 +1,14 @@
 # dsh-plugins
 
-Plugins for DeepSeek Harness (DSH):
+Plugins for DeepSeek Harness (DSH).
 
+**The biggest feature is the Review Queue (`dsh-review-queue`).** It is one list of everything waiting on you across all your agent sessions, and, together with `dsh-session-link`, the way your agents talk to each other and do critical operations: only through you, on a card you confirm.
+
+- [dsh-review-queue](dsh-review-queue/README.md): **the biggest feature, DSH multitasking.** One oldest-first list (the Coding Boss Review Queue) of finished work, open questions and permission requests from every session, so you can run many sessions at once and only watch the list; full-screen overlay opened from a button in the session header, also as a phone app; a triage model proposes handling some cards while code can veto; a Claude session limit shows one pinned card that signs in with another account and resumes the stopped sessions. See [Multitasking with the Review Queue](#multitasking-with-the-review-queue).
+- [dsh-session-link](dsh-session-link/README.md): **agents talking to each other, through you.** Tools `list_sessions`, `send_to_session`, `read_session_result`, `start_session` and `archive_self` so one session can find another, ask it to do something or to open a new session (both always confirmed by the user on a Review Queue card), read its last reply, and offer to archive itself (an Archive card the user confirms); needs `dsh-review-queue`. See [Agents talk to each other, through you](#agents-talk-to-each-other-through-you).
 - [dsh-hooks-tts](#dsh-hooks-tts)
 - [dsh-git-view](dsh-git-view/README.md): read-only Git tab (branch/worktree, changes, diffs) in the right sidebar; local only, port 3082.
 - [dsh-api-call-tab](dsh-api-call-tab/README.md): **API Call** tab in the Trajectory details panel (command line, env names, system prompt, tools, stdin of the recorded request).
-- [dsh-review-queue](dsh-review-queue/README.md): **the main feature, DSH multitasking.** One oldest-first list (the Coding Boss Review Queue) of finished work, open questions and permission requests from every session, so you can run many sessions at once and only watch the list; full-screen overlay opened from a button in the session header, also as a phone app; a Claude session limit shows one pinned card that signs in with another account and resumes the stopped sessions. See [Multitasking with the Review Queue](#multitasking-with-the-review-queue).
-- [dsh-session-link](dsh-session-link/README.md): tools `list_sessions`, `send_to_session`, `read_session_result`, `start_session` and `archive_self` so one session can find another, ask it to do something or to open a new session (both always confirmed by the user on a Review Queue card), read its last reply, and offer to archive itself (an Archive card the user confirms); needs `dsh-review-queue`.
 - dsh-remote-access: moved to its own private repo, `jitsmaster/dsh-remote-access`.
 
 Branches: `main` holds stable, release-ready code only; day-to-day work happens on `develop`.
@@ -22,6 +24,16 @@ The main feature of this repo is `dsh-review-queue` (called **Coding Boss Review
 - **Everywhere.** Every DSH app shares one list through a small local hub, the phone gets the same list as an installable web app with push notifications, and the Windows taskbar shows the waiting count.
 
 Details, settings and the HTTP API: [dsh-review-queue/README.md](dsh-review-queue/README.md).
+
+### Agents talk to each other, through you
+
+With `dsh-session-link` the Review Queue also becomes the channel between agents. A session can list the other open sessions, ask one of them to do something, start a new session, read another session's last reply, or offer to archive itself. Asking another session to do something, starting a new session and archiving itself each only create a card in your queue. Nothing happens until you confirm it. Listing sessions and reading another session's last reply need no approval.
+
+- **You are in every important decision.** Starting a session, sending an instruction to another session and archiving a session are critical operations. They go through you, on a card that names the requesting session, instead of one agent acting on another by itself.
+- **Agents can cooperate without loosening the framework.** Agent frameworks put hurdles in front of agent-to-agent communication, because a message from one agent into another is a way to push instructions past the user. This design gets agents talking anyway, because the person, not the agent, grants each cross-agent action. The sandbox and approval settings of each session are not changed; a started session gets the queue's default access, not a copy of the sender's.
+- **What it does not protect against.** The envelope that marks a message as coming from another agent can be imitated by anyone who can write text into a session, so the confirmation card is the safeguard, not the envelope. `list_sessions` and `read_session_result` need no approval and cover every workspace of the app. Read the cards before you confirm them.
+
+Details, limits and install: [dsh-session-link/README.md](dsh-session-link/README.md).
 
 ## dsh-hooks-tts
 
