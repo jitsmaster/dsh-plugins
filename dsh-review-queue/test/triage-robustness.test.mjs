@@ -78,7 +78,7 @@ test('R4: the judge log entry of an auto done card carries sessionContinues from
   store.add(done())
   await runner.idle()
   const e = entries.find((x) => x.stage === 'judge')
-  assert.ok(e.reasons.includes('session-finished'), JSON.stringify(e))
+  assert.equal(e.reasons.includes('session-finished'), false, 'a finished session is relaxed for auto: ' + JSON.stringify(e))
   assert.equal(e.sessionContinues, false)
 })
 

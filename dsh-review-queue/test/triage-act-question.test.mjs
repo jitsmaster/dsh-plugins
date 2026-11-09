@@ -476,3 +476,77 @@ test('an AI-answered question picked by the recommended option renders without a
   assert.equal(S.aiDetail(item).quote, '')
   assert.equal(S.resolutionText({ ...item, resolution: { ...item.resolution, review: 'agreed' } }), 'AI picked the recommended option: ' + RYES + ' (you agreed)')
 })
+
+// --- routine pick among offered options (reviewer / assignee) -------------------------------------------------------------------------
+const REV_ASK = 'Who should be the required reviewer on PR 6718?'
+const REV_YES = 'Laska Fitzhugh (Recommended)'
+const REV_CARD = (ask = REV_ASK) => question([rq({ question: ask, options: [{ label: REV_YES }, { label: 'Arnold Wang' }] })])
+const REV_J = { needs_decision: false, answer_basis: 'recommended-option', answer: REV_YES, evidence_quote: null, evidence_source: null, matched_rule: RULE_ID, attention: 20, reversible: true, touches_outside_workspace: false }
+
+for (const mode of ['observe', 'auto']) {
+  test(mode + ': a reviewer pick with a (Recommended) option and a low-risk judgment is handled', () => {
+    const v = rv(mode, { item: REV_CARD(), judgment: REV_J })
+    assert.deepEqual([v.verdict, v.act, v.reasons], ['handle', mode === 'auto', []])
+  })
+  test(mode + ': a reviewer pick the model judged not reversible or outside the workspace is still vetoed', () => {
+    for (const over of [{ reversible: false }, { touches_outside_workspace: true }]) {
+      assert.deepEqual(rv(mode, { item: REV_CARD(), judgment: { ...REV_J, ...over } }).reasons, ['not-low-risk'], JSON.stringify(over))
+    }
+  })
+  test(mode + ': a reviewer pick whose question text names a risky action is still risky-option', () => {
+    for (const ask of ['PR 6541 is merged. ' + REV_ASK, 'Deploy first, then ' + REV_ASK.toLowerCase()]) {
+      assert.deepEqual(rv(mode, { item: REV_CARD(ask), judgment: REV_J }).reasons, ['risky-option'], ask)
+    }
+  })
+}
+
+test('auto: a reviewer pick above the score threshold, or without exactly one (Recommended) option, is still vetoed', () => {
+  assert.ok(rv('auto', { item: REV_CARD(), judgment: { ...REV_J, attention: 40 } }).reasons.includes('score-above-threshold'))
+  const none = question([rq({ question: REV_ASK, options: [{ label: 'Laska Fitzhugh' }, { label: 'Arnold Wang' }] })])
+  assert.ok(rv('auto', { item: none, judgment: { ...REV_J, answer: 'Laska Fitzhugh' } }).reasons.includes('no-recommended-option'))
+  const two = question([rq({ question: REV_ASK, options: [{ label: REV_YES }, { label: 'Arnold Wang (Recommended)' }] })])
+  assert.ok(rv('auto', { item: two, judgment: REV_J }).reasons.includes('ambiguous-recommended'))
+})
+
+for (const mode of ['observe', 'auto']) {
+  test(mode + ': an option label over 100 characters (recommended or not) is option-too-long, so instructions cannot ride in a label', () => {
+    const long = 'x'.repeat(101)
+    const other = question([rq({ question: REV_ASK, options: [{ label: REV_YES }, { label: long }] })])
+    assert.deepEqual(rv(mode, { item: other, judgment: REV_J }).reasons, ['option-too-long'])
+    const longRec = 'Laska ' + 'x'.repeat(100) + ' (Recommended)'
+    const rec = question([rq({ question: REV_ASK, options: [{ label: longRec }, { label: 'Arnold Wang' }] })])
+    assert.deepEqual(rv(mode, { item: rec, judgment: { ...REV_J, answer: longRec } }).reasons, ['option-too-long'])
+    const edge = question([rq({ question: REV_ASK, options: [{ label: REV_YES }, { label: 'x'.repeat(100) }] })])
+    assert.deepEqual(rv(mode, { item: edge, judgment: REV_J }).reasons, [])
+    // a non-string label cannot be measured, so it fails closed
+    const odd = question([rq({ question: REV_ASK, options: [{ label: REV_YES }, { label: 42 }] })])
+    assert.ok(rv(mode, { item: odd, judgment: REV_J }).reasons.includes('option-too-long'))
+  })
+}
+
+test('rule: every default rule instruction fits the clip the judge applies, so the model reads it whole', async () => {
+  const { DEFAULT_RULES } = await import('../triage-runner.js')
+  const { RULE_INSTRUCTION_MAX } = await import('../triage-judge.js')
+  for (const r of DEFAULT_RULES) assert.ok(r.instruction.length <= RULE_INSTRUCTION_MAX, r.id + ' is ' + r.instruction.length + ' characters')
+})
+
+test('rule: the no-quote pick is named narrowly (reviewer or assignee from the offered people) and the prohibition comes first so a clip cannot drop it', async () => {
+  const { DEFAULT_RULES } = await import('../triage-runner.js')
+  const r = DEFAULT_RULES.find((x) => x.id === 'straightforward-question')
+  assert.match(r.instruction, /reviewer or assignee of a PR or ticket from the offered people/)
+  assert.doesNotMatch(r.instruction, /such as/i)
+  assert.ok(r.instruction.search(/never answer a choice of direction, scope or taste/i) < r.instruction.search(/no user quote needed/i))
+})
+
+test('judge: the question guidance names the reviewer or assignee pick (the one externally visible pick allowed, never the PR author or the assistant, unclear means a decision, scored 25 or less), without the rule id', async () => {
+  const { createTriageJudge } = await import('../triage-judge.js')
+  const seen = {}
+  const llm = { listProviders: async () => [{ id: 'p1' }], listModels: async () => [{ id: 'claude-haiku-x' }], prepareCall: async () => ({ config: {}, stream: async function* (req) { seen.system = req.system; yield { type: 'text-delta', text: '{}' } } }) }
+  await createTriageJudge({ llm }).judge({ item: question(), rules: [rule('auto')] })
+  assert.match(seen.system, /reviewer or assignee of a PR or ticket/i)
+  assert.match(seen.system, /routine case of this/i) // an instance of the recommended-option path, not a separate one
+  assert.match(seen.system, /the one externally visible pick allowed/i)
+  assert.match(seen.system, /not the PR author or the assistant itself/i)
+  assert.match(seen.system, /match the question rule and give it an attention of 25 or less; if unclear, set needs_decision true/i)
+  assert.doesNotMatch(seen.system, /straightforward-question/i) // the rule id may be renamed or disabled; the guidance says "the question rule"
+})

@@ -2320,7 +2320,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			if (state.triageRulesError) return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, h("div", { className: "rq-empty" }, state.triageRulesError));
 			if (!t) return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, h("div", { className: "rq-empty" }, "Loading AI rules…"));
 			const modeBtn = (r, mode, label) => h("button", { key: mode, type: "button", role: "radio", className: "rq-segb" + (r.mode === mode ? " on" : ""), "aria-checked": r.mode === mode, disabled: !!state.rulesBusy[r.id], onClick: () => pickRuleMode(r.id, mode) }, label);
-			const autoActionPhrase = (cls) => cls === "permission" ? "approve read-only commands" : cls === "question" ? "answer one-question cards (the recommended option when low risk, or a quoted reply)" : cls === "done" ? "clear done cards while the session continues" : "act on matching cards";
+			const autoActionPhrase = (cls) => cls === "permission" ? "approve read-only commands" : cls === "question" ? "answer one-question cards (the recommended option when low risk, or a quoted reply)" : cls === "done" ? "clear trivial done cards (also after the session has ended)" : "act on matching cards";
 			const rec = (label, v) => h("div", { className: "rq-sub" }, label + ": " + recordText(v));
 			const older = (r) => { const o = r.record && r.record.older; return countOf(o && o.agreed) + countOf(o && o.overruled) > 0 ? rec("older versions", o) : null; };
 			const rule = (r) => h("div", { key: r.id, className: "rq-rule", "data-rule": r.id },

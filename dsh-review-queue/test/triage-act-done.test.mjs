@@ -46,10 +46,47 @@ test('observe: the two new facts change nothing, the outcome is identical with a
   assert.deepEqual([without.verdict, without.act, without.reasons], ['handle', false, []])
 })
 
-test('auto: the session-finished veto applies even when the runner relaxes it (only an observe rule is relaxed)', () => {
-  const o = triageOutcome({ item: { id: 'i1', type: 'completed' }, judgment: GOOD, rule: rule('auto'), facts: { ...okFacts, sessionContinues: false, actionItem: false, summaryPending: false }, relax: { sessionFinished: true } })
-  assert.deepEqual([o.verdict, o.act], ['ask', false])
-  assert.deepEqual(o.reasons, ['session-finished'])
+test('auto: the session-finished veto is lifted when the runner relaxes it, and applies without relax', () => {
+  const facts = { ...okFacts, sessionContinues: false, actionItem: false, summaryPending: false, questionAnywhere: false, backgroundWork: false, problemAnywhere: false }
+  const item = { id: 'i1', type: 'completed' }
+  const relaxed = triageOutcome({ item, judgment: GOOD, rule: rule('auto'), facts, relax: { sessionFinished: true } })
+  assert.deepEqual([relaxed.verdict, relaxed.act, relaxed.reasons], ['handle', true, []])
+  const plain = triageOutcome({ item, judgment: GOOD, rule: rule('auto'), facts })
+  assert.deepEqual([plain.verdict, plain.act, plain.reasons], ['ask', false, ['session-finished']])
+})
+
+test('auto + ended session: a question anywhere in the reply or still-running work vetoes; missing facts fail closed', () => {
+  const item = { id: 'i1', type: 'completed' }
+  const ended = { ...okFacts, sessionContinues: false, actionItem: false, summaryPending: false }
+  const run = (facts, mode = 'auto') => triageOutcome({ item, judgment: GOOD, rule: rule(mode), facts, relax: { sessionFinished: true } })
+  const none = { questionAnywhere: false, backgroundWork: false, problemAnywhere: false }
+  assert.deepEqual(run({ ...ended, ...none, questionAnywhere: true }).reasons, ['question-in-reply'])
+  assert.deepEqual(run({ ...ended, ...none, backgroundWork: true }).reasons, ['background-work'])
+  assert.deepEqual(run({ ...ended, ...none, problemAnywhere: true }).reasons, ['problem-in-reply'])
+  assert.deepEqual(run({ ...ended, questionAnywhere: true, backgroundWork: true, problemAnywhere: true }).reasons, ['question-in-reply', 'background-work', 'problem-in-reply'])
+  assert.deepEqual(run(ended).reasons, ['question-in-reply', 'background-work', 'problem-in-reply'], 'missing facts fail closed')
+  const clean = run({ ...ended, ...none })
+  assert.deepEqual([clean.verdict, clean.act, clean.reasons], ['handle', true, []])
+  // a session that continues is not affected, and observe is unchanged
+  assert.deepEqual(run({ ...okFacts, actionItem: false, summaryPending: false, questionAnywhere: true, backgroundWork: true, problemAnywhere: true }).reasons, [])
+  assert.deepEqual(run({ ...ended, questionAnywhere: true, backgroundWork: true, problemAnywhere: true }, 'observe').reasons, [])
+})
+
+test('factsOf exposes questionAnywhere and backgroundWork for a done reply', () => {
+  const f = (reply) => factsOf({ type: 'completed', payload: { reply } })
+  assert.equal(f('Renamed the helper. All tests pass.').questionAnywhere, false)
+  assert.equal(f('Renamed the helper. All tests pass.').backgroundWork, false)
+  assert.equal(f('Why is it stale? Fixed.\n\nOne.\n\nTwo.\n\nDone.').questionAnywhere, true)
+  assert.equal(f('The review subagent is still running in the background.').backgroundWork, true)
+  assert.equal(f('Renamed the helper. All tests pass.').problemAnywhere, false)
+  assert.equal(f("3 tests failed, couldn't fix it.\n\nOne.\n\nTwo.\n\nSummary: done.").problemAnywhere, true)
+})
+
+test('auto: a relaxed session-finished does not lift the action-item or summary-pending vetoes', () => {
+  const facts = { ...okFacts, sessionContinues: false, actionItem: true, summaryPending: true, questionAnywhere: false, backgroundWork: false, problemAnywhere: false }
+  const o = triageOutcome({ item: { id: 'i1', type: 'completed' }, judgment: GOOD, rule: rule('auto'), facts, relax: { sessionFinished: true } })
+  assert.deepEqual(o.reasons, ['action-item', 'summary-pending'])
+  assert.equal(o.act, false)
 })
 
 test('factsOf exposes actionItem and summaryPending from the card fields the auto-clear sweep reads', () => {
@@ -152,15 +189,24 @@ test('e2e observe, same inputs: the card stays open with the would-handle note (
   assert.equal(stage(entries, 'act').length, 0)
 })
 
-test('e2e auto + the session has finished: stays open, logged as ask (session-final veto), the judge is not even called', async () => {
+test('e2e auto + the session has finished: a trivial done card is still cleared (no session-finished veto)', async () => {
   const { store, runner, entries } = setup({ continues: false })
   const item = store.add(done())
   await runner.idle()
+  assert.equal(store.get(item.id).status, 'resolved')
+  assert.equal(store.get(item.id).resolution.kind, 'ai-resolved')
+  const [a] = stage(entries, 'act')
+  assert.equal(a.result, 'done')
+  for (const e of entries) assert.equal((e.reasons ?? []).includes('session-finished'), false)
+})
+
+test('e2e auto + the session has finished + a real question in the reply: stays open (needs-user)', async () => {
+  const { store, runner, entries } = setup({ continues: false })
+  const item = store.add(done({ payload: { reply: 'Built it. Should I merge it now?' } }))
+  await runner.idle()
   assert.equal(store.get(item.id).status, 'open')
   assert.equal(stage(entries, 'act').length, 0)
-  const e = entries.at(-1)
-  assert.equal(e.verdict, 'ask')
-  assert.ok(e.reasons.includes('session-finished'))
+  assert.ok(entries.at(-1).reasons.includes('needs-user'))
 })
 
 test('e2e auto + an action item (bold summary or actionable) stays open', async () => {

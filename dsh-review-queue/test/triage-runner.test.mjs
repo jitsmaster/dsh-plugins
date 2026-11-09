@@ -301,15 +301,14 @@ test('a code-veto record of a done card carries sessionContinues', async () => {
   }
 })
 
-test('auto is never relaxed: an auto done rule on a finished session is still a code veto with no model call', async () => {
+test('auto is relaxed too: an auto done rule on a finished session is judged, with no session-finished veto', async () => {
   const rules = DEFAULT_RULES.map((r) => ({ ...r, mode: 'auto' }))
   const { store, runner, calls, entries } = setup({ rules, judgment: GREEN_DONE })
-  const item = store.add(done())
+  store.add(done())
   await runner.idle()
-  assert.equal(calls.length, 0)
-  assert.equal(store.get(item.id).triage, undefined)
-  assert.equal(entries.at(-1).stage, 'code-veto')
-  assert.ok(entries.at(-1).reasons.includes('session-finished'))
+  assert.equal(calls.length, 1, 'the finished session no longer stops the model call')
+  assert.ok(entries.length > 0)
+  for (const e of entries) assert.equal((e.reasons ?? []).includes('session-finished'), false)
 })
 
 test('factsOf: a done card whose reply only mentions a PR, a handoff or a ticket does not need the user under the observe check; a question still does', () => {

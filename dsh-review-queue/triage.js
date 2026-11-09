@@ -177,6 +177,9 @@ export const isRiskyOption = (text) => {
   return NON_ASCII_LETTER.test(n) || RISKY_RE.test(n)
 }
 
+/** Longest option label (characters) the recommended-option basis accepts. */
+const MAX_LABEL_CHARS = 100
+
 /** Every text a card shows the user: the question and header, each option's label and description. */
 function cardTexts(question) {
   const options = Array.isArray(question?.options) ? question.options : []
@@ -193,6 +196,9 @@ export function recommendedOptionRefusal(judgment, question) { // (autoAnswerRef
   if (refusal) return refusal
   if (judgment?.needs_decision !== false) return 'needs-decision'
   if (judgment.reversible !== true || judgment.touches_outside_workspace !== false) return 'not-low-risk'
+  // A label is a name or a short phrase; a long one can carry instructions for the model, so it never qualifies.
+  const options = Array.isArray(question?.options) ? question.options : []
+  if (options.some((o) => typeof o?.label !== 'string' || o.label.length > MAX_LABEL_CHARS)) return 'option-too-long'
   if ([judgment.answer, ...cardTexts(question)].some(isRiskyOption)) return 'risky-option'
   return undefined
 }
@@ -236,8 +242,8 @@ export function autoAnswerRefusal(answer, question) {
 
 /**
  * @param {{ item: object, judgment?: object, rule?: object, facts?: object, sources?: object[], marks?: object }} input
- *   facts: what CODE computed (riskFlags[], safe, readOnly?, outsideWorkspace?, reversible?, needsUser? (strict), needsUserObserve? (weaker, observe-mode only), sessionContinues?); sources: evidence sources by id;
- *   relax: { sessionFinished?: true } lifts the session-finished veto only for an observe-mode rule of the done class (fails closed for auto or any other mode; never applies to questions).
+ *   facts: what CODE computed (riskFlags[], safe, readOnly?, outsideWorkspace?, reversible?, needsUser? (strict), needsUserObserve? (weaker, observe and auto modes), sessionContinues?); sources: evidence sources by id;
+ *   relax: { sessionFinished?: true } lifts the session-finished veto only for an observe- or auto-mode rule of the done class (fails closed for any other mode; never applies to questions).
  *   A question rule's answer must also be one of the offered options (reason 'answer-not-an-option'); a question without options skips that check.
  * @returns {{ verdict: 'handle' | 'ask', act: boolean, score?: number, threshold: number, reasons: string[] }}
  *   act is true only for a handled item whose rule is in `auto`; `observe` handles on paper only. reasons lists EVERY veto that applied.
@@ -274,14 +280,20 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
     }
   }
   if (rule && rule.class === 'done' && facts) {
-    // The weaker check may only gate observe; any other mode (auto, off, unknown) fails closed on the strict one.
-    const needs = rule.mode === 'observe' ? (facts.needsUserObserve ?? facts.needsUser) : facts.needsUser
+    // The weaker check (PR/handoff/ticket mentions ignored) gates observe and auto; any other mode (off, unknown, missing) fails closed on the strict one.
+    const needs = (rule.mode === 'observe' || rule.mode === 'auto') ? (facts.needsUserObserve ?? facts.needsUser) : facts.needsUser
     if (needs !== false) reasons.push('needs-user')
-    if (facts.sessionContinues !== true && !(relax?.sessionFinished === true && rule.class === 'done' && rule.mode === 'observe')) reasons.push('session-finished')
+    if (facts.sessionContinues !== true && !(relax?.sessionFinished === true && rule.class === 'done' && (rule.mode === 'observe' || rule.mode === 'auto'))) reasons.push('session-finished')
     // Auto only: a done card with an action item, or whose summary the summarizer has not settled yet, is never cleared. Missing facts fail closed.
     if (rule.mode === 'auto') {
       if (facts.actionItem !== false) reasons.push('action-item')
       if (facts.summaryPending !== false) reasons.push('summary-pending')
+      // An ended session no longer backs up the heuristic: a question anywhere in the reply, or work said to be still running (abandoned unseen), keeps the card. Missing facts fail closed.
+      if (facts.sessionContinues !== true) {
+        if (facts.questionAnywhere !== false) reasons.push('question-in-reply')
+        if (facts.backgroundWork !== false) reasons.push('background-work')
+        if (facts.problemAnywhere !== false) reasons.push('problem-in-reply')
+      }
     }
   }
   // Auto only, permission class: the command must have been captured whole and every path argument must resolve (real path) inside the workspace. Missing facts fail closed.

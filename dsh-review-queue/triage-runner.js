@@ -8,7 +8,7 @@
  */
 import { createHash } from 'node:crypto'
 import { riskOf, AUTO_SHELL_TOOLS } from './risk.js'
-import { needsUser, needsUserForTriage } from './actionable.js'
+import { needsUser, needsUserForTriage, questionAnywhere, mentionsBackgroundWork, problemAnywhere } from './actionable.js'
 import { RAW_MAX, RAW_PRECLIP, oneLine } from './triage-judge.js'
 import { hasActionItem } from './auto-clear.js'
 import { classOf, parseReadOnlyCommand, triageOutcome } from './triage.js'
@@ -25,7 +25,7 @@ const SHELL_TOOL = /shell|bash|powershell|pwsh|cmd|command|exec/i
 export const DEFAULT_RULES = [
   { id: 'ro-permission', name: 'Read-only commands', class: 'permission', enabled: true, mode: 'observe', instruction: 'A read-only command that passes the strict parser, inside the workspace: approve.' },
   { id: 'green-done', name: 'Mechanical done messages', class: 'done', enabled: true, mode: 'observe', instruction: 'A done message that only reports passing tests or a finished mechanical step, with no question or follow-up: handle.' },
-  { id: 'straightforward-question', name: 'Straightforward questions', class: 'question', enabled: true, mode: 'observe', instruction: 'A question with one clearly recommended option, where the user already asked for exactly that action earlier in the session: propose that option as the answer. The answer must rest on a quote the user wrote (a user-authored source); never answer a choice of direction, scope or taste.' },
+  { id: 'straightforward-question', name: 'Straightforward questions', class: 'question', enabled: true, mode: 'observe', instruction: 'Never answer a choice of direction, scope or taste. A question with one option marked "(Recommended)" that picks the reviewer or assignee of a PR or ticket from the offered people: propose that option, no user quote needed. Any other question needs a quote the user wrote (a user-authored source) showing they already asked for exactly that action.' },
 ]
 
 /** A hash of the payload fields that matter for acting (never the summary, which arrives later), so a change between judge and act is seen. */
@@ -72,7 +72,7 @@ export function factsOf(item, { sessionContinuesOf = () => false } = {}) {
   if (item?.type === 'completed') {
     let continues = false
     try { continues = sessionContinuesOf(item) === true } catch { /* unknown means the session is treated as finished */ }
-    return { riskFlags: [], safe: true, needsUser: needsUser(p.reply), needsUserObserve: needsUserForTriage(p.reply), sessionContinues: continues, actionItem: item.actionable === true || hasActionItem(item.summary), summaryPending: item.summarySource === undefined || item.summarySource === 'fallback' }
+    return { riskFlags: [], safe: true, needsUser: needsUser(p.reply), needsUserObserve: needsUserForTriage(p.reply), questionAnywhere: questionAnywhere(p.reply), backgroundWork: mentionsBackgroundWork(p.reply), problemAnywhere: problemAnywhere(p.reply), sessionContinues: continues, actionItem: item.actionable === true || hasActionItem(item.summary), summaryPending: item.summarySource === undefined || item.summarySource === 'fallback' }
   }
   // One question only: with several, a single answer cannot be proposed for the card.
   // questionSimple (read by auto only): one question with options, single choice, no presentation intent, still live (not detached), reachable by its call id.

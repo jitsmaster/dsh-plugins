@@ -1,6 +1,6 @@
-// AI triage, observe mode, for QUESTION items (rule "straightforward-question"): the AI may only PROPOSE an answer when the user already asked for exactly
-// that earlier in the session (a verbatim quote from a user-authored source). Nothing is ever answered in this phase; the proposal is logged, shown on the card
-// and compared with what the user then answers.
+// AI triage, observe mode, for QUESTION items (rule "straightforward-question"): the AI may PROPOSE an answer either through the single "(Recommended)" option
+// of a routine pick (e.g. a PR reviewer) or when the user already asked for exactly that earlier in the session (a verbatim quote from a user-authored source).
+// In observe mode nothing is answered; the proposal is logged, shown on the card and compared with what the user then answers.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
@@ -31,7 +31,7 @@ function setup({ judgment = GOOD, rules = [QRULE], sourcesOf = () => SOURCES, ..
 }
 
 // --- A. the default rule ---
-test('DEFAULT_RULES holds exactly one question rule, straightforward-question, observe mode, quote-only, no closed set', () => {
+test('DEFAULT_RULES holds exactly one question rule, straightforward-question, observe mode, no closed set', () => {
   const qs = DEFAULT_RULES.filter((r) => r.class === 'question')
   assert.equal(qs.length, 1)
   const [r] = qs

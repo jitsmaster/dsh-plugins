@@ -122,17 +122,19 @@ test('parseReadOnlyCommand: a strict allowlist, no operators, no redirects, no m
   assert.equal(parseReadOnlyCommand(undefined).ok, false)
 })
 
-test('relax.sessionFinished lifts the session-finished veto in observe mode only; auto is never relaxed', () => {
+test('relax.sessionFinished lifts the session-finished veto in observe and auto mode; every other mode is never relaxed', () => {
 	const done = { id: 'd', type: 'completed', status: 'open' }
 	const facts = { riskFlags: [], safe: true, needsUser: false, sessionContinues: false }
 	const relaxed = { sessionFinished: true }
 	const obs = run({ item: done, rule: rule({ class: 'done' }), facts, relax: relaxed })
 	assert.equal(obs.verdict, 'handle')
 	assert.equal(obs.reasons.includes('session-finished'), false)
-	// auto: the veto always applies, whatever relax says
-	const auto = run({ item: done, rule: rule({ class: 'done', mode: 'auto' }), facts, relax: relaxed })
-	assert.ok(auto.reasons.includes('session-finished'))
-	assert.deepEqual([auto.verdict, auto.act], ['ask', false])
+	// auto: lifted too (the auto-only action-item and summary-pending vetoes still apply on their own facts)
+	const auto = run({ item: done, rule: rule({ class: 'done', mode: 'auto' }), facts: { ...facts, actionItem: false, summaryPending: false, questionAnywhere: false, backgroundWork: false, problemAnywhere: false }, relax: relaxed })
+	assert.equal(auto.reasons.includes('session-finished'), false)
+	assert.deepEqual([auto.verdict, auto.act], ['handle', true])
+	// auto without relax: the veto applies
+	assert.ok(run({ item: done, rule: rule({ class: 'done', mode: 'auto' }), facts: { ...facts, actionItem: false, summaryPending: false } }).reasons.includes('session-finished'))
 	// without relax, or with relax.sessionFinished not exactly true, nothing changes
 	assert.ok(run({ item: done, rule: rule({ class: 'done' }), facts }).reasons.includes('session-finished'))
 	assert.ok(run({ item: done, rule: rule({ class: 'done' }), facts, relax: {} }).reasons.includes('session-finished'))
@@ -144,11 +146,11 @@ test('relax.sessionFinished lifts the session-finished veto in observe mode only
 	assert.ok(run({ item: done, rule: rule({ class: 'done' }), facts: { ...facts, needsUser: true }, relax: relaxed }).reasons.includes('needs-user'))
 })
 
-test('the session-finished relax fails closed: only mode exactly "observe" is relaxed', () => {
+test('the session-finished relax fails closed: only mode exactly "observe" or "auto" is relaxed', () => {
 	const done = { id: 'd', type: 'completed', status: 'open' }
 	const facts = { riskFlags: [], safe: true, needsUser: false, sessionContinues: false }
 	const relax = { sessionFinished: true }
-	for (const mode of [undefined, 'Auto', 'x', 'OBSERVE', null, '']) {
+	for (const mode of [undefined, 'Auto', 'x', 'OBSERVE', null, '', 'off']) {
 		const r = run({ item: done, rule: rule({ class: 'done', mode }), facts, relax })
 		assert.ok(r.reasons.includes('session-finished'), 'mode ' + String(mode) + ' was relaxed')
 	}
