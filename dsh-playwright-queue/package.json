@@ -1,0 +1,23 @@
+{
+  "name": "dsh-playwright-queue",
+  "version": "0.1.0",
+  "private": true,
+  "description": "File-based FIFO lease queue so only one visual-test session at a time uses the CMS and Playwright (queue core).",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./lock": "./lib/lock.js",
+    "./queue": "./lib/queue.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  }
+}
