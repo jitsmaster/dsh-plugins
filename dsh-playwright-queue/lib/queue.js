@@ -15,6 +15,7 @@ const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
 const LOCKFREE_BUSY_RETRIES = 2; // 3 attempts in total
 const UNKNOWN = Symbol('unknown');
 
+export const DEFAULT_IDLE_MS = 600000;
 const DEFAULT_MAX_WAITERS = 100;
 const TMP_STALE_MS = 60000;
 const TMP_SWEEP_EVERY_MS = 60000;
@@ -186,7 +187,7 @@ export function createQueue({
   dir,
   now = Date.now,
   isAlive = defaultPidAlive,
-  idleMs = 600000,
+  idleMs = DEFAULT_IDLE_MS,
   waiterTtlMs = 120000,
   randomId = () => crypto.randomUUID(),
   touchThrottleMs: touchThrottleOpt = Math.floor(idleMs / 10),

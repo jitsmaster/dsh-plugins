@@ -7,6 +7,7 @@
   "engines": {
     "node": ">=18"
   },
+  "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./lock": "./lib/lock.js",
@@ -15,9 +16,10 @@
   },
   "files": [
     "lib",
+    "server.js",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test --test-concurrency=2"
   }
 }

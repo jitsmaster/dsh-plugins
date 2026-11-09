@@ -2,7 +2,7 @@
 
 Queue core for serialising visual-test sessions (one CMS, one Playwright at a time).
 Several OS processes (for example the web and desktop DSH servers, each with a wrapper MCP server) share a
-file-based FIFO lease. This package is the queue only: no MCP server, proxy or hooks yet.
+file-based FIFO lease. This package holds the queue core and the MCP wrapper server.js (hooks come in a later phase).
 
 ```js
 import { createQueue } from 'dsh-playwright-queue/queue';
@@ -83,3 +83,70 @@ Notes and limits:
 - Lock/guard timestamps: ages are clamped at 0 and a `ts` more than 60 s in the future is ignored (file mtime is used).
 - The `readFile` option of `createQueue` is an internal test seam, not public API.
 - Plain ESM, no dependencies. Tests: `npm test` (`node --test`).
+
+## MCP wrapper (server.js)
+
+`server.js` is an MCP stdio server (newline-delimited JSON-RPC 2.0 on stdin/stdout, logs on stderr, no SDK, no
+dependencies) that sits in front of a child MCP server (default Playwright MCP) and serialises access to it with the
+queue. Run one wrapper per DSH server (web, desktop); all share one state dir, so only one session at a time drives
+the browser/CMS.
+
+```
+node server.js                                  # child = npx -y @playwright/mcp@0.0.85 (npx.cmd on Windows)
+node server.js -- <command> [args...]           # explicit child
+DSH_PWQ_CHILD_COMMAND=node DSH_PWQ_CHILD_ARGS='["child.js"]' node server.js
+```
+
+The child is spawned lazily (first `tools/list` or forwarded call), handshaken, its tool list cached, and restarted
+lazily on the next forwarded call if it dies (in-flight calls fail with an `isError` result). The wrapper exits, and
+kills the child tree, when stdin closes or on SIGTERM/SIGINT. On Windows a `.cmd` child runs through
+`cmd.exe /d /s /c` with no shell string; spaces and cmd metacharacters in command/args are rejected. The command only
+ever comes from env/CLI config, never from tool arguments. On POSIX the child is spawned in its own process group and the
+whole group gets SIGTERM on shutdown.
+
+Security notes:
+
+- On Windows, `cmd.exe` resolves `npx.cmd` from the current directory before `PATH`. If the host process cwd is
+  untrusted, pass an absolute command path via `DSH_PWQ_CHILD_COMMAND` (or after `--`).
+- Queue labels shown to other agents (`queue_status`, `holder` in a waiting reply) are free text from the agent
+  (sanitised and capped at 80 chars, but not authenticated); this is accepted within the same-user trust boundary.
+- Message size: a single JSON-RPC line is capped at 16 MiB (`DEFAULT_MAX_LINE_BYTES` in `lib/jsonrpc.js`) in both
+  directions; longer lines are dropped. Playwright screenshots can be several MB of base64, so stay well below that.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `DSH_PWQ_DIR` | `~/.dsh/playwright-queue` | shared queue state dir |
+| `DSH_PWQ_IDLE_MS` | queue default (10 min) | lease idle timeout (validated by the queue). Startup fails (exit 1) if it is smaller than `DSH_PWQ_CHILD_TIMEOUT_MS`, so a long child call cannot outlive the lease |
+| `DSH_PWQ_POLL_MS` | `1000` | poll interval inside `queue_acquire` |
+| `DSH_PWQ_WAIT_BUDGET_MS` | `45000` | max wait per `queue_acquire` call |
+| `DSH_PWQ_CHILD_COMMAND` | `npx` / `npx.cmd` | child command (CLI args after `--` win) |
+| `DSH_PWQ_CHILD_ARGS` | `["-y","@playwright/mcp@0.0.85"]` with the default command, else `[]` | JSON array of strings; the default pins an exact version (no `@latest`), operators can override it with this variable (together with `DSH_PWQ_CHILD_COMMAND`) |
+| `DSH_PWQ_CHILD_TIMEOUT_MS` | `120000` | per-request timeout towards the child |
+
+Tools:
+
+- `queue_acquire {label?, ticket?}`: no ticket enqueues (holder = sanitised label (max 80) + `#` + random id, so it is
+  per attempt and unguessable); with a ticket it polls that ticket (unknown/expired -> `isError`: call again without
+  a ticket). Returns JSON text `{status:'granted', token, idleTimeoutMs}` or
+  `{status:'waiting', ticket, position, holder, retry}`. On grant the browser is cleaned (below).
+- `queue_release {queueToken}`: cleanup, then release. Idempotent: an unknown/expired token gives
+  `{status:'not_held', ok:false}` (not an error); success gives `{status:'released', ok:true}`.
+- `queue_status {}`: holder label, idle/held age, waiter labels; never tokens or tickets.
+- every child tool is republished with an optional string `queueToken` (not added to `required`) and a description
+  suffix. A forwarded call needs a valid `queueToken` (checked with `validate`, then `touch`); it is removed before
+  forwarding and the child's result, `isError` and `structuredContent` come back unchanged (a child JSON-RPC error is
+  passed through). A missing/invalid token is an `isError` result telling the agent to call `queue_acquire`
+  (`lease expired or was released` for a bad token); the child is not called.
+- Browser cleanup (best effort, never throws, at most about 10 s): `browser_tabs {action:'list'}`, close every tab but
+  the current one (highest index first), then `browser_navigate about:blank`. It runs on grant and, before the lease
+  is given back, on release; it is skipped when the child is not running or lacks the tools.
+
+Why a 45 s waiting protocol: MCP clients time out a tool call after about 60 s, so `queue_acquire` never blocks
+longer than `DSH_PWQ_WAIT_BUDGET_MS` (45 s). It answers `waiting` with a ticket and the agent calls it again with that
+ticket; waiting uses `setTimeout` polling, never a synchronous sleep, and other JSON-RPC requests are not serialised
+behind it. Tickets must be re-polled within the queue's `waiterTtlMs` (120 s) or they are dropped.
+
+Later phases: phase 3 (dsh-hooks-tts) releases leases directly through the queue library without the wrapper, which is
+why cleanup also runs at grant time; phase 4 wires the wrapper into the DSH server MCP configs (web and desktop, one
+shared `DSH_PWQ_DIR`). A killed wrapper loses its lease through the queue's dead-pid check; a graceful exit releases
+the leases and tickets it holds.
