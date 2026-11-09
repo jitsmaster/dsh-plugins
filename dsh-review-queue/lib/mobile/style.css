@@ -102,6 +102,8 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 .opt.on { border-color: var(--accent); background: #1c3328; }
 .opt .mark { flex: none; width: 1.4em; font-size: 20px; line-height: 1.2; color: var(--accent); }
 .opt .d { color: var(--dim); font-size: 14px; }
+.opt.ro { cursor: default; min-height: 0; }
+.resbody { margin: 8px 0; }
 
 .input { display: block; width: 100%; min-height: var(--tap); padding: 10px 12px; background: #0f1114; color: var(--text); border: 1px solid var(--line); border-radius: 10px; font: inherit; }
 .input:focus { outline: 2px solid var(--info); outline-offset: 1px; }

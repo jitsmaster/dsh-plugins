@@ -629,7 +629,8 @@ test('Answer now (late) is a native details/summary; its open state is lateOpen'
   const { T } = load()
   const it = { id: 'q1', type: 'question', status: 'resolved', title: 'Q', createdAt: 1, resolvedAt: 2, sessionId: 's', payload: { questions: [{ id: 'a', question: 'Which?', options: [{ label: 'A' }] }] }, resolution: { kind: 'expired' } }
   let tree = T.ResolvedCard({ it })
-  const details = findAll(tree, (n) => n.type === 'details')[0]
+  const lateDetails = (t) => findAll(t, (n) => n.type === 'details' && n.props.className === 'rq-late')[0] // the resolved card also has a folded Message details
+  const details = lateDetails(tree)
   assert.ok(details)
   assert.equal(details.props.open, false)
   assert.equal(textOf(findAll(details, (n) => n.type === 'summary')[0]), 'Answer now (late)', 'no literal arrow: the native details marker is the only one')
@@ -638,7 +639,7 @@ test('Answer now (late) is a native details/summary; its open state is lateOpen'
   details.props.onToggle({ currentTarget: { open: true } })
   assert.equal(T.state.lateOpen.q1, true)
   tree = T.ResolvedCard({ it })
-  const open = findAll(tree, (n) => n.type === 'details')[0]
+  const open = lateDetails(tree)
   assert.equal(open.props.open, true)
   assert.equal(findAll(open, (n) => typeof n.type === 'function' && n.type.name === 'QuestionBody').length, 1)
   open.props.onToggle({ currentTarget: { open: false } })

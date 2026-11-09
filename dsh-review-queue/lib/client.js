@@ -154,6 +154,57 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		/** "session title · workspace" of an item (either part may be missing): the line a waiting card shows under its header, and a resolved card too. */
+		function resolvedSessionLine(item) {
+			return [item && item.sessionTitle, item && item.workspace].filter((x) => typeof x === "string" && x).join(" · ");
+		}
+		/** "Raised 3 h ago": when the item first appeared, counted from createdAt; empty without one. */
+		function raisedText(item, now) {
+			return item && typeof item.createdAt === "number" && item.createdAt > 0 ? "Raised " + fmtAge(now - item.createdAt) : "";
+		}
+		/**
+		 * The original message of a resolved item as plain read-only data (a waiting card's body without any control), shared by the desktop and the phone:
+		 *  question   { kind, questions: [{ id, header?, question, options: [{ label, description?, chosen, recommended }], custom? }] }  (chosen = in resolution.answers)
+		 *  permission { kind, summary, detail?, risks, reason? }
+		 *  completed  { kind, summary, reply? }
+		 *  paused / onhold  { kind: "facts", facts: [string] }
+		 *  todo / pr-merged / archive  { kind: "text", text }
+		 * Undefined for an unknown type. Text is data only: the renderers must show it as text nodes.
+		 */
+		function resolvedBody(item, now) {
+			if (!item || typeof item !== "object") return undefined;
+			const p = item.payload && typeof item.payload === "object" ? item.payload : {};
+			// A resolved item is stored data of any age: a malformed entry must never throw while drawing the list, so every text is coerced and every entry checked.
+			const str = (v) => (typeof v === "string" ? v : "");
+			const obj = (v) => !!v && typeof v === "object";
+			switch (item.type) {
+				case "question": {
+					const answers = (Array.isArray(item.resolution && item.resolution.answers) ? item.resolution.answers : []).filter(obj);
+					const questions = (Array.isArray(p.questions) ? p.questions : []).filter(obj).map((q) => {
+						const a = answers.find((x) => x.id === q.id) || {};
+						const picked = Array.isArray(a.selected) ? a.selected : [];
+						return {
+							id: q.id, ...(str(q.header) ? { header: q.header } : {}), question: str(q.question),
+							options: (Array.isArray(q.options) ? q.options : []).filter((o) => obj(o) && typeof o.label === "string").map((o) => ({ label: o.label, ...(str(o.description) ? { description: o.description } : {}), chosen: picked.includes(o.label), recommended: recommended(q, o.label) })),
+							...(str(a.custom) ? { custom: a.custom } : {}),
+						};
+					});
+					return { kind: "question", questions };
+				}
+				case "permission": {
+					const summary = str(p.summary) || str(p.toolName);
+					return { kind: "permission", summary, ...(str(p.detail) && p.detail !== p.summary ? { detail: p.detail } : {}), risks: (Array.isArray(item.risks) ? item.risks : []).filter((r) => obj(r) && typeof r.label === "string"), ...(str(p.reason) ? { reason: p.reason } : {}) };
+				}
+				case "completed": return { kind: "completed", summary: str(item.summary) || "Finished.", ...(str(p.reply) ? { reply: p.reply } : {}) };
+				case "paused": return { kind: "facts", facts: pausedFacts(item, now) };
+				case "onhold": return { kind: "facts", facts: heldFacts(item, now) };
+				case "todo": return typeof item.text === "string" && item.text ? { kind: "text", text: item.text } : undefined;
+				case "pr-merged": return { kind: "text", text: (typeof p.prId === "string" || typeof p.prId === "number") && p.prId !== "" ? "Pull request " + p.prId + " was merged." : "A pull request was merged." };
+				case "archive": return { kind: "text", text: "This session asked to be archived." + (str(p.reason) ? " Reason: " + p.reason : "") };
+				default: return undefined;
+			}
+		}
+
 		/** Enter sends a reply; Shift+Enter is a new line and Enter during IME composition belongs to the IME. */
 		const isSendKey = (e) => !!e && e.key === "Enter" && !e.shiftKey && !e.isComposing;
 		/** Enter in a question's "Other answer…" box: the answers to send, or undefined (do nothing). Plain Enter only (no modifier, no IME keyCode 229),
@@ -591,7 +642,7 @@ function imageFilesOf(data) {
 		function pausedFacts(item, now) {
 			const p = (item && item.payload) || {};
 			const facts = [p.reason || "Cut off by a restart or crash", "Last activity " + fmtAge(now - (p.lastWrite || 0))];
-			if (p.danglingCalls && p.danglingCalls.length) facts.push("The last tool call had no result and may be half done: " + p.danglingCalls.join(", "));
+			if (Array.isArray(p.danglingCalls) && p.danglingCalls.length) facts.push("The last tool call had no result and may be half done: " + p.danglingCalls.join(", "));
 			if (p.lastUser) facts.push("Last request: " + p.lastUser);
 			return facts;
 		}
@@ -757,7 +808,7 @@ function imageFilesOf(data) {
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyImages: {}, replyOpen: savedToggles.reply, busy: {}, errors: {},
-			selected: null, showResolved: false, showHeld: false, showPhone: false, showRules: false, dialog: null, phoneFrom: "waiting", rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all", resolvedType: "all" }, overlay: storage.get(LS.overlay) === "1",
+			selected: null, showResolved: false, showHeld: false, showPhone: false, showRules: false, dialog: null, phoneFrom: "waiting", rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, resOpen: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all", resolvedType: "all" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipTopic: "", tipUse: { open: false, workspaceId: "" }, tipTicked: {},
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
@@ -836,6 +887,8 @@ function imageFilesOf(data) {
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? { dialog: null } : {}) });
 			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen, late: state.lateOpen }, body);
 			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply)) || Object.keys(state.lateOpen).some((k) => !(k in tog.late))) set({ expanded: tog.expanded, replyOpen: tog.reply, lateOpen: tog.late });
+			const openRes = Object.keys(state.resOpen);
+			if (openRes.length) { const live = new Set((body.resolved || []).map((i) => i.id)); if (openRes.some((k) => !live.has(k))) set({ resOpen: Object.fromEntries(openRes.filter((k) => live.has(k)).map((k) => [k, true])) }); }
 			const ticked = Object.keys(state.tipTicked);
 			if (ticked.length) { const live = new Set((Array.isArray(body.tipSurvey) ? body.tipSurvey : []).map((s) => s && s.id)); if (ticked.some((k) => !live.has(k))) set({ tipTicked: Object.fromEntries(ticked.filter((k) => live.has(k)).map((k) => [k, state.tipTicked[k]])) }); }
 		}
@@ -1573,6 +1626,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-hbtn .b{position:absolute;top:0;right:0;min-width:15px;height:15px;border-radius:8px;background:var(--rq-err);color:#fff;font-size:10px;font-weight:700;line-height:15px;display:flex;align-items:center;justify-content:center;padding:0 3px}"
 			+ ".rq-action{font-weight:700;font-size:1.15em;line-height:1.3;text-decoration:none}.rq-md{font-size:13.5px;line-height:1.5}.rq-md p{margin:0 0 8px;white-space:pre-wrap;word-break:break-word}.rq-md ul,.rq-md ol{margin:0 0 8px;padding-left:22px}.rq-md blockquote{margin:0 0 8px;padding:2px 10px;border-left:3px solid var(--rq-border);color:var(--rq-mute)}"
 			+ ".rq-md pre.rq-pre{margin:0 0 8px}.rq-code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--rq-layer2);border-radius:4px;padding:0 4px}.rq-md a{color:var(--rq-accent)}.rq-h{font-weight:600;margin:6px 0 4px}.rq-h1{font-size:16px}.rq-h2{font-size:14.5px}"
+			+ ".rq-resbody{display:flex;flex-direction:column;gap:6px;margin:4px 0}.rq-ro{cursor:default}.rq-ro:hover{background:var(--rq-base)}.rq-ro.on:hover{background:var(--rq-layer2)}"
 			+ ".rq-replybox{max-height:360px;overflow:auto;background:var(--rq-base);border:1px solid var(--rq-border);border-radius:7px;padding:10px 12px;margin-top:6px}"
 			+ ".rq-todoform{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 14px;border-bottom:1px solid var(--rq-border);background:var(--rq-layer)}.rq-sel{width:auto;max-width:260px;padding:6px 8px}.rq-sel-wide{width:100%;max-width:none;box-sizing:border-box;text-overflow:ellipsis}.rq-thumbs{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.rq-tunequestions{display:flex;flex-direction:column;gap:8px;padding:8px 10px;border:1px solid var(--rq-border,rgba(127,127,127,.35));border-radius:8px}.rq-tq{display:flex;flex-direction:column;gap:3px;font-size:13px}.rq-thumb{position:relative;display:inline-flex}.rq-thumb img{height:56px;max-width:120px;object-fit:cover;border-radius:6px;border:1px solid var(--rq-border)}.rq-thumb-x{position:absolute;top:-7px;right:-7px;width:18px;height:18px;padding:0;border-radius:50%;border:1px solid var(--rq-border);background:var(--rq-layer);color:inherit;cursor:pointer;line-height:1;font-size:11px}"
 			+ ".rq-risks{display:flex;flex-wrap:wrap;gap:6px}.rq-risk{background:#f25a5a22;color:var(--rq-err);border-radius:9px;padding:2px 10px;font-size:12px;font-weight:600}.rq-risk-dot{color:var(--rq-err);font-weight:700}"
@@ -2028,6 +2082,42 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					r.review !== "overruled" ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => openDialog("overrule", it.id) }, "Overrule rule…") : null));
 		}
 
+		/** The original message of a resolved item, read only: the same facts a waiting card showed, with the chosen option marked and no control. Assistant text goes through React text nodes only. */
+		function ResolvedBody({ it }) {
+			const b = resolvedBody(it, Date.now() + state.skew);
+			if (!b) return null;
+			const open = !!state.resOpen[it.id];
+			const mono = { fontFamily: "ui-monospace,Consolas,monospace" };
+			let inner = null;
+			// The message is built only while its fold is open: a long Resolved list must not parse every reply on every render.
+			if (!open) {
+				inner = null;
+			} else if (b.kind === "question") {
+				inner = b.questions.map((q, qi) => h("div", { key: qi, className: "rq-opts" },
+					q.header ? h("div", { className: "rq-sub" }, actionNodes(q.header)) : null,
+					h("div", { className: "rq-text", style: { fontWeight: 600 } }, actionNodes(q.question)),
+					q.options.map((o, oi) => h("div", Object.assign({ key: oi, className: "rq-opt rq-ro" + (o.chosen ? " on" : "") }, o.chosen ? { "data-chosen": "true" } : {}),
+						h("span", null, o.chosen ? "◉" : "○"),
+						h("span", null, h("span", null, o.recommended ? h("span", { className: "rq-star" }, "★ ") : null, o.label), o.description ? h("div", { className: "d" }, actionNodes(o.description)) : null))),
+					q.custom ? h("div", { className: "rq-opt rq-ro on", "data-chosen": "true" }, h("span", null, "◉"), h("span", null, "Other answer: “" + q.custom + "”")) : null));
+			} else if (b.kind === "permission") {
+				inner = h(React.Fragment, null,
+					b.risks.length ? h("div", { className: "rq-risks" }, b.risks.map((r, ri) => h("span", { key: r.code || ri, className: "rq-risk", title: r.label }, "⚠ " + r.label))) : null,
+					b.detail ? h("pre", { className: "rq-pre", style: mono }, b.detail) : h("div", { className: "rq-text", style: mono }, b.summary),
+					b.reason ? h("div", { className: "rq-sub" }, actionNodes(b.reason)) : null);
+			} else if (b.kind === "completed") {
+				inner = h(React.Fragment, null,
+					h("div", { className: "rq-text", style: { whiteSpace: "pre-line" } }, mdNodes(b.summary)),
+					b.reply ? h("details", null, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-replybox" }, Md({ text: b.reply }))) : null);
+			} else if (b.kind === "facts") {
+				inner = h(React.Fragment, null, h("div", { className: "rq-text" }, b.facts[0]), b.facts.slice(1).map((f, n) => h("div", { key: n, className: "rq-sub" }, f)));
+			} else {
+				inner = h("div", { className: "rq-text" }, b.text);
+			}
+			// Folded by default (user choice); the open state is state.resOpen[id] (not saved, pruned with the snapshot).
+			return h("details", { className: "rq-resbody", "data-res-body": it.id, open, onToggle: (e) => { const now = !!(e && e.currentTarget && e.currentTarget.open); if (now !== !!state.resOpen[it.id]) set({ resOpen: { ...state.resOpen, [it.id]: now } }); } }, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Message"), inner);
+		}
+
 		function ResolvedCard({ it }) {
 			const st = useStore();
 			const canOpen = resolvedOpenAction(it, !!hostApi.openSession) === "open";
@@ -2039,9 +2129,12 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const aiOpen = ai && !!st.aiOpen[it.id];
 			// A todo that started ends up here with no other trace of its text: it can be read aloud like an open card (the service reads any item by id).
 			const reading = !!(st.snap && st.snap.reading === it.id);
+			const info = [resolvedSessionLine(it), raisedText(it, Date.now() + state.skew)].filter(Boolean).join(" · ");
 			return h("div", { className: "rq-card rq-res" },
 				h("div", { className: "rq-card-h", title: ai ? (aiOpen ? "Hide details" : "Show details") : canOpen ? "Open session" : undefined, style: { cursor: canOpen ? "pointer" : ai ? "pointer" : "default" }, onClick: ai ? (e) => { if (!isButtonClick(e && e.target)) toggleAi(it); } : (e) => { if (canOpen && !isButtonClick(e && e.target)) openSession(it); } }, h("span", { className: "rq-chip " + it.type }, typeLabel(it.type)), isAiHandled(it) ? h("span", Object.assign({ className: "rq-chip rq-aibadge", "data-ai-badge": it.id }, ai ? {} : { "data-ai-auto": it.id, title: "Cleared automatically" }), "AI") : null, h("span", { className: "rq-title", title: canOpen && !ai ? "Open session" + (it.sessionTitle ? ": " + it.sessionTitle : "") : it.sessionTitle }, cardTitle(it)), h("span", { className: "rq-meta" }, fmtAge(Date.now() + state.skew - (it.resolvedAt || 0)))),
+				info ? h("div", { className: "rq-sub", "data-res-info": it.id }, info) : null,
 				h("div", { className: "rq-sub", title: it.resolution && it.resolution.kind === "no-action" ? plainAction(it.summary) : undefined }, resolutionText(it)),
+				ResolvedBody({ it }), // hook-free: called directly so the card tree (and its tests) holds the body
 				aiOpen ? aiDetailNode(it) : null,
 				aiOpen ? aiReviewNode(it, st) : null,
 				canOpen ? h("div", { className: "rq-row" },
@@ -2438,7 +2531,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { todoSendLabel, handoffFollowable, isAiResolved, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, itemTypeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
+		exports.shared = { resolvedSessionLine, raisedText, resolvedBody, todoSendLabel, handoffFollowable, isAiResolved, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, itemTypeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
@@ -2447,7 +2540,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
-		Object.assign(exports.__test, { mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
+		Object.assign(exports.__test, { resolvedSessionLine, raisedText, resolvedBody, ResolvedBody, mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, viewOf, setView, nextTabId, openDialog, closeDialog, overlayKey, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;

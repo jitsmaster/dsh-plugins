@@ -706,7 +706,7 @@ export function ResolvedBody({ st }) {
       ${shown.length ? shown.map((i) => html`<div class="resolved-row" key=${i.id}>
         <a class="rowitem" href=${'#/item/' + i.id}>
           <div class="top"><${Chip} type=${i.type} item=${i} /><${AiBadge} item=${i} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
-          <div class="title">${c.cardTitle(i)}</div><div class="sub">${c.resolutionText(i)}</div></a>
+          <div class="title">${c.cardTitle(i)}</div>${c.resolvedSessionLine(i) ? html`<div class="sub">${c.resolvedSessionLine(i)}</div>` : null}<div class="sub">${c.resolutionText(i)}</div></a>
         <${ArchiveSessionButton} item=${i} />
       </div>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved recently.'}</div>`}
     </div>
@@ -791,6 +791,39 @@ function NewTodoView() {
   </form>`
 }
 
+/** The original message of a resolved item, read only (same facts as the waiting card, the chosen option marked, no control). Hook-free; assistant text is only ever a text node. */
+export function ResolvedItemBody({ item }) {
+  const b = getCore().resolvedBody(item, now())
+  if (!b) return null
+  let inner
+  if (b.kind === 'question') {
+    inner = b.questions.map((q, qi) => html`<div class="q" key=${qi}>
+      ${q.header ? html`<div class="sub"><${ActionText} text=${q.header} /></div>` : null}
+      <div class="qtext"><${ActionText} text=${q.question} /></div>
+      ${q.options.map((o) => html`<div class=${'opt ro' + (o.chosen ? ' on' : '')} data-chosen=${o.chosen ? 'true' : undefined}>
+        <span class="mark">${o.chosen ? '◉' : '○'}</span>
+        <span><span>${o.recommended ? '★ ' : ''}${o.label}</span>${o.description ? html`<div class="d"><${ActionText} text=${o.description} /></div>` : null}</span></div>`)}
+      ${q.custom ? html`<div class="opt ro on" data-chosen="true"><span class="mark">◉</span><span>${'Other answer: “' + q.custom + '”'}</span></div>` : null}
+    </div>`)
+  } else if (b.kind === 'permission') {
+    inner = html`<div>
+      ${b.risks.length ? html`<div class="risks">${b.risks.map((r) => html`<span class="risk">⚠ ${r.label}</span>`)}</div>` : null}
+      <pre class="mono">${b.detail || b.summary}</pre>
+      ${b.reason ? html`<div class="sub"><${ActionText} text=${b.reason} /></div>` : null}
+    </div>`
+  } else if (b.kind === 'completed') {
+    inner = html`<div>
+      <div class="text" style="white-space:pre-line">${inlineNodes(b.summary)}</div>
+      ${b.reply ? html`<details><summary class="sub">Full reply</summary><${Md} text=${b.reply} /></details>` : null}
+    </div>`
+  } else if (b.kind === 'facts') {
+    inner = html`<div><div class="text">${b.facts[0]}</div>${b.facts.slice(1).map((f) => html`<div class="sub">${f}</div>`)}</div>`
+  } else {
+    inner = html`<div class="text">${b.text}</div>`
+  }
+  return html`<div class="resbody" data-res-body=${item.id}>${inner}</div>`
+}
+
 function ItemView({ id }) {
   const c = getCore()
   const st = useStore()
@@ -807,10 +840,12 @@ function ItemView({ id }) {
   return html`<article class="card">
     <div class="top"><${Chip} type=${item.type} item=${item} /><span class="age">${resolved ? ageOf(item, 'resolvedAt') : ageOf(item)}</span></div>
     <h2>${c.cardTitle(item)}</h2>
-    ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}${item.workspace ? ' · ' + item.workspace : ''}</div>` : null}
+    ${item.sessionTitle ? html`<div class="sub">${c.resolvedSessionLine(item)}</div>` : null}
+    ${resolved && c.raisedText(item, now()) ? html`<div class="sub">${c.raisedText(item, now())}</div>` : null}
     ${c.triageNote(item) ? html`<div class="sub ai-note">${c.triageNote(item)}</div>` : null}
     ${open ? html`<${Body} item=${item} />` : html`<div>
       <div class="resolution">${c.resolutionText(item)}</div>
+      <${ResolvedItemBody} item=${item} />
       <${AiDetail} item=${item} />
       <${AiReview} item=${item} />
       ${late ? html`<details open=${detailOpen(st.toggles, item.id, 'late', lateDefault)} onToggle=${(e) => rememberDetail(item.id, 'late', e.currentTarget.open, lateDefault)}><summary class="sub">Answer now (late)</summary><${QuestionBody} item=${item} path="/v1/late-answer" sendLabel="Send late answer" /></details>` : null}

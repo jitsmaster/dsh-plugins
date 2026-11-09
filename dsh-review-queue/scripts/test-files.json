@@ -247,6 +247,8 @@
   "test/mobile-model-ai-resolved.test.mjs",
   "test/mobile-api-ai-resolved.test.mjs",
   "test/client-ai-card.test.mjs",
+  "test/client-resolved-info.test.mjs",
+  "test/mobile-resolved-info.test.mjs",
   "test/client-ai-filter-head.test.mjs",
   "test/mobile-ai-ui.test.mjs",
   "test/client-ai-rules-helpers.test.mjs",
