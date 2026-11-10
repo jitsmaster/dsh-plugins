@@ -687,6 +687,12 @@ function HeldList() {
 }
 
 /** The Resolved list: All / By me / By AI tabs (the AI tab shows the unseen count), search with a native type select beside it, and the rows. */
+/** The "session · workspace" line under a list row's title, computed once; nothing when the item has neither. */
+function sessionLine(c, item) {
+  const line = c.resolvedSessionLine(item)
+  return line ? html`<div class="sub">${line}</div>` : null
+}
+
 export function ResolvedBody({ st }) {
   const c = getCore()
   const all = st.snap ? st.snap.resolved : []
@@ -706,7 +712,7 @@ export function ResolvedBody({ st }) {
       ${shown.length ? shown.map((i) => html`<div class="resolved-row" key=${i.id}>
         <a class="rowitem" href=${'#/item/' + i.id}>
           <div class="top"><${Chip} type=${i.type} item=${i} /><${AiBadge} item=${i} /><span class="age">${ageOf(i, 'resolvedAt')}</span></div>
-          <div class="title">${c.cardTitle(i)}</div>${c.resolvedSessionLine(i) ? html`<div class="sub">${c.resolvedSessionLine(i)}</div>` : null}<div class="sub">${c.resolutionText(i)}</div></a>
+          <div class="title">${c.cardTitle(i)}</div>${sessionLine(c, i)}<div class="sub">${c.resolutionText(i)}</div></a>
         <${ArchiveSessionButton} item=${i} />
       </div>`) : html`<div class="empty">${all.length ? 'Nothing matches this filter.' : 'Nothing resolved recently.'}</div>`}
     </div>

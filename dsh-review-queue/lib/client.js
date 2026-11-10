@@ -628,11 +628,14 @@ function imageFilesOf(data) {
 		function heldFacts(item, now) {
 			const p = (item && item.payload) || {};
 			const text = (v) => (typeof v === "string" ? v : "");
+			const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+			const t = p.ticket && typeof p.ticket === "object" ? p.ticket : {};
+			const ticketId = typeof t.id === "string" || typeof t.id === "number" ? String(t.id) : "";
 			const facts = [text(p.reason) || "On hold"];
-			if (p.ticket && p.ticket.id) facts.push("Waiting on ticket " + p.ticket.id + " (checked " + HELD_CHECK_TEXT + "; a new comment, state, assignee or description change continues the session)");
+			if (ticketId) facts.push("Waiting on ticket " + ticketId + " (checked " + HELD_CHECK_TEXT + "; a new comment, state, assignee or description change continues the session)");
 			else facts.push("No ticket to watch: use Continue or Release when it can go on");
-			facts.push("Held " + fmtAge(now - (p.heldAt || 0)));
-			if (p.ticket && p.ticket.id) facts.push(p.lastCheckedAt ? "Last checked " + fmtAge(now - p.lastCheckedAt) : "Not checked yet");
+			facts.push("Held " + fmtAge(now - num(p.heldAt)));
+			if (ticketId) facts.push(num(p.lastCheckedAt) ? "Last checked " + fmtAge(now - num(p.lastCheckedAt)) : "Not checked yet");
 			if (text(p.checkError)) facts.push("Could not read the ticket (" + p.checkError + ")");
 			if (text(p.continueError)) facts.push("Could not prompt the session (" + p.continueError + ")");
 			return facts;
@@ -643,7 +646,7 @@ function imageFilesOf(data) {
 		function pausedFacts(item, now) {
 			const p = (item && item.payload) || {};
 			const text = (v) => (typeof v === "string" ? v : "");
-			const facts = [text(p.reason) || "Cut off by a restart or crash", "Last activity " + fmtAge(now - (p.lastWrite || 0))];
+			const facts = [text(p.reason) || "Cut off by a restart or crash", "Last activity " + fmtAge(now - (typeof p.lastWrite === "number" && Number.isFinite(p.lastWrite) ? p.lastWrite : 0))];
 			if (Array.isArray(p.danglingCalls) && p.danglingCalls.length) facts.push("The last tool call had no result and may be half done: " + p.danglingCalls.map(text).filter(Boolean).join(", "));
 			if (text(p.lastUser)) facts.push("Last request: " + p.lastUser);
 			return facts;

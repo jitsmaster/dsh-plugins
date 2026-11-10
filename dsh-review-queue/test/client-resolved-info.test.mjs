@@ -136,6 +136,19 @@ test('resolvedBody facts are always text: an object reason, lastUser or error ne
   }
 })
 
+test('resolvedBody facts never print NaN or [object Object] for non-numeric times or an object ticket id', () => {
+  const { shared } = load()
+  const now = Date.now()
+  const items = [
+    base({ type: 'paused', payload: { reason: 'x', lastWrite: 'soon' } }),
+    base({ type: 'onhold', payload: { reason: 'x', heldAt: 'soon', lastCheckedAt: 'soon', ticket: { id: { a: 1 } } } }),
+  ]
+  for (const it of items) {
+    const text = shared.resolvedBody(it, now).facts.join(' | ')
+    assert.doesNotMatch(text, /NaN|\[object Object\]|undefined/, text)
+  }
+})
+
 test('ResolvedCard renders a risk without a code and a malformed item without throwing', () => {
   const { T } = load()
   assert.doesNotThrow(() => render(T, permission({ risks: [{ label: 'No code' }, { label: 'Also none' }] })))
