@@ -41,6 +41,7 @@ import { createToolSummaries } from './voice/tool-summaries.js'
 import { createHandoffTracker } from './handoffs.js'
 import { installHoldTitles } from './hold.js'
 import { createKeepAwake } from './keep-awake.js'
+import { createQueueReleaser, defaultQueueFactory } from './playwright-queue.js'
 
 export const name = 'hooks-tts'
 
@@ -193,6 +194,21 @@ export function apply(ctx, baseConfig = {}) {
     controller.abort()
     await Promise.allSettled([...pending])
   }, 'hooks-tts: abort running hooks')
+
+  // Release a Playwright queue lease (dsh-playwright-queue) a session still holds when it stops; config playwrightQueue: { enabled, dir }.
+  const pwqCfg = config.playwrightQueue ?? {}
+  const pwq = createQueueReleaser({
+    enabled: pwqCfg.enabled !== false, logger: ctx.logger, queueFactory: defaultQueueFactory(pwqCfg.dir),
+    serverName: pwqCfg.serverName, ...(pwqCfg.releaseGraceMs !== undefined ? { releaseGraceMs: pwqCfg.releaseGraceMs } : {}),
+  })
+  ctx.effect(() => () => pwq.dispose(), 'hooks-tts: playwright queue release')
+  ctx.on('tools/post-execute', async (exec, result, next) => { await pwq.observe(exec.agent?.id, exec.name, exec.arguments, result); return next() })
+  // turn-stopping only schedules the release (other handlers may steer() the turn on); new activity cancels it
+  ctx.on('agent/pre-step', (payload, next) => { try { pwq.noteActive(payload?.agent?.id) } catch { /* never throws */ } return next() })
+  ctx.on('agent/created', ({ agent }) => { try { pwq.noteCreated(agent?.id) } catch { /* never throws */ } })
+  ctx.on('agent/turn-stopping', ({ agent }) => { pwq.scheduleRelease(agent?.id) })
+  ctx.on('subagent/end', (info) => { void pwq.releaseAgent(info?.id, { ended: true }) })
+  ctx.on('agent/disposed', ({ agent }) => { void pwq.releaseAgent(agent?.id, { disposed: true }) })
 
   const settings = createSettings(stateDir, { contextCapTokens: config.contextCapTokens, decideChime: typeof config.decideChime === 'boolean' ? config.decideChime : undefined, keepAwake: typeof config.keepAwake === 'boolean' ? config.keepAwake : undefined, keepDisplayOn: typeof config.keepDisplayOn === 'boolean' ? config.keepDisplayOn : undefined })
   // Keep the computer awake while DSH runs (a hidden helper process; settings keepAwake / keepDisplayOn, live). Started with the plugin, stopped on dispose.
