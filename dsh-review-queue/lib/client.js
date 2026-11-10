@@ -2116,7 +2116,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					q.custom ? h("div", { className: "rq-opt rq-ro on", "data-chosen": "true" }, h("span", null, "◉"), h("span", null, "Other answer: “" + q.custom + "”")) : null));
 			} else if (b.kind === "permission") {
 				inner = h(React.Fragment, null,
-					b.risks.length ? h("div", { className: "rq-risks" }, b.risks.map((r, ri) => h("span", { key: r.code || ri, className: "rq-risk", title: r.label }, "⚠ " + r.label))) : null,
+					b.risks.length ? h("div", { className: "rq-risks" }, b.risks.map((r, ri) => h("span", { key: ri, className: "rq-risk", title: r.label }, "⚠ " + r.label))) : null,
 					b.detail ? h("pre", { className: "rq-pre", style: mono }, b.detail) : h("div", { className: "rq-text", style: mono }, b.summary),
 					b.reason ? h("div", { className: "rq-sub" }, actionNodes(b.reason)) : null);
 			} else if (b.kind === "completed") {

@@ -159,6 +159,14 @@ test('resolvedBody paused: no "half done" line when no dangling call is a usable
   assert.ok(some.facts.some((f) => /half done: Bash$/.test(f)))
 })
 
+test('ResolvedCard risks are keyed by position, never by a payload value', () => {
+  const { T } = load()
+  const it = permission({ risks: [{ code: 'dup', label: 'A' }, { code: 'dup', label: 'B' }, { code: { toString() { return 'x' } }, label: 'C' }] })
+  const spans = findAll(render(T, it), (n) => n.props && n.props.className === 'rq-risk')
+  assert.equal(spans.length, 3)
+  assert.deepEqual(spans.map((n) => n.props.key), [0, 1, 2])
+})
+
 test('hasResolvedBody agrees with resolvedBody for every item type (drift guard)', () => {
   const { mod } = load()
   const { resolvedBody, hasResolvedBody } = mod.__test
