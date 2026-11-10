@@ -2,6 +2,13 @@ import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { emptyTodoDraft, dropStaleWorkspace, TODO_DRAFT_KEY } from '../lib/mobile/todo-form.js'
 
+globalThis.location = { pathname: '/review-queue/m/' }
+const disk = new Map()
+const writes = []
+globalThis.localStorage = { getItem: (k) => (disk.has(k) ? disk.get(k) : null), setItem: (k, v) => { writes.push([k, String(v)]); disk.set(k, String(v)) }, removeItem: (k) => { disk.delete(k) } }
+const api = await import('../lib/mobile/api.js')
+
+// The api module is imported before the first test is registered: a test that finishes while the top-level await is pending is cancelled under --test-force-exit.
 // The phone's restored draft with a workspace that is not in the loaded list loses that id; clearTodoDraft writes the saved draft once.
 test('dropStaleWorkspace: an id missing from a non-empty list is dropped, everything else is untouched', () => {
   const draft = { text: 'Fix it', workspaceId: 'gone', sparc: true }
@@ -15,11 +22,6 @@ test('dropStaleWorkspace: an id missing from a non-empty list is dropped, everyt
   assert.equal(dropStaleWorkspace(none, list), none)
 })
 
-globalThis.location = { pathname: '/review-queue/m/' }
-const disk = new Map()
-const writes = []
-globalThis.localStorage = { getItem: (k) => (disk.has(k) ? disk.get(k) : null), setItem: (k, v) => { writes.push([k, String(v)]); disk.set(k, String(v)) }, removeItem: (k) => { disk.delete(k) } }
-const api = await import('../lib/mobile/api.js')
 let replies
 beforeEach(() => {
   disk.clear(); writes.length = 0

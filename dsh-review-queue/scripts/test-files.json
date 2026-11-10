@@ -127,6 +127,7 @@
   "test/client-todo-draft.test.mjs",
   "test/client-todo-tune.test.mjs",
   "test/mobile-todo-draft.test.mjs",
+  "test/mobile-todo-draft-fixes.test.mjs",
   "test/todo-tune.test.mjs",
   "test/todo-tune-server.test.mjs",
   "test/agent-proxy-tune.test.mjs",
