@@ -150,6 +150,15 @@ test('resolvedBody facts never print NaN or [object Object] for non-numeric time
   }
 })
 
+test('resolvedBody paused: no "half done" line when no dangling call is a usable name', () => {
+  const { shared } = load()
+  const now = Date.now()
+  const none = shared.resolvedBody(base({ type: 'paused', payload: { reason: 'x', lastWrite: now, danglingCalls: [{ a: 1 }, ''] } }), now)
+  assert.ok(!none.facts.some((f) => /half done/.test(f)), none.facts.join(' | '))
+  const some = shared.resolvedBody(base({ type: 'paused', payload: { reason: 'x', lastWrite: now, danglingCalls: ['Bash', { a: 1 }] } }), now)
+  assert.ok(some.facts.some((f) => /half done: Bash$/.test(f)))
+})
+
 test('ResolvedCard renders a risk without a code and a malformed item without throwing', () => {
   const { T } = load()
   assert.doesNotThrow(() => render(T, permission({ risks: [{ label: 'No code' }, { label: 'Also none' }] })))

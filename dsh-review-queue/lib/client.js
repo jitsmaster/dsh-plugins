@@ -647,7 +647,8 @@ function imageFilesOf(data) {
 			const p = (item && item.payload) || {};
 			const text = (v) => (typeof v === "string" ? v : "");
 			const facts = [text(p.reason) || "Cut off by a restart or crash", "Last activity " + fmtAge(now - (typeof p.lastWrite === "number" && Number.isFinite(p.lastWrite) ? p.lastWrite : 0))];
-			if (Array.isArray(p.danglingCalls) && p.danglingCalls.length) facts.push("The last tool call had no result and may be half done: " + p.danglingCalls.map(text).filter(Boolean).join(", "));
+			const dangling = Array.isArray(p.danglingCalls) ? p.danglingCalls.map(text).filter(Boolean) : [];
+			if (dangling.length) facts.push("The last tool call had no result and may be half done: " + dangling.join(", "));
 			if (text(p.lastUser)) facts.push("Last request: " + p.lastUser);
 			return facts;
 		}
