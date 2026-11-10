@@ -120,6 +120,22 @@ test('resolvedBody: a paused item with a non-array danglingCalls does not throw;
   assert.doesNotMatch(shared.resolvedBody(base({ type: 'pr-merged', payload: { prId: { a: 1 } } }), now).text, /object/)
 })
 
+test('resolvedBody facts are always text: an object reason, lastUser or error never reaches the card as a React child', () => {
+  const { T, shared } = load()
+  const now = Date.now()
+  const bad = { a: 1 }
+  const items = [
+    base({ type: 'paused', payload: { reason: bad, lastWrite: now, lastUser: bad, danglingCalls: [bad, 'Bash'] } }),
+    base({ type: 'onhold', payload: { reason: bad, heldAt: now, ticket: { id: bad }, checkError: bad, continueError: bad } }),
+  ]
+  for (const it of items) {
+    const b = shared.resolvedBody(it, now)
+    assert.equal(b.kind, 'facts')
+    assert.ok(b.facts.length > 0 && b.facts.every((f) => typeof f === 'string'), 'every fact is a string: ' + JSON.stringify(b.facts))
+    assert.doesNotThrow(() => render(T, it))
+  }
+})
+
 test('ResolvedCard renders a risk without a code and a malformed item without throwing', () => {
   const { T } = load()
   assert.doesNotThrow(() => render(T, permission({ risks: [{ label: 'No code' }, { label: 'Also none' }] })))

@@ -824,6 +824,14 @@ export function ResolvedItemBody({ item }) {
   return html`<div class="resbody" data-res-body=${item.id}>${inner}</div>`
 }
 
+/** The lines under an item's title: "session · workspace" (also without a session title) and, for a resolved item, when it was raised. Hook-free. */
+export function ItemInfo({ item, resolved }) {
+  const c = getCore()
+  const line = c.resolvedSessionLine(item)
+  const raised = resolved ? c.raisedText(item, now()) : ''
+  return html`<div>${line ? html`<div class="sub">${line}</div>` : null}${raised ? html`<div class="sub">${raised}</div>` : null}</div>`
+}
+
 function ItemView({ id }) {
   const c = getCore()
   const st = useStore()
@@ -840,8 +848,7 @@ function ItemView({ id }) {
   return html`<article class="card">
     <div class="top"><${Chip} type=${item.type} item=${item} /><span class="age">${resolved ? ageOf(item, 'resolvedAt') : ageOf(item)}</span></div>
     <h2>${c.cardTitle(item)}</h2>
-    ${item.sessionTitle ? html`<div class="sub">${c.resolvedSessionLine(item)}</div>` : null}
-    ${resolved && c.raisedText(item, now()) ? html`<div class="sub">${c.raisedText(item, now())}</div>` : null}
+    <${ItemInfo} item=${item} resolved=${!!resolved} />
     ${c.triageNote(item) ? html`<div class="sub ai-note">${c.triageNote(item)}</div>` : null}
     ${open ? html`<${Body} item=${item} />` : html`<div>
       <div class="resolution">${c.resolutionText(item)}</div>

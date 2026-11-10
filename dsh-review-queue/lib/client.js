@@ -627,13 +627,14 @@ function imageFilesOf(data) {
 		/** The lines an on-hold card shows: why, the ticket being watched, how long it has been held, when it was last checked, and what went wrong. The phone card shows the same. */
 		function heldFacts(item, now) {
 			const p = (item && item.payload) || {};
-			const facts = [p.reason || "On hold"];
+			const text = (v) => (typeof v === "string" ? v : "");
+			const facts = [text(p.reason) || "On hold"];
 			if (p.ticket && p.ticket.id) facts.push("Waiting on ticket " + p.ticket.id + " (checked " + HELD_CHECK_TEXT + "; a new comment, state, assignee or description change continues the session)");
 			else facts.push("No ticket to watch: use Continue or Release when it can go on");
 			facts.push("Held " + fmtAge(now - (p.heldAt || 0)));
 			if (p.ticket && p.ticket.id) facts.push(p.lastCheckedAt ? "Last checked " + fmtAge(now - p.lastCheckedAt) : "Not checked yet");
-			if (p.checkError) facts.push("Could not read the ticket (" + p.checkError + ")");
-			if (p.continueError) facts.push("Could not prompt the session (" + p.continueError + ")");
+			if (text(p.checkError)) facts.push("Could not read the ticket (" + p.checkError + ")");
+			if (text(p.continueError)) facts.push("Could not prompt the session (" + p.continueError + ")");
 			return facts;
 		}
 		/** How many sessions a restart cut off (open paused items). */
@@ -641,9 +642,10 @@ function imageFilesOf(data) {
 		/** The lines a paused card shows: why, how long ago, a tool call that may be half done, the last request. The phone card shows the same. */
 		function pausedFacts(item, now) {
 			const p = (item && item.payload) || {};
-			const facts = [p.reason || "Cut off by a restart or crash", "Last activity " + fmtAge(now - (p.lastWrite || 0))];
-			if (Array.isArray(p.danglingCalls) && p.danglingCalls.length) facts.push("The last tool call had no result and may be half done: " + p.danglingCalls.join(", "));
-			if (p.lastUser) facts.push("Last request: " + p.lastUser);
+			const text = (v) => (typeof v === "string" ? v : "");
+			const facts = [text(p.reason) || "Cut off by a restart or crash", "Last activity " + fmtAge(now - (p.lastWrite || 0))];
+			if (Array.isArray(p.danglingCalls) && p.danglingCalls.length) facts.push("The last tool call had no result and may be half done: " + p.danglingCalls.map(text).filter(Boolean).join(", "));
+			if (text(p.lastUser)) facts.push("Last request: " + p.lastUser);
 			return facts;
 		}
 		// ---- Resume all: no confirm step, a few sessions at a time ------------------------------------------

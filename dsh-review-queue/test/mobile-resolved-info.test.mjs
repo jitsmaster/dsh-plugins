@@ -100,11 +100,24 @@ test('ResolvedItemBody: unknown type renders nothing', () => {
   assert.equal(views.ResolvedItemBody({ item: base({ type: 'mystery' }) }), null)
 })
 
+test('ItemInfo of a resolved item with a workspace but no session title still shows the workspace line and the raised time', () => {
+  const text = textOf(draw('ItemInfo', { item: question({ sessionTitle: undefined }), resolved: true }))
+  assert.match(text, /dsh-plugins/)
+  assert.match(text, /Raised 3 h ago/)
+})
+
+test('ItemInfo: a waiting item shows the session line but no raised time; no session at all shows nothing', () => {
+  const waiting = textOf(draw('ItemInfo', { item: question(), resolved: false }))
+  assert.match(waiting, /Fix login · dsh-plugins/)
+  assert.doesNotMatch(waiting, /Raised/)
+  assert.equal(textOf(draw('ItemInfo', { item: question({ sessionTitle: undefined, workspace: undefined, createdAt: undefined }), resolved: true })), '')
+})
+
 test('source: ItemView shows the raised time and the read-only body for a resolved item, and the old open-only Body is untouched', () => {
   const a = viewsSource.indexOf('function ItemView'), b = viewsSource.indexOf('const INSTALL_HINT_KEY')
   assert.ok(a >= 0 && b > a)
   const src = viewsSource.slice(a, b)
   assert.match(src, /ResolvedItemBody/)
-  assert.match(src, /raisedText\(/)
+  assert.match(src, /<\$\{ItemInfo\} item=\$\{item\} resolved=\$\{!!resolved\} \/>/, 'the header lines come from ItemInfo')
   assert.match(src, /open \? html`<\$\{Body\} item=\$\{item\} \/>`/, 'a waiting item still gets its interactive Body')
 })
