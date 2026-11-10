@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createQueue, DEFAULT_IDLE_MS } from './lib/queue.js';
 import { createLineReader, encode, errorResponse, parseLine, ERR } from './lib/jsonrpc.js';
 import { createChildClient, createProxy, defaultChildCommand } from './lib/proxy.js';
+import { createServerGate, defaultValidateWorktree } from './lib/server-gate.js';
 
 const log = (...a) => console.error('[dsh-playwright-queue]', ...a);
 const pkg = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
@@ -49,10 +50,34 @@ function main() {
     log(`startup failed: DSH_PWQ_IDLE_MS (${idleMs ?? DEFAULT_IDLE_MS}) must not be smaller than DSH_PWQ_CHILD_TIMEOUT_MS (${childTimeoutMs}); raise the idle timeout or lower the child timeout`);
     process.exit(1);
   }
+  // opt-in: with DSH_PWQ_SERVER_PORT set, a lease holder must name its worktree and the server on that port must run from it
+  let serverGate = null;
+  let gateCacheMs;
+  const portEnv = process.env.DSH_PWQ_SERVER_PORT;
+  if (portEnv !== undefined && portEnv !== '') {
+    try {
+      if (!/^\d+$/.test(portEnv.trim())) throw new RangeError('must be a plain decimal integer from 1 to 65535');
+      serverGate = createServerGate({ port: Number(portEnv.trim()) });
+    } catch (e) {
+      log('startup failed: DSH_PWQ_SERVER_PORT:', e.message);
+      process.exit(1);
+    }
+  }
+  const cacheEnv = process.env.DSH_PWQ_GATE_CACHE_MS;
+  if (cacheEnv !== undefined && cacheEnv !== '') {
+    if (!/^\d+$/.test(cacheEnv.trim())) {
+      log('startup failed: DSH_PWQ_GATE_CACHE_MS must be a non-negative integer (0 checks every call)');
+      process.exit(1);
+    }
+    gateCacheMs = Number(cacheEnv.trim());
+  }
   const child = createChildClient({ ...cfg, timeoutMs: childTimeoutMs, log });
   const proxy = createProxy({
     queue,
     child,
+    serverGate,
+    gateCacheMs,
+    validateWorktree: serverGate ? defaultValidateWorktree : null,
     pollIntervalMs: positiveEnv('DSH_PWQ_POLL_MS', 1000),
     waitBudgetMs: positiveEnv('DSH_PWQ_WAIT_BUDGET_MS', 45000),
     idleTimeoutMs: idleMs ?? DEFAULT_IDLE_MS,

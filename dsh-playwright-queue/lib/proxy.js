@@ -2,6 +2,7 @@
 // serialises access to it with the lease queue. No dependencies; the only I/O here is the child's stdio.
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import path from 'node:path';
 import { createLineReader, DEFAULT_MAX_LINE_BYTES, encode, errorResponse, parseLine, ERR } from './jsonrpc.js';
 
 export const CLIENT_PROTOCOL_VERSION = '2025-06-18';
@@ -228,6 +229,26 @@ const QUEUE_TOOLS = [
   },
 ];
 
+// With the server gate on, queue_acquire also takes the caller's worktree.
+export function gatedQueueTools(port) {
+  return QUEUE_TOOLS.map((t) => {
+    if (t.name !== 'queue_acquire') return t;
+    return {
+      ...t,
+      description:
+        `${t.description} A \`worktree\` (absolute path of the worktree you are testing) is REQUIRED: browser calls are refused ` +
+        `until the API server on port ${port} runs from that worktree (stop the old server and start one on the same port from it).`,
+      inputSchema: {
+        ...t.inputSchema,
+        properties: {
+          ...t.inputSchema.properties,
+          worktree: { type: 'string', description: 'Absolute path of the worktree whose API server you will test.' },
+        },
+      },
+    };
+  });
+}
+
 // ---- browser cleanup --------------------------------------------------------------------------------------------
 export function parseTabIndices(text) {
   if (typeof text !== 'string') return [];
@@ -253,6 +274,10 @@ export function createProxy({
   cleanupTimeoutMs = 8000, // soft cap; with cleanupGraceMs the whole cleanup is bounded at ~10 s
   cleanupGraceMs = 2000,
   pendingTtlMs = 120000, // matches the queue's default waiter TTL
+  serverGate = null, // { port?, check(worktree) -> {ok, message?} }; when set, queue_acquire needs a worktree and browser calls are gated
+  gateCacheMs = 30000, // a passing check is reused for this long per token; 0 checks every call
+  gateFailCacheMs = 2000, // a refusal is reused for this long per token, so a retry loop does not respawn the lookup
+  validateWorktree = null, // (resolvedWorktree) -> error message or null; extra check on the worktree an agent names
   serverInfo = { name: 'dsh-playwright-queue', version: '0.0.0' },
   pid = process.pid,
   log = defaultLog,
@@ -260,6 +285,9 @@ export function createProxy({
   const held = new Set(); // tokens granted through this wrapper (released on graceful shutdown)
   const pendingTickets = new Map(); // ticket -> last time a queue_acquire call touched it
   const acquiring = new Map(); // JSON-RPC request id -> { cancelled } for in-flight queue_acquire calls
+  const ticketWorktrees = new Map(); // ticket -> worktree named at enqueue (gate on only)
+  const tokenGate = new Map(); // token -> { worktree, okAt } (gate on only)
+  const forgetToken = (t) => { held.delete(t); tokenGate.delete(t); };
 
   // Best effort, never throws; skipped when the child is not running (a fresh child has no stale tabs) or lacks the tools.
   async function cleanupBrowser(token) {
@@ -310,6 +338,7 @@ export function createProxy({
       if (at < cutoff) {
         try { queue.cancel(t); } catch { /* best effort */ }
         pendingTickets.delete(t);
+        ticketWorktrees.delete(t);
       }
     }
   }
@@ -326,10 +355,24 @@ export function createProxy({
 
   async function acquireInner(args, ctl) {
     sweepPending();
-    for (const t of held) { try { if (!queue.validate(t)) held.delete(t); } catch { /* best effort */ } }
+    for (const t of held) { try { if (!queue.validate(t)) forgetToken(t); } catch { /* best effort */ } }
     if (args.label !== undefined && typeof args.label !== 'string') return toolError('label must be a string');
     if (args.ticket !== undefined && typeof args.ticket !== 'string') return toolError('ticket must be a string');
     let ticket = args.ticket;
+    let worktree = null;
+    if (serverGate) {
+      const known = ticket ? ticketWorktrees.get(ticket) : undefined;
+      if (args.worktree !== undefined || !ticket) {
+        const p = parseWorktree(args.worktree);
+        if (p.error) return toolError(p.error);
+        if (known && !sameWorktree(known, p.worktree)) {
+          return toolError(`This ticket was enqueued for ${known}. Poll it without a worktree, or cancel by letting it expire and acquire again with the new worktree.`);
+        }
+        worktree = p.worktree;
+      } else if (known) {
+        worktree = known;
+      } // an unknown ticket without a worktree falls through: the poll answers "unknown or expired"
+    }
     if (!ticket) {
       const label = (args.label ?? '').replace(UNSAFE_LABEL_CHARS, ' ').trim().slice(0, 80) || 'agent';
       const holder = `${label}#${crypto.randomBytes(HOLDER_ID_BYTES).toString('hex')}`; // per attempt: enqueue is idempotent per (holder, pid)
@@ -340,10 +383,12 @@ export function createProxy({
       }
       pendingTickets.set(ticket, Date.now());
     }
+    if (worktree) ticketWorktrees.set(ticket, worktree);
     const deadline = Date.now() + waitBudgetMs;
     for (;;) {
       if (ctl.cancelled) {
         pendingTickets.delete(ticket);
+        ticketWorktrees.delete(ticket);
         try { queue.cancel(ticket); } catch { /* best effort */ }
         return toolError('queue_acquire was cancelled');
       }
@@ -351,21 +396,25 @@ export function createProxy({
       try {
         r = queue.poll(ticket);
       } catch (e) {
+        ticketWorktrees.delete(ticket);
         return toolError(`Queue error: ${e.message}`);
       }
       if (r.status === 'granted') {
         pendingTickets.delete(ticket);
+        ticketWorktrees.delete(ticket);
         held.add(r.token);
+        if (worktree) tokenGate.set(r.token, { worktree, okAt: 0, failAt: 0, failMsg: '', pending: null });
         await cleanupBrowser(r.token);
         if (ctl.cancelled) { // cancelled while cleaning up: do not orphan the fresh lease
           try { queue.release(r.token); } catch { /* best effort */ }
-          held.delete(r.token);
+          forgetToken(r.token);
           return toolError('queue_acquire was cancelled');
         }
         return toolResult({ status: 'granted', token: r.token, idleTimeoutMs });
       }
       if (r.status === 'unknown') {
         pendingTickets.delete(ticket);
+        ticketWorktrees.delete(ticket);
         return toolError('Unknown or expired ticket. Call queue_acquire again without a ticket.');
       }
       pendingTickets.set(ticket, Date.now());
@@ -394,7 +443,7 @@ export function createProxy({
     } catch (e) {
       return toolError(`Queue error: ${e.message}`);
     }
-    held.delete(token);
+    forgetToken(token);
     return ok ? toolResult({ status: 'released', ok: true }) : toolResult({ status: 'not_held', ok: false, message: 'not held' });
   }
 
@@ -409,6 +458,40 @@ export function createProxy({
     });
   }
 
+  // Validates and resolves a worktree named by the agent.
+  function parseWorktree(named) {
+    if (typeof named !== 'string' || !named || !path.isAbsolute(named)) {
+      return { error: 'worktree is required: pass the absolute path of the worktree whose API server you will test.' };
+    }
+    if (process.platform === 'win32' && !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(named)) {
+      return { error: 'worktree must start with a drive letter (C:\\...) or be a UNC path.' };
+    }
+    const wt = path.resolve(named);
+    if (path.parse(wt).root === wt) return { error: 'worktree must not be a filesystem root: pass the root of your git worktree.' };
+    const bad = validateWorktree ? validateWorktree(wt) : null;
+    return bad ? { error: bad } : { worktree: wt };
+  }
+  const sameWorktree = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+
+  // One shared check per token; records the outcome on the entry.
+  async function runGate(entry) {
+    let g;
+    try {
+      g = await serverGate.check(entry.worktree);
+    } catch (e) {
+      g = { ok: false, message: `Server check failed: ${e.message}` };
+    }
+    if (g?.ok) {
+      entry.okAt = Date.now();
+      entry.failAt = 0;
+      return { ok: true };
+    }
+    entry.okAt = 0;
+    entry.failAt = Date.now();
+    entry.failMsg = g?.message || 'The API server check refused this call.';
+    return { ok: false, message: entry.failMsg };
+  }
+
   async function forward(name, args) {
     if (!isObj(args)) return toolError('arguments must be an object (and include queueToken)');
     const { queueToken, ...rest } = args;
@@ -417,7 +500,7 @@ export function createProxy({
     }
     try {
       if (!queue.touch(queueToken)) {
-        held.delete(queueToken);
+        forgetToken(queueToken);
         return toolError('queueToken is not valid: the lease expired or was released. Call queue_acquire again to get a new token.');
       }
     } catch (e) {
@@ -432,8 +515,22 @@ export function createProxy({
     if (!tools.some((t) => t.name === name)) return toolError(`Unknown tool: ${name}`);
     try {
       if (!queue.validate(queueToken)) { // released/expired while the child was starting
-        held.delete(queueToken);
+        forgetToken(queueToken);
         return toolError('queueToken is not valid: the lease expired or was released. Call queue_acquire again to get a new token.');
+      }
+      if (serverGate) {
+        const entry = tokenGate.get(queueToken);
+        if (!entry) return toolError('This lease has no worktree on record: call queue_release, then queue_acquire again with your worktree.');
+        const now = Date.now();
+        if (entry.okAt > 0 && now - entry.okAt < gateCacheMs) {
+          // a recent pass is reused
+        } else if (entry.failAt > 0 && now - entry.failAt < gateFailCacheMs) {
+          return toolError(entry.failMsg);
+        } else {
+          if (!entry.pending) entry.pending = runGate(entry).finally(() => { entry.pending = null; });
+          const g = await entry.pending;
+          if (!g.ok) return toolError(g.message);
+        }
       }
       const res = await child.callTool(name, rest);
       try { queue.touch(queueToken); } catch { /* best effort */ }
@@ -478,7 +575,7 @@ export function createProxy({
         } catch (e) {
           log('child tools unavailable:', e.message);
         }
-        return { tools: [...QUEUE_TOOLS, ...childTools] };
+        return { tools: [...(serverGate ? gatedQueueTools(serverGate.port ?? '?') : QUEUE_TOOLS), ...childTools] };
       }
       case 'tools/call':
         return toolsCall(msg.params, msg.id);
@@ -515,6 +612,8 @@ export function createProxy({
       for (const t of pendingTickets.keys()) { try { queue.cancel(t); } catch { /* best effort */ } }
       held.clear();
       pendingTickets.clear();
+      ticketWorktrees.clear();
+      tokenGate.clear();
     },
   };
 }

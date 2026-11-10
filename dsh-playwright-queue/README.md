@@ -122,6 +122,25 @@ Security notes:
 | `DSH_PWQ_CHILD_COMMAND` | `npx` / `npx.cmd` | child command (CLI args after `--` win) |
 | `DSH_PWQ_CHILD_ARGS` | `["-y","@playwright/mcp@0.0.85"]` with the default command, else `[]` | JSON array of strings; the default pins an exact version (no `@latest`), operators can override it with this variable (together with `DSH_PWQ_CHILD_COMMAND`) |
 | `DSH_PWQ_CHILD_TIMEOUT_MS` | `120000` | per-request timeout towards the child |
+| `DSH_PWQ_SERVER_PORT` | unset (gate off) | turns on the worktree gate (below); the port of the API server under test, e.g. `3030` |
+| `DSH_PWQ_GATE_CACHE_MS` | `30000` | how long a passing gate check is reused per token (`0` checks every browser call; a plain non-negative integer, else startup fails). A refusal is reused for 2 s |
+
+Worktree gate (opt-in, `DSH_PWQ_SERVER_PORT`, a plain decimal port): `queue_acquire` then requires an absolute
+`worktree` argument (the root of the git worktree whose API server the session will test: it must contain `.git`,
+must not be a filesystem root, and on Windows must start with a drive letter or UNC; a waiting ticket remembers it and
+re-polling with a different worktree is an error). Before every forwarded browser call the wrapper looks up the process
+listening on that port (Windows: `netstat -ano`, then PowerShell `Get-CimInstance` for the command line; POSIX: `lsof`,
+`/proc` or `ps`) and refuses the call unless that process runs from the worktree. A script argument (`.js`/`.ts`...) of
+its command line inside the worktree passes; otherwise the working directory is read (Windows: a PEB read through a C#
+`Add-Type`, x64/ARM64 only, about 2 s; POSIX: `/proc/<pid>/cwd` or `lsof`) and a known cwd decides alone. A bare
+mention of the path (`--config`, `--log`) and `..` segments never match, and a worktree nested under another (e.g.
+`.claude/worktrees/x`) never counts for the outer one. Concurrent checks share one lookup. The refusal names only the
+pid and executable (command lines can carry secrets) and tells the agent to stop the old server and start one on the
+same port from its worktree. The gate only checks; it never starts or stops a server. It catches mistakes, not a
+hostile agent (the agent names its own worktree). Limits: the listener could be swapped within the cache window; paths
+are compared textually (junctions, `subst` drives and 8.3 names can cause false refusals); the grant-time browser
+cleanup runs before any gate check; and it proves the listener runs from the worktree, not that the build or client
+bundle is current.
 
 Tools:
 
