@@ -159,6 +159,22 @@ test('resolvedBody paused: no "half done" line when no dangling call is a usable
   assert.ok(some.facts.some((f) => /half done: Bash$/.test(f)))
 })
 
+test('a closed ResolvedCard does not build its message: the payload is read only once the fold is open', () => {
+  const { T } = load()
+  let reads = 0
+  const it = question()
+  const payload = it.payload
+  Object.defineProperty(it, 'payload', { get() { reads++; return payload } })
+  const closed = T.ResolvedCard({ it })
+  assert.equal(reads, 0, 'closed: payload untouched')
+  assert.ok(findAll(closed, (n) => n.props && n.props['data-res-body'] === 'x1').length, 'the closed fold is still there')
+  T.state.resOpen = { ...T.state.resOpen, x1: true }
+  T.ResolvedCard({ it })
+  assert.ok(reads > 0, 'open: the message is built')
+  assert.equal(findAll(T.ResolvedCard({ it: base({ type: 'mystery' }) }), (n) => n.props && n.props['data-res-body']).length, 0, 'no fold for an unknown type')
+  assert.equal(findAll(T.ResolvedCard({ it: base({ type: 'todo', text: '' }) }), (n) => n.props && n.props['data-res-body']).length, 0, 'no fold for a todo without text')
+})
+
 test('ResolvedCard renders a risk without a code and a malformed item without throwing', () => {
   const { T } = load()
   assert.doesNotThrow(() => render(T, permission({ risks: [{ label: 'No code' }, { label: 'Also none' }] })))

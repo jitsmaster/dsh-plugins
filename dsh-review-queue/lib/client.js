@@ -171,6 +171,12 @@ window.__ModuleLoader__.load({
 		 *  todo / pr-merged / archive  { kind: "text", text }
 		 * Undefined for an unknown type. Text is data only: the renderers must show it as text nodes.
 		 */
+		const BODY_TYPES = new Set(["question", "permission", "completed", "paused", "onhold", "pr-merged", "archive"]);
+		/** Whether resolvedBody would return a body, decided from the type (and a todo's text) alone, so a closed fold never builds its message. */
+		function hasResolvedBody(item) {
+			if (!item || typeof item !== "object") return false;
+			return item.type === "todo" ? typeof item.text === "string" && item.text !== "" : BODY_TYPES.has(item.type);
+		}
 		function resolvedBody(item, now) {
 			if (!item || typeof item !== "object") return undefined;
 			const p = item.payload && typeof item.payload === "object" ? item.payload : {};
@@ -2090,9 +2096,10 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 
 		/** The original message of a resolved item, read only: the same facts a waiting card showed, with the chosen option marked and no control. Assistant text goes through React text nodes only. */
 		function ResolvedBody({ it }) {
-			const b = resolvedBody(it, Date.now() + state.skew);
-			if (!b) return null;
+			if (!hasResolvedBody(it)) return null; // cheap: no payload is read for a closed card
 			const open = !!state.resOpen[it.id];
+			const b = open ? resolvedBody(it, Date.now() + state.skew) : undefined;
+			if (open && !b) return null;
 			const mono = { fontFamily: "ui-monospace,Consolas,monospace" };
 			let inner = null;
 			// The message is built only while its fold is open: a long Resolved list must not parse every reply on every render.
