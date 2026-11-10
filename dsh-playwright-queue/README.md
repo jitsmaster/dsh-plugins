@@ -136,7 +136,9 @@ its command line inside the worktree passes; otherwise the working directory is 
 mention of the path (`--config`, `--log`) and `..` segments never match, and a worktree nested under another (e.g.
 `.claude/worktrees/x`) never counts for the outer one. Concurrent checks share one lookup. The refusal names only the
 pid and executable (command lines can carry secrets) and tells the agent to stop the old server and start one on the
-same port from its worktree. The gate only checks; it never starts or stops a server. It catches mistakes, not a
+same port from its worktree. A check with no API server under test (for example the DSH web UI) passes
+`skipServerCheck: true` instead of a worktree (not both; a boolean; a ticket keeps the mode it was enqueued with); the
+holder's browser calls then skip the server check, and the lease and queue order are unchanged. The gate only checks; it never starts or stops a server. It catches mistakes, not a
 hostile agent (the agent names its own worktree). Limits: the listener could be swapped within the cache window; paths
 are compared textually (junctions, `subst` drives and 8.3 names can cause false refusals); the grant-time browser
 cleanup runs before any gate check; and it proves the listener runs from the worktree, not that the build or client

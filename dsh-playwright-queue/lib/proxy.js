@@ -229,6 +229,8 @@ const QUEUE_TOOLS = [
   },
 ];
 
+const SKIP = Symbol('skipServerCheck'); // ticketWorktrees value for a ticket enqueued without a worktree
+
 // With the server gate on, queue_acquire also takes the caller's worktree.
 export function gatedQueueTools(port) {
   return QUEUE_TOOLS.map((t) => {
@@ -237,12 +239,14 @@ export function gatedQueueTools(port) {
       ...t,
       description:
         `${t.description} A \`worktree\` (absolute path of the worktree you are testing) is REQUIRED: browser calls are refused ` +
-        `until the API server on port ${port} runs from that worktree (stop the old server and start one on the same port from it).`,
+        `until the API server on port ${port} runs from that worktree (stop the old server and start one on the same port from it). ` +
+        'Only for checks with no API server under test (for example the DSH web UI), pass `skipServerCheck: true` instead of a worktree.',
       inputSchema: {
         ...t.inputSchema,
         properties: {
           ...t.inputSchema.properties,
           worktree: { type: 'string', description: 'Absolute path of the worktree whose API server you will test.' },
+          skipServerCheck: { type: 'boolean', description: 'Skip the API server check (no worktree needed). Only when no API server is under test.' },
         },
       },
     };
@@ -360,15 +364,24 @@ export function createProxy({
     if (args.ticket !== undefined && typeof args.ticket !== 'string') return toolError('ticket must be a string');
     let ticket = args.ticket;
     let worktree = null;
+    let skip = false;
     if (serverGate) {
+      if (args.skipServerCheck !== undefined && typeof args.skipServerCheck !== 'boolean') return toolError('skipServerCheck must be a boolean');
       const known = ticket ? ticketWorktrees.get(ticket) : undefined;
-      if (args.worktree !== undefined || !ticket) {
+      if (args.skipServerCheck === true) {
+        if (args.worktree !== undefined) return toolError('Pass either worktree or skipServerCheck, not both.');
+        if (known && known !== SKIP) return toolError(`This ticket was enqueued for ${known}. Poll it without skipServerCheck.`);
+        skip = true;
+      } else if (args.worktree !== undefined || !ticket) {
         const p = parseWorktree(args.worktree);
         if (p.error) return toolError(p.error);
+        if (known === SKIP) return toolError('This ticket was enqueued with skipServerCheck. Poll it without a worktree.');
         if (known && !sameWorktree(known, p.worktree)) {
           return toolError(`This ticket was enqueued for ${known}. Poll it without a worktree, or cancel by letting it expire and acquire again with the new worktree.`);
         }
         worktree = p.worktree;
+      } else if (known === SKIP) {
+        skip = true;
       } else if (known) {
         worktree = known;
       } // an unknown ticket without a worktree falls through: the poll answers "unknown or expired"
@@ -384,6 +397,7 @@ export function createProxy({
       pendingTickets.set(ticket, Date.now());
     }
     if (worktree) ticketWorktrees.set(ticket, worktree);
+    else if (skip) ticketWorktrees.set(ticket, SKIP);
     const deadline = Date.now() + waitBudgetMs;
     for (;;) {
       if (ctl.cancelled) {
@@ -404,6 +418,7 @@ export function createProxy({
         ticketWorktrees.delete(ticket);
         held.add(r.token);
         if (worktree) tokenGate.set(r.token, { worktree, okAt: 0, failAt: 0, failMsg: '', pending: null });
+        else if (skip) tokenGate.set(r.token, { skip: true });
         await cleanupBrowser(r.token);
         if (ctl.cancelled) { // cancelled while cleaning up: do not orphan the fresh lease
           try { queue.release(r.token); } catch { /* best effort */ }
@@ -522,7 +537,9 @@ export function createProxy({
         const entry = tokenGate.get(queueToken);
         if (!entry) return toolError('This lease has no worktree on record: call queue_release, then queue_acquire again with your worktree.');
         const now = Date.now();
-        if (entry.okAt > 0 && now - entry.okAt < gateCacheMs) {
+        if (entry.skip) {
+          // the holder opted out: no API server is under test
+        } else if (entry.okAt > 0 && now - entry.okAt < gateCacheMs) {
           // a recent pass is reused
         } else if (entry.failAt > 0 && now - entry.failAt < gateFailCacheMs) {
           return toolError(entry.failMsg);
