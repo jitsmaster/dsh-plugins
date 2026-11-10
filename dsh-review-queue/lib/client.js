@@ -162,6 +162,9 @@ window.__ModuleLoader__.load({
 		function raisedText(item, now) {
 			return item && typeof item.createdAt === "number" && item.createdAt > 0 ? "Raised " + fmtAge(now - item.createdAt) : "";
 		}
+		/** Stored payload fields are of any type: a text is a string or empty, a number is finite or 0 (shared by resolvedBody, heldFacts and pausedFacts). */
+		const text = (v) => (typeof v === "string" ? v : "");
+		const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 		/** The item types whose resolvedBody is decided by type alone (a todo also needs text); a test keeps this in step with resolvedBody. */
 		const BODY_TYPES = new Set(["question", "permission", "completed", "paused", "onhold", "pr-merged", "archive"]);
 		/** Whether resolvedBody would return a body, decided from the type (and a todo's text) alone, so a closed fold never builds its message. */
@@ -182,8 +185,8 @@ window.__ModuleLoader__.load({
 			if (!item || typeof item !== "object") return undefined;
 			const p = item.payload && typeof item.payload === "object" ? item.payload : {};
 			// A resolved item is stored data of any age: a malformed entry must never throw while drawing the list, so every text is coerced and every entry checked.
-			const str = (v) => (typeof v === "string" ? v : "");
 			const obj = (v) => !!v && typeof v === "object";
+			// A type added here also goes into BODY_TYPES (hasResolvedBody); a test keeps the two in step.
 			switch (item.type) {
 				case "question": {
 					const answers = (Array.isArray(item.resolution && item.resolution.answers) ? item.resolution.answers : []).filter(obj);
@@ -191,23 +194,23 @@ window.__ModuleLoader__.load({
 						const a = answers.find((x) => x.id === q.id) || {};
 						const picked = Array.isArray(a.selected) ? a.selected : [];
 						return {
-							id: q.id, ...(str(q.header) ? { header: q.header } : {}), question: str(q.question),
-							options: (Array.isArray(q.options) ? q.options : []).filter((o) => obj(o) && typeof o.label === "string").map((o) => ({ label: o.label, ...(str(o.description) ? { description: o.description } : {}), chosen: picked.includes(o.label), recommended: recommended(q, o.label) })),
-							...(str(a.custom) ? { custom: a.custom } : {}),
+							id: q.id, ...(text(q.header) ? { header: q.header } : {}), question: text(q.question),
+							options: (Array.isArray(q.options) ? q.options : []).filter((o) => obj(o) && typeof o.label === "string").map((o) => ({ label: o.label, ...(text(o.description) ? { description: o.description } : {}), chosen: picked.includes(o.label), recommended: recommended(q, o.label) })),
+							...(text(a.custom) ? { custom: a.custom } : {}),
 						};
 					});
 					return { kind: "question", questions };
 				}
 				case "permission": {
-					const summary = str(p.summary) || str(p.toolName);
-					return { kind: "permission", summary, ...(str(p.detail) && p.detail !== p.summary ? { detail: p.detail } : {}), risks: (Array.isArray(item.risks) ? item.risks : []).filter((r) => obj(r) && typeof r.label === "string"), ...(str(p.reason) ? { reason: p.reason } : {}) };
+					const summary = text(p.summary) || text(p.toolName);
+					return { kind: "permission", summary, ...(text(p.detail) && p.detail !== p.summary ? { detail: p.detail } : {}), risks: (Array.isArray(item.risks) ? item.risks : []).filter((r) => obj(r) && typeof r.label === "string"), ...(text(p.reason) ? { reason: p.reason } : {}) };
 				}
-				case "completed": return { kind: "completed", summary: str(item.summary) || "Finished.", ...(str(p.reply) ? { reply: p.reply } : {}) };
+				case "completed": return { kind: "completed", summary: text(item.summary) || "Finished.", ...(text(p.reply) ? { reply: p.reply } : {}) };
 				case "paused": return { kind: "facts", facts: pausedFacts(item, now) };
 				case "onhold": return { kind: "facts", facts: heldFacts(item, now) };
 				case "todo": return typeof item.text === "string" && item.text ? { kind: "text", text: item.text } : undefined;
 				case "pr-merged": return { kind: "text", text: (typeof p.prId === "string" || typeof p.prId === "number") && p.prId !== "" ? "Pull request " + p.prId + " was merged." : "A pull request was merged." };
-				case "archive": return { kind: "text", text: "This session asked to be archived." + (str(p.reason) ? " Reason: " + p.reason : "") };
+				case "archive": return { kind: "text", text: "This session asked to be archived." + (text(p.reason) ? " Reason: " + p.reason : "") };
 				default: return undefined;
 			}
 		}
@@ -631,9 +634,6 @@ function imageFilesOf(data) {
 		const heldCount = (open) => countStage(open, (s) => s.stage === "held");
 		/** How often the plugin looks at the ticket of a held session (onHoldCheckMs, default 10 minutes; a test keeps the text honest only by this note). */
 		const HELD_CHECK_TEXT = "every 10 minutes";
-		/** Stored payload fields are of any type: a text is a string or empty, a number is finite or 0 (shared by heldFacts and pausedFacts). */
-		const text = (v) => (typeof v === "string" ? v : "");
-		const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 		/** The lines an on-hold card shows: why, the ticket being watched, how long it has been held, when it was last checked, and what went wrong. The phone card shows the same. */
 		function heldFacts(item, now) {
 			const p = (item && item.payload) || {};
@@ -2102,10 +2102,10 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const b = open ? resolvedBody(it, Date.now() + state.skew) : undefined;
 			if (open && !b) return null;
 			const mono = { fontFamily: "ui-monospace,Consolas,monospace" };
+			// inner stays null while the fold is closed: the message is built only while it is open (a long Resolved list must not parse every reply on every render).
 			let inner = null;
-			// The message is built only while its fold is open: a long Resolved list must not parse every reply on every render.
 			if (!open) {
-				inner = null;
+				// closed: nothing to build
 			} else if (b.kind === "question") {
 				inner = b.questions.map((q, qi) => h("div", { key: qi, className: "rq-opts" },
 					q.header ? h("div", { className: "rq-sub" }, actionNodes(q.header)) : null,
