@@ -686,13 +686,13 @@ function HeldList() {
   </div>`
 }
 
-/** The Resolved list: All / By me / By AI tabs (the AI tab shows the unseen count), search with a native type select beside it, and the rows. */
-/** The "session · workspace" line under a list row's title, computed once; nothing when the item has neither. */
+/** The "session · workspace" line under a row's or an item's title, computed once; nothing when the item has neither. */
 function sessionLine(c, item) {
   const line = c.resolvedSessionLine(item)
   return line ? html`<div class="sub">${line}</div>` : null
 }
 
+/** The Resolved list: All / By me / By AI tabs (the AI tab shows the unseen count), search with a native type select beside it, and the rows. */
 export function ResolvedBody({ st }) {
   const c = getCore()
   const all = st.snap ? st.snap.resolved : []
@@ -833,9 +833,8 @@ export function ResolvedItemBody({ item }) {
 /** The lines under an item's title: "session · workspace" (also without a session title) and, for a resolved item, when it was raised. Hook-free. */
 export function ItemInfo({ item, resolved }) {
   const c = getCore()
-  const line = c.resolvedSessionLine(item)
   const raised = resolved ? c.raisedText(item, now()) : ''
-  return html`<div>${line ? html`<div class="sub">${line}</div>` : null}${raised ? html`<div class="sub">${raised}</div>` : null}</div>`
+  return html`<div>${sessionLine(c, item)}${raised ? html`<div class="sub">${raised}</div>` : null}</div>`
 }
 
 function ItemView({ id }) {

@@ -9,7 +9,7 @@ const H = 3600e3
 function load() {
   const { T, mod } = loadClient({ react: { createElement: el } })
   T.state.snap = { snapshotId: 'e:1', open: [], resolved: [] }
-  return { T, shared: mod.shared }
+  return { T, mod, shared: mod.shared }
 }
 const base = (over = {}) => ({ id: 'x1', sessionId: 's1', sessionTitle: 'Fix login', workspace: 'dsh-plugins', status: 'resolved', createdAt: Date.now() - 3 * H, resolvedAt: Date.now() - H, ...over })
 const question = (over = {}) => base({
@@ -157,6 +157,19 @@ test('resolvedBody paused: no "half done" line when no dangling call is a usable
   assert.ok(!none.facts.some((f) => /half done/.test(f)), none.facts.join(' | '))
   const some = shared.resolvedBody(base({ type: 'paused', payload: { reason: 'x', lastWrite: now, danglingCalls: ['Bash', { a: 1 }] } }), now)
   assert.ok(some.facts.some((f) => /half done: Bash$/.test(f)))
+})
+
+test('hasResolvedBody agrees with resolvedBody for every item type (drift guard)', () => {
+  const { mod } = load()
+  const { resolvedBody, hasResolvedBody } = mod.__test
+  assert.equal(typeof hasResolvedBody, 'function')
+  const now = Date.now()
+  for (const type of ['question', 'permission', 'completed', 'paused', 'onhold', 'todo', 'pr-merged', 'archive', 'mystery']) {
+    const it = base({ type, text: 'Write the docs', payload: {} })
+    assert.equal(hasResolvedBody(it), resolvedBody(it, now) !== undefined, 'type ' + type)
+  }
+  assert.equal(hasResolvedBody(base({ type: 'todo', text: '' })), false)
+  assert.equal(hasResolvedBody(undefined), false)
 })
 
 test('a closed ResolvedCard does not build its message: the payload is read only once the fold is open', () => {

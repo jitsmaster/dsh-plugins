@@ -162,6 +162,13 @@ window.__ModuleLoader__.load({
 		function raisedText(item, now) {
 			return item && typeof item.createdAt === "number" && item.createdAt > 0 ? "Raised " + fmtAge(now - item.createdAt) : "";
 		}
+		/** The item types whose resolvedBody is decided by type alone (a todo also needs text); a test keeps this in step with resolvedBody. */
+		const BODY_TYPES = new Set(["question", "permission", "completed", "paused", "onhold", "pr-merged", "archive"]);
+		/** Whether resolvedBody would return a body, decided from the type (and a todo's text) alone, so a closed fold never builds its message. */
+		function hasResolvedBody(item) {
+			if (!item || typeof item !== "object") return false;
+			return item.type === "todo" ? typeof item.text === "string" && item.text !== "" : BODY_TYPES.has(item.type);
+		}
 		/**
 		 * The original message of a resolved item as plain read-only data (a waiting card's body without any control), shared by the desktop and the phone:
 		 *  question   { kind, questions: [{ id, header?, question, options: [{ label, description?, chosen, recommended }], custom? }] }  (chosen = in resolution.answers)
@@ -171,12 +178,6 @@ window.__ModuleLoader__.load({
 		 *  todo / pr-merged / archive  { kind: "text", text }
 		 * Undefined for an unknown type. Text is data only: the renderers must show it as text nodes.
 		 */
-		const BODY_TYPES = new Set(["question", "permission", "completed", "paused", "onhold", "pr-merged", "archive"]);
-		/** Whether resolvedBody would return a body, decided from the type (and a todo's text) alone, so a closed fold never builds its message. */
-		function hasResolvedBody(item) {
-			if (!item || typeof item !== "object") return false;
-			return item.type === "todo" ? typeof item.text === "string" && item.text !== "" : BODY_TYPES.has(item.type);
-		}
 		function resolvedBody(item, now) {
 			if (!item || typeof item !== "object") return undefined;
 			const p = item.payload && typeof item.payload === "object" ? item.payload : {};
@@ -630,11 +631,12 @@ function imageFilesOf(data) {
 		const heldCount = (open) => countStage(open, (s) => s.stage === "held");
 		/** How often the plugin looks at the ticket of a held session (onHoldCheckMs, default 10 minutes; a test keeps the text honest only by this note). */
 		const HELD_CHECK_TEXT = "every 10 minutes";
+		/** Stored payload fields are of any type: a text is a string or empty, a number is finite or 0 (shared by heldFacts and pausedFacts). */
+		const text = (v) => (typeof v === "string" ? v : "");
+		const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 		/** The lines an on-hold card shows: why, the ticket being watched, how long it has been held, when it was last checked, and what went wrong. The phone card shows the same. */
 		function heldFacts(item, now) {
 			const p = (item && item.payload) || {};
-			const text = (v) => (typeof v === "string" ? v : "");
-			const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 			const t = p.ticket && typeof p.ticket === "object" ? p.ticket : {};
 			const ticketId = typeof t.id === "string" || (typeof t.id === "number" && Number.isFinite(t.id)) ? String(t.id) : "";
 			const facts = [text(p.reason) || "On hold"];
@@ -642,8 +644,8 @@ function imageFilesOf(data) {
 			else facts.push("No ticket to watch: use Continue or Release when it can go on");
 			facts.push("Held " + fmtAge(now - num(p.heldAt)));
 			if (ticketId) facts.push(num(p.lastCheckedAt) ? "Last checked " + fmtAge(now - num(p.lastCheckedAt)) : "Not checked yet");
-			if (text(p.checkError)) facts.push("Could not read the ticket (" + p.checkError + ")");
-			if (text(p.continueError)) facts.push("Could not prompt the session (" + p.continueError + ")");
+			if (text(p.checkError)) facts.push("Could not read the ticket (" + text(p.checkError) + ")");
+			if (text(p.continueError)) facts.push("Could not prompt the session (" + text(p.continueError) + ")");
 			return facts;
 		}
 		/** How many sessions a restart cut off (open paused items). */
@@ -651,11 +653,10 @@ function imageFilesOf(data) {
 		/** The lines a paused card shows: why, how long ago, a tool call that may be half done, the last request. The phone card shows the same. */
 		function pausedFacts(item, now) {
 			const p = (item && item.payload) || {};
-			const text = (v) => (typeof v === "string" ? v : "");
-			const facts = [text(p.reason) || "Cut off by a restart or crash", "Last activity " + fmtAge(now - (typeof p.lastWrite === "number" && Number.isFinite(p.lastWrite) ? p.lastWrite : 0))];
+			const facts = [text(p.reason) || "Cut off by a restart or crash", "Last activity " + fmtAge(now - num(p.lastWrite))];
 			const dangling = Array.isArray(p.danglingCalls) ? p.danglingCalls.map(text).filter(Boolean) : [];
 			if (dangling.length) facts.push("The last tool call had no result and may be half done: " + dangling.join(", "));
-			if (text(p.lastUser)) facts.push("Last request: " + p.lastUser);
+			if (text(p.lastUser)) facts.push("Last request: " + text(p.lastUser));
 			return facts;
 		}
 		// ---- Resume all: no confirm step, a few sessions at a time ------------------------------------------
@@ -2553,7 +2554,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
-		Object.assign(exports.__test, { resolvedSessionLine, raisedText, resolvedBody, ResolvedBody, mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
+		Object.assign(exports.__test, { resolvedSessionLine, raisedText, resolvedBody, hasResolvedBody, ResolvedBody, mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });
 		Object.assign(exports.__test, { hotkeyAction, installHotkey, act, errorText, openSession, resolvedOpenAction, isButtonClick, Panel, PhoneHost, loadPhonePanel, viewOf, setView, nextTabId, openDialog, closeDialog, overlayKey, setPhoneImporter: (fn) => { phoneImporter = fn; phonePanel = undefined; } });
 		return module.exports;
