@@ -142,6 +142,7 @@ test('resolvedBody facts never print NaN or [object Object] for non-numeric time
   const items = [
     base({ type: 'paused', payload: { reason: 'x', lastWrite: 'soon' } }),
     base({ type: 'onhold', payload: { reason: 'x', heldAt: 'soon', lastCheckedAt: 'soon', ticket: { id: { a: 1 } } } }),
+    base({ type: 'onhold', payload: { reason: 'x', heldAt: now, ticket: { id: NaN } } }),
   ]
   for (const it of items) {
     const text = shared.resolvedBody(it, now).facts.join(' | ')

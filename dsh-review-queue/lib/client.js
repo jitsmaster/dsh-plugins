@@ -630,7 +630,7 @@ function imageFilesOf(data) {
 			const text = (v) => (typeof v === "string" ? v : "");
 			const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 			const t = p.ticket && typeof p.ticket === "object" ? p.ticket : {};
-			const ticketId = typeof t.id === "string" || typeof t.id === "number" ? String(t.id) : "";
+			const ticketId = typeof t.id === "string" || (typeof t.id === "number" && Number.isFinite(t.id)) ? String(t.id) : "";
 			const facts = [text(p.reason) || "On hold"];
 			if (ticketId) facts.push("Waiting on ticket " + ticketId + " (checked " + HELD_CHECK_TEXT + "; a new comment, state, assignee or description change continues the session)");
 			else facts.push("No ticket to watch: use Continue or Release when it can go on");
