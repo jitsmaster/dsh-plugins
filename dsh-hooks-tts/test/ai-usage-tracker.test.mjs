@@ -105,6 +105,21 @@ test('subagent runs: call counted, usage taken from result meta when present', (
   assert.equal(s.byCategory.subagent.input, 100)
 })
 
+test('delegated runs are listed by name and kind, review detected from the prompt', () => {
+  const t = createUsageTracker()
+  t.observe('s1', msg(usage(1, 1), [
+    call('subagent_claude_code', { name: 'review1-pitfall', description: 'AI pitfall review', prompt: 'Skill(modes:ai-pitfall-review)' }, 'k1'),
+    call('subagent_claude_code', { name: 'lows-fix', description: 'Fix lows', prompt: 'edit files' }, 'k2'),
+  ]))
+  const runs = tally(t, 's1').runs
+  assert.deepEqual(runs.map(r => [r.name, r.kind]), [['review1-pitfall', 'review'], ['lows-fix', 'other']])
+  const b = createUsageTracker()
+  const recs = []; t.onRecord = (r) => recs.push(r)
+  t.observe('s2', msg(usage(1, 1), [call('subagent_claude_code', { name: 'x', prompt: 'code-review' }, 'k3')]))
+  for (const r of recs) b.apply(r)
+  assert.equal(tally(b, 's2').runs.length, 1)
+})
+
 test('records replay to the same state (ledger is the source of truth)', () => {
   const a = createUsageTracker(); const recs = []
   a.onRecord = (r) => recs.push(r)

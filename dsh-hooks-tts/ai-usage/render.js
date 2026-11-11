@@ -32,7 +32,10 @@ export function renderDaily(tracker, day) {
     roots.add(tracker.rootOf(s.id))
     out.push(`## session ${s.id} (${s.kind})`, '', `Title: ${s.title || 'n/a'}`, `Cwd: ${s.cwd || 'n/a'}`)
     if (s.tickets.size) out.push(`Tickets: ${[...s.tickets].map((t) => `[[AB#${t}]]`).join(', ')}`)
-    out.push(`Subagent runs: ${s.subagentCalls}`, '', `Usage on ${day}:`, '', HEAD, row(day, s.byDay[day]), '', 'Session breakdown:', '', breakdown(s), '')
+    const rv = s.runs.filter((r) => r.kind === 'review').length
+    out.push(`Delegated Claude Code runs: ${s.subagentCalls} (${rv} review, ${s.runs.length - rv} other). Their tokens are NOT measurable: DSH logs only a "started"/closing message, not usage, so they are absent from the totals below, not zero.`)
+    if (s.runs.length) out.push('', 'Runs: ' + s.runs.map((r) => `${r.name} [${r.kind}]`).join(', '))
+    out.push('', `Usage on ${day}:`, '', HEAD, row(day, s.byDay[day]), '', 'Session breakdown:', '', breakdown(s), '')
   }
   for (const r of roots) {
     const c = tracker.chain(r)

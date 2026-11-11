@@ -6,6 +6,7 @@
 const REVIEW_SKILLS = new Set(['code-review', 'modes-ai-pitfall-review', 'modes-security-review', 'modes-regressions-analyzer', 'modes-memory-and-performance-analyzer', 'modes:ai-pitfall-review', 'modes:security-review', 'modes:regressions-analyzer', 'modes:memory-and-performance-analyzer'])
 const NEUTRAL_SKILLS = new Set(['modes-sparc', 'modes:sparc', 'all-4-1', 'ado-ticket-to-implementation', 'ctnp-sprint-batch-prs'])
 const TICKET_SKILLS = new Set(['ado-ticket-to-implementation', 'all-4-1', 'ctnp-sprint-batch-prs', 'ado-pr', 'ado-pr-implement', 'ado-pr-review'])
+const REVIEW_RE = /code-review|ai-pitfall|security-review|regressions?-analy|memory-and-performance|\breview\b/i
 const EDIT_TOOLS = new Set(['write', 'edit', 'multi_edit'])
 const TICKET_RE = /AB#(\d{4,7})/g
 const CATS = ['code', 'review', 'skill', 'subagent']
@@ -30,7 +31,7 @@ export function createUsageTracker() {
   const get = (id) => {
     let s = state.get(id)
     if (!s) {
-      s = { id, cwd: '', title: '', ticketSkill: false, totals: zero(), byCategory: {}, bySkill: {}, byTicket: {}, byDay: {}, tickets: new Set(), subagentCalls: 0, ctx: null, pending: new Map(), first: undefined, last: undefined }
+      s = { id, cwd: '', title: '', ticketSkill: false, totals: zero(), byCategory: {}, bySkill: {}, byTicket: {}, byDay: {}, tickets: new Set(), subagentCalls: 0, runs: [], ctx: null, pending: new Map(), first: undefined, last: undefined }
       for (const c of CATS) s.byCategory[c] = zero()
       state.set(id, s)
     }
@@ -69,6 +70,7 @@ export function createUsageTracker() {
       if (r.ticketSkill) s.ticketSkill = true
       account(s, r.cat, r.skill, r.tickets ?? [], r.u, r.time)
       if (r.sub) s.subagentCalls += r.sub
+      if (Array.isArray(r.runs)) s.runs.push(...r.runs.slice(0, 50))
     } else if (r.k === 'sub') {
       const s = get(r.id); account(s, 'subagent', undefined, [], r.u, r.time)
     }
@@ -95,7 +97,7 @@ export function createUsageTracker() {
       if (!usage || !valid(usage.inputTokens) || !valid(usage.outputTokens)) return
       const s = get(id)
       const blocks = Array.isArray(event.data?.message?.content) ? event.data.message.content : []
-      let sub = 0; let edits = false; let text = ''; let ticketSkill = false; let nextCtx = null
+      let sub = 0; let edits = false; let text = ''; let ticketSkill = false; let nextCtx = null; const runs = []
       for (const b of blocks) {
         if (!b || typeof b !== 'object') continue
         if (b.type === 'text' && typeof b.text === 'string') text += ' ' + b.text
@@ -107,7 +109,11 @@ export function createUsageTracker() {
           if (!NEUTRAL_SKILLS.has(args.name)) nextCtx = { name: args.name, review: REVIEW_SKILLS.has(args.name) }
         }
         if (EDIT_TOOLS.has(b.name)) edits = true
-        if (b.name === 'subagent_claude_code') { sub++; if (b.id) s.pending.set(b.id, true) }
+        if (b.name === 'subagent_claude_code') {
+          sub++; if (b.id) s.pending.set(b.id, true)
+          const hay = `${args.name ?? ''} ${args.description ?? ''} ${args.prompt ?? ''}`
+          runs.push({ name: String(args.name ?? args.description ?? 'subagent').slice(0, 80), kind: REVIEW_RE.test(hay) ? 'review' : 'other' })
+        }
       }
       const tickets = [...new Set([...text.matchAll(TICKET_RE)].map((m) => m[1]))]
       let cat = 'code'; let skill
@@ -118,7 +124,7 @@ export function createUsageTracker() {
       }
       const cacheRead = num(usage.cacheReadTokens); const cacheWrite = num(usage.cacheWriteTokens)
       const u = { input: usage.inputTokens + cacheRead + cacheWrite, output: usage.outputTokens, cacheRead, cacheWrite, reasoning: num(usage.reasoningTokens), messages: 1 }
-      const rec = { k: 'msg', id, cat, skill, tickets, u, sub, ticketSkill, time: Number.isFinite(event.time) ? event.time : Date.now() }
+      const rec = { k: 'msg', id, cat, skill, tickets, u, sub, ticketSkill, runs, time: Number.isFinite(event.time) ? event.time : Date.now() }
       apply(rec); emit(rec)
       if (nextCtx) s.ctx = nextCtx // a skill takes effect for the messages after the one that loaded it
     } catch { /* an odd event must never reach the host */ }
