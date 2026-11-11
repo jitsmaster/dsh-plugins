@@ -19,6 +19,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startStatusService } from './status.js'
 import { installContextCap } from './cap.js'
+import { installAiUsage } from './ai-usage/index.js'
 import { installPrPoller } from './pr.js'
 import { withHandover } from './pr-archive-guard.js'
 import { installAskUserTuning } from './ask.js'
@@ -228,6 +229,9 @@ export function apply(ctx, baseConfig = {}) {
   // "Follow-up from handoff" spawns through the cap's machinery, installed further down (hence lazy).
   let contextCap
   startStatusService(ctx, config, stateDir, controller.signal, settings, worktrees, groups, { handoffs, followUp: (sessionId) => contextCap.followUp(sessionId), voice: () => voice })
+
+  // AI usage audit: per-session token accounting written to the vault (AI usage/ and CTnP/AI Usage by Ticket/).
+  try { installAiUsage(ctx, config, stateDir) } catch (error) { ctx.logger.warn(`hooks-tts: ai-usage disabled: ${error?.message ?? error}`) }
 
   // Record the worktree each session actually works in (its cwd stays at the launch directory),
   // and every handoff note it writes (the session menu offers a follow-up from the latest one).
