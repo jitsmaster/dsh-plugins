@@ -8,12 +8,13 @@ import { createUsageTracker } from './tracker.js'
 import { createLedger } from './ledger.js'
 import { writeNotes } from './render.js'
 
-const day = process.argv[2]
+const [day, lastDay = day] = process.argv[2].split('..')
+const ticketsOnly = process.env.AIU_TICKETS_ONLY === '1'
 const vault = process.argv[3] ?? 'D:\\dev\\Notes\\Dev Tasks'
 const ledgerPath = process.argv[4]
 const root = join(homedir(), '.dsh', 'sessions')
 const dayStart = new Date(`${day}T00:00:00`).getTime()
-const dayEnd = dayStart + 86_400_000
+const dayEnd = new Date(`${lastDay}T00:00:00`).getTime() + 86_400_000
 
 function decode(file) {
   const b = readFileSync(file); const idx = []
@@ -54,9 +55,8 @@ for (const list of byGroup.values()) {
   list.sort((a, b) => a.first - b.first)
   for (let i = 1; i < list.length; i++) tracker.link(list[i - 1].sid, list[i].sid)
 }
-const files = writeNotes(tracker, vault, [day])
-// Day summary on top (valid here because only events inside the day were accounted).
-{
+const files = writeNotes(tracker, vault, ticketsOnly ? [] : [day])
+if (!ticketsOnly) {
   const { readFileSync: rf, writeFileSync: wf } = await import('node:fs')
   const z = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, messages: 0 })
   const sum = (a, b) => { for (const k of Object.keys(a)) a[k] += b[k] ?? 0 }
@@ -74,3 +74,4 @@ const files = writeNotes(tracker, vault, [day])
   wf(files[0], top + rf(files[0], 'utf8').replace(/^# AI usage [^\n]*\n\n/, ''))
 }
 console.log(JSON.stringify({ sessions: tracker.sessions().length, files }, null, 1))
+
