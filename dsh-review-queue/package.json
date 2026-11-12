@@ -33,6 +33,7 @@
     "todo-images.js",
     "auto-clear.js",
     "idle-ask.js",
+    "idle-busy.js",
     "triage.js",
     "triage-judge.js",
     "question-merge.js",
