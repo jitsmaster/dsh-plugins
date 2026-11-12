@@ -181,6 +181,36 @@ const CLEAN_FINISHED = [
 ]
 for (const [label, reply] of CLEAN_FINISHED) test('needsUserForTriage lets a clean finished reply through: ' + label, () => assert.equal(forTriage(reply), false, reply))
 
+// Informational wording that used to veto: approval/failure words that report, not ask.
+const INFORMATIONAL = [
+	['approval gate topic', 'Added an approval gate to the deploy script.'],
+	['approved in the past', 'The plan was approved earlier and the work is committed.'],
+	['sign-off as a topic', 'Updated the sign-off checklist template.'],
+	['fixed the failing test', 'Fixed the failing test in the parser suite. All tests pass.'],
+	['fixed the failed build', 'Fixed the failed build; it is green now.'],
+	['no longer failing', 'The importer spec is no longer failing.'],
+	['previously failed', 'The login spec previously failed and now passes.'],
+]
+for (const [label, reply] of INFORMATIONAL) test('needsUserForTriage lets informational wording through: ' + label, () => assert.equal(forTriage(reply), false, reply))
+
+const OPEN_REQUESTS = [
+	['needs your approval', 'The change needs your approval.'],
+	['waiting for approval', 'Waiting for approval.'],
+	['awaiting approval', 'Awaiting approval from the lead.'],
+	['sign-off needed', 'Sign-off needed before the release.'],
+	['approval required', 'Approval is required to continue.'],
+	['approve this', 'Approve this and I will merge.'],
+	['ask you for commit approval', 'I will show the final diff and ask you for commit approval.'],
+	['approve or reset', 'To switch it to approve-with-suggestions, approve or reset, tell me which.'],
+	['commit approval still to do', 'The live check and the commit/PR approval are still to do.'],
+	['merge approval', 'Merge approval is the last step.'],
+	['3 tests failed', '3 tests failed.'],
+	['build failed', 'Build failed on CI.'],
+	['fixed one but others failed', 'Fixed the parser but 3 tests failed.'],
+	['fixed it, still failed', 'Fixed the build; 3 tests failed.'],
+]
+for (const [label, reply] of OPEN_REQUESTS) test('needsUserForTriage still vetoes: ' + label, () => assert.equal(forTriage(reply), true, reply))
+
 test('needsUserForTriage keeps empty, non-string and code-only replies, and lets plain status through like needsUser', () => {
 	for (const reply of ['', '   \n ', undefined, null, 42, {}]) { assert.equal(needsUser(reply), true); assert.equal(forTriage(reply), true) }
 	assert.equal(forTriage('```\nonly code\n```'), true)

@@ -13,7 +13,9 @@ const STRONG = [
 	/\byou(?:'ll| will)? (?:need|have to|must|should|can|may|might|could|want)\b/, /\bneeds? (you|your)\b/, /\bbefore you\b/, /\b(once|when|if) you\b/,
 	/\b(decide|choose|which (?:one|option|approach)|options:)/,
 	/\bready for (?:your |the )?(?:review|merge|merging)\b/, /\bfor your (?:review|attention)\b/, // a review request addressed to the user, also next to a PR or ticket mention
-	/\b(approve|approval|sign[- ]?off|go-?ahead)\b/, /\b(confirm|verify|double[- ]?check) (that|whether|if|it|this)\b/,
+	// Approval only when asked of the user ("needs a sign-off", "approval is required", "approve this"); a topic ("approval gate") or past tense ("approved") is a report.
+	/\b(?:approval|sign[- ]?off|go-?ahead)\b (?:is |are )?(?:needed|required|pending)\b/, /\b(?:needs?|requires?|awaiting|waiting (?:for|on)|pending|for your|your) (?:\w+ )?(?:approval|sign[- ]?off|go-?ahead)\b/, /\bapprove (?:this|it|that|these|the|or)\b/, /\bfor (?:\w+ )?(?:approval|sign[- ]?off|go-?ahead)\b/, /\b(?:commit|merge|pr|push|release|final)(?:\/\w+)? (?:approval|sign[- ]?off)\b/,
+	/\b(confirm|verify|double[- ]?check) (that|whether|if|it|this)\b/,
 	/\b(test (it|this|that)|try (it|this|that)|by hand|manually|restart (it|the|your)|reload)\b/,
 	/\b(blocked (on|by)|stuck|waiting (on|for) (you|your|the user)|unable to|cannot|can't|couldn't|could not|wasn't able)\b/,
 	/\b(still|remaining) (failing|broken|open|unresolved|todo)\b/, /\bnot (yet )?(done|finished|fixed|working|tested)\b/,
@@ -31,7 +33,7 @@ const STRONG = [
  * done card, but stay out of STRONG: for the hide guard (needsUser) a bare failure word is deliberately not a trigger
  * (the summary model and the other tail words decide). "a failure counter" is a topic and does not match.
  */
-const TRIAGE_ONLY = [/\b(?:fail(?:ed|ing)|fails)\b/]
+const TRIAGE_ONLY = [/(?<!\b(?:fix(?:ed|es)?|resolved) (?:the |a |an )?)(?<!no longer |previously |not )\b(?:fail(?:ed|ing)|fails)\b/] // a failure that is fixed, gone or past ("fixed the failing test", "no longer failing") does not veto
 
 /** Signals that only mention a pull request, a handoff or a ticket: a veto for the hide, but not for AI triage (see needsUserForTriage). */
 const MENTIONS = [
