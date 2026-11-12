@@ -192,3 +192,13 @@ test('asker: an idle state asked before the upgrade (keyed on updatedAt) is not 
   const r = rig([S('a', 1 * H)], { io, readLog: async () => ({ records: log }) })
   assert.deepEqual((await r.asker.check()).asked, [])
 })
+
+test('asker: an already-asked session is not log-read again on the next pass', async () => {
+  const reads = []
+  const log = [{ type: 'turn/end', time: 1 * H + 5000, data: { reason: { kind: 'completed' } } }]
+  const r = rig([S('a', 1 * H)], { readLog: async (id) => { reads.push(id); return { records: log } } })
+  assert.deepEqual((await r.asker.check()).asked, ['a'])
+  const before = reads.length
+  await r.asker.check()
+  assert.equal(reads.length, before)
+})

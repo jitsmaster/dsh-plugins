@@ -78,6 +78,9 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, pr
   /** Awake idle time of a session: wall time since its last update minus the machine's sleep. */
   const awakeIdle = (updatedAt) => now() - updatedAt - (sleep?.sleptBetween(updatedAt, now()) ?? 0)
 
+  /** Was this idle state asked already? Same busy-since, or (state saved before the busy clock) nothing newer than the ask itself. */
+  const askedFor = (id, since) => { const prev = state[id]; return !!prev && (prev.updatedAt === since || since <= prev.at) }
+
   // The idle clock starts at the last moment the session was busy (turn, tool call, queued prompt, child session, background job, open card), not at its last message.
   const busy = createBusyTracker({ now, waitingOf: waiting, readLog, startedAt })
 
@@ -100,7 +103,7 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, pr
     busy.observe(items)
     const idle = items
       .filter((i) => i && typeof i.sessionId === 'string' && isTopLevel(i) && i.running !== true && i.blank !== true && !archived.has(i.sessionId) && !held.has(i.sessionId) && !busyParents.has(i.sessionId)
-        && Number.isFinite(i.updatedAt) && t - i.updatedAt <= maxAgeMs && awakeIdle(busy.sinceOf(i)) >= idleMs && state[i.sessionId]?.updatedAt !== busy.sinceOf(i) && !waiting(i.sessionId))
+        && Number.isFinite(i.updatedAt) && t - i.updatedAt <= maxAgeMs && awakeIdle(busy.sinceOf(i)) >= idleMs && !askedFor(i.sessionId, busy.sinceOf(i)) && !waiting(i.sessionId))
       .sort((a, b) => b.updatedAt - a.updatedAt)
 
     const result = { ok: true, asked: [], skipped: [] }
@@ -113,9 +116,7 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, pr
       inspected++
       const seen = await busy.inspect(raw)
       if (seen.busy) { result.skipped.push(raw.sessionId); continue }
-      const prev = state[raw.sessionId]
-      // asked already for this idle state, or (state saved before the busy clock existed, keyed on updatedAt) nothing was busy since that ask
-      if (awakeIdle(seen.since) < idleMs || (prev && (prev.updatedAt === seen.since || seen.since <= prev.at))) continue
+      if (awakeIdle(seen.since) < idleMs || askedFor(raw.sessionId, seen.since)) continue
       const item = { ...raw, updatedAt: seen.since } // the idle state is keyed on the last busy moment
       try {
         await controller.prompt({ requestId: 'idle-ask-' + randomUUID(), sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: ASK_PROMPT }] }, AbortSignal.timeout(PROMPT_TIMEOUT_MS))
