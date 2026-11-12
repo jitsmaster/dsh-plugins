@@ -210,6 +210,17 @@ test('without a question rule the system prompt has no question guidance', async
   assert.doesNotMatch(seen.req.system, /one clearly recommended option/i)
 })
 
+test('with a done rule the guidance names the "subagent or build still running, I will continue" report as needs_decision false', async () => {
+  const seen = {}
+  const DRULES = [{ id: 'green-done', class: 'done', instruction: 'Report of finished work.' }]
+  const DITEM = { id: 'd1', type: 'completed', payload: { reply: 'Review 1 is running in a subagent. I will continue when it reports.' } }
+  await createTriageJudge({ llm: fakeLlm({ answer: { ...GOOD, matched_rule: 'green-done' }, seen }) }).judge({ item: DITEM, rules: DRULES })
+  const system = seen.req.system
+  assert.match(system, /waiting on a subagent, a review or a build/i)
+  assert.match(system, /I'll continue when it reports/)
+  assert.match(system, /not a decision for the user/i)
+})
+
 test('the judge leaves room for hidden reasoning: it asks for at least 1500 output tokens', async () => {
   const seen = {}
   await createTriageJudge({ llm: fakeLlm({ answer: GOOD, seen }) }).judge({ item: ITEM, rules: RULES })

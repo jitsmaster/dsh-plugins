@@ -45,6 +45,7 @@ const QUESTION_GUIDANCE = '\n\nQUESTION items: set needs_decision true unless th
  *  The 25 and 50 below mirror DEFAULT_THRESHOLD and the "unsure means above 50" line of SYSTEM in triage.js; change them together. */
 const DONE_GUIDANCE = '\n\nDONE items: when the message only reports finished work or passing tests, or only says that work (a subagent, a build) is still running in the background and the assistant continues by itself, and it asks nothing, hands nothing back and leaves no follow-up, '
   + 'give it an attention of 25 or less, set needs_decision false and match the done rule. '
+  + 'A message that only says the assistant is waiting on a subagent, a review or a build ("review 1 is running in a subagent, I\'ll continue when it reports") is a status report, not a decision for the user: needs_decision false, attention 25 or less, unless it also asks or hands something back. '
   + 'When it asks a question, offers options, says something is blocked, or leaves a step for the user, give an attention above 50. If unsure, answer above 50.'
 
 /** Cap on the model's raw reply kept in a log line or log entry. */
