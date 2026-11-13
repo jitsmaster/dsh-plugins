@@ -12,6 +12,8 @@
   "files": [
     "index.js",
     "store.js",
+    "tier.js",
+    "event-log.js",
     "speech.js",
     "summary.js",
     "filelog.js",

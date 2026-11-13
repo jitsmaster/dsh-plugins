@@ -70,6 +70,7 @@ import { CHECK_MS, IDLE_MS, createIdleJudge, createIdleResumer, createLogReader 
 import { ASK_CHECK_MS, ASK_IDLE_MS, BEAT_MS, createIdleAsker, createSleepTracker } from './idle-ask.js'
 import { createTriageJudge } from './triage-judge.js'
 import { createTriageLog } from './triage-log.js'
+import { createEventLog } from './event-log.js'
 import { createTriageRunner, DEFAULT_RULES } from './triage-runner.js'
 import { createDoneActor } from './triage-act-done.js'
 import { createPermissionActor } from './triage-act-permission.js'
@@ -142,7 +143,9 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     store = createStoreAdapter({ instanceId, io: fileIo(join(stateDir, 'local', instanceKey + '.json')) })
     log('hub on')
   } else {
-    store = createStore({ io: stateDir ? fileIo(join(stateDir, 'queue.json')) : undefined })
+    // Slice 0 of grouping and priority: ids, types and tiers only, never card text. Hub mode gets its event log in slice 5.
+    const events = stateDir ? createEventLog(join(stateDir, 'queue-events.jsonl')) : undefined
+    store = createStore({ io: stateDir ? fileIo(join(stateDir, 'queue.json')) : undefined, events })
     cancelStalePending(store, { log }) // with the hub on, the hub settles the dead requests of an earlier run (agent/wire.js)
   }
   store.prune()

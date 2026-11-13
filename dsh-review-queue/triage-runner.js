@@ -15,6 +15,7 @@ import { classOf, parseReadOnlyCommand, triageOutcome } from './triage.js'
 import { redact } from './triage-log.js'
 import { commandIntact, containedInWorkspace, plantedBinary } from './triage-paths.js'
 import { clipAnswer } from './triage-clip.js'
+import { buildTier } from './tier.js'
 
 export { clipAnswer }
 
@@ -150,6 +151,17 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
   const record = (entry) => { try { triageLog?.append(entry) } catch { /* the log is best effort */ } }
   const stillOpen = (id) => store.get(id)?.status === 'open'
 
+  /** After the judge answers, refine the code-only tier with the model's optional severity (it can only raise it above the code floor). Best effort; a resolved item is left alone. */
+  function refineTier(item, facts, judgment) {
+    try {
+      const current = store.get(item.id)
+      if (current?.status !== 'open') return
+      const next = buildTier({ item, facts, judgment }, now())
+      if (current.tier?.severity === next.severity && current.tier?.urgency === next.urgency && current.tier?.tier === next.tier) return
+      store.setTier(item.id, next)
+    } catch { /* the tier is advisory; a failure keeps the code-only one */ }
+  }
+
   async function run(item) {
     const cls = classOf(item)
     if (!cls) return
@@ -157,6 +169,7 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
     if (!mine.length) return
     const judgedPrint = payloadFingerprint(item)
     const facts = factsOf(item, { sessionContinuesOf })
+    refineTier(item, facts, undefined) // code facts first, so a vetoed card (no judge call) still gets its tier from what code found
     // Step 1, code only: a veto that no model answer can lift means no model call at all.
     const pre = triageOutcome({ item, judgment: { needs_decision: false, attention: 0, matched_rule: mine[0].id, answer_basis: 'none' }, rule: mine[0], facts, marks: marksOf(item), relax: { sessionFinished: true } })
     // The log says what the verdict that entry records was based on: the raise-time facts for the pre-check, the verdict's own facts after the judge.
@@ -199,6 +212,7 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
       record({ itemId: item.id, type: item.type, stage: 'judge', verdict: 'ask', reasons: ['no-judgment'], note: result?.note, ...(raw ? { raw } : {}) })
       return
     }
+    refineTier(item, facts, result.judgment)
     const rule = mine.find((r) => r.id === result.judgment.matched_rule)
     // An auto verdict reads the card as it is after the judge (its summary and session state may have arrived meanwhile); observe keeps the facts of the raise.
     const latest = store.get(item.id)

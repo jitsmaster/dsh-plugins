@@ -307,5 +307,14 @@
   "test/tip-survey.test.mjs",
   "test/tip-survey-limits.test.mjs",
   "test/tip-survey-wiring.test.mjs",
-  "test/client-tip-survey.test.mjs"
+  "test/client-tip-survey.test.mjs",
+  "test/tier.test.mjs",
+  "test/store-tier.test.mjs",
+  "test/triage-judge-severity.test.mjs",
+  "test/triage-runner-tier.test.mjs",
+  "test/event-log.test.mjs",
+  "test/client-tier-chip.test.mjs",
+  "test/tier-replay.test.mjs",
+  "test/tier-bands.test.mjs",
+  "test/event-log-rotation.test.mjs"
 ]

@@ -4,6 +4,10 @@
  * resolved items stay for a week. Persisted as one small JSON file; a missing, corrupt or unwritable file never throws.
  */
 import { randomUUID } from 'node:crypto'
+import { buildTier, validTier } from './tier.js'
+
+/** The code-only tier of an item (no model input, no facts): every item has one from the moment it exists. The triage runner may refine it later. */
+const codeTier = (item, at) => buildTier({ item }, at)
 
 export const RETENTION_MS = 7 * 24 * 3600 * 1000
 /** Items the AI resolved (the Resolved by AI list) are kept longer, so there is time to review them. */
@@ -24,7 +28,11 @@ function capped(value, depth = 0) {
 /**
  * @param {{ now?: () => number, uuid?: () => string, io?: { read: () => string | undefined, write: (text: string) => void }, retentionMs?: number }} [opts]
  */
-export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0, 12), io, retentionMs = RETENTION_MS } = {}) {
+export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0, 12), io, retentionMs = RETENTION_MS, events } = {}) {
+  /** One row in the event log (ids, types, tiers only); a failing log never reaches the store. */
+  const emit = (event) => { try { events?.record(event) } catch { /* the event log is best effort */ } }
+  const emitTier = (item) => { if (item.tier) emit({ kind: 'tiered', itemId: item.id, type: item.type, tier: item.tier.tier, severity: item.tier.severity, urgency: item.tier.urgency }) }
+  const emitResolved = (item) => emit({ kind: 'resolved', itemId: item.id, type: item.type, resolution: item.resolution?.kind, by: item.resolution?.by })
   /** @type {Map<string, any>} */
   const items = new Map()
   const listeners = new Set()
@@ -72,7 +80,10 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     openBy.clear()
     indexedAs.clear()
     for (const item of data.items) {
-      if (item && typeof item.id === 'string' && typeof item.type === 'string') { items.set(item.id, item); reindex(item) }
+      if (item && typeof item.id === 'string' && typeof item.type === 'string') {
+        if (!validTier(item.tier)) item.tier = codeTier(item, Number.isFinite(item.createdAt) ? item.createdAt : now()) // saved before tiers existed
+        items.set(item.id, item); reindex(item)
+      }
     }
     seq = Number.isFinite(data.seq) ? data.seq : items.size
   }
@@ -103,11 +114,13 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     /** opts.id / opts.createdAt: an item captured elsewhere keeps its id and time (the hub). */
     add(input, { id, createdAt } = {}) {
       const item = { ...capped(input), id: id ?? uuid(), seq: ++seq, status: 'open', createdAt: createdAt ?? now() }
+      item.tier = codeTier(item, now()) // never taken from the caller: an item cannot arrive with a forged tier
       const replaced = items.get(item.id) // an id given twice replaces the earlier item: it must leave the index too
       if (replaced) unindex(replaced)
       items.set(item.id, item)
       reindex(item)
       changed()
+      emitTier(item)
       // The one place new items are announced (AI triage listens here, not in every raiser). A listener runs after the item is stored and can never break the add.
       for (const listener of [...addListeners]) {
         try { listener(copy(item)) } catch { /* one bad listener must not stop the others or lose the item */ }
@@ -119,9 +132,21 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     update(id, patch) {
       const item = items.get(id)
       if (!item) return false
-      Object.assign(item, capped(patch))
+      const { tier: _ignored, ...rest } = patch ?? {} // a tier never arrives through a generic patch (setTier is the one way)
+      Object.assign(item, capped(rest))
       reindex(item)
       changed()
+      return true
+    },
+    /** Replace the tier of an item with a well-formed one (the triage runner, after the judge); false for an unknown id or a malformed tier. */
+    setTier(id, tier) {
+      const item = items.get(id)
+      if (!item || !validTier(tier)) return false
+      const was = item.tier?.tier
+      if (item.tier && item.tier.severity === tier.severity && item.tier.urgency === tier.urgency && item.tier.tier === tier.tier) return true // nothing changed: no version bump, no persist
+      item.tier = { severity: tier.severity, urgency: tier.urgency, tier: tier.tier, at: Number.isFinite(tier.at) ? tier.at : now() }
+      changed()
+      if (item.tier.tier !== was) emitTier(item)
       return true
     },
     /** Put a resolved item back in the queue, in its old place (a misclicked Reviewed). */
@@ -144,6 +169,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       item.resolution = { ...resolution }
       reindex(item)
       changed()
+      emitResolved(item)
       return true
     },
     /** Resolve an open item only when test(item) holds, read in the same tick (a throwing test counts as false). */
@@ -157,7 +183,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       let any = false
       for (const item of items.values()) {
         if (item.sessionId === sessionId && item.status === 'open') {
-          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { ...resolution }; reindex(item); any = true
+          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { ...resolution }; reindex(item); emitResolved(item); any = true
         }
       }
       if (any) changed()
@@ -168,7 +194,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       let any = false
       for (const item of items.values()) {
         if (item.status === 'open' && !liveIds.has(item.sessionId)) {
-          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { kind: 'session-ended' }; reindex(item); any = true
+          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { kind: 'session-ended' }; reindex(item); emitResolved(item); any = true
         }
       }
       if (any) changed()

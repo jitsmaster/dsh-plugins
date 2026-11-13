@@ -79,6 +79,15 @@ window.__ModuleLoader__.load({
 			return t.considered && t.considered[0] ? base + " It weighed a past correction: " + pastText(t.considered[0]) + "." : base;
 		};
 
+		/** The shadow tier chip of a card (severity + urgency, the reason as title); undefined without a usable tier. Display only. Shared with the phone later. */
+		const SEV_LABELS = { high: "High", medium: "Medium", low: "Low", housekeeping: "Housekeeping" };
+		const tierChip = (item) => {
+			const t = item && item.tier;
+			if (!t || !Number.isInteger(t.tier) || t.tier < 0 || t.tier > 4 || !Object.prototype.hasOwnProperty.call(SEV_LABELS, t.severity)) return undefined;
+			const blocked = t.urgency === "blocked";
+			return { text: "P" + t.tier + " " + SEV_LABELS[t.severity], level: t.tier, title: SEV_LABELS[t.severity] + " severity, " + (blocked ? "an agent is blocked on it" : "not blocking an agent") + " (priority P" + t.tier + ")" };
+		};
+
 		/** Done items that left the list without the user acting on them can go back in. */
 		const isReopenable = (it) => !!(it && it.resolution && ((it.resolution.kind === "ai-resolved" && (it.type === "completed" || it.type === "paused")) || it.type === "completed" && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action" || it.resolution.kind === "trimmed")));
 
@@ -1620,7 +1629,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-body{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px}.rq-banner{padding:8px 14px;background:#f25a5a22;color:var(--rq-err);font-size:12px}.rq-notice{padding:6px 14px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#8883}.rq-notice-warn{background:#f2b5301f;color:var(--rq-fg)}"
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
-			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}"
+			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}.rq-tier{opacity:.85}.rq-tier0{outline:1px solid var(--rq-err)}.rq-tier1{outline:1px solid var(--rq-warn)}"
 			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.archive{color:var(--rq-warn)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-chip.onhold{color:var(--rq-mute)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
@@ -1961,11 +1970,13 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const left = item.expiresAt ? item.expiresAt - now : undefined;
 			const Body = item.type === "question" ? QuestionBody : item.type === "permission" ? PermissionBody : item.type === "pr-merged" ? PrMergedBody : item.type === "archive" ? ArchiveBody : item.type === "todo" ? (isFollowUp(item) ? FollowUpBody : TodoBody) : item.type === "paused" ? (isLimitSigninItem(item) ? LimitSigninBody : PausedBody) : item.type === "onhold" ? OnHoldBody : CompletedBody;
 			const reading = !!(st.snap && st.snap.reading === item.id);
+			const chip = tierChip(item);
 			const toggle = () => { if (onSelect) onSelect(); if (!forceFull) set({ expanded: { ...st.expanded, [item.id]: !full } }); };
 			return h("div", { className: "rq-card" + (selected ? " sel" : ""), "data-item": item.id },
 				h("div", { className: "rq-card-h", onClick: toggle },
 					h("span", { className: "rq-pos" }, "#" + item.position),
 					h("span", { className: "rq-chip " + item.type }, itemTypeLabel(item)),
+					chip ? h("span", { className: "rq-chip rq-tier rq-tier" + chip.level, "data-tier": item.id, title: chip.title }, chip.text) : null,
 					h("span", { className: "rq-title", title: cardTitle(item) }, cardTitle(item)),
 					h("span", { className: "rq-meta" },
 						left !== undefined ? h("span", { className: "rq-left" + (left < 30000 ? " soon" : ""), title: "Time left before this question expires" }, fmtLeft(left)) : null,
@@ -2545,7 +2556,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** Pure card helpers the phone page (lib/mobile) reuses by loading this file with a stub React; keep them free of React and of this module's state. */
-		exports.shared = { resolvedSessionLine, raisedText, resolvedBody, todoSendLabel, handoffFollowable, isAiResolved, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, itemTypeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
+		exports.shared = { resolvedSessionLine, raisedText, resolvedBody, todoSendLabel, handoffFollowable, isAiResolved, isAutoCleared, isAiHandled, aiReportChip, stageOf, detachedNote, triageNote, tierChip, isReopenable, nextAfter, filterItems, similarCount, mdInline, mdBlocks, actionTokens, plainAction, cardTitle, fmtAge, fmtLeft, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, aiUnseenCount, typeLabel, itemTypeLabel, errorText, pruneSaved, sinceOf, sessionsText, sessionsTitle, tipSentences, detailsOpen, isSendKey, recommended, waitingCount, pausedCount, pausedFacts, heldCount, heldFacts, FILTER_TYPES, filterBarVisible, todoLine, todoCardState, todoSelect, todoTarget, recordText, promotionHint, ruleModeLabel, lessonLine };
 		exports.inject = inject;
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
@@ -2553,6 +2564,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		Object.assign(exports.__test, { errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
+		Object.assign(exports.__test, { tierChip });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
 		Object.assign(exports.__test, { resolvedSessionLine, raisedText, resolvedBody, hasResolvedBody, ResolvedBody, mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });
