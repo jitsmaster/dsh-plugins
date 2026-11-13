@@ -146,3 +146,7 @@ test('parseJudgment: a trailing (Recommended) suffix is stripped before dedupe; 
   assert.deepEqual(parse({ decision_text: 'Q', decision_options: ['Ship now (Recommended)', 'Wait', 'ship NOW (recommended)'] }).judgment.decision.options, ['Ship now', 'Wait'])
   assert.deepEqual(parse({ decision_text: 'Q', decision_options: ['A (Recommended)', 'a'] }).judgment.decision.options, [])
 })
+test('parseJudgment: decision text and options are stored NFKC-normalised (full-width, ligatures)', () => {
+  const j = parse({ decision_text: '\uff33hip \ufb01x?', decision_options: ['\uff39\uff45\uff53', '\ufb01x it'] }).judgment
+  assert.deepEqual(j.decision, { text: 'Ship fix?', options: ['Yes', 'fix it'] })
+})

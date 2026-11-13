@@ -78,7 +78,7 @@ const boolOrUndef = (v) => (typeof v === 'boolean' ? v : undefined)
 
 /** A done card's decision form from the model: text plus 2-4 distinct string options (fewer than 2 valid ones mean a free-text question); no text means none. */
 const INVISIBLE = /[\p{Default_Ignorable_Code_Point}\p{Cf}\u061c\u034f\u180e\u17b4\u17b5\u2800\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/gu
-const stripCtl = (s) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f\u1680\u2000-\u200a\u3000]+/g, ' ').replace(INVISIBLE, '').replace(/\s+/g, ' ') : s)
+const stripCtl = (s) => (typeof s === 'string' ? s.normalize('NFKC').replace(/[\u0000-\u001f\u007f-\u009f\u1680\u2000-\u200a\u3000]+/g, ' ').replace(INVISIBLE, '').replace(/\s+/g, ' ') : s)
 /** The comparison key of an option: NFKC, case-folded, without a trailing "(Recommended)" style suffix. */
 const RECOMMENDED = /\s*[(\[]\s*recommended\s*[)\]]\s*$/i
 const withoutRecommended = (t) => t.replace(RECOMMENDED, '').trim()
