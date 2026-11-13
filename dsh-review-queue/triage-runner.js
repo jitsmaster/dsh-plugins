@@ -213,6 +213,13 @@ export function createTriageRunner({ store, judge, triageLog, memory, rules = DE
       return
     }
     refineTier(item, facts, result.judgment)
+    // A done card the judge says needs a decision keeps its type and gets a decision payload (shown as a question; never AI-handled).
+    if (cls === 'done' && result.judgment.needs_decision === true && result.judgment.decision && stillOpen(item.id) && !store.get(item.id)?.decision) {
+      try {
+        store.update(item.id, { decision: { text: result.judgment.decision.text, options: result.judgment.decision.options, free: true } })
+        record({ itemId: item.id, type: item.type, stage: 'decision', verdict: 'ask', reasons: ['needs-decision'], options: result.judgment.decision.options.length })
+      } catch { record({ itemId: item.id, type: item.type, stage: 'decision', verdict: 'ask', reasons: ['update-failed'] }) }
+    }
     const rule = mine.find((r) => r.id === result.judgment.matched_rule)
     // An auto verdict reads the card as it is after the judge (its summary and session state may have arrived meanwhile); observe keeps the facts of the raise.
     const latest = store.get(item.id)

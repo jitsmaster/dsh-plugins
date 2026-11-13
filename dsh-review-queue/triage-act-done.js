@@ -8,8 +8,8 @@
  */
 export function createDoneActor({ store }) {
   return async ({ item, resolutionBase }) => {
-    if (!item?.id || item.type !== 'completed') return { ok: false, reason: 'refused' }
-    const resolved = store.resolveIf(item.id, (it) => it.type === 'completed', { ...resolutionBase, action: 'cleared' })
+    if (!item?.id || item.type !== 'completed' || item.decision) return { ok: false, reason: 'refused' }
+    const resolved = store.resolveIf(item.id, (it) => it.type === 'completed' && !it.decision, { ...resolutionBase, action: 'cleared' })
     return resolved ? { ok: true, action: 'cleared' } : { ok: false, reason: 'lost-race' }
   }
 }

@@ -22,7 +22,7 @@ export function createAutoClear({ store, now = Date.now, doneMs = DONE_NO_ACTION
     return item.type === 'question' && Number.isFinite(item.expiresAt) && t >= item.expiresAt
   }
   function quietDone(item, t) {
-    return item.type === 'completed' && t - item.createdAt >= doneMs && item.actionable !== true
+    return item.type === 'completed' && t - item.createdAt >= doneMs && item.actionable !== true && !item.decision
       && !hasActionItem(item.summary) && !guard(() => needsUser(String(item.payload?.reply ?? '')), true)
   }
 

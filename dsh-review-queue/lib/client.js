@@ -1904,6 +1904,10 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			};
 			return h(React.Fragment, null,
 				h("div", { className: "rq-text" + (full ? "" : " rq-clamp"), style: { whiteSpace: "pre-line" } }, item.summary ? mdNodes(item.summary) : "Finished."), // pre-line: the action items sit in a paragraph of their own
+				!full && item.decision && item.decision.text ? h("div", { className: "rq-text rq-clamp", style: { fontWeight: 600 }, "data-decision-compact": item.id }, actionNodes(item.decision.text)) : null,
+				full && item.decision && item.decision.text ? h("div", { className: "rq-opts", "data-decision": item.id },
+					h("div", { className: "rq-text", style: { fontWeight: 600 } }, actionNodes(item.decision.text)),
+					(item.decision.options || []).map((o) => h("button", { key: o, className: "rq-opt" + (reply === o ? " on" : ""), "data-decision-opt": o, disabled: busy, "aria-pressed": reply === o, onClick: () => set({ replies: { ...state.replies, [item.id]: o } }) }, h("span", null, reply === o ? "◉" : "○"), h("span", null, o)))) : null,
 				full ? h(React.Fragment, null,
 					item.payload && item.payload.reply ? h("details", { open: detailsOpen(st.replyOpen, item), onToggle: (e) => { const now = !!e.currentTarget.open; if (now !== detailsOpen(state.replyOpen, item)) set({ replyOpen: { ...state.replyOpen, [item.id]: now } }); } }, h("summary", { className: "rq-sub", style: { cursor: "pointer" } }, "Full reply"), h("div", { className: "rq-replybox" }, h(Md, { text: item.payload.reply }))) : null,
 					h("textarea", { className: "rq-ta", placeholder: "Reply to this session… (Enter sends, Shift+Enter for a new line)", value: reply, disabled: busy, onChange: (e) => set({ replies: { ...st.replies, [item.id]: e.target.value } }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); if (canSend && !busy) send(); } }, onPaste: (e) => onPasteReplyImages(item.id, e) }),
