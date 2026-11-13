@@ -21,7 +21,9 @@ const ID = /^[A-Za-z0-9]{4,32}$/
 const ENDED = new Set(['question', 'permission'])
 /** Only work that outlives its process can change hands: a question or permission died with the app that held its promise. */
 const ADOPTABLE = new Set(['completed', 'pr-merged', 'archive', 'todo', 'onhold'])
-const BLOCKED = [...HUB_FIELDS, '__proto__']
+/** `decision` is written only by the app's own triage runner (local store); it never reaches the hub mirror through the owner sync (hub-store blocks it too). */
+const BLOCKED = [...HUB_FIELDS, 'decision', '__proto__']
+const withoutDecision = ({ decision: _d, ...rest }) => rest
 const short = (id) => id.slice(0, 4)
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const items = (v) => (Array.isArray(v) ? v.filter((i) => i && typeof i.id === 'string' && typeof i.type === 'string') : [])
@@ -108,7 +110,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
   }
   function syncOpen(inst, it, out) {
     const cur = store.get(it.id)
-    if (!cur) { store.applyOp({ op: 'add', item: it }, { owner: inst.id }); return }
+    if (!cur) { store.applyOp({ op: 'add', item: withoutDecision(it) }, { owner: inst.id }); return }
     if (cur.owner !== inst.id) { out.foreign.push(it.id); return }
     if (cur.status === 'resolved') {
       if (cur.resolution?.by !== 'hub') { out.resolved.push({ id: cur.id, resolution: cur.resolution }); return }
@@ -122,7 +124,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     const cur = store.get(it.id)
     const resolution = it.resolution ?? { kind: 'resolved' }
     if (!cur) {
-      if (store.applyOp({ op: 'add', item: it }, { owner: inst.id }).ok) store.applyOp({ op: 'resolve', id: it.id, resolution }, { owner: inst.id })
+      if (store.applyOp({ op: 'add', item: withoutDecision(it) }, { owner: inst.id }).ok) store.applyOp({ op: 'resolve', id: it.id, resolution }, { owner: inst.id })
     } else if (cur.owner !== inst.id) out.foreign.push(it.id)
     else if (cur.status === 'open') store.applyOp({ op: 'resolve', id: it.id, resolution }, { owner: inst.id })
   }

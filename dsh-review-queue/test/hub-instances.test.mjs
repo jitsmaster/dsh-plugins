@@ -321,3 +321,17 @@ test('the coordinator of a todo is the caller if it is online, else the most rec
   instances.bye(B)
   assert.equal(instances.coordinator(undefined), undefined)
 })
+
+// ---- decision never travels over the owner sync (hub-store blocks it too; this is the first line) --------------------------
+
+test('owner sync never sends a decision to the hub store (add or update)', () => {
+  const { store, instances } = make()
+  const ops = []
+  const orig = store.applyOp
+  store.applyOp = (op, ctx) => { ops.push(op); return orig(op, ctx) }
+  reg(instances, A, { sync: { openItems: [{ id: 'dn1', type: 'completed', sessionId: 's1', payload: {}, decision: { text: 'Q?', options: ['A', 'B'] } }] } })
+  instances.sync(A, { openItems: [{ id: 'dn1', type: 'completed', sessionId: 's1', payload: {}, summary: 'x', decision: { text: 'Q2?', options: ['A', 'B'] } }] })
+  assert.ok(ops.length >= 2, JSON.stringify(ops))
+  for (const op of ops) assert.equal(JSON.stringify(op).includes('decision'), false, JSON.stringify(op))
+  assert.equal(store.get('dn1').decision, undefined)
+})

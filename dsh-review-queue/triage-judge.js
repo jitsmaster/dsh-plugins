@@ -94,7 +94,7 @@ function decisionOf(obj) {
     const k = optionKey(t)
     if (t && !seen.has(k)) { seen.add(k); options.push(t) }
   }
-  return { decision: { text: text.slice(0, MAX_DECISION_TEXT), options: options.length >= MIN_OPTIONS ? options.slice(0, MAX_OPTIONS) : [] } }
+  return { decision: { text: Array.from(text).slice(0, MAX_DECISION_TEXT).join(''), options: options.length >= MIN_OPTIONS ? options.slice(0, MAX_OPTIONS) : [] } }
 }
 /** The model's answer as a Judgment, or { note } when the form is not filled in (a required field missing or of the wrong type). */
 export function parseJudgment(out) {

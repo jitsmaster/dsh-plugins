@@ -246,3 +246,13 @@ test('a truncated reply names the finish reason in the log line', async () => {
   assert.equal(lines.length, 1)
   assert.match(lines[0], /finish: max-tokens/)
 })
+
+test('the decision text is cut by code point: a surrogate pair at the limit is never split', () => {
+  const head = 'ab '.repeat(133) // 399 code points, spaces so no redaction pattern matches
+  const text = head + '\u{1F600}' + ' cd ef'
+  const r = parseJudgment(JSON.stringify({ ...GOOD, needs_decision: true, decision_text: text, decision_options: [] }))
+  const out = r.judgment.decision.text
+  assert.equal(Array.from(out).length, 400)
+  assert.equal(out, head + '\u{1F600}')
+  assert.equal(/[\ud800-\udbff](?![\udc00-\udfff])/.test(out), false)
+})

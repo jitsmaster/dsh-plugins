@@ -68,11 +68,22 @@ test('decision text renders as plain text, not markup nodes; the full card label
   assert.match(textOf(findAll(tree, (n) => n.props && n.props['data-decision-label'] !== undefined)[0]), /AI-suggested/)
 })
 
-test('compact decision text is plain too; no AI-suggested label without options', () => {
+test('compact decision text is plain too; the full card labels a no-options decision as AI-suggested as well', () => {
   const T = setup()
   const c = findAll(T.CompletedBody({ item: item({ text: 'Ship <u>A</u>?', options: ['A', 'B'], free: true }), full: false }), (n) => n.props && n.props['data-decision-compact'] !== undefined)
   assert.equal(findAll(c[0], (n) => n.type === 'u').length, 0)
   assert.match(textOf(c[0]), /<u>A<\/u>/)
   const tree = T.CompletedBody({ item: item({ text: 'Why?', options: [], free: true }), full: true })
-  assert.equal(findAll(tree, (n) => n.props && n.props['data-decision-label'] !== undefined).length, 0)
+  assert.equal(findAll(tree, (n) => n.props && n.props['data-decision-label'] !== undefined).length, 1)
+})
+
+test('the compact card carries the AI-suggested label before the decision text (rq-opt-label, not rq-hint)', () => {
+  const T = setup()
+  const tree = T.CompletedBody({ item: item({ text: 'Ship A or B?', options: [], free: true }), full: false })
+  const c = findAll(tree, (n) => n.props && n.props['data-decision-compact'] !== undefined)[0]
+  assert.match(textOf(c), /^AI-suggested: Ship A or B\?/)
+  const label = findAll(c, (n) => n.props && n.props['data-decision-label'] !== undefined)
+  assert.equal(label.length, 1)
+  assert.equal(label[0].props.className, 'rq-opt-label')
+  assert.equal(findAll(tree, (n) => n.props && /rq-hint/.test(n.props.className || '')).length, 0)
 })
