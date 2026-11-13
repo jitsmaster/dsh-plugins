@@ -407,3 +407,12 @@ test('hub store: a hub-owned agent cannot set or add decision; the local store p
   store.applyOp({ op: 'update', id: 'x', patch: { decision: { text: 'evil', options: [] } } }, { owner: 'A1' })
   assert.equal(store.get('x').decision, undefined)
 })
+
+test('hub store: a hub-owned agent cannot unset decision', () => {
+  const { store } = make()
+  add(store, { id: 'y' })
+  // the local path sets it directly on the inner store; emulate by checking unset is filtered out of the patch
+  store.applyOp({ op: 'update', id: 'y', patch: { summary: 's' }, unset: ['decision'] }, { owner: 'A1' })
+  assert.equal(store.get('y').summary, 's')
+  assert.equal(store.get('y').decision, undefined)
+})
