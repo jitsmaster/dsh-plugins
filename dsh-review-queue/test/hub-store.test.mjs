@@ -395,3 +395,15 @@ test('on disk: both files corrupt starts empty; the next write replaces them', (
   store.flush()
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).items.length, 1)
 })
+
+test('hub store: a hub-owned agent cannot set or add decision; the local store path still can', () => {
+  const { store } = make()
+  add(store, { id: 'x', decision: { text: 'evil', options: ['a', 'b'] } })
+  assert.equal(store.get('x').decision, undefined)
+  store.applyOp({ op: 'update', id: 'x', patch: { decision: { text: 'evil', options: [] }, summary: 's' } }, { owner: 'A1' })
+  assert.equal(store.get('x').decision, undefined)
+  assert.equal(store.get('x').summary, 's')
+  store.applyOp({ op: 'resolve', id: 'x', resolution: { kind: 'reviewed' } }, { owner: 'A1' })
+  store.applyOp({ op: 'update', id: 'x', patch: { decision: { text: 'evil', options: [] } } }, { owner: 'A1' })
+  assert.equal(store.get('x').decision, undefined)
+})

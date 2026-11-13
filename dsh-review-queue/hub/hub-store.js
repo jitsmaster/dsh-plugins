@@ -14,8 +14,9 @@ const MAX_CREATED_SKEW_MS = 24 * 3600 * 1000
 /** Fields an agent can never set or patch: identity, order, state and ownership belong to the hub. */
 export const HUB_FIELDS = ['id', 'seq', 'status', 'owner', 'createdAt', 'resolvedAt', 'resolution']
 /** An update may carry a new resolution only for an item that is already resolved (a late answer replaces what was recorded). */
-const OPEN_PATCH_BLOCKED = [...HUB_FIELDS, '__proto__']
-const RESOLVED_PATCH_BLOCKED = HUB_FIELDS.filter((k) => k !== 'resolution').concat('__proto__')
+/** The decision payload of a done card is written only by the app's own triage runner (local store), never by an agent. */
+const OPEN_PATCH_BLOCKED = [...HUB_FIELDS, 'decision', '__proto__']
+const RESOLVED_PATCH_BLOCKED = HUB_FIELDS.filter((k) => k !== 'resolution').concat('decision', '__proto__')
 
 const bad = { ok: false, error: 'bad-op' }
 const without = (object, keys) => Object.fromEntries(Object.entries(object).filter(([k]) => !keys.includes(k)))

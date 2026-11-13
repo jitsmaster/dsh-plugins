@@ -125,3 +125,24 @@ test('runner: a store failure on the decision write is logged as update-failed a
   assert.equal(store.get(item.id).status, 'open')
   assert.ok(entries.some((e) => e.stage === 'judge'), 'the verdict was still recorded')
 })
+
+test('parseJudgment: default-ignorable, Cf, bidi marks, variation selectors and blank fillers are stripped', () => {
+  const junk = '\u061c\u034f\u180e\u17b4\u17b5\u2800\ufe0f\u{e0100}\u200e\u2066\u00ad'
+  const j = parse({ decision_text: `Ship${junk} A?`, decision_options: [`A${junk}`, `B\u2800\ufe00`] }).judgment
+  assert.deepEqual(j.decision, { text: 'Ship A?', options: ['A', 'B'] })
+})
+
+test('parseJudgment: unicode spaces become one space', () => {
+  const j = parse({ decision_text: 'Ship\u1680A\u2003\u3000or\u2009B?', decision_options: ['X\u2000Y', 'Z'] }).judgment
+  assert.deepEqual(j.decision, { text: 'Ship A or B?', options: ['X Y', 'Z'] })
+})
+
+test('parseJudgment: options that differ only by NFKC form or case are deduped', () => {
+  const j = parse({ decision_text: 'Q', decision_options: ['Yes', 'YES', '\uff39es', 'No'] }).judgment
+  assert.deepEqual(j.decision.options, ['Yes', 'No'])
+})
+
+test('parseJudgment: a trailing (Recommended) suffix is stripped before dedupe; too few distinct options degrade to free text', () => {
+  assert.deepEqual(parse({ decision_text: 'Q', decision_options: ['Ship now (Recommended)', 'Wait', 'ship NOW (recommended)'] }).judgment.decision.options, ['Ship now', 'Wait'])
+  assert.deepEqual(parse({ decision_text: 'Q', decision_options: ['A (Recommended)', 'a'] }).judgment.decision.options, [])
+})

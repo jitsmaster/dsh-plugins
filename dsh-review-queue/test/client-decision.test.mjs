@@ -58,3 +58,21 @@ test('a compact card shows the decision text (clamped) but no option buttons', (
   assert.equal(opts(tree).length, 0)
   assert.equal(findAll(T.CompletedBody({ item: item(), full: false }), (n) => n.props && n.props['data-decision-compact'] !== undefined).length, 0)
 })
+
+test('decision text renders as plain text, not markup nodes; the full card labels the options as AI-suggested', () => {
+  const T = setup()
+  const tree = T.CompletedBody({ item: item({ text: 'Ship <u>**A**</u>?', options: ['A', 'B'], free: true }), full: true })
+  assert.equal(findAll(tree, (n) => n.type === 'u' || n.type === 'strong').length, 0)
+  assert.match(textOf(blocks(tree)[0]), /Ship <u>\*\*A\*\*<\/u>\?/)
+  assert.equal(findAll(tree, (n) => n.props && n.props['data-decision-label'] !== undefined).length, 1)
+  assert.match(textOf(findAll(tree, (n) => n.props && n.props['data-decision-label'] !== undefined)[0]), /AI-suggested/)
+})
+
+test('compact decision text is plain too; no AI-suggested label without options', () => {
+  const T = setup()
+  const c = findAll(T.CompletedBody({ item: item({ text: 'Ship <u>A</u>?', options: ['A', 'B'], free: true }), full: false }), (n) => n.props && n.props['data-decision-compact'] !== undefined)
+  assert.equal(findAll(c[0], (n) => n.type === 'u').length, 0)
+  assert.match(textOf(c[0]), /<u>A<\/u>/)
+  const tree = T.CompletedBody({ item: item({ text: 'Why?', options: [], free: true }), full: true })
+  assert.equal(findAll(tree, (n) => n.props && n.props['data-decision-label'] !== undefined).length, 0)
+})
