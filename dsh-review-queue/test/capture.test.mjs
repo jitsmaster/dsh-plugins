@@ -452,6 +452,21 @@ test('an item the user already reviewed or replied to before the verdict is left
   assert.equal(st.snapshot().resolved[0].resolution.kind, 'replied')
 })
 
+test('a no-action verdict does not hide a done item that carries a decision for the user', async () => {
+  const handlers = {}
+  const ctx = { on: (n, f) => { handlers[n] = f }, get: () => undefined }
+  const st = createStore({ now: () => 1 })
+  installCapture(ctx, { store: st, summarizer: { summarize: async () => {
+    // the triage judge attached a decision while the summary was in flight
+    st.update(st.list({ status: 'open' })[0].id, { decision: { text: 'Ship A or B?', options: ['A', 'B'] } })
+    return { text: 's', source: 'llm', actionable: false }
+  } } })
+  await handlers['agent/turn-stopping']({ agent: { id: 'a1', session: { deriveMessages: () => [{ role: 'assistant', content: 'Done.' }] } } })
+  await settle()
+  assert.equal(st.snapshot().open.length, 1)
+  assert.equal(st.snapshot().resolved.length, 0)
+})
+
 test('hiding a done item still brings back older done items that legacy data records as superseded by it', async () => {
   const logs = []
   const handlers = {}

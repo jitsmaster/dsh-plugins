@@ -19,6 +19,13 @@ test('parseJudgment: more than 4 options are cut to 4; one option or non-strings
   assert.deepEqual(parse({ decision_text: 'Q', decision_options: [1, { x: 1 }] }).judgment.decision.options, [])
 })
 
+test('parseJudgment: an option is cut by code points, never inside a surrogate pair', () => {
+  const head = 'option '.repeat(17) // 119 code points (a long run of one letter would be redacted as a secret)
+  const [o] = parse({ decision_text: 'Q', decision_options: [head + '😀tail', 'B'] }).judgment.decision.options
+  assert.equal(o, head + '😀')
+  assert.ok(!/[\ud800-\udbff]$/.test(o))
+})
+
 test('parseJudgment: no decision text means no decision; duplicates and blanks are dropped', () => {
   assert.equal(parse({ decision_options: ['A', 'B'] }).judgment.decision, undefined)
   assert.deepEqual(parse({ decision_text: 'Q', decision_options: ['A', 'A', ' ', 'B'] }).judgment.decision.options, ['A', 'B'])

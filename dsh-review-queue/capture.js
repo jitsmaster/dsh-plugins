@@ -390,6 +390,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
   function hideNoAction(id) {
     guard(() => {
       const item = store.get(id)
+      if (item?.decision) return // the triage judge needs a user decision here: the card must stay open
       if (!store.resolve(id, { kind: 'no-action', by: 'auto' })) return
       log('capture: hid done item "' + nameOf(item) + '" (no action needed): ' + String(item?.summary ?? '').slice(0, 160))
       let back = 0

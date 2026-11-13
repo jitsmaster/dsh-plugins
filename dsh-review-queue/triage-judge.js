@@ -89,7 +89,8 @@ function decisionOf(obj) {
   const seen = new Set()
   const options = []
   for (const o of Array.isArray(obj.decision_options) ? obj.decision_options : []) {
-    const t = typeof o === 'string' ? withoutRecommended(redact(stripCtl(o)).trim()).slice(0, MAX_OPTION) : ''
+    const t0 = typeof o === 'string' ? withoutRecommended(redact(stripCtl(o)).trim()) : ''
+    const t = Array.from(t0).slice(0, MAX_OPTION).join('') // by code points: a surrogate pair is never cut
     const k = optionKey(t)
     if (t && !seen.has(k)) { seen.add(k); options.push(t) }
   }
