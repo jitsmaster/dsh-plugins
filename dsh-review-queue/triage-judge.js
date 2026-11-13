@@ -84,7 +84,8 @@ const RECOMMENDED = /\s*[(\[]\s*recommended\s*[)\]]\s*$/i
 const withoutRecommended = (t) => t.replace(RECOMMENDED, '').trim()
 const optionKey = (t) => t.normalize('NFKC').toLowerCase()
 function decisionOf(obj) {
-  const text = strOrNull(redact(stripCtl(obj.decision_text) ?? ''))
+  if (typeof obj.decision_text !== 'string') return {} // an object/number/boolean is never stringified into a card text
+  const text = strOrNull(redact(stripCtl(obj.decision_text)))
   if (!text) return {}
   const seen = new Set()
   const options = []

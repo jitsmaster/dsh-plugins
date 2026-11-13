@@ -256,3 +256,15 @@ test('the decision text is cut by code point: a surrogate pair at the limit is n
   assert.equal(out, head + '\u{1F600}')
   assert.equal(/[\ud800-\udbff](?![\udc00-\udfff])/.test(out), false)
 })
+test('a non-string decision_text (object, number, boolean, array) yields no decision', () => {
+  for (const bad of [{}, 5, false, true, ['a b'], { text: 'x' }]) {
+    const r = parseJudgment(JSON.stringify({ ...GOOD, needs_decision: true, decision_text: bad, decision_options: ['Yes', 'No'] }))
+    assert.ok(r.judgment, JSON.stringify(bad))
+    assert.equal(r.judgment.decision, undefined, JSON.stringify(bad))
+  }
+})
+
+test('non-string decision options are dropped, string ones kept', () => {
+  const r = parseJudgment(JSON.stringify({ ...GOOD, needs_decision: true, decision_text: 'Pick one?', decision_options: ['Yes', 5, {}, false, ['x'], 'No'] }))
+  assert.deepEqual(r.judgment.decision.options, ['Yes', 'No'])
+})
