@@ -31,6 +31,7 @@ test('HP3 permission: "Item four, approve write file?" with the same tool wordin
 test('HP4 numbers: words up to twenty, digits above', () => {
   assert.equal(permissionHeadline({ toolName: 'read', position: 20 }), 'Item twenty, approve read file?')
   assert.equal(permissionHeadline({ toolName: 'read', position: 21 }), 'Item 21, approve read file?')
+  assert.equal(permissionHeadline({ toolName: 'read', position: 100 }), 'Item 100, approve read file?')
 })
 
 test('HP5 a position that is not a positive whole number is ignored: the old headline', () => {

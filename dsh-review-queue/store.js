@@ -32,6 +32,16 @@ function capped(value, depth = 0) {
 export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0, 12), io, retentionMs = RETENTION_MS, events } = {}) {
   /** One row in the event log (ids, types, tiers only); a failing log never reaches the store. */
   const emit = (event) => { try { events?.record(event) } catch { /* the event log is best effort */ } }
+  let shownOrder = 'oldest'
+  const shownIds = new Set()
+  /** 1-based position of an open item under the current display order. */
+  const rankOf = (id) => {
+    if (!events) return undefined // nothing records it: skip the sort
+    let flat = [...items.values()].filter((i) => i.status === 'open').sort(order)
+    if (shownOrder === 'tier') flat = groupOpen(flat, { order: 'tier', now: now() }).flatMap((g) => g.items)
+    const n = flat.findIndex((i) => i.id === id)
+    return n < 0 ? undefined : n + 1
+  }
   const emitTier = (item) => { if (item.tier) emit({ kind: 'tiered', itemId: item.id, type: item.type, tier: item.tier.tier, severity: item.tier.severity, urgency: item.tier.urgency }) }
   const emitResolved = (item) => emit({ kind: 'resolved', itemId: item.id, type: item.type, resolution: item.resolution?.kind, by: item.resolution?.by })
   /** @type {Map<string, any>} */
@@ -155,17 +165,34 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       const item = items.get(id)
       if (!item || item.status !== 'resolved') return false
       item.status = 'open'
+      shownIds.delete(id) // back in the queue: it can be shown (and reported) again
       delete item.resolvedAt
       delete item.resolution
       reindex(item)
       changed()
       return true
     },
+    /** How many ids `shown` remembers (open items only); for tests. */
+    shownCount: () => shownIds.size,
+    /** The display order the ranks of `shown` and `acted` events follow ('oldest' or 'tier'); set by the service. */
+    setOrder(value) { shownOrder = value === 'tier' ? 'tier' : 'oldest' },
+    /** Records `shown` once per item (first time in view) with its current rank; false when the item is not open. Ids, type and rank only. */
+    shown(id) {
+      const item = items.get(id)
+      if (!item || item.status !== 'open') return false
+      if (shownIds.has(id)) return true
+      shownIds.add(id)
+      emit({ kind: 'shown', itemId: id, type: item.type, rank: rankOf(id) })
+      return true
+    },
     /** Move an open item to resolved, once. */
     resolve(id, resolution) {
       const item = items.get(id)
       if (!item || item.status !== 'open') return false
+      // `acted` = a card action that resolves the item here (by:'card'); the rank is the server display order, not the client's held order. Answers that go through update() are not counted (documented limit).
+      if (resolution?.by === 'card') emit({ kind: 'acted', itemId: id, type: item.type, rank: rankOf(id) }) // the user's own action, with the rank held at that moment
       item.status = 'resolved'
+      shownIds.delete(id) // the set only holds open items
       item.resolvedAt = now()
       item.resolution = { ...resolution }
       reindex(item)
@@ -184,7 +211,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       let any = false
       for (const item of items.values()) {
         if (item.sessionId === sessionId && item.status === 'open') {
-          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { ...resolution }; reindex(item); emitResolved(item); any = true
+          item.status = 'resolved'; shownIds.delete(item.id); item.resolvedAt = now(); item.resolution = { ...resolution }; reindex(item); emitResolved(item); any = true
         }
       }
       if (any) changed()
@@ -195,7 +222,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       let any = false
       for (const item of items.values()) {
         if (item.status === 'open' && !liveIds.has(item.sessionId)) {
-          item.status = 'resolved'; item.resolvedAt = now(); item.resolution = { kind: 'session-ended' }; reindex(item); emitResolved(item); any = true
+          item.status = 'resolved'; shownIds.delete(item.id); item.resolvedAt = now(); item.resolution = { kind: 'session-ended' }; reindex(item); emitResolved(item); any = true
         }
       }
       if (any) changed()
@@ -220,11 +247,13 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     count(test) { let n = 0; for (const item of items.values()) if (test(item)) n++; return n },
     list: ({ status } = {}) => [...items.values()].filter((i) => status === undefined || i.status === status).sort(order).map(copy),
     /** Open items, oldest first, each with its position (1 = oldest); resolved items, newest first. */
-    snapshot() {
+    snapshot({ order: queueOrder } = {}) {
       const all = [...items.values()]
-      const flat = all.filter((i) => i.status === 'open').sort(order)
+      let flat = all.filter((i) => i.status === 'open').sort(order)
       const info = new Map()
-      for (const g of groupOpen(flat)) for (const i of g.items) info.set(i.id, { groupId: g.id, groupRank: g.rank })
+      const groups = groupOpen(flat, queueOrder === 'tier' ? { order: 'tier', now: now() } : {})
+      for (const g of groups) for (const i of g.items) info.set(i.id, { groupId: g.id, groupRank: g.rank })
+      if (queueOrder === 'tier') flat = groups.flatMap((g) => g.items) // group by group, best effective tier first; position follows
       const open = flat.map((i, n) => ({ ...copy(i), position: n + 1, ...info.get(i.id) }))
       const resolved = all.filter((i) => i.status === 'resolved').sort((a, b) => b.resolvedAt - a.resolvedAt || b.seq - a.seq).map(copy)
       return { snapshotId: epoch + ':' + version, open, resolved }
@@ -234,7 +263,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       const at = now()
       let any = false
       for (const [id, item] of items) {
-        if (item.status === 'resolved' && item.resolvedAt < at - (item.resolution?.kind === 'ai-resolved' ? AI_RETENTION_MS : retentionMs)) { items.delete(id); any = true }
+        if (item.status === 'resolved' && item.resolvedAt < at - (item.resolution?.kind === 'ai-resolved' ? AI_RETENTION_MS : retentionMs)) { items.delete(id); shownIds.delete(id); any = true }
       }
       if (any) changed()
     },

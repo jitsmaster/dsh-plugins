@@ -17,7 +17,7 @@ export function createMirrorStore({ now = Date.now } = {}) {
     get: (id) => inner.get(id),
     list: (filter) => inner.list(filter),
     findOpen: (q) => inner.findOpen(q),
-    snapshot: () => ({ ...inner.snapshot(), snapshotId }),
+    snapshot: (opts) => ({ ...inner.snapshot(opts), snapshotId }),
     isCurrent: (id) => id === snapshotId,
     add: refuse, update: refuse, resolve: refuse, reopen: refuse, resolveSession: refuse, reconcile: refuse, prune() {},
     /** Replace the mirror with a hub snapshot; listeners hear it unless it is the same snapshot again. */

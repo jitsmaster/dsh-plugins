@@ -284,6 +284,11 @@
   "test/todo-link-options-http.test.mjs",
   "test/client-new-session-card.test.mjs",
   "test/triage-enabled.test.mjs",
+  "test/client-queue-order.test.mjs",
+  "test/event-shown-acted.test.mjs",
+  "test/client-shown.test.mjs",
+  "test/client-hold.test.mjs",
+  "test/hub-queue-order.test.mjs",
   "test/triage-act.test.mjs",
   "test/capture-ai-resolution.test.mjs",
   "test/triage-act-done.test.mjs",
@@ -322,5 +327,7 @@
   "test/groups-ui.test.mjs",
   "test/client-group-head.test.mjs",
   "test/client-grouped-list.test.mjs",
-  "test/client-groups-loader.test.mjs"
+  "test/client-groups-loader.test.mjs",
+  "test/groups-order.test.mjs",
+  "test/service-queue-order.test.mjs"
 ]

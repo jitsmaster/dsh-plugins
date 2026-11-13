@@ -4,6 +4,8 @@
  * Items with no sessionId, and housekeeping types, stay single cards.
  */
 
+import { effectiveTier } from './tier.js'
+
 const SINGLE_TYPES = new Set(['todo', 'onhold', 'archive', 'pr-merged', 'paused'])
 
 /** The id of the group an item belongs to: its session, or `item:<id>` for a card that stands alone. */
@@ -16,8 +18,12 @@ const at = (i) => (Number.isFinite(i.createdAt) ? i.createdAt : Infinity)
 /** Oldest first; a missing createdAt sorts last; seq breaks ties (Infinity - Infinity would be NaN). */
 const byAge = (a, b) => { const x = at(a); const y = at(b); return x < y ? -1 : x > y ? 1 : (a.seq ?? 0) - (b.seq ?? 0) }
 
-/** Ordered groups `{ id, items, createdAt, count, topTier, rank }` of the open items. */
-export function groupOpen(items) {
+/**
+ * Ordered groups `{ id, items, createdAt, count, topTier, rank }` of the open items.
+ * `opts.order === 'tier'` with a finite `opts.now` orders groups by effective tier (best item tier, aged by group age, see tier.js), then oldest item;
+ * anything else is oldest-first. A group without any tier ranks last.
+ */
+export function groupOpen(items, opts = {}) {
   const byId = new Map()
   for (const item of Array.isArray(items) ? items : []) {
     if (!item || typeof item !== 'object' || typeof item.id !== 'string' || item.status === 'resolved') continue
@@ -30,7 +36,14 @@ export function groupOpen(items) {
     const tiers = sorted.map((i) => i.tier?.tier).filter(Number.isInteger)
     return { id, items: sorted, createdAt: at(sorted[0]), count: sorted.length, topTier: tiers.length ? tiers.reduce((m, t) => (t < m ? t : m), Infinity) : undefined }
   })
-  groups.sort((a, b) => byAge(a.items[0], b.items[0]))
+  if (opts?.order === 'tier' && Number.isFinite(opts.now)) {
+    for (const g of groups) g.sortTier = g.topTier === undefined ? Infinity : effectiveTier(g.topTier, opts.now - g.createdAt)
+    // Inside a tier a group holding a high-severity free item (risk-flagged work) ranks above a group that is only blocked questions.
+    for (const g of groups) g.sortRisk = g.items.some((i) => i.tier?.tier === g.topTier && i.tier?.severity === 'high' && i.tier?.urgency === 'free') ? 0 : 1
+    const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0) // explicit: Infinity - Infinity is NaN (untiered groups rank last, then by risk and age)
+    groups.sort((a, b) => cmp(a.sortTier, b.sortTier) || cmp(a.sortRisk, b.sortRisk) || byAge(a.items[0], b.items[0]))
+    for (const g of groups) { delete g.sortTier; delete g.sortRisk }
+  } else groups.sort((a, b) => byAge(a.items[0], b.items[0]))
   groups.forEach((g, n) => { g.rank = n + 1 })
   return groups
 }

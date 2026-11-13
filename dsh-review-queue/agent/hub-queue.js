@@ -56,6 +56,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
   /** The snapshot of the active service; in hub mode a tip read by the local service ('tip:<id>') is its reading. */
   const snapshot = (opts) => {
     const hub = hubMode()
+    if (hub) { const want = local.queueOrder?.(); if ((want === 'tier' || want === 'oldest') && view.queueOrder() !== want) view.setQueueOrder(want) } // the display order is this app's own switch; the view only follows it
     const snap = (hub ? view : local).snapshot(opts)
     const own = hub && snap.reading === undefined ? local.readingId?.() : undefined
     const base = typeof own === 'string' && own.startsWith(TIP_READING) ? { ...snap, reading: own } : snap
@@ -157,5 +158,8 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     triageEnabled: (value) => local.triageEnabled(value), // this app's own triage rules: never asked of the hub
     triageReview: (id, opts) => local.triageReview(id, opts), // this app's own triage rules: never asked of the hub
     triageForget: (lessonId) => local.triageForget(lessonId), // this app's own triage rules: never asked of the hub
+    shown: (id) => local.shown(id), // the event log is this app's own; known limit (spec: slice 5): in hub mode an item held by the hub is not in the local store, so no event is written for it
+    queueOrder: () => local.queueOrder(), // this app's own display-order switch: never asked of the hub
+    setQueueOrder: (value) => local.setQueueOrder(value), // this app's own display-order switch: never asked of the hub
   }
 }

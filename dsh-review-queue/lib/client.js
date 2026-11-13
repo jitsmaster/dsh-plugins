@@ -884,7 +884,7 @@ function imageFilesOf(data) {
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyImages: {}, replyOpen: savedToggles.reply, busy: {}, errors: {},
-			selected: null, showResolved: false, showHeld: false, showPhone: false, showRules: false, dialog: null, phoneFrom: "waiting", rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, resOpen: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all", resolvedType: "all" }, overlay: storage.get(LS.overlay) === "1",
+			selected: null, hold: null, showResolved: false, showHeld: false, showPhone: false, showRules: false, dialog: null, phoneFrom: "waiting", rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, resOpen: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all", resolvedType: "all" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipTopic: "", tipUse: { open: false, workspaceId: "" }, tipTicked: {},
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
@@ -918,11 +918,13 @@ function imageFilesOf(data) {
 		}
 		function set(patch) {
 			Object.assign(state, patch);
+			if (patch.overlay === false && state.hold) state.hold = null; // any close of the overlay releases the hold
 			if ("todoForm" in patch) saveTodoForm();
 			if ("drafts" in patch || "replies" in patch) scheduleSave();
 			if ("expanded" in patch || "replyOpen" in patch || "lateOpen" in patch) scheduleToggleSave();
 			version++;
 			listeners.forEach((l) => l());
+			if ("selected" in patch && state.snap) reportShown(); // a card the user moves to counts as shown, not only one that arrives with a snapshot
 		}
 		const NO_ITEMS = [];
 		let openMemo = { snap: null, filter: null, held: false, list: NO_ITEMS };
@@ -930,9 +932,28 @@ function imageFilesOf(data) {
 		function visibleOpen() {
 			const snap = state.snap;
 			if (!snap) return NO_ITEMS;
-			if (openMemo.snap !== snap || openMemo.filter !== state.filter || openMemo.held !== state.showHeld || openMemo.mod !== groupsMod) openMemo = { snap, filter: state.filter, held: state.showHeld, mod: groupsMod, list: groupOrder(groupsMod, filterItems(snap.open, state.showHeld ? { ...state.filter, type: "onhold" } : state.filter)) };
+			if (openMemo.snap !== snap || openMemo.filter !== state.filter || openMemo.held !== state.showHeld || openMemo.mod !== groupsMod || openMemo.hold !== state.hold) {
+				let list = groupOrder(groupsMod, filterItems(snap.open, state.showHeld ? { ...state.filter, type: "onhold" } : state.filter));
+				let fresh = 0;
+				const hold = state.hold;
+				if (hold && Array.isArray(hold.ids)) { // client-only hold: the order of the moment the hold began; arrivals go last
+					const rank = new Map(hold.ids.map((id, n) => [id, n]));
+					const kept = list.filter((i) => rank.has(i.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
+					const added = list.filter((i) => !rank.has(i.id));
+					fresh = added.length;
+					list = kept.concat(added);
+				}
+				openMemo = { snap, filter: state.filter, held: state.showHeld, mod: groupsMod, hold: state.hold, list, fresh };
+			}
 			return openMemo.list;
 		}
+		/** How many open items arrived since the hold began (the "N new" strip); 0 without a hold. */
+		function newCount() { visibleOpen(); return state.hold ? openMemo.fresh || 0 : 0; }
+		/** The hold covers every open item in list order, whatever the filter: a filter change is never an arrival. */
+		function holdOf() { const ids = groupOrder(groupsMod, state.snap.open).map((i) => i.id); return ids.length ? { ids } : null; } // an empty list holds nothing: the first arrival is not "new"
+		/** Freezes the current list order (the overlay keeps it until the user taps "N new" or closes the overlay). */
+		function holdNow() { set({ hold: holdOf() }); }
+		function releaseHold() { if (state.hold) set({ hold: null }); }
 		let countsMemo = { snap: null, counts: null };
 		/** The counts of the header and the tabs, one pass each, once per snapshot. */
 		function snapCounts(snap) {
@@ -961,12 +982,24 @@ function imageFilesOf(data) {
 			const d = state.dialog;
 			const gone = d && !(body.open || []).some((i) => i.id === d.id) && !(body.resolved || []).some((i) => i.id === d.id); // the item it acts on left the queue
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? { dialog: null } : {}) });
+			if (state.overlay && !state.hold && body.open) { const h0 = holdOf(); if (h0) set({ hold: h0 }); } // an empty list holds nothing and must not re-render every snapshot; // an overlay restored open at load starts its hold with the first snapshot
 			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen, late: state.lateOpen }, body);
 			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply)) || Object.keys(state.lateOpen).some((k) => !(k in tog.late))) set({ expanded: tog.expanded, replyOpen: tog.reply, lateOpen: tog.late });
 			const openRes = Object.keys(state.resOpen);
 			if (openRes.length) { const live = new Set((body.resolved || []).map((i) => i.id)); if (openRes.some((k) => !live.has(k))) set({ resOpen: Object.fromEntries(openRes.filter((k) => live.has(k)).map((k) => [k, true])) }); }
 			const ticked = Object.keys(state.tipTicked);
 			if (ticked.length) { const live = new Set((Array.isArray(body.tipSurvey) ? body.tipSurvey : []).map((s) => s && s.id)); if (ticked.some((k) => !live.has(k))) set({ tipTicked: Object.fromEntries(ticked.filter((k) => live.has(k)).map((k) => [k, state.tipTicked[k]])) }); }
+			reportShown();
+		}
+		const shownSent = new Set();
+		/** The desktop overlay shows one card at a time: the one in view is reported once per item (POST /v1/shown, ids only); best effort. */
+		function reportShown() {
+			if (state.snap) { const live = new Set(state.snap.open.map((i) => i.id)); for (const id of shownSent) if (!live.has(id)) shownSent.delete(id); } // an item that left is forgotten: the set stays small
+			if (!state.overlay || viewOf(state) !== "waiting") return;
+			const cur = currentItem();
+			if (!cur || shownSent.has(cur.id)) return;
+			shownSent.add(cur.id);
+			postJson("/v1/shown", { id: cur.id });
 		}
 
 		/** Whether somebody can see this page now: the hub's presence (is the desktop looked at?) counts only polls that say so. */
@@ -1121,6 +1154,14 @@ function imageFilesOf(data) {
 		async function setTriageEnabled(enabled) {
 			await rulesAct("triage-enabled", "/v1/triage-enabled", { enabled });
 			if (!state.rulesError && state.snap) set({ snap: { ...state.snap, triage: { enabled } } });
+		}
+		/** The queue order switch ("tier" = By priority, "oldest" = Oldest first): posted like a rules change; the snapshot follows at once. */
+		async function setQueueOrder(mode) {
+			set({ rulesBusy: { ...state.rulesBusy, "queue-order": true }, rulesError: undefined });
+			const r = await postJson("/v1/queue-order", { mode });
+			set({ rulesBusy: { ...state.rulesBusy, "queue-order": false }, rulesError: r.ok ? undefined : rulesErrorText(r) });
+			if (r.ok && state.snap) set({ snap: { ...state.snap, queueOrder: mode }, hold: null }); // the held order was the old one: release it
+			if (r.ok && pollCtl) pollCtl.abort(); // the next poll fetches the list in its new order at once
 		}
 		/** Off and Observe at once; Auto asks first (rulesConfirm) so a rule never starts acting by accident once a later phase makes auto live. */
 		function pickRuleMode(id, mode) { if (mode === "auto") set({ rulesConfirm: id }); else rulesAct(id, "/v1/triage-rule-mode", { ruleId: id, mode }); }
@@ -1669,7 +1710,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				set({ scanning: false, scanNote: res.ok ? (j.added ? "Found " + j.added + " paused session" + (j.added === 1 ? "" : "s") + "." : "No new paused sessions.") : errorText(res.status, j) });
 			} catch (e) { set({ scanning: false, scanNote: "Request failed: " + String((e && e.message) || e) }); }
 		}
-		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on }); if (pollCtl) pollCtl.abort(); }
+		function setOverlay(on) { if (!on) stopReading(); storage.set(LS.overlay, on ? "1" : "0"); set({ overlay: on, hold: on && state.snap ? holdOf() : null }); if (pollCtl) pollCtl.abort(); }
 
 		// =====================================================================================
 		// Styles
@@ -2524,7 +2565,10 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const triageOn = t.enabled !== false, triageBusy = !!state.rulesBusy["triage-enabled"];
 			const triageBtn = (value, label) => h("button", { key: label, type: "button", role: "radio", className: "rq-segb" + (triageOn === value ? " on" : ""), "aria-checked": triageOn === value, disabled: triageBusy, onClick: () => { if (triageOn !== value) setTriageEnabled(value); } }, label);
 			const triageSwitch = h("div", { className: "rq-rule", "data-triage-enabled": triageOn }, h("div", { className: "rq-rule-h" }, h("strong", null, "AI triage"), h("span", { className: "rq-sub" }, triageOn ? "on" : "switched off: the AI makes no judgments"), h("span", { className: "rq-grow" }), h("span", { className: "rq-seg", role: "radiogroup", "aria-label": "AI triage" }, triageBtn(true, "On"), triageBtn(false, "Off"))));
-			return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, state.rulesError ? h("div", { className: "rq-err" }, state.rulesError) : null, triageSwitch,
+			const orderTier = !!state.snap && state.snap.queueOrder === "tier", orderBusy = !!state.rulesBusy["queue-order"];
+			const orderBtn = (value, label) => h("button", { key: label, type: "button", role: "radio", className: "rq-segb" + (orderTier === value ? " on" : ""), "aria-checked": orderTier === value, disabled: orderBusy, onClick: () => { if (orderTier !== value) setQueueOrder(value ? "tier" : "oldest"); } }, label);
+			const orderSwitch = h("div", { className: "rq-rule", "data-queue-order": orderTier ? "tier" : "oldest" }, h("div", { className: "rq-rule-h" }, h("strong", null, "Queue order"), h("span", { className: "rq-sub" }, orderTier ? "groups ranked by priority tier" : "oldest group first"), h("span", { className: "rq-grow" }), h("span", { className: "rq-seg", role: "radiogroup", "aria-label": "Queue order" }, orderBtn(false, "Oldest first"), orderBtn(true, "By priority"))));
+			return h("div", { className: "rq-body rq-rules", ...vpanel("rules") }, state.rulesError ? h("div", { className: "rq-err" }, state.rulesError) : null, triageSwitch, orderSwitch,
 				rules.length ? rules.map(rule) : h("div", { className: "rq-empty" }, "No rules."),
 				h("h3", null, "Corrections the AI learned"), lessons.length ? lessons.map(lesson) : h("div", { className: "rq-empty" }, "No corrections learned yet."));
 		}
@@ -2548,7 +2592,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap }), noticeBanner(snap), banner, h(TodoForm), h(ViewTabs, { snap }), h(SubTabs, { snap }), h(PausedStrip, { snap }), h(ResumeAllBar),
 				view === "phone" ? h("div", { className: "rq-body", ...vpanel("phone") }, h(PhoneHost)) : view === "rules" ? h(RulesView) : view === "resolved" ? h("div", { className: "rq-body", ...vpanel("resolved") }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split", ...vpanel(view) },
-						h("div", Object.assign({ className: "rq-side" }, open.length ? { role: "listbox", "aria-label": view === "held" ? "Held sessions" : "Waiting items" } : {}), open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
+						h("div", Object.assign({ className: "rq-side" }, open.length ? { role: "listbox", "aria-label": view === "held" ? "Held sessions" : "Waiting items" } : {}), st.hold && newCount() > 0 ? h("button", { type: "button", className: "rq-btn", "data-new-strip": "1", onClick: releaseHold }, newCount() + " new") : null, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
 						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip ? h("div", { className: "rq-tipwrap" }, tip) : null),
 						h("div", { className: "rq-narrow" }, list)),
 				view === "resolved" || view === "rules" || view === "phone" ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"),
@@ -2631,7 +2675,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { visibleOpen, detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, resolvedCountsMemo, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
-		Object.assign(exports.__test, { errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
+		Object.assign(exports.__test, { errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, visibleOpen, newCount, holdNow, releaseHold, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
 		Object.assign(exports.__test, { tierChip, groupHead, groupedList, groupOrder, loadGroupsUi, requestGroupsUi, setGroupsImporter: (fn) => { groupsImporter = fn; groupsUi = undefined; groupsAsked = false; groupsMod = undefined; } });

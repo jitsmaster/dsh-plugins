@@ -5,7 +5,7 @@ import { createHubQueue } from '../agent/hub-queue.js'
 import { createRouter } from '../server.js'
 
 // Triage is this app's own (rules file, log, memory): the hub-mode queue must pass it to the local service, whatever the mode.
-const METHODS = ['triageRules', 'triageRuleMode', 'triageEnabled', 'triageReview', 'triageForget']
+const METHODS = ['triageRules', 'triageRuleMode', 'triageEnabled', 'triageReview', 'triageForget', 'queueOrder', 'setQueueOrder']
 
 function make(connected) {
   const calls = []
@@ -25,7 +25,7 @@ function make(connected) {
 for (const connected of [true, false]) {
   test(`triage methods delegate to the local service (${connected ? 'hub connected' : 'degraded'})`, async () => {
     const { queue, calls } = make(connected)
-    const args = { triageRules: [], triageRuleMode: ['r1', 'auto', { confirmed: true }], triageEnabled: [false], triageReview: ['i1', { review: 'ok' }], triageForget: ['l1'] }
+    const args = { triageRules: [], triageRuleMode: ['r1', 'auto', { confirmed: true }], triageEnabled: [false], triageReview: ['i1', { review: 'ok' }], triageForget: ['l1'], queueOrder: [], setQueueOrder: ['tier'] }
     for (const m of METHODS) {
       assert.equal(typeof queue[m], 'function', m + ' exists')
       assert.deepEqual(await queue[m](...args[m]), { ok: true, from: m })
@@ -39,6 +39,17 @@ for (const connected of [true, false]) {
     assert.deepEqual(snap.triage, { enabled: false })
     assert.equal(snap.aiReport.total, 3)
     if (connected) assert.equal(snap.snapshotId !== 'L' && snap.secret === undefined, true)
+  })
+}
+
+for (const connected of [true, false]) {
+  test(`queueOrder and setQueueOrder delegate to the local service (${connected ? 'hub connected' : 'degraded'})`, async () => {
+    const { queue, calls } = make(connected)
+    assert.equal(typeof queue.queueOrder, 'function')
+    assert.equal(typeof queue.setQueueOrder, 'function')
+    await queue.queueOrder()
+    await queue.setQueueOrder('tier')
+    assert.deepEqual(calls, [['queueOrder', []], ['setQueueOrder', ['tier']]])
   })
 }
 

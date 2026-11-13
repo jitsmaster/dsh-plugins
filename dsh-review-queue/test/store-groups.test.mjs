@@ -21,6 +21,18 @@ test('open stays flat and oldest-first with unchanged positions, and carries gro
   assert.deepEqual(open.map((i) => i.groupRank), [1, 2, 1])
 })
 
+test('snapshot({ order: "tier" }) flattens open by group tier order, positions follow; default stays oldest-first', () => {
+  const store = make()
+  const a = store.add({ type: 'completed', sessionId: 's1', payload: { reply: 'x' } })
+  const b = store.add({ type: 'question', sessionId: 's2', payload: { questions: [] } })
+  const a2 = store.add({ type: 'completed', sessionId: 's1', payload: { reply: 'y' } })
+  assert.deepEqual(store.snapshot().open.map((i) => i.id), [a.id, b.id, a2.id])
+  const open = store.snapshot({ order: 'tier' }).open
+  assert.deepEqual(open.map((i) => i.id), [b.id, a.id, a2.id], 'the blocked question group (P1) goes before the done group')
+  assert.deepEqual(open.map((i) => i.position), [1, 2, 3])
+  assert.deepEqual(store.snapshot({ order: 'bogus' }).open.map((i) => i.id), [a.id, b.id, a2.id])
+})
+
 test('a card with no session is its own group', () => {
   const store = make()
   const t = store.add({ type: 'todo', payload: {} })

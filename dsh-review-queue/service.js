@@ -37,7 +37,7 @@ const needsUser = (item) => (item.type !== 'paused' || isLimitSignin(item)) && i
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, tipSurvey: givenSurvey, tipSurveyDeps, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, paused, limitSignIn, onHold, threadOf, archiveOfferEnabled = () => true, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, tipSurvey: givenSurvey, tipSurveyDeps, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, queueOrderIo, paused, limitSignIn, onHold, threadOf, archiveOfferEnabled = () => true, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
@@ -51,6 +51,12 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
   let runningCall // the last runningSessions list: { done, doneAt, promise }
   let tuning = false // a Tune prompt call is on its way: one at a time per service (each is a paid model call)
+  // The queue order switch: 'oldest' (default) or 'tier'. Persisted through queueOrderIo; anything unreadable fails closed to 'oldest'.
+  let order = 'oldest'
+  try { const raw = queueOrderIo?.read(); if (raw && JSON.parse(raw)?.order === 'tier') order = 'tier' } catch { /* fail closed */ }
+  store.setOrder?.(order)
+  /** The open items in the order the cards show (voice numbers and next must match the screen). */
+  const openNow = () => store.snapshot({ order }).open
   let focusId
   let reading // id of the item being read aloud
   let readOpen = false // the item being read was in the queue when reading started
@@ -228,13 +234,25 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     ...triageReview,
     /** The done card's Follow handoff button: a new session resumes the latest handoff note (the source session is archived by that follow-up). */
     followHandoff: (id) => handoffFollow.follow(id),
+    queueOrder: () => order,
+    /** The overlay showed this item for the first time: one `shown` event with its rank (ids, type, rank only). */
+    shown: (id) => (store.shown?.(String(id)) ? { ok: true } : { ok: false, error: 'not-open' }),
+    /** The order switch: 'oldest' or 'tier'; anything else is bad input. A failing write keeps the choice for this run. */
+    setQueueOrder(value) {
+      if (value !== 'oldest' && value !== 'tier') return { ok: false, error: 'bad-input' }
+      order = value
+      store.setOrder?.(order)
+      try { queueOrderIo?.write(JSON.stringify({ order })) } catch { /* kept in memory */ }
+      emit()
+      return { ok: true }
+    },
     /**
      * opts.tip === true: the overlay is open, so the tip is wanted (and asked for when the list is empty); without it none is attached and none generated.
      * opts.watch (or tip): somebody looks at the session numbers (the phone, an open overlay), so they are kept fresh.
      */
     snapshot(opts) {
       settleArchived()
-      const snap = store.snapshot()
+      const snap = store.snapshot({ order })
       if (opts?.watch || opts?.tip === true) sessions?.touch()
       const tip = snap.open.some((i) => i.type !== 'onhold') || opts?.tip !== true ? undefined : tipNow() // the tip exists only while nothing waits (held sessions wait for nobody): nothing is generated for a busy list
       const counts = sessions?.current()
@@ -242,6 +260,8 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const open = snap.open.map((item) => ({ ...item, title: titleFor(item), spoken: spokenFor(item, item.position), ...(archivableOf(item, running) ? { archivable: true } : {}), ...(item.type === 'permission' ? { risks: risksOf(item) } : {}) }))
       return {
         ...snap,
+        queueOrder: order,
+        ...(order === 'tier' ? { snapshotId: snap.snapshotId + '~tier' } : {}), // the order is part of the long-poll stamp: a switch must reach a client holding the old one
         archKey: archKeyOf(open), // part of the long-poll token: a flag that appears or goes is seen at once
         ...(counts ? { sessions: counts } : {}),
         ...(tip ? { tip } : {}),
@@ -269,7 +289,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const item = store.get(id)
       if (!item) return { ok: false, error: 'not-found' }
       if (!speaker) return { ok: false, error: 'no-speaker' }
-      const position = store.snapshot().open.find((i) => i.id === id)?.position
+      const position = openNow().find((i) => i.id === id)?.position
       const result = speakAs(id, chunkForSpeech(fullTextFor(item, position)), item.status === 'open')
       if (result.ok) lastReadId = id
       return result
@@ -601,10 +621,10 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     /** The shared archiveOfferCommands switch (marker, command and the session-link tool archive_self): false when the user turned archive offers off. */
     archiveOfferEnabled: () => archiveOfferEnabled() !== false,
     /** The oldest open item (position 1), or undefined. */
-    first: () => store.snapshot().open[0],
+    first: () => openNow()[0],
     /** Reads the open item at a 1-based queue position (what the card's play button reads) and focuses it. */
     readPosition(n) {
-      const open = store.snapshot().open
+      const open = openNow()
       if (!open.length) return { ok: false, error: 'empty' }
       if (!Number.isInteger(n) || n < 1 || n > open.length) return { ok: false, error: 'no-item' }
       const { id } = open[n - 1]
@@ -624,7 +644,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
      * item has left the list). Past the end: { ok:false, error:'no-item', n } where n is the missing position.
      */
     next() {
-      const open = store.snapshot().open
+      const open = openNow()
       if (!open.length) return { ok: false, error: 'empty' }
       const n = (lastReadId === undefined ? -1 : open.findIndex((i) => i.id === lastReadId)) + 2
       const result = this.readPosition(n)
@@ -632,7 +652,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     },
     /** The session of the first open item and that item's card title, for "open the first item's session". */
     openTarget() {
-      const item = store.snapshot().open[0]
+      const item = openNow()[0]
       return item ? { sessionId: item.sessionId, title: titleFor(item) } : undefined
     },
     /** Asks every open browser to show or hide the overlay; each applies a given seq once. */

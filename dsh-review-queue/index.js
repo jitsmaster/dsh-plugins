@@ -285,7 +285,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
     log,
     ...(config.tipSurveyDeps ?? {}),
   }
-  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, limitSignIn, archiveOfferEnabled, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, tipSurveyDeps, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, queueOrderIo: stateDir ? fileIo(join(stateDir, 'queue-order.json')) : undefined, limitSignIn, archiveOfferEnabled, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, tipSurveyDeps, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
   // Observe mode only: every new item is judged in the background and an open card that is safe to handle gets the note "AI would have handled this". Nothing is ever done to an item.
   let triage
   if (triageWanted) {
