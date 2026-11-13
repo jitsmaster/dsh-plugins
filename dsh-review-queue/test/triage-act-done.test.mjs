@@ -272,3 +272,12 @@ test('e2e: an AI-cleared done card can be reopened through the service; reopenin
   assert.equal(store.get(item.id).status, 'open')
   assert.equal(store.get(item.id).resolution, undefined)
 })
+
+test('e2e auto: a judge severity above Low keeps the done card open (tier-above-auto), no act', async () => {
+  const { store, runner, entries } = setup({ judgment: { ...GOOD, severity: 'medium' } })
+  const item = store.add(done())
+  await runner.idle()
+  assert.equal(store.get(item.id).status, 'open')
+  assert.equal(stage(entries, 'act').length, 0)
+  assert.ok(stage(entries, 'judge').at(-1).reasons.includes('tier-above-auto'))
+})

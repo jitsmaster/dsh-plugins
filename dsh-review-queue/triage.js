@@ -6,6 +6,7 @@
  */
 import { recommendedOf } from './speech.js'
 import { PROTECTED, PROTECTED_AUTO, SHORT_NAME } from './triage-paths.js'
+import { autoGateOk } from './tier.js'
 
 /** Items scoring at or below this are candidates for processing (a rule may set its own, never above MAX_THRESHOLD). */
 export const DEFAULT_THRESHOLD = 25
@@ -302,6 +303,9 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
     if (facts?.commandIntact !== true) reasons.push('command-truncated')
     if (facts?.pathsContained !== true) reasons.push('outside-workspace-real')
   }
+  // Auto only, every class: an item is acted on only when its code-proven severity is Low or Housekeeping (the model can only raise it). Aging never enters here.
+  // A question's own floor is Medium (the judge never lowers it), so the question class may act up to Medium; every other class only at Low or Housekeeping.
+  if (rule && rule.mode === 'auto' && !autoGateOk({ item, facts, judgment: j, ruleClass: classOf(item) })) reasons.push('tier-above-auto')
   if (score !== undefined && score > threshold) reasons.push('score-above-threshold')
   const verdict = reasons.length ? 'ask' : 'handle'
   return { verdict, act: verdict === 'handle' && rule?.mode === 'auto', ...(score === undefined ? {} : { score }), threshold, reasons }

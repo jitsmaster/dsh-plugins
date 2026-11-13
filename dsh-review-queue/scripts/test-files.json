@@ -285,6 +285,7 @@
   "test/client-new-session-card.test.mjs",
   "test/triage-enabled.test.mjs",
   "test/client-queue-order.test.mjs",
+  "test/triage-tier-gate.test.mjs",
   "test/event-shown-acted.test.mjs",
   "test/client-shown.test.mjs",
   "test/client-hold.test.mjs",

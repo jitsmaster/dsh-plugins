@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { severityOf, urgencyOf, tierOf, effectiveTier, isAutoSafeSeverity, tierOfItem, MATRIX, AGING_STEP_MS } from '../tier.js'
+import { severityOf, urgencyOf, tierOf, effectiveTier, isAutoSafeSeverity, autoGateOk, tierOfItem, MATRIX, AGING_STEP_MS } from '../tier.js'
 
 const perm = (over = {}) => ({ type: 'permission', sessionId: 's', payload: { toolName: 'Bash', detail: 'git status' }, ...over })
 const safeFacts = { riskFlags: [], safe: true }
@@ -106,4 +106,19 @@ test('the AI gate: only Low and Housekeeping severity, whatever the urgency', ()
   assert.equal(isAutoSafeSeverity(undefined), false)
   // aging never changes the gate: it reads severity, not the effective tier
   assert.equal(isAutoSafeSeverity(severityOf({ item: { type: 'question' } })), false)
+})
+
+test('the AI gate by rule class: the question class may act at Medium, no other class may', () => {
+  assert.equal(isAutoSafeSeverity('medium', 'question'), true)
+  assert.equal(isAutoSafeSeverity('high', 'question'), false)
+  assert.equal(isAutoSafeSeverity('medium', 'done'), false)
+  assert.equal(isAutoSafeSeverity('medium', 'permission'), false)
+  assert.equal(isAutoSafeSeverity('low', 'permission'), true)
+})
+
+test('autoGateOk: done class ignores the facts that already have their own vetoes; risk flags still fail', () => {
+  const item = { type: 'completed' }
+  assert.equal(autoGateOk({ item, facts: { riskFlags: [], needsUser: true, actionItem: true }, ruleClass: 'done' }), true)
+  assert.equal(autoGateOk({ item, facts: { riskFlags: ['x'] }, ruleClass: 'done' }), false)
+  assert.equal(autoGateOk({ item, facts: { riskFlags: [] }, judgment: { needs_decision: true }, ruleClass: 'done' }), false)
 })

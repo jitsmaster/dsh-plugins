@@ -4,6 +4,7 @@
  * Severity = risk if the AI or the user gets the item wrong; urgency = is an agent blocked on it. An ITIL-style lookup matrix turns the
  * pair into a tier P0 (0) .. P4 (4). Everything here is pure code: the model's severity is optional input that can only RAISE a severity above
  * the code floor, never lower it, and text in the item is never read. Aging changes the sort tier only, never the AI gate.
+ * The AI gate (autoGateOk): Low or Housekeeping only; the question class may also act at Medium (its own floor).
  */
 
 export const SEVERITIES = ['low', 'medium', 'high']
@@ -85,5 +86,14 @@ export function effectiveTier(tier, ageMs) {
   return Math.max(1, tier - Math.floor(ageMs / AGING_STEP_MS))
 }
 
-/** The AI gate: only a code-proven Low or Housekeeping severity may be acted on, whatever the urgency. Reads severity, never the aged tier. */
-export const isAutoSafeSeverity = (severity) => severity === 'low' || severity === 'housekeeping'
+/** The AI gate: only a code-proven Low or Housekeeping severity may be acted on, whatever the urgency; the question class, whose own floor is Medium, may also act at Medium. Reads severity, never the aged tier. */
+export const isAutoSafeSeverity = (severity, ruleClass) => severity === 'low' || severity === 'housekeeping' || (ruleClass === 'question' && severity === 'medium')
+
+/**
+ * The gate for one auto rule: severity of the item as the rule's class sees it. Done class: needs-user / action-item facts already have their own
+ * vetoes in triageOutcome, so they are ignored here (no double reason).
+ */
+export function autoGateOk({ item, facts, judgment, ruleClass }) {
+  const f = ruleClass === 'done' && facts ? { ...facts, needsUser: false, needsUserObserve: false, actionItem: false } : facts
+  return isAutoSafeSeverity(severityOf({ item, facts: f, judgment }), ruleClass)
+}
