@@ -101,6 +101,20 @@ test('parseJudgment: a newline or tab becomes a space (words stay apart); zero-w
   assert.deepEqual(j.decision, { text: 'Ship A or B?', options: ['AA', 'B'] })
 })
 
+test('parseJudgment: tag characters, soft hyphen and Hangul fillers are stripped from decision text and options', () => {
+  const tags = String.fromCodePoint(0xe0041, 0xe0042, 0xe0043, 0xe007f)
+  const j = parse({ decision_text: `Ship${tags} A­?ᅟᅠㅤﾠ`, decision_options: [`A${tags}­`, 'Bㅤﾠ'] }).judgment
+  assert.deepEqual(j.decision, { text: 'Ship A?', options: ['A', 'B'] })
+})
+
+test('parseJudgment: a secret in the decision text or options is redacted', () => {
+  const j = parse({ decision_text: 'Use token=abc123secretvalue to deploy?', decision_options: ['Use Bearer abcdefghijklmnop1234', 'No'] }).judgment
+  assert.equal(j.decision.text.includes('abc123secretvalue'), false)
+  assert.ok(j.decision.text.includes('[redacted]'))
+  assert.equal(j.decision.options[0].includes('abcdefghijklmnop1234'), false)
+  assert.ok(j.decision.options[0].includes('[redacted]'))
+})
+
 test('runner: a store failure on the decision write is logged as update-failed and triage continues', async () => {
   const { store, runner, entries } = setup({ ...BASE, decision: { text: 'Q?', options: ['A', 'B'] } })
   const realUpdate = store.update.bind(store)

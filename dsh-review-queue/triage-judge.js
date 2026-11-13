@@ -77,14 +77,14 @@ const strOrNull = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 
 const boolOrUndef = (v) => (typeof v === 'boolean' ? v : undefined)
 
 /** A done card's decision form from the model: text plus 2-4 distinct string options (fewer than 2 valid ones mean a free-text question); no text means none. */
-const stripCtl = (s) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\ufeff]/g, '').replace(/\s+/g, ' ') : s)
+const stripCtl = (s) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\ufeff\u00ad\u115f\u1160\u3164\uffa0\u{e0000}-\u{e007f}]/gu, '').replace(/\s+/g, ' ') : s)
 function decisionOf(obj) {
-  const text = strOrNull(stripCtl(obj.decision_text))
+  const text = strOrNull(redact(stripCtl(obj.decision_text) ?? ''))
   if (!text) return {}
   const seen = new Set()
   const options = []
   for (const o of Array.isArray(obj.decision_options) ? obj.decision_options : []) {
-    const t = typeof o === 'string' ? stripCtl(o).trim().slice(0, MAX_OPTION) : ''
+    const t = typeof o === 'string' ? redact(stripCtl(o)).trim().slice(0, MAX_OPTION) : ''
     if (t && !seen.has(t)) { seen.add(t); options.push(t) }
   }
   return { decision: { text: text.slice(0, MAX_DECISION_TEXT), options: options.length >= MIN_OPTIONS ? options.slice(0, MAX_OPTIONS) : [] } }
