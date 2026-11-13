@@ -43,6 +43,8 @@ export const FILES = {
   'overlay.js': { file: join(LIB, 'client.js'), type: JS },
   /** The desktop overlay's Phone panel (devices, pairing code), imported by the overlay on first use. */
   'phone-panel.js': { file: join(LIB, 'phone-panel.js'), type: JS },
+  /** The overlay's group card model, imported by the overlay on first use. */
+  'groups-ui.js': { file: join(LIB, 'groups-ui.js'), type: JS },
 }
 
 /**

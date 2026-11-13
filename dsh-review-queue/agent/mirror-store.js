@@ -6,7 +6,7 @@
  */
 import { createStore } from '../store.js'
 
-const DERIVED = ['position', 'spoken', 'risks']
+const DERIVED = ['position', 'spoken', 'risks', 'groupId', 'groupRank']
 
 export function createMirrorStore({ now = Date.now } = {}) {
   const inner = createStore({ now })

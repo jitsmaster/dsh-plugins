@@ -316,5 +316,11 @@
   "test/client-tier-chip.test.mjs",
   "test/tier-replay.test.mjs",
   "test/tier-bands.test.mjs",
-  "test/event-log-rotation.test.mjs"
+  "test/event-log-rotation.test.mjs",
+  "test/groups.test.mjs",
+  "test/store-groups.test.mjs",
+  "test/groups-ui.test.mjs",
+  "test/client-group-head.test.mjs",
+  "test/client-grouped-list.test.mjs",
+  "test/client-groups-loader.test.mjs"
 ]

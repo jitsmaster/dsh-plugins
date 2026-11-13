@@ -88,6 +88,60 @@ window.__ModuleLoader__.load({
 			return { text: "P" + t.tier + " " + SEV_LABELS[t.severity], level: t.tier, title: SEV_LABELS[t.severity] + " severity, " + (blocked ? "an agent is blocked on it" : "not blocking an agent") + " (priority P" + t.tier + ")" };
 		};
 
+		/** The header above the cards of one session (model from lib/groups-ui.js groupCardModel); nothing for a group of one card. Display only. */
+		const groupHead = (m, now) => {
+			if (!m || !(m.count > 1)) return null;
+			const tier = Number.isInteger(m.topTier) && m.topTier >= 0 && m.topTier <= 4 ? "P" + m.topTier : "";
+			return h("div", { className: "rq-group-h", key: "gh:" + m.id, "data-group": m.id },
+				h("span", { className: "rq-group-title" }, m.title || ""),
+				m.workspace ? h("span", { className: "rq-sub" }, m.workspace) : null,
+				tier ? h("span", { className: "rq-chip rq-tier rq-tier" + m.topTier, title: "Highest priority in this session" }, tier) : null,
+				h("span", { className: "rq-sub" }, m.count + " items"),
+				Number.isFinite(m.createdAt) ? h("span", { className: "rq-sub" }, fmtAge(now - m.createdAt)) : null,
+				m.aiHandled > 0 ? h("span", { className: "rq-sub", "data-ai-handled": m.id }, "AI handled " + m.aiHandled) : null);
+		};
+
+		/**
+		 * The overlay list group by group: a header before each multi-item session group, then its cards oldest first.
+		 * `ui` is the lazily loaded lib/groups-ui.js; without it (not loaded yet) the list is flat. `cardOf(item)` builds one card.
+		 */
+		// The groups of an ordered open list, by the identity of that list: groupOrder() computes them once and groupedList() reuses them.
+		const groupsOf = new WeakMap();
+		let groupsMemo = { open: null, ui: null, resolved: null, index: null, groups: [], models: new Map() };
+		const groupedList = (ui, open, resolved, now, cardOf) => {
+			if (!Array.isArray(open) || !open.length) return [];
+			if (!ui) return open.map(cardOf);
+			const out = [];
+			// The same open list is grouped once, and each header model built once per (open, resolved), not per render; `now` only feeds the age text.
+			if (groupsMemo.open !== open || groupsMemo.ui !== ui) groupsMemo = { open, ui, resolved, index: null, groups: groupsOf.get(open) || ui.groupsOfOpen(open), models: new Map() };
+			else if (groupsMemo.resolved !== resolved) groupsMemo = { ...groupsMemo, resolved, index: null, models: new Map() };
+			for (const g of groupsMemo.groups) {
+				let model;
+				if (g.count > 1) {
+					model = groupsMemo.models.get(g.id);
+					if (!model) {
+						if (!groupsMemo.index) groupsMemo.index = typeof ui.indexResolved === "function" ? ui.indexResolved(resolved) : resolved; // one pass over resolved, not one per group
+						model = ui.groupCardModel(g, groupsMemo.index);
+						groupsMemo.models.set(g.id, model);
+					}
+				}
+				const head = model ? groupHead(model, now) : null;
+				if (head) out.push(head);
+				for (const i of g.items) out.push(cardOf(i));
+			}
+			return out;
+		};
+
+		/** The open items flattened in the order the cards are drawn (group by group); flat order without the module. j/k, advance and the side list use it. */
+		const groupOrder = (ui, open) => {
+			if (!ui || !Array.isArray(open) || open.length < 2) return open;
+			const out = [];
+			const groups = ui.groupsOfOpen(open);
+			for (const g of groups) for (const i of g.items) out.push(i);
+			groupsOf.set(out, groups); // groupedList() draws this same list: it reuses the groups instead of grouping again
+			return out;
+		};
+
 		/** Done items that left the list without the user acting on them can go back in. */
 		const isReopenable = (it) => !!(it && it.resolution && ((it.resolution.kind === "ai-resolved" && (it.type === "completed" || it.type === "paused")) || it.type === "completed" && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action" || it.resolution.kind === "trimmed")));
 
@@ -876,7 +930,7 @@ function imageFilesOf(data) {
 		function visibleOpen() {
 			const snap = state.snap;
 			if (!snap) return NO_ITEMS;
-			if (openMemo.snap !== snap || openMemo.filter !== state.filter || openMemo.held !== state.showHeld) openMemo = { snap, filter: state.filter, held: state.showHeld, list: filterItems(snap.open, state.showHeld ? { ...state.filter, type: "onhold" } : state.filter) };
+			if (openMemo.snap !== snap || openMemo.filter !== state.filter || openMemo.held !== state.showHeld || openMemo.mod !== groupsMod) openMemo = { snap, filter: state.filter, held: state.showHeld, mod: groupsMod, list: groupOrder(groupsMod, filterItems(snap.open, state.showHeld ? { ...state.filter, type: "onhold" } : state.filter)) };
 			return openMemo.list;
 		}
 		let countsMemo = { snap: null, counts: null };
@@ -1629,7 +1683,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-body{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px}.rq-banner{padding:8px 14px;background:#f25a5a22;color:var(--rq-err);font-size:12px}.rq-notice{padding:6px 14px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#8883}.rq-notice-warn{background:#f2b5301f;color:var(--rq-fg)}"
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
-			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}.rq-tier{opacity:.85}.rq-tier0{outline:1px solid var(--rq-err)}.rq-tier1{outline:1px solid var(--rq-warn)}"
+			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}.rq-tier{opacity:.85}.rq-group-h{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:6px 4px 0;border-bottom:1px solid var(--rq-layer2)}.rq-group-title{font-weight:600}.rq-tier0{outline:1px solid var(--rq-err)}.rq-tier1{outline:1px solid var(--rq-warn)}"
 			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.archive{color:var(--rq-warn)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-chip.onhold{color:var(--rq-mute)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
@@ -2347,6 +2401,21 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			phonePanel = phonePanel || phoneImporter(API + "/m/phone-panel.js").then((m) => m.createPhonePanel(React, { API, fmtAge }), (e) => { phonePanel = undefined; throw e; });
 			return phonePanel;
 		}
+		// The group card model (lib/groups-ui.js) is imported the same way on first use; until it is loaded the list is flat.
+		let groupsImporter = (url) => import(url);
+		let groupsUi;
+		let groupsMod; // the loaded module, once the import resolved
+		function loadGroupsUi() {
+			groupsUi = groupsUi || groupsImporter(API + "/m/groups-ui.js").catch((e) => { groupsUi = undefined; throw e; });
+			return groupsUi;
+		}
+		let groupsAsked = false;
+		/** Asks for the module once per page (a render loop must not re-import, even after a failure); `onReady` runs when it is there. A failure leaves the flat list and is logged once. */
+		function requestGroupsUi(onReady) {
+			if (groupsAsked || groupsMod) return;
+			groupsAsked = true;
+			loadGroupsUi().then((m) => { groupsMod = m; onReady(); }, (e) => { try { console.warn("review queue: grouping module not loaded, the list stays flat (" + ((e && e.message) || e) + ")"); } catch (x) { /* no console */ } });
+		}
 		function PhoneHost() {
 			const [Loaded, setLoaded] = useState(null);
 			const [failed, setFailed] = useState(null);
@@ -2474,7 +2543,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const tip = listed && snap && !st.showHeld && !snap.open.some((i) => i.type !== "onhold") && snap.tip ? h(TipCard, { tip: snap.tip }) : null;
 			const emptySide = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none));
 			const empty = h("div", { className: "rq-emptywrap" }, h("div", { className: "rq-empty" }, none), tip);
-			const list = !listed ? null : open.length ? open.map((it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
+			if (listed) requestGroupsUi(() => set({ groupsReady: true })); // the flat list stays until the module is there
+			const list = !listed ? null : open.length ? groupedList(groupsMod, open, snap ? snap.resolved : [], Date.now(), (it) => h(Card, { key: it.id, item: it })) : snap ? empty : h("div", { className: "rq-empty" }, "Loading…");
 			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap }), noticeBanner(snap), banner, h(TodoForm), h(ViewTabs, { snap }), h(SubTabs, { snap }), h(PausedStrip, { snap }), h(ResumeAllBar),
 				view === "phone" ? h("div", { className: "rq-body", ...vpanel("phone") }, h(PhoneHost)) : view === "rules" ? h(RulesView) : view === "resolved" ? h("div", { className: "rq-body", ...vpanel("resolved") }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split", ...vpanel(view) },
@@ -2564,7 +2634,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		Object.assign(exports.__test, { errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
-		Object.assign(exports.__test, { tierChip });
+		Object.assign(exports.__test, { tierChip, groupHead, groupedList, groupOrder, loadGroupsUi, requestGroupsUi, setGroupsImporter: (fn) => { groupsImporter = fn; groupsUi = undefined; groupsAsked = false; groupsMod = undefined; } });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
 		Object.assign(exports.__test, { resolvedSessionLine, raisedText, resolvedBody, hasResolvedBody, ResolvedBody, mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });

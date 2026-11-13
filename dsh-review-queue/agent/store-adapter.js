@@ -12,7 +12,7 @@ import { createStore } from '../store.js'
 const MAX_OUTBOX = 2000
 const MAX_RESOLVED_SYNC = 100
 /** Fields the hub owns; an adopted item loses them. */
-const HUB_ONLY = ['owner', 'seq', 'status', 'resolvedAt', 'resolution', 'ownerLabel', 'ownerState', 'position']
+const HUB_ONLY = ['owner', 'seq', 'status', 'resolvedAt', 'resolution', 'ownerLabel', 'ownerState', 'position', 'groupId', 'groupRank']
 
 const safe = (fn, fallback) => { try { return fn() } catch { return fallback } }
 

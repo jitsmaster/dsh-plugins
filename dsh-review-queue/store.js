@@ -5,6 +5,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { buildTier, validTier } from './tier.js'
+import { groupOpen } from './groups.js'
 
 /** The code-only tier of an item (no model input, no facts): every item has one from the moment it exists. The triage runner may refine it later. */
 const codeTier = (item, at) => buildTier({ item }, at)
@@ -221,7 +222,10 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     /** Open items, oldest first, each with its position (1 = oldest); resolved items, newest first. */
     snapshot() {
       const all = [...items.values()]
-      const open = all.filter((i) => i.status === 'open').sort(order).map((i, n) => ({ ...copy(i), position: n + 1 }))
+      const flat = all.filter((i) => i.status === 'open').sort(order)
+      const info = new Map()
+      for (const g of groupOpen(flat)) for (const i of g.items) info.set(i.id, { groupId: g.id, groupRank: g.rank })
+      const open = flat.map((i, n) => ({ ...copy(i), position: n + 1, ...info.get(i.id) }))
       const resolved = all.filter((i) => i.status === 'resolved').sort((a, b) => b.resolvedAt - a.resolvedAt || b.seq - a.seq).map(copy)
       return { snapshotId: epoch + ':' + version, open, resolved }
     },
