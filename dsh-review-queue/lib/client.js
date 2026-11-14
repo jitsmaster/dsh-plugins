@@ -2356,7 +2356,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			const risky = it.risks && it.risks.length;
 			return h("div", { ref, role: "option", tabIndex: selected ? 0 : -1, "aria-selected": !!selected, className: "rq-row-i" + (selected ? " sel" : ""), onClick: () => set({ selected: it.id }),
 				onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); set({ selected: it.id }); } } },
-				h("span", { className: "rq-row" }, h("span", { className: "rq-pos" }, "#" + it.position), h("span", { className: "rq-chip " + it.type }, itemTypeLabel(it)), h("span", { className: "rq-title" }, cardTitle(it)),
+				h("span", { className: "rq-row" }, h("span", { className: "rq-pos" }, "#" + it.position), h("span", { className: "rq-chip " + it.type }, itemTypeLabel(it)), tierChip(it) ? h("span", { className: "rq-chip rq-tier rq-tier" + tierChip(it).level, "data-tier": it.id, title: tierChip(it).title }, tierChip(it).text) : null, h("span", { className: "rq-title" }, cardTitle(it)),
 					left !== undefined || risky ? h("span", { className: "rq-meta" },
 						left !== undefined ? h("span", { className: "rq-left" + (left < 30000 ? " soon" : ""), title: "Time left before this question expires" }, fmtLeft(left)) : null,
 						risky ? h("span", { className: "rq-risk-dot", title: it.risks.map((r) => r.label).join("; ") }, "⚠") : null) : null),
@@ -2597,7 +2597,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return h("div", { className: "rq rq-ov", "data-rq": "overlay", role: "dialog", "aria-label": "Coding Boss Review Queue" }, h(Head, { snap }), noticeBanner(snap), banner, h(TodoForm), h(ViewTabs, { snap }), h(SubTabs, { snap }), h(PausedStrip, { snap }), h(ResumeAllBar),
 				view === "phone" ? h("div", { className: "rq-body", ...vpanel("phone") }, h(PhoneHost)) : view === "rules" ? h(RulesView) : view === "resolved" ? h("div", { className: "rq-body", ...vpanel("resolved") }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split", ...vpanel(view) },
-						h("div", Object.assign({ className: "rq-side" }, open.length ? { role: "listbox", "aria-label": view === "held" ? "Held sessions" : "Waiting items" } : {}), st.hold && newCount() > 0 ? h("button", { type: "button", className: "rq-btn", "data-new-strip": "1", onClick: releaseHold }, newCount() + " new") : null, open.length ? open.map((it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
+						h("div", Object.assign({ className: "rq-side" }, open.length ? { role: "listbox", "aria-label": view === "held" ? "Held sessions" : "Waiting items" } : {}), st.hold && newCount() > 0 ? h("button", { type: "button", className: "rq-btn", "data-new-strip": "1", onClick: releaseHold }, newCount() + " new") : null, open.length ? groupedList(groupsMod, open, snap ? snap.resolved : [], Date.now(), (it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
 						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip ? h("div", { className: "rq-tipwrap" }, tip) : null),
 						h("div", { className: "rq-narrow" }, list)),
 				view === "resolved" || view === "rules" || view === "phone" ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"),

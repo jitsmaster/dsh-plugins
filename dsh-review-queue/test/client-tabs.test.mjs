@@ -350,6 +350,17 @@ test('the left list is a listbox of options with aria-selected; a click selects;
   assert.equal(T.state.selected, 'b')
 })
 
+test('a left-list row shows the tier chip of its item, and none without a tier', () => {
+  const { T } = load()
+  T.state.snap = snap({ open: [item('a', 'question', { position: 1, tier: { tier: 1, severity: 'medium', urgency: 'blocked' } }), item('b', 'completed', { position: 2 })] })
+  const side = findAll(T.Panel(), (n) => /\brq-side\b/.test(n.props?.className ?? ''))[0]
+  const rows = findAll(side, (n) => typeof n.type === 'function' && n.type.name === 'SideRow').map((n) => n.type(n.props))
+  const chips = rows.map((r) => findAll(r, (n) => n.props && n.props['data-tier'] !== undefined))
+  assert.equal(chips[0].length, 1)
+  assert.match(textOf(chips[0][0]), /P1 Medium/)
+  assert.equal(chips[1].length, 0)
+})
+
 test('a row answers Enter and Space by selecting; arrows still move through overlayKey', () => {
   const { T } = load()
   T.state.snap = snap({ open: [item('a', 'question', { position: 1 }), item('b', 'completed', { position: 2 })] })
