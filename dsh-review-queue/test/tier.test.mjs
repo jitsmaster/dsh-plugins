@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { severityOf, urgencyOf, tierOf, effectiveTier, isAutoSafeSeverity, autoGateOk, tierOfItem, MATRIX, AGING_STEP_MS } from '../tier.js'
+import { severityOf, urgencyOf, tierOf, isAutoSafeSeverity, autoGateOk, tierOfItem, MATRIX } from '../tier.js'
 
 const perm = (over = {}) => ({ type: 'permission', sessionId: 's', payload: { toolName: 'Bash', detail: 'git status' }, ...over })
 const safeFacts = { riskFlags: [], safe: true }
@@ -82,20 +82,6 @@ test('tierOfItem combines severity and urgency', () => {
   assert.equal(tierOfItem({ item: { type: 'question' } }), 1)
   assert.equal(tierOfItem({ item: { type: 'completed' } }), 3)
   assert.equal(tierOfItem({ item: { type: 'todo' } }), 0)
-})
-
-test('aging: one tier per 60 min of group age, capped at P1, never creates P0', () => {
-  assert.equal(AGING_STEP_MS, 60 * 60 * 1000)
-  assert.equal(effectiveTier(4, 0), 4)
-  assert.equal(effectiveTier(4, AGING_STEP_MS - 1), 4)
-  assert.equal(effectiveTier(4, AGING_STEP_MS), 3)
-  assert.equal(effectiveTier(4, 2 * AGING_STEP_MS), 2)
-  assert.equal(effectiveTier(4, 10 * AGING_STEP_MS), 1)
-  assert.equal(effectiveTier(2, 100 * AGING_STEP_MS), 1)
-  assert.equal(effectiveTier(1, 100 * AGING_STEP_MS), 1)
-  assert.equal(effectiveTier(0, 100 * AGING_STEP_MS), 0)
-  assert.equal(effectiveTier(3, -5), 3)
-  assert.equal(effectiveTier(3, NaN), 3)
 })
 
 test('the AI gate: only Low and Housekeeping severity, whatever the urgency', () => {

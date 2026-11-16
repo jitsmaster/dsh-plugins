@@ -19,7 +19,7 @@ const byAge = (a, b) => { const x = at(a); const y = at(b); return x < y ? -1 : 
 
 /**
  * Ordered groups `{ id, items, createdAt, count, topTier, rank }` of the open items.
- * `opts.order === 'tier'` with a finite `opts.now` orders groups by effective tier (best item tier, aged by group age, see tier.js), then oldest item;
+ * `opts.order === 'tier'` with a finite `opts.now` orders groups by their best item tier, then oldest item;
  * anything else is oldest-first. A group without any tier ranks last.
  */
 export function groupOpen(items, opts = {}) {

@@ -1012,7 +1012,7 @@ function imageFilesOf(data) {
 			const gone = d && !(body.open || []).some((i) => i.id === d.id) && !(body.resolved || []).some((i) => i.id === d.id); // the item it acts on left the queue
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? { dialog: null } : {}) });
 			clearFresh(currentItem()?.id); // the card on show (nothing chosen: the first) is already seen
-			if (state.overlay && !state.hold && body.open) { const h0 = holdOf(); if (h0) set({ hold: h0 }); } // an empty list holds nothing and must not re-render every snapshot; // an overlay restored open at load starts its hold with the first snapshot
+			if (state.overlay && !state.hold && body.open) { const h0 = holdOf(); if (h0) set({ hold: h0 }); } // an empty list holds nothing and must not re-render every snapshot; this also starts the hold of an overlay restored open at load, with the first snapshot
 			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen, late: state.lateOpen }, body);
 			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply)) || Object.keys(state.lateOpen).some((k) => !(k in tog.late))) set({ expanded: tog.expanded, replyOpen: tog.reply, lateOpen: tog.late });
 			const openRes = Object.keys(state.resOpen);

@@ -309,7 +309,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
     })
     triage.start()
   }
-  // A new question that repeats an older open question of the same session supersedes it (group card merge); the model is the cheapest one DSH can reach.
+  // A new question that repeats an older open question of the same session supersedes it (group card merge); the model is a small, fast one picked by name (summary.js pickModel PREFER), else the first one DSH lists.
   let questionMerge
   if (questionMergeOn) {
     questionMerge = createQuestionMerge({ store, same: createSameJudge({ llm }), log, expireRest: true })

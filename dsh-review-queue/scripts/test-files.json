@@ -1,6 +1,7 @@
 [
   "test/store.test.mjs",
   "test/detached-expiry.test.mjs",
+  "test/proxy-order.test.mjs",
   "test/question-merge-wiring.test.mjs",
   "test/speech.test.mjs",
   "test/reader.test.mjs",

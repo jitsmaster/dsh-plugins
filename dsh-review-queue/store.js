@@ -92,7 +92,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     indexedAs.clear()
     for (const item of data.items) {
       if (item && typeof item.id === 'string' && typeof item.type === 'string') {
-        if (!validTier(item.tier) || (item.type === 'todo' && item.status === 'open')) item.tier = codeTier(item, Number.isFinite(item.createdAt) ? item.createdAt : now()) // saved before tiers existed
+        if (!validTier(item.tier) || (item.type === 'todo' && item.status === 'open')) item.tier = codeTier(item, Number.isFinite(item.createdAt) ? item.createdAt : now()) // no or malformed tier (saved before tiers existed); an open todo is always re-derived: it is P0 by design (tier.js) and triage never judges one, so a stored todo tier holds nothing worth keeping
         items.set(item.id, item); reindex(item)
       }
     }

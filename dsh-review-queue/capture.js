@@ -5,7 +5,7 @@
  * Nothing here may break the host: every handler falls through to next() when anything goes wrong.
  */
 import { recommendedOf, cleanText } from './speech.js'
-import { expireDetachedQuestions } from './detached-expiry.js'
+import { expireDetachedQuestions, openOf } from './detached-expiry.js'
 import { fallbackSummary } from './summary.js'
 import { toolDetail, hasExtraToolArgs } from './risk.js'
 import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
@@ -189,7 +189,7 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     try { return fn() } catch (error) { log('capture: ' + (error?.message ?? error)); return fallback }
   }
   // Performance: the open items of one session without copying the whole store (every step of every session asks); a store without peekOpen falls back to list().
-  const openOf = (sessionId) => (typeof store.peekOpen === 'function' ? store.peekOpen(sessionId) : store.list({ status: 'open' }).filter((i) => i.sessionId === sessionId))
+  const openOfSession = (sessionId) => openOf(store, sessionId)
 
   /**
    * The session keeps at most `limit` open done cards (default `keep`): the oldest beyond that are resolved as 'trimmed' (with the limit that
@@ -198,7 +198,7 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
    */
   function trimDone(sessionId, limit = keep) {
     guard(() => {
-      const cards = openOf(sessionId).filter((i) => i.type === 'completed')
+      const cards = openOfSession(sessionId).filter((i) => i.type === 'completed')
       for (const old of cards.slice(0, Math.max(0, cards.length - limit))) {
         if (store.resolve(old.id, { kind: 'trimmed', by: 'auto', limit })) log('capture: trimmed done item "' + nameOf(old) + '" (' + old.id + ') of session ' + sessionId + ': the session has more than ' + limit + ' open done items')
       }
@@ -243,7 +243,7 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     const seconds = callId === undefined ? undefined : timeouts.get(callId)
     // A session asks one live question at a time: an older open question of this session (its request ended without an answer, detached) can never
     // reach the assistant now, so it leaves the list and the new question is the one to answer.
-    if (expireOlder) guard(() => expireDetachedQuestions(store, openOf(agent.id), { skip: (old) => old.key === callId || detachedInFlight.has(old.id) }))
+    if (expireOlder) guard(() => expireDetachedQuestions(store, openOfSession(agent.id), { skip: (old) => old.key === callId || detachedInFlight.has(old.id) }))
 
     let item
     try {
@@ -361,7 +361,7 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     // One message is enough: the finished turn that follows an archive offer adds no done card next to the open archive card.
     // Only that one turn is silent (per archive card): a session that keeps working after the offer must not hide its later results.
     // The token is taken before the empty-reply return: a tool-only offer turn still uses it up.
-    const offer = guard(() => openOf(agent.id).find((i) => i.type === 'archive'))
+    const offer = guard(() => openOfSession(agent.id).find((i) => i.type === 'archive'))
     if (offer && silencedBy.get(agent.id) !== offer.id) { silencedBy.set(agent.id, offer.id); return }
     if (!reply) return
     const item = guard(() => store.add({ type: 'completed', ...baseOf(agent), payload: { reply, ...(request ? { request } : {}) } }))
@@ -407,7 +407,7 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
       // Only role 'user' messages: isHumanMessage alone accepts any message without a source (assistant and tool messages included).
       const humans = messages.filter((m) => m?.role === 'user' && isHumanMessage(m))
       const human = humans.length > 0
-      const open = openOf(agent.id)
+      const open = openOfSession(agent.id)
       // A question of that session the user answered there: a reply to it, or a plain message of their own.
       for (const item of open) {
         if (item.type !== 'question') continue

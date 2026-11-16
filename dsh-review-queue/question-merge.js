@@ -8,7 +8,7 @@
  * and runs are serialized (one model call at a time).
  */
 import { NOTE_UNUSABLE, createModelRun } from './summary.js'
-import { expireDetachedQuestions } from './detached-expiry.js'
+import { expireDetachedQuestions, openOf as openItemsOf } from './detached-expiry.js'
 
 const MAX_TEXT = 600
 export const MAX_COMPARE = 5 // older items judged per new one
@@ -62,21 +62,20 @@ export function createSameJudge({ llm, timeoutMs = SAME_TIMEOUT_MS, maxTokens = 
   }
 }
 
-/** @param {{ store: any, same: (a: string, b: string, kind?: string) => Promise<boolean>, log?: (l: string) => void, now?: () => number, enabled?: () => boolean }} deps */
+/** @param {{ store: any, same: (a: string, b: string, kind?: string) => Promise<boolean>, log?: (l: string) => void, now?: () => number, enabled?: () => boolean, expireRest?: boolean }} deps (expireRest: after the merge attempt, also expire the older detached questions of the session) */
 export function createQuestionMerge({ store, same, log = () => {}, now = Date.now, enabled = () => true, expireRest = false }) {
   let chain = Promise.resolve() // runs are serialized: one model call at a time
   let off = () => {}
   let stopped = false
   let pending = 0
-  /** The open items of one session, without copying the whole store. */
-  const openOf = (sessionId) => (typeof store.peekOpen === 'function' ? store.peekOpen(sessionId).filter((i) => i.status === 'open') : store.list({ status: 'open' }).filter((i) => i.sessionId === sessionId))
+  /** The open items of one session, without copying the whole store; this caller walks them while resolving, so a stale index entry is dropped. */
+  const openOf = (sessionId) => openItemsOf(store, sessionId, { onlyOpen: true })
   const say = (error) => log('question-merge: ' + String(error?.message ?? error).slice(0, 120))
 
   /** capture.js used to expire older detached questions when a new one arrived; with expireRest the merge does it AFTER trying to merge them. */
   function expireOlder(added) {
     if (!expireRest || added.type !== 'question') return
     expireDetachedQuestions(store, openOf(added.sessionId), { skip: (old) => old.id === added.id || !(old.seq < added.seq), onError: say })
-
   }
 
   async function run(added) {

@@ -13,7 +13,7 @@ import { Readable } from 'node:stream'
 import { PROTOCOL } from '../hub/protocol.js'
 import { MAX_WAIT_MS, PREFIX, archKeyOf, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
 import { spokenFor } from '../speech.js'
-import { groupOpen } from '../groups.js'
+import { stampTier, unstampTier, tierSorted } from './proxy-order.js'
 import { surveyKeyOf } from '../tip-survey.js'
 
 const MODES = ['starting', 'hub', 'standalone', 'degraded']
@@ -162,30 +162,19 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     return closed.signal.aborted ? undefined : AGAIN
   }
 
-  const TIER_MARK = '~tier'
-  /** The snapshot id a client sees: the hub's id, marked when this app shows the list by priority (a different order needs its own stamp). */
-  const stampTier = (id, tiered) => id + (tiered ? TIER_MARK : '')
-  /** The reverse of stampTier: the hub's id and whether the mark was on it. */
-  const unstampTier = (stamp) => (stamp.endsWith(TIER_MARK) ? { id: stamp.slice(0, -TIER_MARK.length), tiered: true } : { id: stamp, tiered: false })
   const safeOrder = () => { try { return queue.queueOrder?.() } catch { return undefined } }
-  /** Group members in group order, each carrying its group's id and rank. */
-  const flattenGroups = (groups) => groups.flatMap((g) => g.items.map((i) => ({ ...i, groupId: g.id, groupRank: g.rank })))
-  /** The item at its 1-based place in the list; a spoken line names the place, so it is built again. */
-  const atPosition = (item, n) => ({ ...item, position: n + 1, spoken: item.spoken && spokenFor(item, n + 1) })
-  /** The hub lists oldest first: this app's own By priority switch re-sorts that list by group tier, positions following. */
-  const tierSorted = (list) => flattenGroups(groupOpen(list, { order: 'tier', now: Date.now() })).map(atPosition)
   async function hubRound({ res, since, remaining, closed, visible, want }) {
     const local = localState()
     const tierNow = safeOrder() === 'tier'
-    const parts = since?.split('|')
+    let parts = since?.split('|')
     if (parts) {
       const stamp = unstampTier(parts[0])
-      if (stamp.tiered !== tierNow) parts.length = 0 // the client holds a stamp of the other display order: it needs a full answer
+      if (stamp.tiered !== tierNow) parts = undefined // the client holds a stamp of the other display order: it needs a full answer
       else parts[0] = stamp.id
     }
     const tipId = want.tip ? tipIdFor(parts?.[0]) : ''
     // A client that knows the tip part (six parts) must have the tip that is current now; an older page is not held to it.
-    const sameLocal = parts !== undefined && parts.length > 0 && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId) && (parts.length < 7 || archKeyNow() === undefined || parts[6] === archKeyNow()) && (parts.length < 8 || parts[7] === surveyKeyOf(local.tipSurvey))
+    const sameLocal = parts !== undefined && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId) && (parts.length < 7 || archKeyNow() === undefined || parts[6] === archKeyNow()) && (parts.length < 8 || parts[7] === surveyKeyOf(local.tipSurvey))
     const query = new URLSearchParams()
     if (sameLocal) { query.set('since', parts[0] + '|||0' + (parts.length > 4 ? '|' + parts[4] : '')); query.set('wait', String(remaining)) }
     if (visible) query.set('visible', '1')

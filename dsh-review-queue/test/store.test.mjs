@@ -257,3 +257,19 @@ test('an item added under an id that is already used replaces the earlier one in
   store.add(q({ sessionId: 'b' }), { id: 'same' })
   assert.deepEqual([store.peekOpen('a').length, store.peekOpen('b').length], [0, 1])
 })
+
+// A todo is always P0 by design (tier.js severityOf: the user's own task), and triage never judges one (CLASS_OF has no todo), so a stored todo tier carries no information.
+test('an open todo reloads as P0 even when a different tier was stored with setTier; other items keep a stored tier', () => {
+  const disk = {}
+  const io = { read: () => disk.text, write: (text) => { disk.text = text } }
+  const one = make({ io })
+  const todo = one.store.add({ type: 'todo', text: 'fix it' })
+  const done = one.store.add({ type: 'completed', sessionId: 's1' })
+  const p3 = { severity: 'low', urgency: 'free', tier: 3, at: 5 }
+  assert.equal(one.store.setTier(todo.id, p3), true)
+  assert.equal(one.store.setTier(done.id, { severity: 'medium', urgency: 'free', tier: 2, at: 5 }), true)
+  const two = make({ io })
+  assert.equal(two.store.get(todo.id).tier.tier, 0, 'a todo is P0 whatever was stored')
+  assert.equal(two.store.get(todo.id).tier.urgency, 'blocked')
+  assert.equal(two.store.get(done.id).tier.tier, 2, 'a non-todo keeps its stored (valid) tier')
+})

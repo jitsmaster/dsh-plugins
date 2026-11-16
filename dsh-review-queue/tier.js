@@ -23,9 +23,6 @@ export const MATRIX = {
   housekeeping: { blocked: 3, free: 4 },
 }
 
-/** Aging: a group waiting this long moves up one tier (never above P1: aging alone cannot create a P0). */
-export const AGING_STEP_MS = 60 * 60 * 1000
-
 const raise = (a, b) => (RANK[b] > RANK[a] ? b : a)
 
 /**
@@ -78,13 +75,6 @@ export function buildTier(input = {}, at) {
   const severity = severityOf(input)
   const urgency = urgencyOf(input.item)
   return { severity, urgency, tier: tierOf(severity, urgency), at }
-}
-
-/** The sort tier after aging: one tier per AGING_STEP_MS of group age, capped at P1; P0 and P1 never move; a bad age changes nothing. */
-export function effectiveTier(tier, ageMs) {
-  if (!Number.isFinite(tier) || tier <= 1) return tier
-  if (!Number.isFinite(ageMs) || ageMs <= 0) return tier
-  return Math.max(1, tier - Math.floor(ageMs / AGING_STEP_MS))
 }
 
 /** The AI gate: only a code-proven Low or Housekeeping severity may be acted on, whatever the urgency; the question class, whose own floor is Medium, may also act at Medium. Reads severity, never the aged tier. */
