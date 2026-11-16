@@ -74,8 +74,8 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
       const current = store.get(old.id)
       if (!current || current.status !== 'open') continue
       const count = (current.merged?.count ?? 1) + (store.get(added.id)?.merged?.count ?? 1)
+      store.resolve(old.id, { kind: 'superseded', by: 'merge', into: added.id }) // resolve first: a failure here must not leave a count that includes an unresolved item
       store.update(added.id, { merged: { count }, updatedAt: now() })
-      store.resolve(old.id, { kind: 'superseded', by: 'merge', into: added.id })
     }
   }
 

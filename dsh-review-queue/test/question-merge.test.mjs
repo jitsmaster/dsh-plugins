@@ -114,3 +114,13 @@ test('the judge is told the kind of the two texts', async () => {
   await merge.idle()
   assert.deepEqual(kinds, ['completed', 'question'])
 })
+
+test('a failing resolve leaves the newer item without a merge count', async () => {
+  const { store, merge } = setup()
+  const old = store.add(q('Which database?'))
+  const realResolve = store.resolve.bind(store)
+  store.resolve = (id, r) => { if (id === old.id) throw new Error('boom'); return realResolve(id, r) }
+  const fresh = store.add(q('Which DB?'))
+  await merge.idle()
+  assert.equal(store.get(fresh.id).merged, undefined)
+})

@@ -35,3 +35,17 @@ test('an item that leaves the queue is forgotten', () => {
   T.applySnapshot(snap(['a']))
   assert.deepEqual(Object.keys(T.state.fresh), [])
 })
+
+test('selectItem(null) and an unmarked id leave the marks alone', () => {
+  const T = setup()
+  T.applySnapshot(snap(['a']))
+  T.applySnapshot(snap(['a', 'b']))
+  T.selectItem(null)
+  assert.deepEqual(Object.keys(T.state.fresh), ['b'])
+  assert.equal(T.state.selected, null)
+})
+
+test('the new-row background is a valid color-mix, not a hex suffix', () => {
+  const T = setup()
+  assert.match(T.CSS, /\.rq-row-i\.new\{background:color-mix\(/)
+})
