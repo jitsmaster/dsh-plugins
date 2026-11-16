@@ -149,7 +149,7 @@ window.__ModuleLoader__.load({
 		};
 
 		/** Done items that left the list without the user acting on them can go back in. */
-		const isReopenable = (it) => !!(it && it.resolution && ((it.resolution.kind === "ai-resolved" && (it.type === "completed" || it.type === "paused")) || it.type === "completed" && it.resolution.by !== "merge" && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action" || it.resolution.kind === "trimmed")));
+		const isReopenable = (it) => !!(it && it.resolution && ((it.resolution.kind === "ai-resolved" && (it.type === "completed" || it.type === "paused")) || it.type === "completed" && (it.resolution.kind === "reviewed" || it.resolution.kind === "superseded" || it.resolution.kind === "no-action" || it.resolution.kind === "trimmed")));
 
 		const AI_ACTIONS = { approved: "AI approved it", cleared: "AI cleared it as handled", resumed: "AI resumed the session" };
 		/** Caps a string at n characters with an ellipsis; anything that is not a string becomes "". */

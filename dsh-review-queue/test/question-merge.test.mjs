@@ -34,7 +34,7 @@ test('a repeated question supersedes the older one and carries the merge count a
   const fresh = store.add(q('Which DB do you want?'))
   await merge.idle()
   assert.equal(store.get(old.id).status, 'resolved')
-  assert.deepEqual(store.get(old.id).resolution, { kind: 'superseded', by: 'merge', into: fresh.id })
+  assert.deepEqual(store.get(old.id).resolution, { kind: 'superseded', by: 'merge', into: fresh.id, assumed: [] })
   const kept = store.get(fresh.id)
   assert.equal(kept.status, 'open')
   assert.equal(kept.merged.count, 2)
@@ -242,4 +242,54 @@ test('stop() ends queued runs: no model call after it', async () => {
   merge.stop()
   await merge.idle()
   assert.equal(calls.length, 0)
+})
+
+test('a risky older done card (risks) is never merged', async () => {
+  const { store, merge, calls } = setup()
+  const old = store.add({ ...done('Migration finished on Postgres.'), risks: ['rm -rf'] })
+  store.add(done('Migration finished on Postgres.'))
+  await merge.idle()
+  assert.equal(store.get(old.id).status, 'open')
+  assert.equal(calls.length, 0)
+})
+
+test('an older done card above low severity is never merged; a low one still is', async () => {
+  const { store, merge } = setup()
+  const high = store.add(done('Migration finished on Postgres.'))
+  store.setTier(high.id, { severity: 'high', urgency: 'free', tier: 1, at: 1 })
+  const low = store.add(done('Migration finished on Postgres.'))
+  store.add(done('Migration finished on Postgres.'))
+  await merge.idle()
+  assert.equal(store.get(high.id).status, 'open')
+  assert.equal(store.get(low.id).resolution.by, 'merge')
+})
+
+test('a merge-superseded question records the assumed recommended options', async () => {
+  const { store, merge } = setup()
+  const withOpts = (t) => ({ ...q(t), payload: { questions: [{ question: t, options: [{ label: 'Postgres (Recommended)' }, { label: 'SQLite' }] }] } })
+  const old = store.add(withOpts('Which database?'))
+  const fresh = store.add(withOpts('which database'))
+  await merge.idle()
+  assert.deepEqual(store.get(old.id).resolution, { kind: 'superseded', by: 'merge', into: fresh.id, assumed: ['Postgres (Recommended)'] })
+})
+
+test('a very long text is bounded: normalized only up to the model limit', async () => {
+  const { store, merge, calls } = setup()
+  const huge = 'a'.repeat(5_000_000)
+  const t0 = Date.now()
+  const old = store.add(q(huge))
+  store.add(q(huge))
+  await merge.idle()
+  assert.ok(Date.now() - t0 < 2000)
+  assert.equal(calls.length, 0)
+  assert.equal(store.get(old.id).resolution.kind, 'expired')
+})
+
+test('path and identifier characters are kept: a/b and a b do not exact-match', async () => {
+  const { store, merge, calls } = setup({ same: async () => false })
+  const old = store.add(q('use src/a_b.js file'))
+  store.add(q('use src a b js file'))
+  await merge.idle()
+  assert.equal(store.get(old.id).resolution.kind, 'expired')
+  assert.equal(calls.length, 1, 'goes to the model, not the exact shortcut')
 })

@@ -8,6 +8,7 @@
  * and runs are serialized (one model call at a time).
  */
 import { NOTE_UNUSABLE, createModelRun } from './summary.js'
+import { recommendedOf } from './speech.js'
 import { expireDetachedQuestions, openOfSession } from './detached-expiry.js'
 
 const MAX_TEXT = 600
@@ -24,10 +25,17 @@ export function questionTextOf(item) {
 /** The text that is compared: a question's texts, or a done message's reply. */
 export function textOf(item) { return item?.type === 'completed' ? String(item?.payload?.reply ?? '').trim() : questionTextOf(item) }
 
-const normalize = (t) => String(t).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+/** Loose form (every non-letter/digit run is a space): word splitting for the shared-word gate only. */
+const loose = (t) => String(t).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+/** Strict form for the exact-match shortcut: path/identifier characters (/ . _ -) are kept, so /b and  b differ. */
+const normalize = (t) => String(t).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}/._-]+/gu, ' ').trim()
+/** Exact match of two texts. Performance: only texts within MAX_TEXT are normalized, so the work per item is bounded; a longer text never exact-matches. */
+const sameText = (a, b) => a.length <= MAX_TEXT && b.length <= MAX_TEXT && normalize(a) === normalize(b)
+/** Security: an older done card that is risky (risk flags, or a severity above low/housekeeping) is never superseded: it stays open for the user. */
+const isRisky = (item) => (Array.isArray(item?.risks) && item.risks.length > 0) || (item?.tier?.severity !== undefined && item.tier.severity !== 'low' && item.tier.severity !== 'housekeeping')
 /** The option labels of a question item, sorted and joined: two questions with different choices are never the same. */
 const optionsOf = (item) => (Array.isArray(item?.payload?.questions) ? item.payload.questions : []).map((q) => (Array.isArray(q?.options) ? q.options : []).map((o) => String(o?.label ?? '')).sort().join('|')).join('||')
-const wordsOf = (t) => new Set(normalize(t).split(' ').filter((w) => w.length >= 3))
+const wordsOf = (t) => new Set(loose(t).split(' ').filter((w) => w.length >= 3))
 const shareWord = (a, b) => { const wa = wordsOf(a); for (const w of wordsOf(b)) if (wa.has(w)) return true; return false }
 
 /** The model's answer as { same: boolean }, or { note } when unusable. The whole answer must be one JSON object. */
@@ -83,7 +91,7 @@ export function createQuestionMerge({ store, same, isBusy = () => false, log = (
   function isCandidate(old, added) {
     const a = textOf(added); const o = textOf(old)
     if (!a || !o || optionsOf(old) !== optionsOf(added)) return false
-    return normalize(a) === normalize(o) || (a.length <= MAX_TEXT && o.length <= MAX_TEXT && shareWord(o, a))
+    return sameText(a, o) || (a.length <= MAX_TEXT && o.length <= MAX_TEXT && shareWord(o, a))
   }
 
   async function run(added) {
@@ -95,7 +103,8 @@ export function createQuestionMerge({ store, same, isBusy = () => false, log = (
     if (!text || typeof added.sessionId !== 'string') return
     const olds = openOfSession(store, added.sessionId, { onlyOpen: true })
       .filter((i) => i.type === added.type && !spared(i, added) // only items raised BEFORE this one (the run is async: later ones are already stored)
-        && (added.type !== 'question' || i.detached === true)) // a live question is still awaited by its agent: never closed here
+        && (added.type !== 'question' || i.detached === true) // a live question is still awaited by its agent: never closed here
+        && (added.type !== 'completed' || !isRisky(i))) // a risky done card stays open
       .reverse() // the most recent first
       .slice(0, MAX_COMPARE)
     for (const old of olds) {
@@ -104,7 +113,7 @@ export function createQuestionMerge({ store, same, isBusy = () => false, log = (
       const oldText = textOf(old)
       if (!oldText) continue
       if (optionsOf(old) !== optionsOf(added)) continue // different choices: a different question
-      let isSame = normalize(oldText) === normalize(text)
+      let isSame = sameText(oldText, text)
       if (!isSame) {
         if (oldText.length > MAX_TEXT || text.length > MAX_TEXT || !shareWord(oldText, text)) continue // no model call on a truncated prefix or on unrelated texts
         try { isSame = await same(oldText, text, added.type) } catch (error) { say(error); return }
@@ -113,7 +122,7 @@ export function createQuestionMerge({ store, same, isBusy = () => false, log = (
       const current = store.get(old.id)
       if (!current || current.status !== 'open') continue
       const count = (current.merged?.count ?? 1) + (store.get(added.id)?.merged?.count ?? 1)
-      store.resolve(old.id, { kind: 'superseded', by: 'merge', into: added.id }) // resolve first: a failure here must not leave a count that includes an unresolved item
+      store.resolve(old.id, { kind: 'superseded', by: 'merge', into: added.id, ...(old.type === 'question' ? { assumed: (old.payload?.questions ?? []).map(recommendedOf).filter(Boolean) } : {}) }) // resolve first: a failure here must not leave a count that includes an unresolved item
       store.update(added.id, { merged: { count }, updatedAt: now() })
     }
   }

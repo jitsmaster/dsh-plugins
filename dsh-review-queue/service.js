@@ -678,7 +678,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const kind = item.resolution?.kind
       // An AI-resolved done card or paused session may come back; a question or permission was already answered for real, so it may not.
       const aiBack = kind === 'ai-resolved' && (item.type === 'completed' || item.type === 'paused')
-      const humanBack = item.type === 'completed' && item.resolution?.by !== 'merge' && (kind === 'reviewed' || kind === 'superseded' || kind === 'no-action' || kind === 'trimmed')
+      const humanBack = item.type === 'completed' && (kind === 'reviewed' || kind === 'superseded' || kind === 'no-action' || kind === 'trimmed')
       if (item.status !== 'resolved' || !(aiBack || humanBack)) return { ok: false, error: 'not-reopenable' }
       return store.reopen(id) ? { ok: true } : { ok: false, error: 'not-reopenable' }
     },
