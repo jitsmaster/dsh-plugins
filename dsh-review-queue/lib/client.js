@@ -983,7 +983,6 @@ function imageFilesOf(data) {
 		const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l); }; };
 		const useStore = () => { useSyncExternalStore(subscribe, () => version); return state; };
 
-		/** Takes a fresh snapshot into the store. */
 		let knownIds = null; // ids seen in earlier snapshots; null before the first one (everything present at load is not "new")
 		/** Marks items that arrived after the first snapshot as new until the user selects them. */
 		function trackFresh(body) {
@@ -1006,6 +1005,7 @@ function imageFilesOf(data) {
 		}
 		/** Selects an item and clears its new mark. */
 		function selectItem(id) { clearFresh(id, { selected: id }); }
+		/** Takes a fresh snapshot into the store. */
 		function applySnapshot(body) {
 			trackFresh(body);
 			const d = state.dialog;

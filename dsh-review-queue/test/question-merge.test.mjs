@@ -41,12 +41,12 @@ test('a repeated question supersedes the older one and carries the merge count a
   assert.equal(kept.updatedAt, 5000)
 })
 
-test('a different question stays open', async () => {
+test('a different question is not merged', async () => {
   const { store, merge } = setup({ same: async () => false })
   const old = store.add(q('Which database?'))
   store.add(q('Delete the folder?'))
   await merge.idle()
-  assert.equal(store.get(old.id).status, 'open')
+  assert.equal(store.get(old.id).resolution.kind, 'expired', 'not merged: the older detached question just expires')
 })
 
 test('only open questions of the same session are compared', async () => {
@@ -72,7 +72,7 @@ test('a failing model changes nothing', async () => {
   const old = store.add(q('A?'))
   store.add(q('B?'))
   await merge.idle()
-  assert.equal(store.get(old.id).status, 'open')
+  assert.equal(store.get(old.id).resolution.kind, 'expired', 'not merged: the older detached question just expires')
 })
 
 const done = (reply, sessionId = 's1') => ({ type: 'completed', sessionId, workspace: 'D:/w', payload: { reply } })
@@ -129,7 +129,7 @@ test('questions with different options are not the same, whatever the model says
   const old = store.add({ ...q('Which database?'), payload: { questions: [{ question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'SQLite' }] }] } })
   store.add({ ...q('Which database?'), payload: { questions: [{ question: 'Which database?', options: [{ label: 'MySQL' }] }] } })
   await merge.idle()
-  assert.equal(store.get(old.id).status, 'open')
+  assert.equal(store.get(old.id).resolution.kind, 'expired', 'not merged: the older detached question just expires')
   assert.equal(calls.length, 0)
 })
 
@@ -140,7 +140,7 @@ test('a text longer than the model limit is never judged by the model on a trunc
   store.add(q(long + ' second?'))
   await merge.idle()
   assert.equal(calls.length, 0)
-  assert.equal(store.get(old.id).status, 'open')
+  assert.equal(store.get(old.id).resolution.kind, 'expired', 'not merged: the older detached question just expires')
 })
 
 test('two texts sharing no word are not sent to the model', async () => {
@@ -152,10 +152,12 @@ test('two texts sharing no word are not sent to the model', async () => {
 })
 
 test('at most 5 older items are compared per new item', async () => {
-  const { store, merge, calls } = setup({ same: async () => false })
-  for (let i = 0; i < 8; i++) store.add(q('database old ' + i))
-  await merge.idle()
-  calls.length = 0
+  let n = 0
+  const store = createStore({ now: () => 1000 + n * 10, uuid: () => 'i' + ++n })
+  const calls = []
+  for (let i = 0; i < 8; i++) store.add(q('database old ' + i)) // stored before the merge listens, so none has expired yet
+  const merge = createQuestionMerge({ store, same: async (a, b) => { calls.push([a, b]); return false }, log: () => {}, now: () => 5000 })
+  merge.start()
   store.add(q('database brand new'))
   await merge.idle()
   assert.equal(calls.length, 5)
@@ -177,12 +179,12 @@ test('parseSame reads only a clean JSON object', () => {
 function setupExpire({ same = async () => false } = {}) {
   let n = 0
   const store = createStore({ now: () => 1000 + n * 10, uuid: () => 'i' + ++n })
-  const merge = createQuestionMerge({ store, same, log: () => {}, now: () => 5000, expireRest: true })
+  const merge = createQuestionMerge({ store, same, log: () => {}, now: () => 5000 })
   merge.start()
   return { store, merge }
 }
 
-test('expireRest: an older detached question that does not match expires as capture would have done', async () => {
+test('expiry: an older detached question that does not match expires as capture would have done', async () => {
   const { store, merge } = setupExpire()
   const old = store.add(q('Which database?'))
   store.add(q('Should I use tabs?'))
@@ -191,7 +193,7 @@ test('expireRest: an older detached question that does not match expires as capt
   assert.equal(store.get(old.id).resolution.kind, 'expired')
 })
 
-test('expireRest: a failing model still lets the older detached question expire', async () => {
+test('expiry: a failing model still lets the older detached question expire', async () => {
   const { store, merge } = setupExpire({ same: async () => { throw new Error('boom') } })
   const old = store.add(q('Which database is it?'))
   store.add(q('Which database now?'))
@@ -199,7 +201,7 @@ test('expireRest: a failing model still lets the older detached question expire'
   assert.equal(store.get(old.id).resolution.kind, 'expired')
 })
 
-test('expireRest: a matching older question is superseded, not expired', async () => {
+test('expiry: a matching older question is superseded, not expired', async () => {
   const { store, merge } = setupExpire({ same: async () => true })
   const old = store.add(q('Which database should I use?'))
   store.add(q('Which database do you want?'))
@@ -207,7 +209,7 @@ test('expireRest: a matching older question is superseded, not expired', async (
   assert.equal(store.get(old.id).resolution.kind, 'superseded')
 })
 
-test('expireRest: a live (not detached) older question is left open', async () => {
+test('expiry: a live (not detached) older question is left open', async () => {
   const { store, merge } = setupExpire()
   const old = store.add(q('Which database?', 's1', { detached: false }))
   store.add(q('Should I use tabs?'))

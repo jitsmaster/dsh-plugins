@@ -1,5 +1,5 @@
 /**
- * Group card redesign: a new question or done message that repeats an older one of the same session supersedes it.
+ * A new question or done message that repeats an older one of the same session supersedes it.
  * "Same" is judged by a small AI model (createSameJudge, same createModelRun pattern as triage-judge.js); identical normalized text
  * merges without a model call. Display effect: the older item resolves as { kind: 'superseded', by: 'merge', into }, the newer one carries
  * `merged.count` and `updatedAt`. Never throws; a failing model changes nothing.
@@ -8,7 +8,7 @@
  * and runs are serialized (one model call at a time).
  */
 import { NOTE_UNUSABLE, createModelRun } from './summary.js'
-import { expireDetachedQuestions, openOf as openItemsOf } from './detached-expiry.js'
+import { expireDetachedQuestions, openOfSession } from './detached-expiry.js'
 
 const MAX_TEXT = 600
 export const MAX_COMPARE = 5 // older items judged per new one
@@ -62,20 +62,18 @@ export function createSameJudge({ llm, timeoutMs = SAME_TIMEOUT_MS, maxTokens = 
   }
 }
 
-/** @param {{ store: any, same: (a: string, b: string, kind?: string) => Promise<boolean>, log?: (l: string) => void, now?: () => number, enabled?: () => boolean, expireRest?: boolean }} deps (expireRest: after the merge attempt, also expire the older detached questions of the session) */
-export function createQuestionMerge({ store, same, log = () => {}, now = Date.now, enabled = () => true, expireRest = false }) {
+/** @param {{ store: any, same: (a: string, b: string, kind?: string) => Promise<boolean>, log?: (l: string) => void, now?: () => number }} deps (after the merge attempt, the older detached questions of the session are expired too) */
+export function createQuestionMerge({ store, same, log = () => {}, now = Date.now }) {
   let chain = Promise.resolve() // runs are serialized: one model call at a time
   let off = () => {}
   let stopped = false
   let pending = 0
-  /** The open items of one session, without copying the whole store; this caller walks them while resolving, so a stale index entry is dropped. */
-  const openOf = (sessionId) => openItemsOf(store, sessionId, { onlyOpen: true })
   const say = (error) => log('question-merge: ' + String(error?.message ?? error).slice(0, 120))
 
-  /** capture.js used to expire older detached questions when a new one arrived; with expireRest the merge does it AFTER trying to merge them. */
+  /** Expires the older detached questions of the session AFTER the merge attempt (this caller walks the list while resolving, so onlyOpen drops stale index entries). */
   function expireOlder(added) {
-    if (!expireRest || added.type !== 'question') return
-    expireDetachedQuestions(store, openOf(added.sessionId), { skip: (old) => old.id === added.id || !(old.seq < added.seq), onError: say })
+    if (added.type !== 'question') return
+    expireDetachedQuestions(store, openOfSession(store, added.sessionId, { onlyOpen: true }), { skip: (old) => old.id === added.id || !(old.seq < added.seq), onError: say })
   }
 
   async function run(added) {
@@ -85,7 +83,7 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
   async function compare(added) {
     const text = textOf(added)
     if (!text || typeof added.sessionId !== 'string') return
-    const olds = openOf(added.sessionId)
+    const olds = openOfSession(store, added.sessionId, { onlyOpen: true })
       .filter((i) => i.type === added.type && i.id !== added.id && i.seq < added.seq // only items raised BEFORE this one (the run is async: later ones are already stored)
         && (added.type !== 'question' || i.detached === true)) // a live question is still awaited by its agent: never closed here
       .reverse() // the most recent first
@@ -114,7 +112,7 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
     start() {
       if (typeof store.onAdd !== 'function') return false
       off = store.onAdd((item) => {
-        if ((item?.type !== 'question' && item?.type !== 'completed') || !enabled()) return
+        if ((item?.type !== 'question' && item?.type !== 'completed')) return
         pending++
         chain = chain.then(() => run(item)).catch(say).finally(() => { pending-- })
       })

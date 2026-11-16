@@ -19,7 +19,7 @@ const byAge = (a, b) => { const x = at(a); const y = at(b); return x < y ? -1 : 
 
 /**
  * Ordered groups `{ id, items, createdAt, count, topTier, rank }` of the open items.
- * `opts.order === 'tier'` with a finite `opts.now` orders groups by their best item tier, then oldest item;
+ * `opts.order === 'tier'` orders groups by their best item tier, then oldest item;
  * anything else is oldest-first. A group without any tier ranks last.
  */
 export function groupOpen(items, opts = {}) {
@@ -35,7 +35,7 @@ export function groupOpen(items, opts = {}) {
     const tiers = sorted.map((i) => i.tier?.tier).filter(Number.isInteger)
     return { id, items: sorted, createdAt: at(sorted[0]), count: sorted.length, topTier: tiers.length ? tiers.reduce((m, t) => (t < m ? t : m), Infinity) : undefined }
   })
-  if (opts?.order === 'tier' && Number.isFinite(opts.now)) {
+  if (opts?.order === 'tier') {
     // Priority only: a group ranks by its own best tier (no aging, no risk or todo exceptions), then by its oldest item; untiered groups rank last.
     const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0) // explicit: Infinity - Infinity is NaN
     const rankOf = (g) => (g.topTier === undefined ? Infinity : g.topTier)

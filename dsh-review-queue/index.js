@@ -162,7 +162,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   // Question auto-answer: questionAutoAnswer (default on), questionAutoAnswerLeadSeconds (0 = off) and questionWindowSeconds (the window of a question
   // the model gave no timeout: must match the ask_user_question timeout row). A value that is not a finite number in range is passed on as undefined: capture.js applies its defaults.
   const msOf = (seconds, zeroOk) => (Number.isFinite(seconds) && (seconds > 0 || (zeroOk && seconds === 0)) ? seconds * 1000 : undefined)
-  // The question merge (group card redesign) is on unless config.questionMerge is false.
+  // The question merge is on unless config.questionMerge is false (documented in README Config).
   const questionMergeOn = config.questionMerge !== false
   const capture = installCapture(ctx, {
     store, summarizer, log, autoAnswer: config.questionAutoAnswer !== false,
@@ -312,7 +312,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   // A new question that repeats an older open question of the same session supersedes it (group card merge); the model is a small, fast one picked by name (summary.js pickModel PREFER), else the first one DSH lists.
   let questionMerge
   if (questionMergeOn) {
-    questionMerge = createQuestionMerge({ store, same: createSameJudge({ llm }), log, expireRest: true })
+    questionMerge = createQuestionMerge({ store, same: createSameJudge({ llm }), log })
     questionMerge.start()
   }
   aiReporter?.start()

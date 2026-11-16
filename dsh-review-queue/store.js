@@ -38,7 +38,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
   const rankOf = (id) => {
     if (!events) return undefined // nothing records it: skip the sort
     let flat = [...items.values()].filter((i) => i.status === 'open').sort(order)
-    if (shownOrder === 'tier') flat = groupOpen(flat, { order: 'tier', now: now() }).flatMap((g) => g.items)
+    if (shownOrder === 'tier') flat = groupOpen(flat, { order: 'tier' }).flatMap((g) => g.items)
     const n = flat.findIndex((i) => i.id === id)
     return n < 0 ? undefined : n + 1
   }
@@ -251,7 +251,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       const all = [...items.values()]
       let flat = all.filter((i) => i.status === 'open').sort(order)
       const info = new Map()
-      const groups = groupOpen(flat, queueOrder === 'tier' ? { order: 'tier', now: now() } : {})
+      const groups = groupOpen(flat, queueOrder === 'tier' ? { order: 'tier' } : {})
       for (const g of groups) for (const i of g.items) info.set(i.id, { groupId: g.id, groupRank: g.rank })
       if (queueOrder === 'tier') flat = groups.flatMap((g) => g.items) // group by group, best effective tier first; position follows
       const open = flat.map((i, n) => ({ ...copy(i), position: n + 1, ...info.get(i.id) }))

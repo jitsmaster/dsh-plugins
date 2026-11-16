@@ -21,4 +21,4 @@ export const flattenGroups = (groups) => groups.flatMap((g) => g.items.map((i) =
 export const atPosition = (item, n) => ({ ...item, position: n + 1, spoken: item.spoken && spokenFor(item, n + 1) })
 
 /** The hub lists oldest first: this app's own By priority switch re-sorts that list by group tier, positions following. */
-export const tierSorted = (list) => flattenGroups(groupOpen(list, { order: 'tier', now: Date.now() })).map(atPosition)
+export const tierSorted = (list) => flattenGroups(groupOpen(list, { order: 'tier' })).map(atPosition)
