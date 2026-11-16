@@ -1,4 +1,4 @@
-// A todo is the user's own task: P0 and always first, in both orders.
+// A todo is the user's own task: P0; it has no other special place in the order.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { tierOfItem, buildTier } from '../tier.js'

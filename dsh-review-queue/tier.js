@@ -36,7 +36,7 @@ const raise = (a, b) => (RANK[b] > RANK[a] ? b : a)
 export function severityOf({ item, facts, judgment } = {}) {
   if (Array.isArray(facts?.riskFlags) && facts.riskFlags.length) return 'high'
   const type = item?.type
-  if (type === 'todo') return 'high' // the user's own task: P0 with urgency blocked, always first
+  if (type === 'todo') return 'high' // the user's own task: P0 with urgency blocked (sorts by its tier like any item)
   if (HOUSEKEEPING.has(type)) return 'housekeeping'
   let floor
   if (type === 'permission') floor = facts?.safe === true ? 'low' : 'high'

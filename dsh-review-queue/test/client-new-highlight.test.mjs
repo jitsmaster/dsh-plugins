@@ -49,3 +49,10 @@ test('the new-row background is a valid color-mix, not a hex suffix', () => {
   const T = setup()
   assert.match(T.CSS, /\.rq-row-i\.new\{background:color-mix\(/)
 })
+
+test('the implicitly selected item (nothing chosen) is never left marked new', () => {
+  const T = setup()
+  T.applySnapshot(snap([]))
+  T.applySnapshot(snap(['x']))
+  assert.deepEqual(Object.keys(T.state.fresh), [])
+})
