@@ -13,6 +13,7 @@ import { Readable } from 'node:stream'
 import { PROTOCOL } from '../hub/protocol.js'
 import { MAX_WAIT_MS, PREFIX, archKeyOf, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
 import { spokenFor } from '../speech.js'
+import { groupOpen } from '../groups.js'
 import { surveyKeyOf } from '../tip-survey.js'
 
 const MODES = ['starting', 'hub', 'standalone', 'degraded']
@@ -161,12 +162,19 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     return closed.signal.aborted ? undefined : AGAIN
   }
 
+  const TIER_MARK = '~tier'
+  const safeOrder = () => { try { return queue.queueOrder?.() } catch { return undefined } }
+  /** The hub lists oldest first: this app's own By priority switch re-sorts that list by group tier, positions following. */
+  const tierSorted = (list) => groupOpen(list, { order: 'tier', now: Date.now() }).flatMap((g) => g.items.map((i) => ({ ...i, groupId: g.id, groupRank: g.rank }))).map((i, n) => ({ ...i, position: n + 1, spoken: i.spoken && spokenFor(i, n + 1) }))
   async function hubRound({ res, since, remaining, closed, visible, want }) {
     const local = localState()
+    const tierNow = safeOrder() === 'tier'
     const parts = since?.split('|')
+    if (parts && parts[0].endsWith(TIER_MARK) !== tierNow) parts.length = 0 // the client holds a stamp of the other display order: it needs a full answer
+    if (parts && parts.length) parts[0] = parts[0].endsWith(TIER_MARK) ? parts[0].slice(0, -TIER_MARK.length) : parts[0]
     const tipId = want.tip ? tipIdFor(parts?.[0]) : ''
     // A client that knows the tip part (six parts) must have the tip that is current now; an older page is not held to it.
-    const sameLocal = parts !== undefined && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId) && (parts.length < 7 || archKeyNow() === undefined || parts[6] === archKeyNow()) && (parts.length < 8 || parts[7] === surveyKeyOf(local.tipSurvey))
+    const sameLocal = parts !== undefined && parts.length > 0 && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId) && (parts.length < 7 || archKeyNow() === undefined || parts[6] === archKeyNow()) && (parts.length < 8 || parts[7] === surveyKeyOf(local.tipSurvey))
     const query = new URLSearchParams()
     if (sameLocal) { query.set('since', parts[0] + '|||0' + (parts.length > 4 ? '|' + parts[4] : '')); query.set('wait', String(remaining)) }
     if (visible) query.set('visible', '1')
@@ -188,15 +196,16 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     const now = localState()
     if (r.json.unchanged) {
       const same = now.focusId === local.focusId && now.reading === local.reading && now.ui?.seq === local.ui?.seq && surveyKeyOf(now.tipSurvey) === surveyKeyOf(local.tipSurvey) && (want.tip ? tipIdFor(parts?.[0]) : '') === tipId
-      return same ? send(res, 200, { unchanged: true, snapshotId: r.json.snapshotId }) : AGAIN
+      return same ? send(res, 200, { unchanged: true, snapshotId: r.json.snapshotId + (tierNow ? TIER_MARK : '') }) : AGAIN
     }
     const empty = nothingWaits(r.json.open) // the tip still shows
     lastFull = { id: r.json.snapshotId, empty }
     const tip = empty && want.tip ? tipOf() : undefined
     // The hub's items carry no archivable flag: this app adds it to its own (it knows which of its sessions run), and the other apps' items get none.
-    const open = typeof queue.markArchivable === 'function' ? queue.markArchivable(r.json.open, instanceId()) : r.json.open
+    const marked = typeof queue.markArchivable === 'function' ? queue.markArchivable(r.json.open, instanceId()) : r.json.open
+    const open = tierNow ? tierSorted(marked) : marked
     lastHubOpen = r.json.open
-    return send(res, 200, { ...r.json, open, archKey: archKeyOf(open), focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}), ...(now.tipSurvey?.length ? { tipSurvey: now.tipSurvey } : {}) })
+    return send(res, 200, { ...r.json, snapshotId: r.json.snapshotId + (tierNow ? TIER_MARK : ''), queueOrder: tierNow ? 'tier' : 'oldest', open, archKey: archKeyOf(open), focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}), ...(now.tipSurvey?.length ? { tipSurvey: now.tipSurvey } : {}) })
   }
 
   async function snapshot(req, res, url) {
