@@ -83,3 +83,34 @@ test('every older open question of the session is compared, no cap', async () =>
   await merge.idle()
   assert.equal(calls.length, 8)
 })
+
+const done = (reply, sessionId = 's1') => ({ type: 'completed', sessionId, workspace: 'D:/w', payload: { reply } })
+
+test('a repeated done message supersedes the older one and carries the merge count', async () => {
+  const { store, merge, calls } = setup()
+  const old = store.add(done('Migration finished on Postgres.'))
+  const fresh = store.add(done('The Postgres migration is done.'))
+  await merge.idle()
+  assert.equal(calls.length, 1)
+  assert.deepEqual(store.get(old.id).resolution, { kind: 'superseded', by: 'merge', into: fresh.id })
+  assert.equal(store.get(fresh.id).merged.count, 2)
+})
+
+test('a done message and a question are never compared', async () => {
+  const { store, merge, calls } = setup()
+  store.add(q('Same text?'))
+  store.add(done('Same text?'))
+  await merge.idle()
+  assert.equal(calls.length, 0)
+})
+
+test('the judge is told the kind of the two texts', async () => {
+  const kinds = []
+  let n = 0
+  const store = createStore({ now: () => 1000 + n * 10, uuid: () => 'i' + ++n })
+  const merge = createQuestionMerge({ store, same: async (a, b, kind) => { kinds.push(kind); return false }, log: () => {}, now: () => 5000 })
+  merge.start()
+  store.add(done('one')); store.add(done('two')); store.add(q('x?')); store.add(q('y?'))
+  await merge.idle()
+  assert.deepEqual(kinds, ['completed', 'question'])
+})

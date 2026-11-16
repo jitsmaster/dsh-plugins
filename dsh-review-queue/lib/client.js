@@ -91,7 +91,7 @@ window.__ModuleLoader__.load({
 		/** Note on a question that absorbed repeats (question-merge.js); undefined without a usable count above 1. Display only. */
 		const mergedNote = (item) => {
 			const n = item && item.merged && item.merged.count;
-			return Number.isInteger(n) && n > 1 ? "Merged " + n + " similar questions" : undefined;
+			return Number.isInteger(n) && n > 1 ? "Merged " + n + (item.type === "completed" ? " similar messages" : " similar questions") : undefined;
 		};
 
 		/** The header above the cards of one session (model from lib/groups-ui.js groupCardModel); nothing for a group of one card. Display only. */
