@@ -213,3 +213,29 @@ test('expireRest: a live (not detached) older question is left open', async () =
   await merge.idle()
   assert.equal(store.get(old.id).status, 'open')
 })
+
+test('the merge reads only the session of the new item, never the whole store list', async () => {
+  const { store, merge } = setup()
+  store.add(q('database one'))
+  let lists = 0
+  const realList = store.list.bind(store)
+  store.list = (...a) => { lists++; return realList(...a) }
+  store.add(q('database two'))
+  await merge.idle()
+  assert.equal(lists, 0)
+})
+
+test('a backlog past the pending cap skips the model work instead of growing', async () => {
+  const { store, merge, calls } = setup({ same: async () => false })
+  for (let i = 0; i < 40; i++) store.add(q('database item ' + i))
+  await merge.idle()
+  assert.ok(calls.length <= 100, 'calls ' + calls.length)
+})
+
+test('stop() ends queued runs: no model call after it', async () => {
+  const { store, merge, calls } = setup({ same: async () => false })
+  store.add(q('database one')); store.add(q('database two')); store.add(q('database three'))
+  merge.stop()
+  await merge.idle()
+  assert.equal(calls.length, 0)
+})

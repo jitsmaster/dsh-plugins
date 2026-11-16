@@ -12,6 +12,7 @@ import { recommendedOf } from './speech.js'
 
 const MAX_TEXT = 600
 const MAX_COMPARE = 5 // older items judged per new one
+const MAX_PENDING = 20 // queued runs; past it a new item gets no model work (its expiry still runs)
 export const SAME_TIMEOUT_MS = 15000
 
 /** The question texts of a question item, joined. */
@@ -65,33 +66,37 @@ export function createSameJudge({ llm, timeoutMs = SAME_TIMEOUT_MS, maxTokens = 
 export function createQuestionMerge({ store, same, log = () => {}, now = Date.now, enabled = () => true, expireRest = false }) {
   let chain = Promise.resolve() // runs are serialized: one model call at a time
   let off = () => {}
+  let stopped = false
+  let pending = 0
+  /** The open items of one session, without copying the whole store. */
+  const openOf = (sessionId) => (typeof store.peekOpen === 'function' ? store.peekOpen(sessionId).filter((i) => i.status === 'open') : store.list({ status: 'open' }).filter((i) => i.sessionId === sessionId))
   const say = (error) => log('question-merge: ' + String(error?.message ?? error).slice(0, 120))
 
   /** capture.js used to expire older detached questions when a new one arrived; with expireRest the merge does it AFTER trying to merge them. */
   function expireOlder(added) {
     if (!expireRest || added.type !== 'question') return
-    for (const old of store.list({ status: 'open' })) {
-      if (old.type === 'question' && old.detached === true && old.sessionId === added.sessionId && old.id !== added.id && old.seq < added.seq) {
+    for (const old of openOf(added.sessionId)) {
+      if (old.type === 'question' && old.detached === true && old.id !== added.id && old.seq < added.seq) {
         try { store.resolve(old.id, { kind: 'expired', assumed: (old.payload?.questions ?? []).map(recommendedOf).filter(Boolean) }) } catch (error) { say(error) }
       }
     }
   }
 
   async function run(added) {
-    try { await compare(added) } finally { expireOlder(added) }
+    try { if (!stopped && pending <= MAX_PENDING) await compare(added) } finally { if (!stopped) expireOlder(added) }
   }
 
   async function compare(added) {
     const text = textOf(added)
     if (!text || typeof added.sessionId !== 'string') return
-    const olds = store.list({ status: 'open' })
-      .filter((i) => i.type === added.type && i.sessionId === added.sessionId && i.id !== added.id && i.seq < added.seq // only items raised BEFORE this one (the run is async: later ones are already stored)
+    const olds = openOf(added.sessionId)
+      .filter((i) => i.type === added.type && i.id !== added.id && i.seq < added.seq // only items raised BEFORE this one (the run is async: later ones are already stored)
         && (added.type !== 'question' || i.detached === true)) // a live question is still awaited by its agent: never closed here
       .reverse() // the most recent first
       .slice(0, MAX_COMPARE)
     for (const old of olds) {
       const fresh = store.get(added.id)
-      if (!fresh || fresh.status !== 'open') return
+      if (stopped || !fresh || fresh.status !== 'open') return
       const oldText = textOf(old)
       if (!oldText) continue
       if (optionsOf(old) !== optionsOf(added)) continue // different choices: a different question
@@ -114,11 +119,12 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
       if (typeof store.onAdd !== 'function') return false
       off = store.onAdd((item) => {
         if ((item?.type !== 'question' && item?.type !== 'completed') || !enabled()) return
-        chain = chain.then(() => run(item)).catch(say)
+        pending++
+        chain = chain.then(() => run(item)).catch(say).finally(() => { pending-- })
       })
       return true
     },
-    stop() { off() },
+    stop() { stopped = true; off() },
     async idle() { let c; do { c = chain; await c } while (c !== chain) },
   }
 }
