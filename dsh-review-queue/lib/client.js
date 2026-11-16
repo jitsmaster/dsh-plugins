@@ -88,6 +88,12 @@ window.__ModuleLoader__.load({
 			return { text: "P" + t.tier + " " + SEV_LABELS[t.severity], level: t.tier, title: SEV_LABELS[t.severity] + " severity, " + (blocked ? "an agent is blocked on it" : "not blocking an agent") + " (priority P" + t.tier + ")" };
 		};
 
+		/** Note on a question that absorbed repeats (question-merge.js); undefined without a usable count above 1. Display only. */
+		const mergedNote = (item) => {
+			const n = item && item.merged && item.merged.count;
+			return Number.isInteger(n) && n > 1 ? "Merged " + n + " similar questions" : undefined;
+		};
+
 		/** The header above the cards of one session (model from lib/groups-ui.js groupCardModel); nothing for a group of one card. Display only. */
 		const groupHead = (m, now) => {
 			if (!m || !(m.count > 1)) return null;
@@ -2084,6 +2090,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 						!forceFull ? h("span", { "aria-hidden": true }, full ? "▾" : "▸") : null)),
 				item.sessionTitle || (full && item.workspace) ? h("div", { className: "rq-sub" }, [item.sessionTitle, full ? item.workspace : ""].filter(Boolean).join(" · ")) : null,
 				item.earlier ? h("div", { className: "rq-sub" }, "Replaces " + item.earlier + " earlier result" + (item.earlier === 1 ? "" : "s") + " from this session (see Resolved).") : null,
+				mergedNote(item) ? h("div", { className: "rq-sub", "data-merged": item.id }, mergedNote(item)) : null,
 				triageNote(item) ? h("div", { className: "rq-sub rq-ai", "data-ai-note": item.id }, triageNote(item)) : null,
 				h(Body, { item, full }),
 				st.errors[item.id] ? h("div", { className: "rq-err" }, st.errors[item.id]) : null,
@@ -2683,7 +2690,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		Object.assign(exports.__test, { errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, visibleOpen, newCount, holdNow, releaseHold, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
-		Object.assign(exports.__test, { tierChip, groupHead, groupedList, groupOrder, loadGroupsUi, requestGroupsUi, setGroupsImporter: (fn) => { groupsImporter = fn; groupsUi = undefined; groupsAsked = false; groupsMod = undefined; } });
+		Object.assign(exports.__test, { tierChip, mergedNote, groupHead, groupedList, groupOrder, loadGroupsUi, requestGroupsUi, setGroupsImporter: (fn) => { groupsImporter = fn; groupsUi = undefined; groupsAsked = false; groupsMod = undefined; } });
 		Object.assign(exports.__test, { enterAnswers, QuestionBody, recordText, promotionHint, ruleModeLabel, lessonLine });
 		Object.assign(exports.__test, { resolvedSessionLine, raisedText, resolvedBody, hasResolvedBody, ResolvedBody, mdNodes, Md, CompletedBody, PermissionBody, ResolvedCard, actionTokens, plainAction, actionNodes });
 		Object.assign(exports.__test, { patchForm, openTodoForm, closeTodoForm, installDraftFlush, canTune, nextFormAfterTune, tuneTodo, undoTune, setTuneAnswer, applyTuneAnswers, skipTuneQuestions, revealSessionRow, setHostOpen: (fn) => { hostApi.openSession = fn; }, setHostSidebar: (fn) => { hostApi.sidebar = fn; }, openGitTab, viewChanges, canViewChanges, imageFilesOf, addImages, removeImage, clearImages, TodoForm, loadEfforts });

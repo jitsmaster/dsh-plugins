@@ -15,6 +15,12 @@ test('items of one session form one group, oldest first; groups ordered by their
   assert.deepEqual(groups.map((g) => g.rank), [1, 2])
 })
 
+test('inside a group items sort by last update (updatedAt, else createdAt), oldest first', () => {
+  const g = groupOpen([it('a', 'question', 's', 10, { updatedAt: 50 }), it('b', 'completed', 's', 20), it('c', 'question', 's', 30)])[0]
+  assert.deepEqual(g.items.map((i) => i.id), ['b', 'c', 'a'])
+  assert.equal(g.createdAt, 20)
+})
+
 test('items without a session, and housekeeping types, stay single cards', () => {
   const items = [it('t1', 'todo', undefined, 1), it('t2', 'todo', undefined, 2), it('o1', 'onhold', 's1', 3), it('o2', 'onhold', 's1', 4), it('p1', 'archive', 's1', 5), it('m1', 'pr-merged', 's1', 6), it('c1', 'completed', 's1', 7)]
   const groups = groupOpen(items)

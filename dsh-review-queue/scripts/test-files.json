@@ -332,5 +332,8 @@
   "test/client-grouped-list.test.mjs",
   "test/client-groups-loader.test.mjs",
   "test/groups-order.test.mjs",
+  "test/question-merge.test.mjs",
+  "test/client-merged-note.test.mjs",
+  "test/agent-proxy-order.test.mjs",
   "test/service-queue-order.test.mjs"
 ]

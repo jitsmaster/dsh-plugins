@@ -69,6 +69,7 @@ import { createSurveyLogReader } from './tip-survey.js'
 import { CHECK_MS, IDLE_MS, createIdleJudge, createIdleResumer, createLogReader } from './idle-resume.js'
 import { ASK_CHECK_MS, ASK_IDLE_MS, BEAT_MS, createIdleAsker, createSleepTracker } from './idle-ask.js'
 import { createTriageJudge } from './triage-judge.js'
+import { createQuestionMerge, createSameJudge } from './question-merge.js'
 import { createTriageLog } from './triage-log.js'
 import { createEventLog } from './event-log.js'
 import { createTriageRunner, DEFAULT_RULES } from './triage-runner.js'
@@ -304,6 +305,12 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
       ...(config.triageDeps ?? {}),
     })
     triage.start()
+  }
+  // A new question that repeats an older open question of the same session supersedes it (group card merge); the model is the cheapest one DSH can reach.
+  let questionMerge
+  if (config.questionMerge !== false && process.env.NODE_TEST_CONTEXT === undefined) {
+    questionMerge = createQuestionMerge({ store, same: config.questionMergeDeps?.same ?? createSameJudge({ llm }), log })
+    questionMerge.start()
   }
   aiReporter?.start()
   const pausedTimers = []

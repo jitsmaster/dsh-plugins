@@ -34,6 +34,7 @@
     "idle-ask.js",
     "triage.js",
     "triage-judge.js",
+    "question-merge.js",
     "triage-log.js",
     "triage-runner.js",
     "triage-clip.js",

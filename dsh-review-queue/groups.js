@@ -14,7 +14,8 @@ export function groupIdOf(item) {
   return item.sessionId
 }
 
-const at = (i) => (Number.isFinite(i.createdAt) ? i.createdAt : Infinity)
+/** Last-update time of an item: `updatedAt` (a merged question), else `createdAt`. */
+const at = (i) => (Number.isFinite(i.updatedAt) ? i.updatedAt : Number.isFinite(i.createdAt) ? i.createdAt : Infinity)
 /** Oldest first; a missing createdAt sorts last; seq breaks ties (Infinity - Infinity would be NaN). */
 const byAge = (a, b) => { const x = at(a); const y = at(b); return x < y ? -1 : x > y ? 1 : (a.seq ?? 0) - (b.seq ?? 0) }
 
