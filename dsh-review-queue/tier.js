@@ -3,7 +3,7 @@
  *
  * Severity = risk if the AI or the user gets the item wrong; urgency = is an agent blocked on it. An ITIL-style lookup matrix turns the
  * pair into a tier P0 (0) .. P4 (4). Everything here is pure code: the model's severity is optional input that can only RAISE a severity above
- * the code floor, never lower it, and text in the item is never read. Aging changes the sort tier only, never the AI gate.
+ * the code floor, never lower it, and text in the item is never read. The tier is never aged: ordering is by priority only.
  * The AI gate (autoGateOk): Low or Housekeeping only; the question class may also act at Medium (its own floor).
  */
 

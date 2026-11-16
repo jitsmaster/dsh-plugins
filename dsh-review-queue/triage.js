@@ -303,7 +303,7 @@ export function triageOutcome({ item, judgment, rule, facts, sources = [], marks
     if (facts?.commandIntact !== true) reasons.push('command-truncated')
     if (facts?.pathsContained !== true) reasons.push('outside-workspace-real')
   }
-  // Auto only, every class: an item is acted on only when its code-proven severity is Low or Housekeeping (the model can only raise it). Aging never enters here.
+  // Auto only, every class: an item is acted on only when its code-proven severity is Low or Housekeeping (the model can only raise it). Only the code-proven severity counts here.
   // A question's own floor is Medium (the judge never lowers it), so the question class may act up to Medium; every other class only at Low or Housekeeping.
   if (rule && rule.mode === 'auto' && !autoGateOk({ item, facts, judgment: j, ruleClass: classOf(item) })) reasons.push('tier-above-auto')
   if (score !== undefined && score > threshold) reasons.push('score-above-threshold')

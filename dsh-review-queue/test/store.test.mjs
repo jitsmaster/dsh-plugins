@@ -273,3 +273,23 @@ test('an open todo reloads as P0 even when a different tier was stored with setT
   assert.equal(two.store.get(todo.id).tier.urgency, 'blocked')
   assert.equal(two.store.get(done.id).tier.tier, 2, 'a non-todo keeps its stored (valid) tier')
 })
+
+test('reopen of a merge-superseded card lowers merged.count on the card it merged into; drops merged at 1; tolerates a missing target', () => {
+  let t = 1000
+  let n = 0
+  const store = createStore({ now: () => (t += 10), uuid: () => 'm' + ++n })
+  const a = store.add({ type: 'completed', sessionId: 's1', payload: { reply: 'a' } })
+  const b = store.add({ type: 'completed', sessionId: 's1', payload: { reply: 'b' } })
+  const c = store.add({ type: 'completed', sessionId: 's1', payload: { reply: 'c' } })
+  store.resolve(a.id, { kind: 'superseded', by: 'merge', into: c.id })
+  store.resolve(b.id, { kind: 'superseded', by: 'merge', into: c.id })
+  store.update(c.id, { merged: { count: 3 } })
+  assert.equal(store.reopen(a.id), true)
+  assert.deepEqual(store.get(c.id).merged, { count: 2 })
+  assert.equal(store.reopen(b.id), true)
+  assert.equal(store.get(c.id).merged, undefined)
+  // A superseded card (not by merge) or a missing target changes nothing and does not throw.
+  const d = store.add({ type: 'completed', sessionId: 's2', payload: { reply: 'd' } })
+  store.resolve(d.id, { kind: 'superseded', by: 'merge', into: 'gone' })
+  assert.equal(store.reopen(d.id), true)
+})

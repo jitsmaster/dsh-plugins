@@ -5,7 +5,7 @@
 
 A **Review** tab in the DSH right sidebar (sibling of dsh-git-view): the user's to-do list of AI work waiting on them. Tab shows a count badge.
 
-## Items (all sessions, all workspaces), sorted by time ascending (oldest first)
+## Items (all sessions, all workspaces), ordered by priority (group top tier first, then oldest / last-updated)
 - **Completed**: session finished a turn. Card shows session title, workspace/worktree, finish time, an LLM-written 2-3 line summary of what was done (cheapest available DSH model, generated once and cached; falls back to the last paragraph of the reply on failure); full reply behind the expander.
 - **Question**: pending ask_user_question. Card shows the full question, all choices with the recommended one marked, time left, and what happens at expiry. Answerable from the card (option buttons). Enter in a question's "Other answer…" box sends the answers like *Send answer* (same `buildAnswers` check and busy guard, once per send) when that box has text and every other question is answered; Shift/Ctrl/Alt/Meta+Enter and IME composition (`isComposing`, keyCode 229) do nothing, and the same holds for the late-answer form. The key legend says so.
 - **Todo**: a task the user added to start a new session (see "Todo item" below).

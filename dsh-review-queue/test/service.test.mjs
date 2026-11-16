@@ -394,3 +394,14 @@ test('a done card superseded by a merge can be reopened', () => {
   assert.deepEqual(queue.reopen(a.id), { ok: true })
   assert.equal(store.get(a.id).status, 'open')
 })
+
+test('service reopen of a merge-superseded done card lowers the merged note of the newer card', () => {
+  const { store, queue } = setup()
+  const a = store.add(completed())
+  const b = store.add(completed())
+  store.resolve(a.id, { kind: 'superseded', by: 'merge', into: b.id })
+  store.update(b.id, { merged: { count: 2 } })
+  assert.deepEqual(queue.reopen(a.id), { ok: true })
+  assert.equal(store.get(b.id).merged, undefined)
+  assert.equal(store.get(a.id).status, 'open')
+})

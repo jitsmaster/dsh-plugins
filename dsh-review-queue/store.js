@@ -168,8 +168,19 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       if (!item || item.status !== 'resolved') return false
       item.status = 'open'
       shownIds.delete(id) // back in the queue: it can be shown (and reported) again
+      const resolution = item.resolution
       delete item.resolvedAt
       delete item.resolution
+      // A card brought back from a merge no longer sits inside the newer card: its "Merged N" note drops by one (gone at 1). A missing target is skipped.
+      if (resolution?.by === 'merge' && typeof resolution.into === 'string') {
+        const target = items.get(resolution.into)
+        const count = target?.merged?.count
+        if (target && Number.isInteger(count)) {
+          if (count - 1 > 1) target.merged = { ...target.merged, count: count - 1 }
+          else delete target.merged
+          reindex(target)
+        }
+      }
       reindex(item)
       changed()
       return true
