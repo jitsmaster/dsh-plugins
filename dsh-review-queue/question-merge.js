@@ -6,7 +6,6 @@
  */
 import { NOTE_UNUSABLE, createModelRun } from './summary.js'
 
-const MAX_COMPARED = 5
 const MAX_TEXT = 600
 export const SAME_TIMEOUT_MS = 15000
 
@@ -56,7 +55,7 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
     if (!text || typeof added.sessionId !== 'string') return
     const olds = store.list({ status: 'open' })
       .filter((i) => i.type === 'question' && i.sessionId === added.sessionId && i.id !== added.id && i.seq < added.seq) // only questions raised BEFORE this one (the run is async: later ones are already stored)
-      .slice(-MAX_COMPARED).reverse() // the most recent older questions first
+      .reverse() // the most recent older questions first; no cap: every older open question is compared
     for (const old of olds) {
       const fresh = store.get(added.id)
       if (!fresh || fresh.status !== 'open') return

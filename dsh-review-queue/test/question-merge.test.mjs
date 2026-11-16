@@ -74,12 +74,12 @@ test('a failing model changes nothing', async () => {
   assert.equal(store.get(old.id).status, 'open')
 })
 
-test('at most 5 older questions are compared', async () => {
+test('every older open question of the session is compared, no cap', async () => {
   const { store, merge, calls } = setup({ same: async () => false })
   for (let i = 0; i < 8; i++) store.add(q('old ' + i))
   await merge.idle()
   calls.length = 0
   store.add(q('brand new'))
   await merge.idle()
-  assert.equal(calls.length, 5)
+  assert.equal(calls.length, 8)
 })
