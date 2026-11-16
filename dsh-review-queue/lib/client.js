@@ -890,7 +890,7 @@ function imageFilesOf(data) {
 		const savedToggles = loadToggles();
 		const state = {
 			snap: null, error: null, skew: 0, expanded: savedToggles.expanded, drafts: saved.drafts, replies: saved.replies, replyImages: {}, replyOpen: savedToggles.reply, busy: {}, errors: {},
-			selected: null, hold: null, showResolved: false, showHeld: false, showPhone: false, showRules: false, dialog: null, phoneFrom: "waiting", rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, resOpen: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all", resolvedType: "all" }, overlay: storage.get(LS.overlay) === "1",
+			selected: null, fresh: {}, hold: null, showResolved: false, showHeld: false, showPhone: false, showRules: false, dialog: null, phoneFrom: "waiting", rulesBusy: {}, rulesConfirm: null, rulesError: undefined, triageRules: undefined, triageRulesError: undefined, aiOpen: {}, resOpen: {}, lateOpen: savedToggles.late, filter: { type: "all", query: "", resolvedBy: "all", resolvedType: "all" }, overlay: storage.get(LS.overlay) === "1",
 			todoForm: loadTodoForm(), workspaces: null, efforts: null, followSessions: null, todoPick: {}, tipDeeper: {}, tipTopic: "", tipUse: { open: false, workspaceId: "" }, tipTicked: {},
 			resumeAll: null, scanNote: undefined, scanning: false,
 		};
@@ -984,7 +984,22 @@ function imageFilesOf(data) {
 		const useStore = () => { useSyncExternalStore(subscribe, () => version); return state; };
 
 		/** Takes a fresh snapshot into the store. */
+		let knownIds = null; // ids seen in earlier snapshots; null before the first one (everything present at load is not "new")
+		/** Marks items that arrived after the first snapshot as new until the user selects them. */
+		function trackFresh(body) {
+			const ids = (body.open || []).map((i) => i.id);
+			if (knownIds === null) { knownIds = new Set(ids); return; }
+			const live = new Set(ids);
+			const fresh = {};
+			for (const id of Object.keys(state.fresh)) if (live.has(id)) fresh[id] = true;
+			for (const id of ids) if (!knownIds.has(id)) fresh[id] = true;
+			knownIds = live;
+			if (Object.keys(fresh).length !== Object.keys(state.fresh).length || Object.keys(fresh).some((k) => !state.fresh[k])) set({ fresh });
+		}
+		/** Selects an item and clears its new mark. */
+		function selectItem(id) { const f = state.fresh; if (f[id]) { const { [id]: _gone, ...rest } = f; set({ selected: id, fresh: rest }); } else set({ selected: id }); }
 		function applySnapshot(body) {
+			trackFresh(body);
 			const d = state.dialog;
 			const gone = d && !(body.open || []).some((i) => i.id === d.id) && !(body.resolved || []).some((i) => i.id === d.id); // the item it acts on left the queue
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? { dialog: null } : {}) });
@@ -1730,7 +1745,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-body{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px}.rq-banner{padding:8px 14px;background:#f25a5a22;color:var(--rq-err);font-size:12px}.rq-notice{padding:6px 14px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#8883}.rq-notice-warn{background:#f2b5301f;color:var(--rq-fg)}"
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
-			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}.rq-tier{opacity:.85}.rq-group-h{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:6px 4px 0;border-bottom:1px solid var(--rq-layer2)}.rq-group-title{font-weight:600}.rq-tier0{outline:1px solid var(--rq-err)}.rq-tier1{outline:1px solid var(--rq-warn)}"
+			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}.rq-tier{opacity:.85}.rq-group-h{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:6px 4px 0;border-bottom:1px solid var(--rq-layer2)}.rq-group-title{font-weight:600}.rq-row-i.new{background:var(--rq-accent,#3b82f6)22;box-shadow:inset 3px 0 0 var(--rq-accent,#3b82f6);font-weight:600}.rq-tier0{outline:1px solid var(--rq-err)}.rq-tier1{outline:1px solid var(--rq-warn)}"
 			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.archive{color:var(--rq-warn)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-chip.onhold{color:var(--rq-mute)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
@@ -2361,8 +2376,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			}, [selected]);
 			const left = it.expiresAt ? it.expiresAt - now : undefined;
 			const risky = it.risks && it.risks.length;
-			return h("div", { ref, role: "option", tabIndex: selected ? 0 : -1, "aria-selected": !!selected, className: "rq-row-i" + (selected ? " sel" : ""), onClick: () => set({ selected: it.id }),
-				onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); set({ selected: it.id }); } } },
+			return h("div", { ref, role: "option", tabIndex: selected ? 0 : -1, "aria-selected": !!selected, className: "rq-row-i" + (selected ? " sel" : "") + (!selected && state.fresh[it.id] ? " new" : ""), "data-new": !selected && state.fresh[it.id] ? "1" : undefined, onClick: () => selectItem(it.id),
+				onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectItem(it.id); } } },
 				h("span", { className: "rq-row" }, h("span", { className: "rq-pos" }, "#" + it.position), h("span", { className: "rq-chip " + it.type }, itemTypeLabel(it)), tierChip(it) ? h("span", { className: "rq-chip rq-tier rq-tier" + tierChip(it).level, "data-tier": it.id, title: tierChip(it).title }, tierChip(it).text) : null, h("span", { className: "rq-title" }, cardTitle(it)),
 					left !== undefined || risky ? h("span", { className: "rq-meta" },
 						left !== undefined ? h("span", { className: "rq-left" + (left < 30000 ? " soon" : ""), title: "Time left before this question expires" }, fmtLeft(left)) : null,
@@ -2631,7 +2646,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			if (!cur) return;
 			const open = visibleOpen();
 			const i = open.findIndex((x) => x.id === cur.id);
-			if (action === "next" || action === "prev") { e.preventDefault(); const to = open[Math.min(open.length - 1, Math.max(0, i + (action === "next" ? 1 : -1)))]; if (to) set({ selected: to.id }); return; }
+			if (action === "next" || action === "prev") { e.preventDefault(); const to = open[Math.min(open.length - 1, Math.max(0, i + (action === "next" ? 1 : -1)))]; if (to) selectItem(to.id); return; }
 			if (state.busy[cur.id]) return;
 			e.preventDefault();
 			if (action === "read") { if (state.snap && state.snap.reading === cur.id) act("/v1/stop", {}, cur.id); else act("/v1/read", { id: cur.id }, cur.id); }
@@ -2687,7 +2702,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { visibleOpen, detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, resolvedCountsMemo, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
-		Object.assign(exports.__test, { errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, visibleOpen, newCount, holdNow, releaseHold, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
+		Object.assign(exports.__test, { selectItem, errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, visibleOpen, newCount, holdNow, releaseHold, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
 		Object.assign(exports.__test, { tierChip, mergedNote, groupHead, groupedList, groupOrder, loadGroupsUi, requestGroupsUi, setGroupsImporter: (fn) => { groupsImporter = fn; groupsUi = undefined; groupsAsked = false; groupsMod = undefined; } });

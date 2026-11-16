@@ -11,8 +11,8 @@ test('a todo is P0', () => {
   assert.equal(buildTier({ item: { type: 'todo' } }, 1).tier, 0)
 })
 
-test('todo groups come first in oldest order and in tier order', () => {
+test('a todo has no special place: it sorts by its tier (P0) in tier order, by age in oldest order', () => {
   const items = [it('a', 'question', 's1', 1, { tier: { tier: 1 } }), it('t', 'todo', undefined, 50, { tier: { tier: 0 } })]
-  assert.equal(groupOpen(items)[0].id, 'item:t')
+  assert.equal(groupOpen(items)[0].id, 's1')
   assert.equal(groupOpen(items, { order: 'tier', now: 100 })[0].id, 'item:t')
 })

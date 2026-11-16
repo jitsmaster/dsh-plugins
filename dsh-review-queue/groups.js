@@ -4,8 +4,6 @@
  * Items with no sessionId, and housekeeping types, stay single cards.
  */
 
-import { effectiveTier } from './tier.js'
-
 const SINGLE_TYPES = new Set(['todo', 'onhold', 'archive', 'pr-merged', 'paused'])
 
 /** The id of the group an item belongs to: its session, or `item:<id>` for a card that stands alone. */
@@ -38,14 +36,11 @@ export function groupOpen(items, opts = {}) {
     return { id, items: sorted, createdAt: at(sorted[0]), count: sorted.length, topTier: tiers.length ? tiers.reduce((m, t) => (t < m ? t : m), Infinity) : undefined }
   })
   if (opts?.order === 'tier' && Number.isFinite(opts.now)) {
-    for (const g of groups) g.sortTier = g.topTier === undefined ? Infinity : effectiveTier(g.topTier, opts.now - g.createdAt)
-    // Inside a tier a group holding a high-severity free item (risk-flagged work) ranks above a group that is only blocked questions.
-    for (const g of groups) g.sortRisk = g.items.some((i) => i.tier?.tier === g.topTier && i.tier?.severity === 'high' && i.tier?.urgency === 'free') ? 0 : 1
-    const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0) // explicit: Infinity - Infinity is NaN (untiered groups rank last, then by risk and age)
-    for (const g of groups) g.sortTodo = g.items.some((i) => i.type === 'todo') ? 0 : 1
-    groups.sort((a, b) => cmp(a.sortTodo, b.sortTodo) || cmp(a.sortTier, b.sortTier) || cmp(a.sortRisk, b.sortRisk) || byAge(a.items[0], b.items[0]))
-    for (const g of groups) { delete g.sortTier; delete g.sortRisk; delete g.sortTodo }
-  } else groups.sort((a, b) => ((a.items.some((i) => i.type === 'todo') ? 0 : 1) - (b.items.some((i) => i.type === 'todo') ? 0 : 1)) || byAge(a.items[0], b.items[0]))
+    // Priority only: a group ranks by its own best tier (no aging, no risk or todo exceptions), then by its oldest item; untiered groups rank last.
+    const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0) // explicit: Infinity - Infinity is NaN
+    const rankOf = (g) => (g.topTier === undefined ? Infinity : g.topTier)
+    groups.sort((a, b) => cmp(rankOf(a), rankOf(b)) || byAge(a.items[0], b.items[0]))
+  } else groups.sort((a, b) => byAge(a.items[0], b.items[0]))
   groups.forEach((g, n) => { g.rank = n + 1 })
   return groups
 }

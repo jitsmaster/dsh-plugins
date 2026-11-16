@@ -1,0 +1,37 @@
+// New items are highlighted in the left list until they are selected.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { loadClient, el, okJson } from './client-todo-helpers.mjs'
+
+const mk = (id, n) => ({ id, type: 'completed', status: 'open', sessionId: 's' + id, createdAt: n, seq: n, position: n, payload: {} })
+const snap = (ids) => ({ snapshotId: 'e:1', open: ids.map((id, n) => mk(id, n + 1)), resolved: [] })
+function setup() {
+  const { T } = loadClient({ fetchImpl: async () => okJson({ ok: true }), react: { createElement: el } })
+  return T
+}
+
+test('items present at the first snapshot are not new', () => {
+  const T = setup()
+  T.applySnapshot(snap(['a', 'b']))
+  assert.deepEqual(Object.keys(T.state.fresh), [])
+})
+
+test('an item arriving later is new until it is selected', () => {
+  const T = setup()
+  T.applySnapshot(snap(['a', 'b']))
+  T.applySnapshot(snap(['a', 'b', 'c']))
+  assert.deepEqual(Object.keys(T.state.fresh), ['c'])
+  T.applySnapshot(snap(['a', 'b', 'c']))
+  assert.deepEqual(Object.keys(T.state.fresh), ['c'], 'stays new across snapshots')
+  T.selectItem('c')
+  assert.deepEqual(Object.keys(T.state.fresh), [])
+  assert.equal(T.state.selected, 'c')
+})
+
+test('an item that leaves the queue is forgotten', () => {
+  const T = setup()
+  T.applySnapshot(snap(['a']))
+  T.applySnapshot(snap(['a', 'b']))
+  T.applySnapshot(snap(['a']))
+  assert.deepEqual(Object.keys(T.state.fresh), [])
+})

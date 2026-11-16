@@ -291,6 +291,7 @@
   "test/event-shown-acted.test.mjs",
   "test/client-shown.test.mjs",
   "test/client-hold.test.mjs",
+  "test/client-new-highlight.test.mjs",
   "test/hub-queue-order.test.mjs",
   "test/triage-act.test.mjs",
   "test/capture-ai-resolution.test.mjs",
