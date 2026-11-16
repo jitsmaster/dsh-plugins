@@ -40,3 +40,14 @@ test('a card with no session is its own group', () => {
   assert.equal(i.groupId, 'item:' + t.id)
   assert.equal(i.groupRank, 1)
 })
+
+test("rank and flat order agree with the grouped order for a merged item", () => {
+  const store = make()
+  const a = store.add({ type: "question", sessionId: "s1", payload: { questions: [] } })
+  const b = store.add({ type: "question", sessionId: "s2", payload: { questions: [] } })
+  store.update(a.id, { merged: { count: 2 }, updatedAt: 99_999 }) // merged: last update puts s1 behind s2
+  const open = store.snapshot().open
+  assert.deepEqual(open.map((i) => i.id), [b.id, a.id])
+  assert.deepEqual(open.map((i) => i.groupRank), [1, 2])
+  assert.deepEqual(open.map((i) => i.position), [1, 2])
+})

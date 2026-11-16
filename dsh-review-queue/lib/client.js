@@ -983,6 +983,7 @@ function imageFilesOf(data) {
 		const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l); }; };
 		const useStore = () => { useSyncExternalStore(subscribe, () => version); return state; };
 
+		const KNOWN_IDS_MAX = 3000;
 		let knownIds = null; // ids seen in earlier snapshots; null before the first one (everything present at load is not "new")
 		/** Marks items that arrived after the first snapshot as new until the user selects them. */
 		function trackFresh(body) {
@@ -992,7 +993,8 @@ function imageFilesOf(data) {
 			const fresh = {};
 			for (const id of Object.keys(state.fresh)) if (live.has(id)) fresh[id] = true;
 			for (const id of ids) if (!knownIds.has(id)) fresh[id] = true;
-			knownIds = live;
+			for (const id of ids) { knownIds.delete(id); knownIds.add(id); } // cumulative: an item that leaves for a moment and returns is not new again
+				while (knownIds.size > KNOWN_IDS_MAX) knownIds.delete(knownIds.values().next().value); // memory: bounded, oldest ids dropped first
 			if (Object.keys(fresh).length !== Object.keys(state.fresh).length || Object.keys(fresh).some((k) => !state.fresh[k])) set({ fresh });
 		}
 		/** Clears the new mark of one item, together with any other state in `extra` in a single store write; writes nothing when there is nothing to change. */

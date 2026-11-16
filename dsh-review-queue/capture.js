@@ -539,6 +539,8 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
   })
 
   return {
+    /** True while the card answer of this detached question item is being sent: nothing may resolve the item meanwhile. */
+    isBusy: (id) => detachedInFlight.has(id),
     /**
      * Answer a pending question from the card. answers: [{ id, selected, custom? }], one per question. A detached question (its live
      * request ended, the item is still open) is answered through the session instead; that call is asynchronous.

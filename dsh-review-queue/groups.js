@@ -15,7 +15,7 @@ export function groupIdOf(item) {
 /** Last-update time of an item: `updatedAt` (a merged question), else `createdAt`. */
 const at = (i) => (Number.isFinite(i.updatedAt) ? i.updatedAt : Number.isFinite(i.createdAt) ? i.createdAt : Infinity)
 /** Oldest first; a missing createdAt sorts last; seq breaks ties (Infinity - Infinity would be NaN). */
-const byAge = (a, b) => { const x = at(a); const y = at(b); return x < y ? -1 : x > y ? 1 : (a.seq ?? 0) - (b.seq ?? 0) }
+export const byAge = (a, b) => { const x = at(a); const y = at(b); return x < y ? -1 : x > y ? 1 : (a.seq ?? 0) - (b.seq ?? 0) }
 
 /**
  * Ordered groups `{ id, items, createdAt, count, topTier, rank }` of the open items.

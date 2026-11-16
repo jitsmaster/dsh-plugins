@@ -312,7 +312,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   // A new question that repeats an older open question of the same session supersedes it (group card merge); the model is a small, fast one picked by name (summary.js pickModel PREFER), else the first one DSH lists.
   let questionMerge
   if (questionMergeOn) {
-    questionMerge = createQuestionMerge({ store, same: createSameJudge({ llm }), log })
+    questionMerge = createQuestionMerge({ store, same: createSameJudge({ llm }), isBusy: capture.isBusy, log })
     questionMerge.start()
   }
   aiReporter?.start()

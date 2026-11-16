@@ -5,7 +5,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { buildTier, validTier } from './tier.js'
-import { groupOpen } from './groups.js'
+import { groupOpen, byAge } from './groups.js'
 
 /** The code-only tier of an item (no model input, no facts): every item has one from the moment it exists. The triage runner may refine it later. */
 const codeTier = (item, at) => buildTier({ item }, at)
@@ -37,7 +37,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
   /** 1-based position of an open item under the current display order. */
   const rankOf = (id) => {
     if (!events) return undefined // nothing records it: skip the sort
-    let flat = [...items.values()].filter((i) => i.status === 'open').sort(order)
+    let flat = [...items.values()].filter((i) => i.status === 'open').sort(displayOrder)
     if (shownOrder === 'tier') flat = groupOpen(flat, { order: 'tier' }).flatMap((g) => g.items)
     const n = flat.findIndex((i) => i.id === id)
     return n < 0 ? undefined : n + 1
@@ -53,6 +53,8 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
   const epoch = uuid()
 
   const order = (a, b) => a.createdAt - b.createdAt || a.seq - b.seq
+  // The display order is the grouped order (groups.js byAge: last update first-key), so ranks and positions agree with the cards a merged item moves in.
+  const displayOrder = byAge
 
   // Performance: the open items per session, so the per-step lookup of the capture reads one small set instead of cloning every item.
   // Every status or session change of an item goes through reindex.
@@ -249,7 +251,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     /** Open items, oldest first, each with its position (1 = oldest); resolved items, newest first. */
     snapshot({ order: queueOrder } = {}) {
       const all = [...items.values()]
-      let flat = all.filter((i) => i.status === 'open').sort(order)
+      let flat = all.filter((i) => i.status === 'open').sort(displayOrder)
       const info = new Map()
       const groups = groupOpen(flat, queueOrder === 'tier' ? { order: 'tier' } : {})
       for (const g of groups) for (const i of g.items) info.set(i.id, { groupId: g.id, groupRank: g.rank })

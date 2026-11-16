@@ -63,7 +63,7 @@ export function createSameJudge({ llm, timeoutMs = SAME_TIMEOUT_MS, maxTokens = 
 }
 
 /** @param {{ store: any, same: (a: string, b: string, kind?: string) => Promise<boolean>, log?: (l: string) => void, now?: () => number }} deps (after the merge attempt, the older detached questions of the session are expired too) */
-export function createQuestionMerge({ store, same, log = () => {}, now = Date.now }) {
+export function createQuestionMerge({ store, same, isBusy = () => false, log = () => {}, now = Date.now }) {
   let chain = Promise.resolve() // runs are serialized: one model call at a time
   let off = () => {}
   let stopped = false
@@ -73,7 +73,17 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
   /** Expires the older detached questions of the session AFTER the merge attempt (this caller walks the list while resolving, so onlyOpen drops stale index entries). */
   function expireOlder(added) {
     if (added.type !== 'question') return
-    expireDetachedQuestions(store, openOfSession(store, added.sessionId, { onlyOpen: true }), { skip: (old) => old.id === added.id || !(old.seq < added.seq), onError: say })
+    expireDetachedQuestions(store, openOfSession(store, added.sessionId, { onlyOpen: true }), { skip: (old) => spared(old, added), onError: say })
+  }
+
+  /** Never closed by this module: the item itself, a later one (the run is async), one whose card answer is in flight, one raised by the same call. */
+  const spared = (old, added) => old.id === added.id || !(old.seq < added.seq) || isBusy(old.id) === true || (added.type === 'question' && added.key !== undefined && old.key === added.key)
+
+  /** Whether the model could judge `old` against `added` (the compare step would not skip it): such an item waits for the merge attempt before it expires. */
+  function isCandidate(old, added) {
+    const a = textOf(added); const o = textOf(old)
+    if (!a || !o || optionsOf(old) !== optionsOf(added)) return false
+    return normalize(a) === normalize(o) || (a.length <= MAX_TEXT && o.length <= MAX_TEXT && shareWord(o, a))
   }
 
   async function run(added) {
@@ -84,7 +94,7 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
     const text = textOf(added)
     if (!text || typeof added.sessionId !== 'string') return
     const olds = openOfSession(store, added.sessionId, { onlyOpen: true })
-      .filter((i) => i.type === added.type && i.id !== added.id && i.seq < added.seq // only items raised BEFORE this one (the run is async: later ones are already stored)
+      .filter((i) => i.type === added.type && !spared(i, added) // only items raised BEFORE this one (the run is async: later ones are already stored)
         && (added.type !== 'question' || i.detached === true)) // a live question is still awaited by its agent: never closed here
       .reverse() // the most recent first
       .slice(0, MAX_COMPARE)
@@ -113,6 +123,8 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
       if (typeof store.onAdd !== 'function') return false
       off = store.onAdd((item) => {
         if ((item?.type !== 'question' && item?.type !== 'completed')) return
+        // Performance: an older detached question that no model call could merge expires at once, not behind the serialized model chain (up to 15 s per call).
+        if (item.type === 'question') expireDetachedQuestions(store, openOfSession(store, item.sessionId, { onlyOpen: true }), { skip: (old) => spared(old, item) || isCandidate(old, item), onError: say })
         pending++
         chain = chain.then(() => run(item)).catch(say).finally(() => { pending-- })
       })

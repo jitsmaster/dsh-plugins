@@ -68,3 +68,14 @@ test('clearFresh(id) clears one mark, and does nothing (no store write) when the
   T.clearFresh('b')
   assert.deepEqual(Object.keys(T.state.fresh), ['c'])
 })
+test("an item that briefly leaves the open list and returns is not new again", () => {
+  const T = setup()
+  let v = 0
+  const next = (ids) => T.applySnapshot({ ...snap(ids), snapshotId: "e:" + ++v })
+  next(["a"])
+  next(["a", "b"])
+  assert.deepEqual(Object.keys(T.state.fresh), ["b"])
+  next(["a"])
+  next(["a", "b"])
+  assert.deepEqual(Object.keys(T.state.fresh), [])
+})
