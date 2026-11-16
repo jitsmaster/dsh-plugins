@@ -39,7 +39,7 @@ test('parity: groupsOfOpen and groupOpen agree on membership, order, count and t
     item({ id: 'd', sessionId: undefined, type: 'todo', createdAt: 4, seq: 4 }),
   ]
   const server = groupOpen(open)
-  const client = groupsOfOpen(open.map((i) => ({ ...i, groupId: groupOpen([i])[0].id }))).sort((x, y) => x.createdAt - y.createdAt)
+  const client = groupsOfOpen(open.map((i) => ({ ...i, groupId: groupOpen([i])[0].id }))).sort((x, y) => (y.items.some((i) => i.type === 'todo') ? 1 : 0) - (x.items.some((i) => i.type === 'todo') ? 1 : 0) || x.createdAt - y.createdAt) // a todo group is always first
   const pick = (gs) => gs.map((g) => [g.id, g.items.map((i) => i.id), g.count, g.topTier])
   assert.deepEqual(pick(client), pick(server))
 })

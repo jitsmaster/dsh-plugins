@@ -42,9 +42,10 @@ export function groupOpen(items, opts = {}) {
     // Inside a tier a group holding a high-severity free item (risk-flagged work) ranks above a group that is only blocked questions.
     for (const g of groups) g.sortRisk = g.items.some((i) => i.tier?.tier === g.topTier && i.tier?.severity === 'high' && i.tier?.urgency === 'free') ? 0 : 1
     const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0) // explicit: Infinity - Infinity is NaN (untiered groups rank last, then by risk and age)
-    groups.sort((a, b) => cmp(a.sortTier, b.sortTier) || cmp(a.sortRisk, b.sortRisk) || byAge(a.items[0], b.items[0]))
-    for (const g of groups) { delete g.sortTier; delete g.sortRisk }
-  } else groups.sort((a, b) => byAge(a.items[0], b.items[0]))
+    for (const g of groups) g.sortTodo = g.items.some((i) => i.type === 'todo') ? 0 : 1
+    groups.sort((a, b) => cmp(a.sortTodo, b.sortTodo) || cmp(a.sortTier, b.sortTier) || cmp(a.sortRisk, b.sortRisk) || byAge(a.items[0], b.items[0]))
+    for (const g of groups) { delete g.sortTier; delete g.sortRisk; delete g.sortTodo }
+  } else groups.sort((a, b) => ((a.items.some((i) => i.type === 'todo') ? 0 : 1) - (b.items.some((i) => i.type === 'todo') ? 0 : 1)) || byAge(a.items[0], b.items[0]))
   groups.forEach((g, n) => { g.rank = n + 1 })
   return groups
 }

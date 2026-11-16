@@ -21,7 +21,7 @@ const TYPES = {
 
 test('add stores a code-only tier on every item type', () => {
   const store = make()
-  const expect = { permission: [0, 'high', 'blocked'], question: [1, 'medium', 'blocked'], completed: [3, 'low', 'free'], paused: [4, 'housekeeping', 'free'], todo: [4, 'housekeeping', 'free'], onhold: [4, 'housekeeping', 'free'], archive: [4, 'housekeeping', 'free'], 'pr-merged': [4, 'housekeeping', 'free'] }
+  const expect = { permission: [0, 'high', 'blocked'], question: [1, 'medium', 'blocked'], completed: [3, 'low', 'free'], paused: [4, 'housekeeping', 'free'], todo: [0, 'high', 'blocked'], onhold: [4, 'housekeeping', 'free'], archive: [4, 'housekeeping', 'free'], 'pr-merged': [4, 'housekeeping', 'free'] }
   for (const [type, input] of Object.entries(TYPES)) {
     const item = store.add(input)
     assert.equal(item.tier.tier, expect[type][0], type + ' tier')

@@ -335,5 +335,6 @@
   "test/question-merge.test.mjs",
   "test/client-merged-note.test.mjs",
   "test/agent-proxy-order.test.mjs",
+  "test/todo-first.test.mjs",
   "test/service-queue-order.test.mjs"
 ]

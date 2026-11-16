@@ -39,7 +39,7 @@ test('needs_decision is at least Medium', () => {
 test('code-only defaults when the model gave nothing', () => {
   assert.equal(severityOf({ item: { type: 'question' } }), 'medium')
   assert.equal(severityOf({ item: { type: 'completed' } }), 'low')
-  for (const type of ['paused', 'todo', 'archive', 'pr-merged', 'onhold']) assert.equal(severityOf({ item: { type }, judgment: { severity: 'high' } }), 'housekeeping', type)
+  for (const type of ['paused', 'archive', 'pr-merged', 'onhold']) assert.equal(severityOf({ item: { type }, judgment: { severity: 'high' } }), 'housekeeping', type)
 })
 
 test('the judge can never lower a question below its Medium code floor', () => {
@@ -62,7 +62,7 @@ test('text in the item cannot lower a tier', () => {
 test('urgency: a pending permission or question blocks the agent', () => {
   assert.equal(urgencyOf({ type: 'permission' }), 'blocked')
   assert.equal(urgencyOf({ type: 'question' }), 'blocked')
-  for (const type of ['completed', 'paused', 'todo', 'archive', 'pr-merged', 'onhold']) assert.equal(urgencyOf({ type }), 'free', type)
+  for (const type of ['completed', 'paused', 'archive', 'pr-merged', 'onhold']) assert.equal(urgencyOf({ type }), 'free', type)
 })
 
 test('matrix: every cell', () => {
@@ -81,7 +81,7 @@ test('tierOfItem combines severity and urgency', () => {
   assert.equal(tierOfItem({ item: perm(), facts: safeFacts }), 2)
   assert.equal(tierOfItem({ item: { type: 'question' } }), 1)
   assert.equal(tierOfItem({ item: { type: 'completed' } }), 3)
-  assert.equal(tierOfItem({ item: { type: 'todo' } }), 4)
+  assert.equal(tierOfItem({ item: { type: 'todo' } }), 0)
 })
 
 test('aging: one tier per 60 min of group age, capped at P1, never creates P0', () => {
