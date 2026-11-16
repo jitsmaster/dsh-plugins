@@ -327,3 +327,8 @@ test('source: the review node has no inline form state any more (no aiCorrection
   assert.doesNotMatch(src, /aiCorrection|aiOverrule|holdOpen/, 'the old inline state keys are gone from the whole file')
   assert.match(body, /openDialog\(/, 'Mark wrong and Overrule rule open a dialog')
 })
+test('isReopenable: a done card superseded by a merge is not reopenable', () => {
+  const { T } = load()
+  assert.equal(T.isReopenable({ type: 'completed', resolution: { kind: 'superseded', by: 'merge', into: 'x' } }), false)
+  assert.equal(T.isReopenable({ type: 'completed', resolution: { kind: 'superseded', by: 'newer' } }), true)
+})

@@ -385,3 +385,11 @@ test('a done item hidden as no-action can be reopened and is not counted while h
   assert.deepEqual(queue.reopen(a.id), { ok: true })
   assert.equal(queue.count().total, 1)
 })
+
+test('a done card superseded by a merge is not manually reopenable', () => {
+  const { store, queue } = setup()
+  const a = store.add(completed())
+  const b = store.add(completed())
+  store.resolve(a.id, { kind: 'superseded', by: 'merge', into: b.id })
+  assert.deepEqual(queue.reopen(a.id), { ok: false, error: 'not-reopenable' })
+})
