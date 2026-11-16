@@ -108,3 +108,13 @@ test('an item restored from an older file without a tier gets one on load', () =
   const store = make({ read: () => old, write: () => {} })
   assert.equal(store.snapshot().open[0].tier.tier, 3)
 })
+
+test('an open todo saved with the old housekeeping tier is re-derived as P0 on load', () => {
+  let saved
+  const store = make({ read: () => saved, write: (t) => { saved = t } })
+  store.add(TYPES.todo)
+  const data = JSON.parse(saved)
+  data.items[0].tier = { severity: 'housekeeping', urgency: 'free', tier: 4, at: 1 }
+  const again = make({ read: () => JSON.stringify(data), write: () => {} })
+  assert.equal(again.snapshot().open[0].tier.tier, 0)
+})

@@ -92,7 +92,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     indexedAs.clear()
     for (const item of data.items) {
       if (item && typeof item.id === 'string' && typeof item.type === 'string') {
-        if (!validTier(item.tier)) item.tier = codeTier(item, Number.isFinite(item.createdAt) ? item.createdAt : now()) // saved before tiers existed
+        if (!validTier(item.tier) || (item.type === 'todo' && item.status === 'open')) item.tier = codeTier(item, Number.isFinite(item.createdAt) ? item.createdAt : now()) // saved before tiers existed
         items.set(item.id, item); reindex(item)
       }
     }

@@ -18,7 +18,7 @@ export function groupsOfOpen(open) {
     if (!byId.has(id)) byId.set(id, [])
     byId.get(id).push(item)
   }
-  const at = (i) => (Number.isFinite(i.createdAt) ? i.createdAt : Infinity)
+  const at = (i) => (Number.isFinite(i.updatedAt) ? i.updatedAt : Number.isFinite(i.createdAt) ? i.createdAt : Infinity) // same as groups.js: last update
   // Same order as groups.js: oldest first, missing createdAt last, seq breaks ties.
   const byAge = (a, b) => { const x = at(a); const y = at(b); return x < y ? -1 : x > y ? 1 : (a.seq ?? 0) - (b.seq ?? 0) }
   return [...byId].map(([id, list]) => {

@@ -87,3 +87,11 @@ test('a single-card group has no AI handled line and bad input is harmless', () 
   assert.equal(aiHandledLine(1), 'AI handled 1')
   assert.equal(aiHandledLine(3), 'AI handled 3')
 })
+
+test('groupsOfOpen orders items by last update like groupOpen (updatedAt, else createdAt)', () => {
+  const open = [item({ id: 'a', sessionId: 's1', createdAt: 1, updatedAt: 9, seq: 1 }), item({ id: 'b', sessionId: 's1', createdAt: 5, seq: 2 })]
+  const server = groupOpen(open)[0].items.map((i) => i.id)
+  const client = groupsOfOpen(open.map((i) => ({ ...i, groupId: 's1' })))[0].items.map((i) => i.id)
+  assert.deepEqual(server, ['b', 'a'])
+  assert.deepEqual(client, server)
+})

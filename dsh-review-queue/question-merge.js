@@ -8,6 +8,7 @@
  * and runs are serialized (one model call at a time).
  */
 import { NOTE_UNUSABLE, createModelRun } from './summary.js'
+import { recommendedOf } from './speech.js'
 
 const MAX_TEXT = 600
 const MAX_COMPARE = 5 // older items judged per new one
@@ -61,12 +62,26 @@ export function createSameJudge({ llm, timeoutMs = SAME_TIMEOUT_MS, maxTokens = 
 }
 
 /** @param {{ store: any, same: (a: string, b: string, kind?: string) => Promise<boolean>, log?: (l: string) => void, now?: () => number, enabled?: () => boolean }} deps */
-export function createQuestionMerge({ store, same, log = () => {}, now = Date.now, enabled = () => true }) {
+export function createQuestionMerge({ store, same, log = () => {}, now = Date.now, enabled = () => true, expireRest = false }) {
   let chain = Promise.resolve() // runs are serialized: one model call at a time
   let off = () => {}
   const say = (error) => log('question-merge: ' + String(error?.message ?? error).slice(0, 120))
 
+  /** capture.js used to expire older detached questions when a new one arrived; with expireRest the merge does it AFTER trying to merge them. */
+  function expireOlder(added) {
+    if (!expireRest || added.type !== 'question') return
+    for (const old of store.list({ status: 'open' })) {
+      if (old.type === 'question' && old.detached === true && old.sessionId === added.sessionId && old.id !== added.id && old.seq < added.seq) {
+        try { store.resolve(old.id, { kind: 'expired', assumed: (old.payload?.questions ?? []).map(recommendedOf).filter(Boolean) }) } catch (error) { say(error) }
+      }
+    }
+  }
+
   async function run(added) {
+    try { await compare(added) } finally { expireOlder(added) }
+  }
+
+  async function compare(added) {
     const text = textOf(added)
     if (!text || typeof added.sessionId !== 'string') return
     const olds = store.list({ status: 'open' })

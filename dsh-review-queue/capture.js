@@ -151,7 +151,7 @@ function answerWindowMs(req, seconds, defaultWindowMs) {
  * keepDone: how many open done cards ('completed') one session keeps (default 20, an invalid value falls back to it); past it the oldest is
  * resolved as 'trimmed' and logged.
  */
-export function installCapture(ctx, { store, summarizer, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS }) {
+export function installCapture(ctx, { store, summarizer, expireOlder = true, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS }) {
   const keep = Number.isInteger(keepDone) && keepDone > 0 ? keepDone : DEFAULT_KEEP_DONE
   const children = new Set()
   const lastHuman = new Map() // session id -> "<human message count>:<last text>" seen at the previous step (tells a newly typed message from the same history)
@@ -242,7 +242,7 @@ export function installCapture(ctx, { store, summarizer, log = () => {}, now = D
     const seconds = callId === undefined ? undefined : timeouts.get(callId)
     // A session asks one live question at a time: an older open question of this session (its request ended without an answer, detached) can never
     // reach the assistant now, so it leaves the list and the new question is the one to answer.
-    guard(() => {
+    if (expireOlder) guard(() => {
       for (const old of openOf(agent.id)) {
         if (old.type === 'question' && old.detached && old.key !== callId && !detachedInFlight.has(old.id)) store.resolve(old.id, { kind: 'expired', assumed: (old.payload?.questions ?? []).map(recommendedOf).filter(Boolean) })
       }

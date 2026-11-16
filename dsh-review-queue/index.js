@@ -165,6 +165,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const capture = installCapture(ctx, {
     store, summarizer, log, autoAnswer: config.questionAutoAnswer !== false,
     autoAnswerLeadMs: msOf(config.questionAutoAnswerLeadSeconds, true), defaultWindowMs: msOf(config.questionWindowSeconds, false),
+    expireOlder: !(config.questionMerge !== false && process.env.NODE_TEST_CONTEXT === undefined), // with the question merge on, it expires the older detached questions itself after trying to merge them
     keepDone: config.doneKeepPerSession, // capture.js falls back to its default (20) for anything that is not a positive integer
   })
   const controllerOf = () => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } }
@@ -309,7 +310,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   // A new question that repeats an older open question of the same session supersedes it (group card merge); the model is the cheapest one DSH can reach.
   let questionMerge
   if (config.questionMerge !== false && process.env.NODE_TEST_CONTEXT === undefined) {
-    questionMerge = createQuestionMerge({ store, same: config.questionMergeDeps?.same ?? createSameJudge({ llm }), log })
+    questionMerge = createQuestionMerge({ store, same: config.questionMergeDeps?.same ?? createSameJudge({ llm }), log, expireRest: true })
     questionMerge.start()
   }
   aiReporter?.start()
