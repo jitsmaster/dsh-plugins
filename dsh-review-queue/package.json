@@ -35,6 +35,7 @@
     "triage.js",
     "triage-judge.js",
     "question-merge.js",
+    "detached-expiry.js",
     "triage-log.js",
     "triage-runner.js",
     "triage-clip.js",

@@ -2,7 +2,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
-import { createQuestionMerge, questionTextOf, parseSame } from '../question-merge.js'
+import { createQuestionMerge, questionTextOf, parseSame, MAX_COMPARE, MAX_PENDING } from '../question-merge.js'
+import { NOTE_UNUSABLE } from '../summary.js'
 
 const q = (text, sessionId = 's1', extra = {}) => ({ type: 'question', sessionId, workspace: 'D:/w', detached: true, payload: { questions: [{ question: text, options: [] }] }, ...extra })
 
@@ -22,9 +23,9 @@ test('questionTextOf joins the question texts', () => {
 
 test('parseSame reads the model JSON and rejects anything else', () => {
   assert.deepEqual(parseSame('{"same": true}'), { same: true })
-  assert.ok(parseSame('noise {"same": false} noise').note)
-  assert.ok(parseSame('nope').note)
-  assert.ok(parseSame('{"same":"yes"}').note)
+  assert.equal(parseSame('noise {"same": false} noise').note, NOTE_UNUSABLE)
+  assert.equal(parseSame('nope').note, NOTE_UNUSABLE)
+  assert.equal(parseSame('{"same":"yes"}').note, NOTE_UNUSABLE)
 })
 
 test('a repeated question supersedes the older one and carries the merge count and update time', async () => {
@@ -170,7 +171,7 @@ test('runs are serialized: never two model calls at once', async () => {
 
 test('parseSame reads only a clean JSON object', () => {
   assert.deepEqual(parseSame('{"same": true}'), { same: true })
-  assert.ok(parseSame('{"same": true} and {"same": false}').note)
+  assert.equal(parseSame('{"same": true} and {"same": false}').note, NOTE_UNUSABLE)
 })
 
 function setupExpire({ same = async () => false } = {}) {
@@ -229,7 +230,8 @@ test('a backlog past the pending cap skips the model work instead of growing', a
   const { store, merge, calls } = setup({ same: async () => false })
   for (let i = 0; i < 40; i++) store.add(q('database item ' + i))
   await merge.idle()
-  assert.ok(calls.length <= 100, 'calls ' + calls.length)
+  // The first runs start while the backlog is past the cap and are skipped: only the last MAX_PENDING items are judged, each against at most MAX_COMPARE older ones.
+  assert.ok(calls.length <= MAX_PENDING * MAX_COMPARE, 'calls ' + calls.length)
 })
 
 test('stop() ends queued runs: no model call after it', async () => {

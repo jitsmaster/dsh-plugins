@@ -162,10 +162,12 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   // Question auto-answer: questionAutoAnswer (default on), questionAutoAnswerLeadSeconds (0 = off) and questionWindowSeconds (the window of a question
   // the model gave no timeout: must match the ask_user_question timeout row). A value that is not a finite number in range is passed on as undefined: capture.js applies its defaults.
   const msOf = (seconds, zeroOk) => (Number.isFinite(seconds) && (seconds > 0 || (zeroOk && seconds === 0)) ? seconds * 1000 : undefined)
+  // The question merge (group card redesign) is on unless config.questionMerge is false.
+  const questionMergeOn = config.questionMerge !== false
   const capture = installCapture(ctx, {
     store, summarizer, log, autoAnswer: config.questionAutoAnswer !== false,
     autoAnswerLeadMs: msOf(config.questionAutoAnswerLeadSeconds, true), defaultWindowMs: msOf(config.questionWindowSeconds, false),
-    expireOlder: !(config.questionMerge !== false && process.env.NODE_TEST_CONTEXT === undefined), // with the question merge on, it expires the older detached questions itself after trying to merge them
+    expireOlder: !questionMergeOn, // with the question merge on, it expires the older detached questions itself after trying to merge them
     keepDone: config.doneKeepPerSession, // capture.js falls back to its default (20) for anything that is not a positive integer
   })
   const controllerOf = () => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } }
@@ -309,8 +311,8 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   }
   // A new question that repeats an older open question of the same session supersedes it (group card merge); the model is the cheapest one DSH can reach.
   let questionMerge
-  if (config.questionMerge !== false && process.env.NODE_TEST_CONTEXT === undefined) {
-    questionMerge = createQuestionMerge({ store, same: config.questionMergeDeps?.same ?? createSameJudge({ llm }), log, expireRest: true })
+  if (questionMergeOn) {
+    questionMerge = createQuestionMerge({ store, same: createSameJudge({ llm }), log, expireRest: true })
     questionMerge.start()
   }
   aiReporter?.start()

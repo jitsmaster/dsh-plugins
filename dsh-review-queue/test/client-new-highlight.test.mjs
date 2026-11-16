@@ -56,3 +56,15 @@ test('the implicitly selected item (nothing chosen) is never left marked new', (
   T.applySnapshot(snap(['x']))
   assert.deepEqual(Object.keys(T.state.fresh), [])
 })
+
+test('clearFresh(id) clears one mark, and does nothing (no store write) when the id is not marked', () => {
+  const T = setup()
+  T.applySnapshot(snap(['a']))
+  T.applySnapshot(snap(['a', 'b', 'c']))
+  const before = T.state.fresh
+  T.clearFresh('zzz')
+  T.clearFresh(null)
+  assert.equal(T.state.fresh, before, 'untouched object: set() was not called')
+  T.clearFresh('b')
+  assert.deepEqual(Object.keys(T.state.fresh), ['c'])
+})

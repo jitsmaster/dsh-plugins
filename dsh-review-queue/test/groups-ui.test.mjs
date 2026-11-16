@@ -1,7 +1,7 @@
 // Slice 1: the model behind the group card (header facts, items oldest first, collapsed "AI handled N"). Pure; the React part is tested separately.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { groupOpen } from '../groups.js'
+import { groupOpen, groupIdOf } from '../groups.js'
 import { groupCardModel, aiHandledLine, groupsOfOpen, indexResolved } from '../lib/groups-ui.js'
 
 test('groupsOfOpen groups a snapshot open list by groupId, in first-seen order, items oldest first', () => {
@@ -94,4 +94,22 @@ test('groupsOfOpen orders items by last update like groupOpen (updatedAt, else c
   const client = groupsOfOpen(open.map((i) => ({ ...i, groupId: 's1' })))[0].items.map((i) => i.id)
   assert.deepEqual(server, ['b', 'a'])
   assert.deepEqual(client, server)
+})
+
+// groups-ui.js cannot import groups.js (the overlay bundle), so its copy of the age order is pinned to the server's on the same fixtures.
+test('groupsOfOpen orders items and groups exactly like groups.js groupOpen (updatedAt, missing createdAt, seq ties)', () => {
+  const raw = [
+    { id: 'a', sessionId: 's1', createdAt: 100, seq: 3 },
+    { id: 'b', sessionId: 's1', createdAt: 100, seq: 1 },
+    { id: 'c', sessionId: 's1', createdAt: 50, updatedAt: 200, seq: 2 },
+    { id: 'd', sessionId: 's2', seq: 5 },
+    { id: 'e', sessionId: 's2', createdAt: 70, seq: 4, tier: { tier: 2 } },
+    { id: 'f', sessionId: 's3', seq: 7 },
+    { id: 'g', sessionId: 's3', seq: 6 },
+    { id: 'h', type: 'todo', sessionId: 's1', createdAt: 10, seq: 8 },
+    { id: 'i', createdAt: 5, seq: 9, tier: { tier: 1 } },
+  ]
+  const open = raw.map((i) => ({ ...i, type: i.type ?? 'question', status: 'open', groupId: groupIdOf({ type: i.type ?? 'question', ...i }) }))
+  const shape = (gs) => gs.map((g) => ({ id: g.id, ids: g.items.map((i) => i.id), createdAt: g.createdAt, count: g.count, topTier: g.topTier }))
+  assert.deepEqual(shape(groupsOfOpen(open)).sort((x, y) => x.id.localeCompare(y.id)), shape(groupOpen(open)).sort((x, y) => x.id.localeCompare(y.id)))
 })

@@ -8,11 +8,11 @@
  * and runs are serialized (one model call at a time).
  */
 import { NOTE_UNUSABLE, createModelRun } from './summary.js'
-import { recommendedOf } from './speech.js'
+import { expireDetachedQuestions } from './detached-expiry.js'
 
 const MAX_TEXT = 600
-const MAX_COMPARE = 5 // older items judged per new one
-const MAX_PENDING = 20 // queued runs; past it a new item gets no model work (its expiry still runs)
+export const MAX_COMPARE = 5 // older items judged per new one
+export const MAX_PENDING = 20 // queued runs; past it a new item gets no model work (its expiry still runs)
 export const SAME_TIMEOUT_MS = 15000
 
 /** The question texts of a question item, joined. */
@@ -75,11 +75,8 @@ export function createQuestionMerge({ store, same, log = () => {}, now = Date.no
   /** capture.js used to expire older detached questions when a new one arrived; with expireRest the merge does it AFTER trying to merge them. */
   function expireOlder(added) {
     if (!expireRest || added.type !== 'question') return
-    for (const old of openOf(added.sessionId)) {
-      if (old.type === 'question' && old.detached === true && old.id !== added.id && old.seq < added.seq) {
-        try { store.resolve(old.id, { kind: 'expired', assumed: (old.payload?.questions ?? []).map(recommendedOf).filter(Boolean) }) } catch (error) { say(error) }
-      }
-    }
+    expireDetachedQuestions(store, openOf(added.sessionId), { skip: (old) => old.id === added.id || !(old.seq < added.seq), onError: say })
+
   }
 
   async function run(added) {

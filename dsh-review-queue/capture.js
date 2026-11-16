@@ -5,6 +5,7 @@
  * Nothing here may break the host: every handler falls through to next() when anything goes wrong.
  */
 import { recommendedOf, cleanText } from './speech.js'
+import { expireDetachedQuestions } from './detached-expiry.js'
 import { fallbackSummary } from './summary.js'
 import { toolDetail, hasExtraToolArgs } from './risk.js'
 import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
@@ -242,11 +243,8 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     const seconds = callId === undefined ? undefined : timeouts.get(callId)
     // A session asks one live question at a time: an older open question of this session (its request ended without an answer, detached) can never
     // reach the assistant now, so it leaves the list and the new question is the one to answer.
-    if (expireOlder) guard(() => {
-      for (const old of openOf(agent.id)) {
-        if (old.type === 'question' && old.detached && old.key !== callId && !detachedInFlight.has(old.id)) store.resolve(old.id, { kind: 'expired', assumed: (old.payload?.questions ?? []).map(recommendedOf).filter(Boolean) })
-      }
-    })
+    if (expireOlder) guard(() => expireDetachedQuestions(store, openOf(agent.id), { skip: (old) => old.key === callId || detachedInFlight.has(old.id) }))
+
     let item
     try {
       item = store.add({

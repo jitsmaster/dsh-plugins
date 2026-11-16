@@ -996,14 +996,22 @@ function imageFilesOf(data) {
 			knownIds = live;
 			if (Object.keys(fresh).length !== Object.keys(state.fresh).length || Object.keys(fresh).some((k) => !state.fresh[k])) set({ fresh });
 		}
+		/** Clears the new mark of one item, together with any other state in `extra` in a single store write; writes nothing when there is nothing to change. */
+		function clearFresh(id, extra) {
+			const marked = !!id && !!state.fresh[id];
+			if (!marked && !extra) return;
+			if (!marked) { set(extra); return; }
+			const { [id]: _gone, ...rest } = state.fresh;
+			set({ ...extra, fresh: rest });
+		}
 		/** Selects an item and clears its new mark. */
-		function selectItem(id) { const f = state.fresh; if (f[id]) { const { [id]: _gone, ...rest } = f; set({ selected: id, fresh: rest }); } else set({ selected: id }); }
+		function selectItem(id) { clearFresh(id, { selected: id }); }
 		function applySnapshot(body) {
 			trackFresh(body);
 			const d = state.dialog;
 			const gone = d && !(body.open || []).some((i) => i.id === d.id) && !(body.resolved || []).some((i) => i.id === d.id); // the item it acts on left the queue
 			set({ snap: body, error: null, skew: (body.serverNow || Date.now()) - Date.now(), ...(gone ? { dialog: null } : {}) });
-			{ const cur = currentItem(); if (cur && state.fresh[cur.id]) { const { [cur.id]: _seen, ...rest } = state.fresh; set({ fresh: rest }); } } // the card on show (nothing chosen: the first) is already seen
+			clearFresh(currentItem()?.id); // the card on show (nothing chosen: the first) is already seen
 			if (state.overlay && !state.hold && body.open) { const h0 = holdOf(); if (h0) set({ hold: h0 }); } // an empty list holds nothing and must not re-render every snapshot; // an overlay restored open at load starts its hold with the first snapshot
 			const tog = pruneToggles({ expanded: state.expanded, reply: state.replyOpen, late: state.lateOpen }, body);
 			if (Object.keys(state.expanded).some((k) => !(k in tog.expanded)) || Object.keys(state.replyOpen).some((k) => !(k in tog.reply)) || Object.keys(state.lateOpen).some((k) => !(k in tog.late))) set({ expanded: tog.expanded, replyOpen: tog.reply, lateOpen: tog.late });
@@ -2703,7 +2711,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		exports.apply = apply;
 		exports.HeaderAnchor = HeaderAnchor;
 		exports.__test = { visibleOpen, detachedNote, triageNote, isReopenable, nextAfter, keyAction, filterItems, similarCount, pruneSaved, mdInline, mdBlocks, isSendKey, cardTitle, fmtAge, fmtLeft, baseName, toggleChoice, buildAnswers, answerText, resolutionText, aiDetail, RESOLVED_BY, RESOLVED_LABELS, resolvedCounts, resolvedCountsMemo, aiUnseenCount, typeLabel, CSS, LS, detailsOpen, pruneToggles, set, applySnapshot, setOverlay, state };
-		Object.assign(exports.__test, { selectItem, errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, visibleOpen, newCount, holdNow, releaseHold, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
+		Object.assign(exports.__test, { selectItem, clearFresh, errorText, surveyErrorText, surveyKeyOf,applySnapshot, uiStep, sinceOf, sessionsText, applyUi, setOverlay, state, visibleOpen, newCount, holdNow, releaseHold, uiPeek: () => ({ overlay: state.overlay, uiSeen }) });
 		Object.assign(exports.__test, { stageOf, loadFollowSessions, followLabel, followTitle, followPlaceholder, todoCardState, todoTarget, canConfirm, todoSelect, todoLine, waitingCount, FILTER_TYPES, filterBarVisible, keyRoute, isSubmitKey, todoFormProblem, openControl, loadWorkspaces, ensureWorkspaces, workspacesNote, submitTodo, confirmTodo, cancelTodo, TodoBody, FollowUpBody, Card, TodoForm, setTodoMode });
 		Object.assign(exports.__test, { RESUME_AT_A_TIME, RESUME_SLOT_MS, RESUME_POLL_MS, RESUME_GRACE_MS, resumeProgressText, pollRunning, sleepFor, settledAfter, runResumeAll, resumeOne, pausedCount, isSessionItem, pausedFacts, heldCount, heldFacts, OnHoldBody, HoldButton, DialogHost, PausedBody, startResumeAll, LimitSigninBody, Card, isLimitSigninItem, itemTypeLabel });
 		Object.assign(exports.__test, { tierChip, mergedNote, groupHead, groupedList, groupOrder, loadGroupsUi, requestGroupsUi, setGroupsImporter: (fn) => { groupsImporter = fn; groupsUi = undefined; groupsAsked = false; groupsMod = undefined; } });

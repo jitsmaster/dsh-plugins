@@ -163,15 +163,26 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
   }
 
   const TIER_MARK = '~tier'
+  /** The snapshot id a client sees: the hub's id, marked when this app shows the list by priority (a different order needs its own stamp). */
+  const stampTier = (id, tiered) => id + (tiered ? TIER_MARK : '')
+  /** The reverse of stampTier: the hub's id and whether the mark was on it. */
+  const unstampTier = (stamp) => (stamp.endsWith(TIER_MARK) ? { id: stamp.slice(0, -TIER_MARK.length), tiered: true } : { id: stamp, tiered: false })
   const safeOrder = () => { try { return queue.queueOrder?.() } catch { return undefined } }
+  /** Group members in group order, each carrying its group's id and rank. */
+  const flattenGroups = (groups) => groups.flatMap((g) => g.items.map((i) => ({ ...i, groupId: g.id, groupRank: g.rank })))
+  /** The item at its 1-based place in the list; a spoken line names the place, so it is built again. */
+  const atPosition = (item, n) => ({ ...item, position: n + 1, spoken: item.spoken && spokenFor(item, n + 1) })
   /** The hub lists oldest first: this app's own By priority switch re-sorts that list by group tier, positions following. */
-  const tierSorted = (list) => groupOpen(list, { order: 'tier', now: Date.now() }).flatMap((g) => g.items.map((i) => ({ ...i, groupId: g.id, groupRank: g.rank }))).map((i, n) => ({ ...i, position: n + 1, spoken: i.spoken && spokenFor(i, n + 1) }))
+  const tierSorted = (list) => flattenGroups(groupOpen(list, { order: 'tier', now: Date.now() })).map(atPosition)
   async function hubRound({ res, since, remaining, closed, visible, want }) {
     const local = localState()
     const tierNow = safeOrder() === 'tier'
     const parts = since?.split('|')
-    if (parts && parts[0].endsWith(TIER_MARK) !== tierNow) parts.length = 0 // the client holds a stamp of the other display order: it needs a full answer
-    if (parts && parts.length) parts[0] = parts[0].endsWith(TIER_MARK) ? parts[0].slice(0, -TIER_MARK.length) : parts[0]
+    if (parts) {
+      const stamp = unstampTier(parts[0])
+      if (stamp.tiered !== tierNow) parts.length = 0 // the client holds a stamp of the other display order: it needs a full answer
+      else parts[0] = stamp.id
+    }
     const tipId = want.tip ? tipIdFor(parts?.[0]) : ''
     // A client that knows the tip part (six parts) must have the tip that is current now; an older page is not held to it.
     const sameLocal = parts !== undefined && parts.length > 0 && parts[1] === (local.focusId ?? '') && parts[2] === (local.reading ?? '') && parts[3] === String(local.ui?.seq ?? 0) && (parts.length < 6 || parts[5] === tipId) && (parts.length < 7 || archKeyNow() === undefined || parts[6] === archKeyNow()) && (parts.length < 8 || parts[7] === surveyKeyOf(local.tipSurvey))
@@ -196,7 +207,7 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     const now = localState()
     if (r.json.unchanged) {
       const same = now.focusId === local.focusId && now.reading === local.reading && now.ui?.seq === local.ui?.seq && surveyKeyOf(now.tipSurvey) === surveyKeyOf(local.tipSurvey) && (want.tip ? tipIdFor(parts?.[0]) : '') === tipId
-      return same ? send(res, 200, { unchanged: true, snapshotId: r.json.snapshotId + (tierNow ? TIER_MARK : '') }) : AGAIN
+      return same ? send(res, 200, { unchanged: true, snapshotId: stampTier(r.json.snapshotId, tierNow) }) : AGAIN
     }
     const empty = nothingWaits(r.json.open) // the tip still shows
     lastFull = { id: r.json.snapshotId, empty }
@@ -205,7 +216,7 @@ export function createProxy({ queue, serve, hubUrl, secret, instanceId, mirror =
     const marked = typeof queue.markArchivable === 'function' ? queue.markArchivable(r.json.open, instanceId()) : r.json.open
     const open = tierNow ? tierSorted(marked) : marked
     lastHubOpen = r.json.open
-    return send(res, 200, { ...r.json, snapshotId: r.json.snapshotId + (tierNow ? TIER_MARK : ''), queueOrder: tierNow ? 'tier' : 'oldest', open, archKey: archKeyOf(open), focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}), ...(now.tipSurvey?.length ? { tipSurvey: now.tipSurvey } : {}) })
+    return send(res, 200, { ...r.json, snapshotId: stampTier(r.json.snapshotId, tierNow), queueOrder: tierNow ? 'tier' : 'oldest', open, archKey: archKeyOf(open), focusId: now.focusId, reading: now.reading, ui: now.ui, ...(tip ? { tip } : {}), ...(now.tipSurvey?.length ? { tipSurvey: now.tipSurvey } : {}) })
   }
 
   async function snapshot(req, res, url) {
