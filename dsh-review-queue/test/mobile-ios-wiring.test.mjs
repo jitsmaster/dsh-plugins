@@ -141,7 +141,9 @@ test('the "+ New todo" floating link clears the bottom nav and the last card (sa
 })
 test('the Read aloud button is not drawn on iOS (Android speaks with the device TTS, iOS has no button)', () => {
   const body = views.slice(views.indexOf('function ReadAloud('), views.indexOf('function Mic('))
-  assert.match(body, /platformInfo\([^)]*\)\.ios\s*\|\|\s*typeof speechSynthesis === 'undefined'/)
+  assert.match(body, /platformInfo\([^)]*\)\.ios/)
+  assert.match(body, /readAloudVisible\(\{ ios,/)
   assert.match(body, /return null/)
-  assert.ok(body.indexOf('platformInfo(') < body.indexOf('useEffect('), 'decided before any effect is registered')
+  assert.ok(body.indexOf('platformInfo(') < body.indexOf('useEffect('), 'platform read before the effect is registered')
+  assert.ok(body.indexOf('useEffect(') < body.indexOf('return null'), 'every hook runs before the early return, so hook order never changes')
 })

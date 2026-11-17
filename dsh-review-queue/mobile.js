@@ -29,6 +29,7 @@ export const FILES = {
   'todo-form.js': { file: join(M, 'todo-form.js'), type: JS },
   'toggles.js': { file: join(M, 'toggles.js'), type: JS },
   'thread.js': { file: join(M, 'thread.js'), type: JS },
+  'read-aloud.js': { file: join(M, 'read-aloud.js'), type: JS },
   'settings.js': { file: join(M, 'settings.js'), type: JS },
   'auth.js': { file: join(M, 'auth.js'), type: JS },
   'pairing.js': { file: join(M, 'pairing.js'), type: JS },

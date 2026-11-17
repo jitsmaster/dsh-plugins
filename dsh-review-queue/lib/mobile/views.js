@@ -1,6 +1,7 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
-import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen } from './api.js'
+import { createBrowserReadAloud, readAloudVisible } from './read-aloud.js'
+import { state, subscribe, set, act, getCore, fetchTtsChunk, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen } from './api.js'
 import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
@@ -134,19 +135,17 @@ export function Sheet({ title, lines = [], mono, risks = [], confirmLabel, hold,
 }
 
 function ReadAloud({ item }) {
-  const [on, setOn] = useState(false)
-  // Android: Chrome's speechSynthesis is the device's own TextToSpeech engine. iPhone / iPad: no Read aloud button at all.
-  if (platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }).ios || typeof speechSynthesis === 'undefined' || !item.spoken) return null
-  useEffect(() => () => { if (on) speechSynthesis.cancel() }, [on])
-  const toggle = () => {
-    if (on) { speechSynthesis.cancel(); setOn(false); return }
-    const u = new SpeechSynthesisUtterance(item.spoken.full)
-    u.onend = u.onerror = () => setOn(false)
-    speechSynthesis.cancel()
-    speechSynthesis.speak(u)
-    setOn(true)
-  }
-  return html`<button class="btn" aria-pressed=${on} onClick=${toggle}>${on ? '■ Stop' : '▶ Read aloud'}</button>`
+  // The PC's local TTS first (WAV chunks from the hub), the phone's own engine (Chrome's speechSynthesis = the device's TextToSpeech) when the PC cannot be reached.
+  // iPhone / iPad: no Read aloud button at all. The hooks run first so their order never depends on the item.
+  const ios = platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }).ios
+  const [mode, setMode] = useState('idle')
+  const player = useRef(null)
+  if (!player.current) player.current = createBrowserReadAloud({ fetchChunk: fetchTtsChunk, onChange: setMode })
+  useEffect(() => () => player.current.stop(), [])
+  if (!readAloudVisible({ ios, hasLocalEngine: typeof speechSynthesis !== 'undefined', hasAudio: typeof Audio !== 'undefined', hasText: !!item.spoken })) return null
+  const on = mode !== 'idle'
+  const toggle = () => { if (on) player.current.stop(); else player.current.start(item) }
+  return html`<button class="btn" aria-pressed=${on} onClick=${toggle}>${mode === 'loading' ? '… Loading' : on ? '■ Stop' : '▶ Read aloud'}</button>`
 }
 
 /**

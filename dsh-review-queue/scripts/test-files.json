@@ -343,5 +343,7 @@
   "test/agent-proxy-order.test.mjs",
   "test/todo-first.test.mjs",
   "test/service-queue-order.test.mjs",
-  "test/question-merge-guard.test.mjs"
+  "test/question-merge-guard.test.mjs",
+  "test/hub-tts.test.mjs",
+  "test/mobile-read-aloud.test.mjs"
 ]

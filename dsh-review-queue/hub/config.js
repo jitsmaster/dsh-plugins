@@ -6,6 +6,7 @@
  */
 import { join } from 'node:path'
 import { readText } from './atomic-file.js'
+import { loopbackTtsUrl } from './tts.js'
 
 export const CONFIG_FILE = 'hub.config.json'
 
@@ -39,5 +40,7 @@ export function loadHubConfig(stateDir, { log = () => {} } = {}) {
     staleGraceMs: Number.isFinite(raw.staleGraceMs) && raw.staleGraceMs >= 0 ? raw.staleGraceMs : undefined,
     android: { packageName: typeof android.packageName === 'string' ? android.packageName : undefined, sha256CertFingerprints: strings(android.sha256CertFingerprints) },
     pushSubject: typeof raw.pushSubject === 'string' ? raw.pushSubject : undefined,
+    // The PC's local TTS server the phone's Read aloud uses (hub/tts.js): a loopback URL only, else the default.
+    ttsUrl: loopbackTtsUrl(raw.ttsUrl),
   }
 }

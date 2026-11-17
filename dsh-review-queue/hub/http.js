@@ -113,6 +113,27 @@ export function createHttp({ hub, log = () => {} }) {
     return seen() ? unchanged() : send(res, 200, hub.snapshot())
   }
 
+  /** GET /v1/tts?id&n: chunk n of the item's read-out as WAV, made by the PC's local TTS server (hub/tts.js). A failure is a JSON error; the phone then uses its own voice. */
+  async function ttsChunk(req, res, url) {
+    if (req.method !== 'GET') return send(res, 405, { error: 'method' })
+    const id = url.searchParams.get('id')
+    if (!id) return send(res, 400, { error: 'bad-input' })
+    const nText = url.searchParams.get('n')
+    if (nText !== null && !/^\d{1,5}$/.test(nText)) return send(res, 400, { error: 'bad-input' })
+    const item = hub.store?.get(id)
+    if (!item) return send(res, 404, { error: 'not-found' })
+    const chunks = hub.tts.chunksOf(item)
+    const n = nText === null ? 0 : Number(nText)
+    if (!chunks.length) return send(res, 404, { error: 'nothing-to-read' })
+    if (n >= chunks.length) return send(res, 404, { error: 'no-chunk' })
+    const r = await hub.tts.synth(chunks[n])
+    if (!r.ok) return send(res, r.error === 'busy' ? 503 : 502, { error: r.error })
+    if (res.destroyed) return undefined
+    res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': r.wav.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-TTS-Chunks': String(chunks.length) })
+    res.end(r.wav)
+    return undefined
+  }
+
   async function api(req, res, url, path) {
     const who = authorize(req, res, { longPoll: path === '/v1/snapshot' && Number(url.searchParams.get('wait')) > 0 })
     if (!who) return undefined
@@ -130,6 +151,7 @@ export function createHttp({ hub, log = () => {} }) {
       // A paired phone may read it too: it already prompts any session (post, follow-up todo), and its Follow up form picks the session in this dropdown.
       return send(res, 200, await hub.followUpSessions(caller))
     }
+    if (path === '/v1/tts') return await ttsChunk(req, res, url)
     if (path.startsWith('/v1/push/')) {
       if (req.method === 'POST' && !originOk(req)) return send(res, 403, { error: 'bad-origin' })
       return await hub.pushRoutes(req, res, path, { readJson, send }, who)

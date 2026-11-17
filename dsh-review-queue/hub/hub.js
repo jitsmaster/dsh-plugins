@@ -27,6 +27,7 @@ import { createNotifier } from './notifier.js'
 import { createPairing } from './pairing.js'
 import { createPushStore, jsonFileIo, loadOrCreateVapid } from './push.js'
 import { createPushRoutes } from './push-routes.js'
+import { DEFAULT_TTS_URL, createTts } from './tts.js'
 import { PROTOCOL } from './protocol.js'
 import { createRateLimiter } from './ratelimit.js'
 import { createRoles } from './roles.js'
@@ -83,6 +84,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
   let roles
   let pushRoutes
   let notifier
+  let tts
   let http
   let desktopSeenAt = -Infinity
   const sessionListeners = new Set() // woken when the summed session numbers change
@@ -121,6 +123,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
     get pairing() { return pairing },
     get push() { return push },
     get roles() { return roles },
+    get tts() { return tts },
     get hardener() { return hardener },
     pushRoutes: (...args) => pushRoutes(...args),
     /** Who is calling: the injected role function (tests) or the real rules of hub/roles.js. */
@@ -182,6 +185,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
       mkdirSync(hubDir, { recursive: true })
       if (!injectedLog) log = createFileLog(join(hubDir, 'hub.log'), { now })
       config = loadHubConfig(stateDir, { log })
+      tts = createTts({ url: config.ttsUrl ?? DEFAULT_TTS_URL })
       try { migrateLegacy({ stateDir, hubDir, now, log }) } catch (error) { log('legacy import failed: ' + String(error?.code ?? error?.name ?? 'error')) }
       store = createHubStore({ now, uuid, io: createFileIo(join(hubDir, 'queue.json')), retentionMs, debounceMs, log })
       if (store.loadedFrom === 'empty') store.flush(true) // so the legacy import cannot run twice

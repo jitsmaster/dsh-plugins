@@ -8,6 +8,7 @@ import { TOKEN_KEY, authFailureText, hubBase, isAuthFailure, pairBody, pairError
 import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
 import { pollWaitMs, sheetGone, todoConfirmBody } from './model.js'
+import { ttsPath } from './read-aloud.js'
 import { bindDraftFlush, dropStaleEffort, dropStaleWorkspace, emptyTodoDraft, loadTodoDraft, saveTodoDraft } from './todo-form.js'
 import { detailOpen, loadToggles, pruneToggles, saveToggles, setDetail } from './toggles.js'
 import {
@@ -153,6 +154,16 @@ export async function act(path, body, id) {
   } catch (e) { error = 'Request failed: ' + String((e && e.message) || e) }
   set({ busy: { ...state.busy, [id]: false }, errors: { ...state.errors, [id]: error } })
   return !error
+}
+
+/** One WAV chunk of an item's read-out, made by the PC's local TTS (GET /v1/tts). { ok, blob, chunks } or { ok: false, status } (0 = no answer); a lost pairing sends the phone back to pairing. */
+export async function fetchTtsChunk(id, n) {
+  try {
+    const res = await call(ttsPath(API, id, n))
+    if (!res.ok) { handleAuthFailure(res.status, await res.json().catch(() => null)); return { ok: false, status: res.status } }
+    const blob = await res.blob()
+    return { ok: true, blob, chunks: Number(res.headers.get('x-tts-chunks')) || 1 }
+  } catch { return { ok: false, status: 0 } }
 }
 
 const aiSeenRequested = new Set()
