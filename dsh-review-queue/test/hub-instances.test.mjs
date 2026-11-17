@@ -324,14 +324,24 @@ test('the coordinator of a todo is the caller if it is online, else the most rec
 
 // ---- decision never travels over the owner sync (hub-store blocks it too; this is the first line) --------------------------
 
-test('owner sync never sends a decision to the hub store (add or update)', () => {
+test('owner sync carries a valid decision to the hub store (add and update), marked trusted', () => {
   const { store, instances } = make()
-  const ops = []
+  const ctxs = []
   const orig = store.applyOp
-  store.applyOp = (op, ctx) => { ops.push(op); return orig(op, ctx) }
-  reg(instances, A, { sync: { openItems: [{ id: 'dn1', type: 'completed', sessionId: 's1', payload: {}, decision: { text: 'Q?', options: ['A', 'B'] } }] } })
-  instances.sync(A, { openItems: [{ id: 'dn1', type: 'completed', sessionId: 's1', payload: {}, summary: 'x', decision: { text: 'Q2?', options: ['A', 'B'] } }] })
-  assert.ok(ops.length >= 2, JSON.stringify(ops))
-  for (const op of ops) assert.equal(JSON.stringify(op).includes('decision'), false, JSON.stringify(op))
-  assert.equal(store.get('dn1').decision, undefined)
+  store.applyOp = (op, ctx) => { ctxs.push(ctx); return orig(op, ctx) }
+  reg(instances, A, { sync: { openItems: [{ id: 'dn1', type: 'completed', sessionId: 's1', payload: {}, decision: { text: 'Q?', options: ['A', 'B'], free: true } }] } })
+  assert.deepEqual(store.get('dn1').decision, { text: 'Q?', options: ['A', 'B'], free: true })
+  instances.sync(A, { openItems: [{ id: 'dn1', type: 'completed', sessionId: 's1', payload: {}, summary: 'x', decision: { text: 'Q2?', options: ['A', 'B', 'C'], free: true } }] })
+  assert.deepEqual(store.get('dn1').decision.options, ['A', 'B', 'C'])
+  assert.ok(ctxs.length >= 2 && ctxs.every((c) => c.trusted === true && c.owner === A), JSON.stringify(ctxs))
+})
+
+test('owner sync drops a malformed decision (wrong type, too many options, long text) instead of storing it', () => {
+  const { store, instances } = make()
+  const bad = [
+    { text: 5, options: [] }, { text: 'Q?', options: 'AB' }, { text: 'Q?', options: ['A', 'B', 'C', 'D', 'E'] },
+    { text: 'x'.repeat(2000), options: ['A', 'B'] }, { text: 'Q?', options: [{ label: 'A' }, 'B'] }, 'evil', null,
+  ]
+  bad.forEach((decision, n) => reg(instances, A, { sync: { openItems: [{ id: 'bad' + n, type: 'completed', sessionId: 's' + n, payload: {}, decision }] } }))
+  for (let n = 0; n < bad.length; n++) assert.equal(store.get('bad' + n)?.decision, undefined, 'malformed decision #' + n)
 })

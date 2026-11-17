@@ -21,6 +21,19 @@ const RESOLVED_PATCH_BLOCKED = HUB_FIELDS.filter((k) => k !== 'resolution').conc
 const bad = { ok: false, error: 'bad-op' }
 const without = (object, keys) => Object.fromEntries(Object.entries(object).filter(([k]) => !keys.includes(k)))
 
+// Limits of the judge's decision payload (triage-judge.js MAX_DECISION_TEXT, MAX_OPTION, MAX_OPTIONS): the hub accepts nothing wider.
+const DECISION_TEXT_MAX = 400
+const DECISION_OPTION_MAX = 120
+const DECISION_OPTIONS_MAX = 4
+/** A decision payload as the owning app's triage runner writes it, or undefined when its shape is not exactly that (nothing is repaired or stringified). */
+export function cleanDecision(d) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return undefined
+  if (typeof d.text !== 'string' || !d.text || d.text.length > DECISION_TEXT_MAX) return undefined
+  if (!Array.isArray(d.options) || d.options.length > DECISION_OPTIONS_MAX) return undefined
+  if (!d.options.every((o) => typeof o === 'string' && o && o.length <= DECISION_OPTION_MAX)) return undefined
+  return { text: d.text, options: [...d.options], free: true }
+}
+
 /**
  * @param {{ now?: () => number, uuid?: () => string, io?: { read: (which: 'main' | 'bak') => string | undefined, write: (text: string, opts: { rotate: boolean }) => void },
  *   retentionMs?: number, debounceMs?: number, maxDelayMs?: number, timers?: { setTimeout: Function, clearTimeout: Function }, log?: (line: string) => void }} [opts]
@@ -110,21 +123,25 @@ export function createHubStore({ now = Date.now, uuid = () => randomUUID().slice
   const ownedBy = (item, owner) => owner === undefined || item.owner === owner
 
   const ops = {
-    add(op, owner) {
+    add(op, owner, trusted) {
       if (!op.item || typeof op.item !== 'object' || typeof op.item.type !== 'string') return bad
       const id = typeof op.item.id === 'string' && op.item.id ? op.item.id : uuid()
       const existing = inner.get(id)
       if (existing) return existing.owner === owner ? { ok: true, id, duplicate: true } : { ok: false, error: 'id-conflict' }
-      inner.add({ ...without(op.item, OPEN_PATCH_BLOCKED), owner }, { id, createdAt: clamp(op.item.createdAt) })
+      const decision = trusted ? cleanDecision(op.item.decision) : undefined // only the owning app's own sync may carry a decision, and only a well-formed one
+      inner.add({ ...without(op.item, OPEN_PATCH_BLOCKED), ...(decision ? { decision } : {}), owner }, { id, createdAt: clamp(op.item.createdAt) })
       return { ok: true, id }
     },
-    update(op, owner) {
+    update(op, owner, trusted) {
       const item = inner.get(op.id)
       if (!item) return { ok: false, error: 'not-found' }
       if (!ownedBy(item, owner)) return { ok: false, error: 'not-owner' }
       const patch = without(op.patch ?? {}, item.status === 'resolved' ? RESOLVED_PATCH_BLOCKED : OPEN_PATCH_BLOCKED)
+      const decision = trusted ? cleanDecision(op.patch?.decision) : undefined
+      const unsetDecision = trusted === true && Array.isArray(op.unset) && op.unset.includes('decision')
       const unset = (Array.isArray(op.unset) ? op.unset : []).filter((k) => typeof k === 'string' && !OPEN_PATCH_BLOCKED.includes(k))
-      inner.update(op.id, { ...patch, ...Object.fromEntries(unset.map((k) => [k, undefined])) })
+      if (unsetDecision) unset.push('decision')
+      inner.update(op.id, { ...patch, ...(decision ? { decision } : {}), ...Object.fromEntries(unset.map((k) => [k, undefined])) })
       return { ok: true }
     },
     resolve(op, owner) {
@@ -161,9 +178,9 @@ export function createHubStore({ now = Date.now, uuid = () => randomUUID().slice
 
   return {
     /** Apply one agent op (add, update, resolve, reopen, resolveSession, retitle) for owner; answers { ok, ... } with an error code on refusal. */
-    applyOp(op, { owner } = {}) {
+    applyOp(op, { owner, trusted } = {}) {
       const run = op && typeof op === 'object' && Object.hasOwn(ops, op.op) ? ops[op.op] : undefined
-      return run ? run(op, owner) : bad
+      return run ? run(op, owner, trusted === true) : bad
     },
     get: (id) => inner.get(id),
     list: (filter) => inner.list(filter),

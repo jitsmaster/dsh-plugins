@@ -408,6 +408,22 @@ test('hub store: a hub-owned agent cannot set or add decision; the local store p
   assert.equal(store.get('x').decision, undefined)
 })
 
+test('hub store: a trusted owner sync may set decision on add and update; an untrusted op still cannot', () => {
+  const { store } = make()
+  store.applyOp({ op: 'add', item: { id: 't1', type: 'completed', sessionId: 's', payload: {}, decision: { text: 'Q?', options: ['a', 'b'], free: true } } }, { owner: 'A1', trusted: true })
+  assert.deepEqual(store.get('t1').decision, { text: 'Q?', options: ['a', 'b'], free: true })
+  store.applyOp({ op: 'update', id: 't1', patch: { decision: { text: 'Q2?', options: [], free: true } } }, { owner: 'A1', trusted: true })
+  assert.equal(store.get('t1').decision.text, 'Q2?')
+  store.applyOp({ op: 'update', id: 't1', patch: { decision: { text: 'evil', options: [] } } }, { owner: 'A1' })
+  assert.equal(store.get('t1').decision.text, 'Q2?')
+  store.applyOp({ op: 'update', id: 't1', patch: { summary: 's' }, unset: ['decision'] }, { owner: 'A1' })
+  assert.equal(store.get('t1').decision.text, 'Q2?')
+  store.applyOp({ op: 'update', id: 't1', patch: {}, unset: ['decision'] }, { owner: 'A1', trusted: true })
+  assert.equal(store.get('t1').decision, undefined)
+  store.applyOp({ op: 'update', id: 't1', patch: { id: 'x', status: 'resolved', owner: 'B' } }, { owner: 'A1', trusted: true })
+  assert.equal(store.get('t1').owner, 'A1')
+})
+
 test('hub store: a hub-owned agent cannot unset decision', () => {
   const { store } = make()
   add(store, { id: 'y' })
