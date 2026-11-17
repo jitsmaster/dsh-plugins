@@ -143,6 +143,30 @@ test('the TTS server URL comes from hub.config.json ttsUrl; a URL that is not lo
   assert.equal(loadHubConfig(dir).ttsUrl, undefined)
 })
 
+test('ttsVoice is male or female from hub.config.json, anything else is ignored', () => {
+  const dir = tmpDir()
+  for (const [value, want] of [['female', 'female'], ['male', 'male'], ['robot', undefined], [3, undefined], [undefined, undefined]]) {
+    writeFileSync(join(dir, 'hub.config.json'), JSON.stringify({ ttsVoice: value }))
+    assert.equal(loadHubConfig(dir).ttsVoice, want, String(value))
+  }
+})
+
+test('the TTS URL order is hub.config.json, then DSH_TTS_URL (loopback only), else undefined (hub uses the default)', () => {
+  const dir = tmpDir()
+  writeFileSync(join(dir, 'hub.config.json'), JSON.stringify({}))
+  assert.equal(loadHubConfig(dir, { env: { DSH_TTS_URL: 'http://127.0.0.1:7777/tts' } }).ttsUrl, 'http://127.0.0.1:7777/tts')
+  assert.equal(loadHubConfig(dir, { env: { DSH_TTS_URL: 'http://evil.example/tts' } }).ttsUrl, undefined)
+  assert.equal(loadHubConfig(dir, { env: {} }).ttsUrl, undefined)
+  writeFileSync(join(dir, 'hub.config.json'), JSON.stringify({ ttsUrl: 'http://127.0.0.1:9999/speak' }))
+  assert.equal(loadHubConfig(dir, { env: { DSH_TTS_URL: 'http://127.0.0.1:7777/tts' } }).ttsUrl, 'http://127.0.0.1:9999/speak', 'config wins over env')
+})
+
+test('the hub makes its TTS with the configured voice', async (t) => {
+  const k = await fakeKokoro(t)
+  const { hub } = await startHub(t, { ttsUrl: k.url })
+  assert.equal(hub.tts.gender, 'male', 'default voice')
+})
+
 // ---- loopbackTtsUrl --------------------------------------------------------------------------------------------------------------
 
 test('loopbackTtsUrl accepts only http(s) URLs on this PC without credentials', () => {

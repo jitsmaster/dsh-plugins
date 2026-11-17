@@ -40,6 +40,7 @@ async function readCapped(res, max) {
 export function createTts({ url = DEFAULT_TTS_URL, fetchFn = (...a) => fetch(...a), maxBytes = MAX_BYTES, maxActive = MAX_ACTIVE, timeoutMs = TIMEOUT_MS, gender = 'male' } = {}) {
   let active = 0
   return {
+    gender,
     /** The read-out of an item cut for speech, at most MAX_CHUNKS pieces. */
     chunksOf: (item) => chunkForSpeech(fullTextFor(item)).slice(0, MAX_CHUNKS),
     /** @returns {Promise<{ ok: true, wav: Buffer } | { ok: false, error: 'busy' | 'too-large' | 'tts-unavailable' }>} */

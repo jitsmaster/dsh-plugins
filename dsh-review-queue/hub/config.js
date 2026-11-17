@@ -19,7 +19,7 @@ function parseUrl(value) {
   } catch { return undefined }
 }
 
-export function loadHubConfig(stateDir, { log = () => {} } = {}) {
+export function loadHubConfig(stateDir, { log = () => {}, env = process.env } = {}) {
   let raw = {}
   const text = readText(join(stateDir, CONFIG_FILE))
   if (text !== undefined) {
@@ -41,6 +41,9 @@ export function loadHubConfig(stateDir, { log = () => {} } = {}) {
     android: { packageName: typeof android.packageName === 'string' ? android.packageName : undefined, sha256CertFingerprints: strings(android.sha256CertFingerprints) },
     pushSubject: typeof raw.pushSubject === 'string' ? raw.pushSubject : undefined,
     // The PC's local TTS server the phone's Read aloud uses (hub/tts.js): a loopback URL only, else the default.
-    ttsUrl: loopbackTtsUrl(raw.ttsUrl),
+    // Order: hub.config.json ttsUrl, then DSH_TTS_URL (same variable dsh-hooks-tts reads), else undefined (the hub uses DEFAULT_TTS_URL).
+    ttsUrl: loopbackTtsUrl(raw.ttsUrl) ?? loopbackTtsUrl(env && env.DSH_TTS_URL),
+    // 'male' | 'female'; anything else is ignored (the hub then uses male).
+    ttsVoice: raw.ttsVoice === 'male' || raw.ttsVoice === 'female' ? raw.ttsVoice : undefined,
   }
 }

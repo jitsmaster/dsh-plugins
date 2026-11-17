@@ -11,8 +11,7 @@ export const ttsPath = (api, id, n) => String(api) + '/v1/tts?id=' + encodeURICo
 /** Whether the Read aloud button is drawn: never on iOS, and only when something can speak (PC audio or the phone's own engine) and there is text. */
 export const readAloudVisible = ({ ios, hasLocalEngine, hasAudio, hasText }) => !ios && !!hasText && (!!hasLocalEngine || !!hasAudio)
 
-const MAX_CHUNKS = 200
-
+// The chunk count comes from the hub's X-TTS-Chunks header (already capped in hub/tts.js), so no second cap lives here.
 /**
  * @param {{ fetchChunk: (id: string, n: number) => Promise<{ ok: boolean, status?: number, blob?: any, chunks?: number }>, playBlob: (blob: any) => Promise<void>,
  *   speakLocal?: (text: string) => Promise<void>, stopAudio?: () => void, stopLocal?: () => void, prime?: () => void, onChange?: (state: string) => void }} deps
@@ -38,14 +37,17 @@ export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, s
       if (!alive()) return
       // A 401 is a pairing problem the caller already reported: another voice would hide it.
       if (!cur.ok) { if (cur.status !== 401) await local(item); return }
-      const total = Math.max(1, Math.min(Number(cur.chunks) || 1, MAX_CHUNKS))
+      const total = Math.max(1, Number(cur.chunks) || 1)
       for (let n = 0; n < total; n++) {
         const next = n + 1 < total ? safeFetch(item.id, n + 1) : null
         setState('playing')
         try { await playBlob(cur.blob) } catch { if (alive() && n === 0) await local(item); return } // refused audio: the own engine, but only before anything was heard
         if (!alive() || !next) return
         cur = await next
-        if (!alive() || !cur.ok) return // later chunks failing ends the read: the rest is not repeated in another voice
+        if (!alive()) return
+        // A later chunk that fails (not a 401) is fetched once more: a brief hub or Kokoro hiccup must not cut the message short.
+        if (!cur.ok && cur.status !== 401) { cur = await safeFetch(item.id, n + 1); if (!alive()) return }
+        if (!cur.ok) return // still failing ends the read: the rest is not repeated in another voice
       }
     } finally { if (token === mine) setState('idle') }
   }

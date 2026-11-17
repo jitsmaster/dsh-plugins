@@ -185,7 +185,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
       mkdirSync(hubDir, { recursive: true })
       if (!injectedLog) log = createFileLog(join(hubDir, 'hub.log'), { now })
       config = loadHubConfig(stateDir, { log })
-      tts = createTts({ url: config.ttsUrl ?? DEFAULT_TTS_URL })
+      tts = createTts({ url: config.ttsUrl ?? DEFAULT_TTS_URL, gender: config.ttsVoice ?? 'male' })
       try { migrateLegacy({ stateDir, hubDir, now, log }) } catch (error) { log('legacy import failed: ' + String(error?.code ?? error?.name ?? 'error')) }
       store = createHubStore({ now, uuid, io: createFileIo(join(hubDir, 'queue.json')), retentionMs, debounceMs, log })
       if (store.loadedFrom === 'empty') store.flush(true) // so the legacy import cannot run twice

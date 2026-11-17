@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FILES } from '../mobile.js'
-import { createReadAloud, ttsPath, readAloudVisible } from '../lib/mobile/read-aloud.js'
+import { createReadAloud, createAudioPlayer, createBrowserReadAloud, ttsPath, readAloudVisible } from '../lib/mobile/read-aloud.js'
 
 // The phone's Read aloud: the PC's local TTS first (WAV chunks from the hub, played one after the other), the phone's own speech engine when the PC
 // cannot be reached. The player is pure (fetch, playback and the local engine are injected), so it is tested without a DOM.
@@ -132,6 +132,49 @@ test('a failure after the first chunk ends the read quietly (the rest is not rep
   assert.equal(r.player.state(), 'idle')
 })
 
+// A later chunk that fails is fetched once more before the read ends (a brief hub or Kokoro hiccup must not cut the message short).
+function retryRig(statuses) {
+  const log = []
+  const plays = []
+  const player = createReadAloud({
+    fetchChunk: async (id, n) => {
+      if (n === 0) return { ok: true, blob: blob(0), chunks: 2 }
+      const status = statuses.shift()
+      log.push('fetch ' + n + ' ' + status)
+      return status === 200 ? { ok: true, blob: blob(n), chunks: 2 } : { ok: false, status }
+    },
+    playBlob: (b) => { plays.push(b.blob); return Promise.resolve() },
+    speakLocal: (text) => { log.push('local'); return Promise.resolve() },
+  })
+  return { player, log, plays }
+}
+
+test('a later chunk that fails once is fetched again and the read continues', async () => {
+  const r = retryRig([502, 200])
+  r.player.start(item)
+  for (let i = 0; i < 8; i++) await tick()
+  assert.deepEqual(r.plays, ['wav0', 'wav1'])
+  assert.equal(r.player.state(), 'idle')
+})
+
+test('a later chunk that fails twice ends the read without the phone voice', async () => {
+  const r = retryRig([502, 502, 200])
+  r.player.start(item)
+  for (let i = 0; i < 8; i++) await tick()
+  assert.deepEqual(r.plays, ['wav0'])
+  assert.equal(r.log.filter((l) => l.startsWith('fetch')).length, 2, 'one retry only')
+  assert.ok(!r.log.includes('local'))
+  assert.equal(r.player.state(), 'idle')
+})
+
+test('a 401 on a later chunk is not retried', async () => {
+  const r = retryRig([401, 200])
+  r.player.start(item)
+  for (let i = 0; i < 8; i++) await tick()
+  assert.deepEqual(r.plays, ['wav0'])
+  assert.equal(r.log.filter((l) => l.startsWith('fetch')).length, 1)
+})
+
 test('without a local engine and without the PC the read just ends', async () => {
   const r = rig({ failAt: 0, local: false })
   r.player.start(item)
@@ -146,6 +189,81 @@ test('the button is drawn on Android and desktop browsers, never on iOS, and nee
   assert.equal(readAloudVisible({ ios: false, hasLocalEngine: false, hasAudio: false, hasText: true }), false)
   assert.equal(readAloudVisible({ ios: true, hasLocalEngine: true, hasAudio: true, hasText: true }), false)
   assert.equal(readAloudVisible({ ios: false, hasLocalEngine: true, hasAudio: true, hasText: false }), false)
+})
+
+// ---- createAudioPlayer / createBrowserReadAloud with a fake window -----------------------------------------------------------------
+
+function fakeEnv({ playRejects = false, noSpeech = false } = {}) {
+  const urls = { made: [], revoked: [] }
+  const audios = []
+  const spoken = []
+  let cancels = 0
+  class Audio {
+    constructor() { this.paused = false; this.plays = []; audios.push(this) }
+    play() { this.plays.push(this.src); return playRejects && this.src.startsWith('blob:') ? Promise.reject(new Error('NotAllowed')) : Promise.resolve() }
+    pause() { this.paused = true }
+  }
+  class Utter { constructor(text) { this.text = text } }
+  const env = {
+    Audio,
+    URL: { createObjectURL: (b) => { const u = 'blob:' + urls.made.length; urls.made.push(u); return u }, revokeObjectURL: (u) => urls.revoked.push(u) },
+  }
+  if (!noSpeech) {
+    env.SpeechSynthesisUtterance = Utter
+    env.speechSynthesis = { cancel: () => { cancels++ }, speak: (u) => { spoken.push(u.text); u.onend() } }
+  }
+  return { env, urls, audios, spoken, cancels: () => cancels }
+}
+
+test('audio player: prime plays the silent clip', () => {
+  const f = fakeEnv()
+  createAudioPlayer(f.env).prime()
+  assert.equal(f.audios.length, 1)
+  assert.match(f.audios[0].plays[0], /^data:audio\/wav/)
+})
+
+test('audio player: play resolves on ended and revokes the object URL', async () => {
+  const f = fakeEnv()
+  const p = createAudioPlayer(f.env)
+  const done = p.play({})
+  f.audios[0].onended()
+  await done
+  assert.deepEqual(f.urls.revoked, ['blob:0'])
+})
+
+test('audio player: stop pauses and settles the pending play', async () => {
+  const f = fakeEnv()
+  const p = createAudioPlayer(f.env)
+  const done = p.play({})
+  p.stop()
+  await done
+  assert.equal(f.audios[0].paused, true)
+  assert.deepEqual(f.urls.revoked, ['blob:0'])
+})
+
+test('audio player: a rejected play() rejects and revokes the URL', async () => {
+  const f = fakeEnv({ playRejects: true })
+  const p = createAudioPlayer(f.env)
+  await assert.rejects(p.play({}), /NotAllowed/)
+  assert.deepEqual(f.urls.revoked, ['blob:0'])
+})
+
+test('browser read aloud: the phone engine speaks the whole text when the PC is unreachable', async () => {
+  const f = fakeEnv()
+  const player = createBrowserReadAloud({ fetchChunk: async () => ({ ok: false, status: 502 }), env: f.env })
+  player.start(item)
+  for (let i = 0; i < 6; i++) await tick()
+  assert.deepEqual(f.spoken, ['Done in One. All good.'])
+  assert.ok(f.cancels() >= 1)
+})
+
+test('browser read aloud: no engine and no PC ends without throwing', async () => {
+  const f = fakeEnv({ noSpeech: true })
+  const player = createBrowserReadAloud({ fetchChunk: async () => ({ ok: false, status: 502 }), env: f.env })
+  player.start(item)
+  for (let i = 0; i < 6; i++) await tick()
+  assert.equal(player.state(), 'idle')
+  player.stop()
 })
 
 // ---- wiring ----------------------------------------------------------------------------------------------------------------------
