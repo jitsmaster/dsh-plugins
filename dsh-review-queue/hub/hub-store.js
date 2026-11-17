@@ -34,6 +34,15 @@ export function cleanDecision(d) {
   return { text: d.text, options: [...d.options], free: true }
 }
 
+/** Texts and option labels of a question item as one comparable string ('' when it has no text): case, spacing and punctuation do not matter, the options do. */
+function questionKey(item) {
+  const qs = Array.isArray(item?.payload?.questions) ? item.payload.questions : []
+  const norm = (t) => String(t ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}/._-]+/gu, ' ').trim()
+  const text = qs.map((q) => norm(q?.question)).filter(Boolean).join(' ')
+  if (!text || text.length > 600) return ''
+  return text + '\n' + qs.map((q) => (Array.isArray(q?.options) ? q.options : []).map((o) => norm(o?.label)).sort().join('|')).join('||')
+}
+
 /**
  * @param {{ now?: () => number, uuid?: () => string, io?: { read: (which: 'main' | 'bak') => string | undefined, write: (text: string, opts: { rotate: boolean }) => void },
  *   retentionMs?: number, debounceMs?: number, maxDelayMs?: number, timers?: { setTimeout: Function, clearTimeout: Function }, log?: (line: string) => void }} [opts]
@@ -122,6 +131,27 @@ export function createHubStore({ now = Date.now, uuid = () => randomUUID().slice
   }
   const ownedBy = (item, owner) => owner === undefined || item.owner === owner
 
+  /**
+   * A question of a session that another instance (an app restarted under a new key) already has open, with the same text and options,
+   * is a repeat: the older copy is superseded by the new one. Same-owner repeats are the app's own question merge's business.
+   */
+  function mergeAcrossOwners(id) {
+    const added = inner.get(id)
+    if (added?.type !== 'question' || typeof added.sessionId !== 'string') return
+    const text = questionKey(added)
+    if (!text) return
+    let count = added.merged?.count ?? 1
+    let merged = false
+    for (const old of inner.list({ status: 'open' })) {
+      if (old.id === id || old.type !== 'question' || old.sessionId !== added.sessionId || old.owner === added.owner) continue
+      if (questionKey(old) !== text) continue
+      if (!inner.resolve(old.id, { kind: 'superseded', by: 'merge', into: id })) continue
+      count += old.merged?.count ?? 1
+      merged = true
+    }
+    if (merged) inner.update(id, { merged: { count } })
+  }
+
   const ops = {
     add(op, owner, trusted) {
       if (!op.item || typeof op.item !== 'object' || typeof op.item.type !== 'string') return bad
@@ -130,6 +160,7 @@ export function createHubStore({ now = Date.now, uuid = () => randomUUID().slice
       if (existing) return existing.owner === owner ? { ok: true, id, duplicate: true } : { ok: false, error: 'id-conflict' }
       const decision = trusted ? cleanDecision(op.item.decision) : undefined // only the owning app's own sync may carry a decision, and only a well-formed one
       inner.add({ ...without(op.item, OPEN_PATCH_BLOCKED), ...(decision ? { decision } : {}), owner }, { id, createdAt: clamp(op.item.createdAt) })
+      mergeAcrossOwners(id)
       return { ok: true, id }
     },
     update(op, owner, trusted) {

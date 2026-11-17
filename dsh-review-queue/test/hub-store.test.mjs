@@ -432,3 +432,26 @@ test('hub store: a hub-owned agent cannot unset decision', () => {
   assert.equal(store.get('y').summary, 's')
   assert.equal(store.get('y').decision, undefined)
 })
+// ---- cross-instance question merge ---------------------------------------------------------------------------------------------
+
+const q = (text, labels = ['A', 'B']) => ({ type: 'question', sessionId: 's1', payload: { questions: [{ question: text, options: labels.map((label) => ({ label })) }] } })
+
+test('the same question of a session raised by another instance supersedes the older open copy', () => {
+  const { store } = make()
+  const old = store.applyOp({ op: 'add', item: q('What should I do next on PR A?') }, { owner: 'A1' })
+  const next = store.applyOp({ op: 'add', item: q('what should I do next on PR A?') }, { owner: 'B2' })
+  assert.equal(store.get(old.id).status, 'resolved')
+  assert.deepEqual(store.get(old.id).resolution, { kind: 'superseded', by: 'merge', into: next.id })
+  assert.equal(store.get(next.id).status, 'open')
+  assert.equal(store.get(next.id).merged.count, 2)
+})
+
+test('cross-instance merge leaves different text, different options, other sessions and the same owner alone', () => {
+  const { store } = make()
+  const a = store.applyOp({ op: 'add', item: q('One?') }, { owner: 'A1' })
+  store.applyOp({ op: 'add', item: q('Two?') }, { owner: 'B2' })
+  store.applyOp({ op: 'add', item: q('One?', ['X']) }, { owner: 'B2' })
+  store.applyOp({ op: 'add', item: { ...q('One?'), sessionId: 's2' } }, { owner: 'B2' })
+  store.applyOp({ op: 'add', item: q('One?') }, { owner: 'A1' })
+  assert.equal(store.get(a.id).status, 'open')
+})
