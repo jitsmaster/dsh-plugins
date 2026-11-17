@@ -1,6 +1,6 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
-import { state, subscribe, set, act, getCore, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen } from './api.js'
+import { state, subscribe, set, clearFresh, act, getCore, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen } from './api.js'
 import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
@@ -631,7 +631,8 @@ function ItemRow({ item }) {
   const c = getCore()
   const risky = item.type === 'permission' && item.risks && item.risks.length
   const badges = rowBadges(c, item)
-  return html`<a class="rowitem" href=${'#/item/' + item.id}>
+  const isNew = !!state.fresh[item.id]
+  return html`<a class=${'rowitem' + (isNew ? ' new' : '')} href=${'#/item/' + item.id} onClick=${() => clearFresh(item.id)}>
     <div class="top"><${Chip} type=${item.type} item=${item} />${badges.tier ? html`<span class=${'chip tier tier' + badges.tier.level} title=${badges.tier.title}>${badges.tier.text}</span>` : null}${risky ? html`<span class="risk small">⚠ risky</span>` : null}<span class="age">${ageOf(item)}</span></div>
     <div class="title">${c.cardTitle(item)}</div>
     ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}</div>` : null}
