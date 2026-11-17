@@ -67,6 +67,7 @@ export function createTts({ url = DEFAULT_TTS_URL, fetchFn = (...a) => fetch(...
         const res = await fetchFn(url, { method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, voice_gender: gender }), signal: ac.signal })
         if (!res.ok || !/^audio\//i.test(res.headers.get('content-type') ?? '')) { try { await res.body?.cancel() } catch { /* nothing to cancel */ } return { ok: false, error: 'tts-unavailable' } }
         const wav = await readCapped(res, maxBytes)
+        if (wav && wav.length === 0) return { ok: false, error: 'tts-unavailable' }
         return wav ? { ok: true, wav } : { ok: false, error: 'too-large' }
       } catch { return { ok: false, error: 'tts-unavailable' } } finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort); active-- }
     },

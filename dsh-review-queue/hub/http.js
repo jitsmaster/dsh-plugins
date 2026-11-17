@@ -68,11 +68,11 @@ export function createHttp({ hub, log = () => {} }) {
   }
 
   /** The caller, or undefined after the refusal (401 / 403 / 429) was sent. */
-  function authorize(req, res, { longPoll = false } = {}) {
+  function authorize(req, res, { longPoll = false, skipLimit = false } = {}) {
     const who = hub.identify(req)
     if (who.error) { send(res, who.error === 'login-not-allowed' ? 403 : 401, { error: who.error }); return undefined }
     if (!who.role) { send(res, 401, { error: 'auth-required' }); return undefined }
-    if (who.role === 'device' && who.deviceId && !longPoll) {
+    if (who.role === 'device' && who.deviceId && !longPoll && !skipLimit) {
       const taken = hub.deviceLimiter.take(who.deviceId)
       if (!taken.ok) { sendLimited(res, taken.retryAfterMs); return undefined }
     }
@@ -140,7 +140,7 @@ export function createHttp({ hub, log = () => {} }) {
 
   async function api(req, res, url, path) {
     // /v1/tts is not counted by the per-device limiter: a read makes one request per chunk plus a prefetch, and hub.tts (2 at once) already bounds the load.
-    const who = authorize(req, res, { longPoll: path === '/v1/tts' || (path === '/v1/snapshot' && Number(url.searchParams.get('wait')) > 0) })
+    const who = authorize(req, res, { longPoll: path === '/v1/snapshot' && Number(url.searchParams.get('wait')) > 0, skipLimit: path === '/v1/tts' })
     if (!who) return undefined
     const caller = typeof req.headers['x-rq-instance'] === 'string' ? req.headers['x-rq-instance'] : undefined
     if (path === '/v1/snapshot' || path === '/v1/workspaces') {

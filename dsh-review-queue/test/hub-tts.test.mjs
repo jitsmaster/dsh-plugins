@@ -256,3 +256,8 @@ test('/v1/tts is not counted by the per-device rate limiter (a read makes a requ
   assert.equal((await getBin(port, P + '/v1/tts?id=' + id + '&n=0')).status, 200)
   assert.equal(taken, 0)
 })
+
+test('synth treats an empty audio answer as unavailable', async () => {
+  const tts = createTts({ url: DEFAULT_TTS_URL, fetchFn: async () => audioResponse(Buffer.alloc(0)) })
+  assert.deepEqual(await tts.synth('x'), { ok: false, error: 'tts-unavailable' })
+})

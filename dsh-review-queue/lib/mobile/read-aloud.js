@@ -20,7 +20,8 @@ export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, s
   let token = 0
   let state = 'idle' // idle | loading | playing
   const setState = (s) => { if (s === state) return; state = s; try { if (onChange) onChange(s) } catch { /* a listener must not break the player */ } }
-  const safeFetch = async (id, n) => { try { return await fetchChunk(id, n) } catch { return { ok: false, status: 0 } } }
+  let controller = null // aborts the chunk requests of the read in progress
+  const safeFetch = async (id, n) => { try { return await fetchChunk(id, n, controller && controller.signal) } catch { return { ok: false, status: 0 } } }
 
   /** The whole text with the phone's own engine (nothing was played from the PC yet). */
   async function local(item) {
@@ -61,6 +62,7 @@ export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, s
 
   const stopAll = () => {
     token++
+    if (controller) { try { controller.abort() } catch { /* already aborted */ } controller = null }
     try { if (stopAudio) stopAudio() } catch { /* already stopped */ }
     try { if (stopLocal) stopLocal() } catch { /* already stopped */ }
     setState('idle')
@@ -71,6 +73,7 @@ export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, s
     start(item) {
       stopAll()
       const mine = token
+      controller = typeof AbortController === 'function' ? new AbortController() : null
       setState('loading')
       try { if (prime) prime() } catch { /* best effort */ }
       void run(item, mine)

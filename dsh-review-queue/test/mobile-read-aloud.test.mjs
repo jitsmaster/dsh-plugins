@@ -307,3 +307,16 @@ test('a busy (503) first chunk is fetched once more before the phone voice is us
   await sleep(20)
   assert.deepEqual(seen, [503, 503, 'local'])
 })
+
+test('stop aborts the chunk requests in flight (the hub then frees its synthesis slot)', async () => {
+  const signals = []
+  const player = createReadAloud({
+    fetchChunk: async (id, n, signal) => { signals.push(signal); return { ok: true, blob: blob(n), chunks: 3 } },
+    playBlob: () => new Promise(() => {}),
+  })
+  player.start(item)
+  await tick(); await tick()
+  assert.ok(signals.length >= 1 && signals.every((s) => s && !s.aborted))
+  player.stop()
+  assert.ok(signals.every((s) => s.aborted))
+})

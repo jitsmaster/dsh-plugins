@@ -157,9 +157,9 @@ export async function act(path, body, id) {
 }
 
 /** One WAV chunk of an item's read-out, made by the PC's local TTS (GET /v1/tts). { ok, blob, chunks } or { ok: false, status } (0 = no answer); a lost pairing sends the phone back to pairing. */
-export async function fetchTtsChunk(id, n) {
+export async function fetchTtsChunk(id, n, signal) {
   try {
-    const res = await call(ttsPath(API, id, n))
+    const res = await call(ttsPath(API, id, n), signal ? { signal } : undefined)
     if (!res.ok) { handleAuthFailure(res.status, await res.json().catch(() => null)); return { ok: false, status: res.status } }
     const blob = await res.blob()
     return { ok: true, blob, chunks: Number(res.headers.get('x-tts-chunks')) || 1 }
