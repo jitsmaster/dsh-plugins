@@ -243,7 +243,7 @@ export function DecisionOptions({ item, st }) {
   if (!d || !d.text) return null
   const reply = (st.replies && st.replies[item.id]) || ''
   const busy = !!(st.busy && st.busy[item.id])
-  const options = Array.isArray(d.options) ? d.options : []
+  const options = Array.isArray(d.options) ? d.options.filter((o) => typeof o === 'string') : []
   return html`<div class="decision" data-decision=${item.id}>
     <div class="text" style="font-weight:600">${String(d.text)}</div>
     <div class="sub">AI-suggested</div>

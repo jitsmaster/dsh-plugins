@@ -59,3 +59,10 @@ test('tapping an option sets the reply draft and marks it pressed', () => {
 test('no decision: nothing is drawn', () => {
   assert.equal(views.DecisionOptions({ item: { id: 'x', type: 'completed' }, st: api.state }), null)
 })
+
+test('non-string options are not drawn', () => {
+  api.set({ replies: {} })
+  const it2 = { id: 'c2', type: 'completed', status: 'open', decision: { text: 'Q', options: ['Yes', null, 5, { a: 1 }] } }
+  const buttons = walk(expand(views.DecisionOptions({ item: it2, st: api.state }))).filter((n) => n.type === 'button')
+  assert.equal(buttons.length, 1)
+})
