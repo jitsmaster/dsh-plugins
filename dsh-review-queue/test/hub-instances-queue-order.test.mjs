@@ -60,3 +60,22 @@ test('a changed order bumps the store revision and wakes the long polls; a repea
   assert.equal(store.snapshot().snapshotId, after)
   assert.equal(woke.length, 1)
 })
+
+test('a non-deciding app flipping its order does not bump the revision or wake the long polls', () => {
+  const clock = fakeClock(); let n = 0; const woke = []
+  const store = createHubStore({ now: clock.now, uuid: () => 'u' + ++n, timers: clock, io: memIo() })
+  const commands = createCommands({ now: clock.now, timers: clock })
+  const instances = createInstances({ store, commands, now: clock.now, onSessions: () => woke.push(1) })
+  reg(instances, A, 'k1')
+  reg(instances, B, 'k2')
+  instances.presence(A, { queueOrder: 'tier' })
+  clock.advance(1000)
+  instances.presence(B, { queueOrder: 'oldest', desktopActive: true })
+  assert.equal(instances.queueOrder(), 'oldest')
+  const id = store.snapshot().snapshotId
+  const wakes = woke.length
+  instances.presence(A, { queueOrder: 'oldest' })
+  assert.equal(instances.queueOrder(), 'oldest')
+  assert.equal(store.snapshot().snapshotId, id)
+  assert.equal(woke.length, wakes)
+})
