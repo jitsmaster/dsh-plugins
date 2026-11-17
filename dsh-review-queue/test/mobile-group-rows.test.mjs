@@ -26,6 +26,13 @@ test('AI-handled items of the session resolved since the oldest open item are co
   assert.equal(groupedRows(ui, open, resolved)[0].head.aiHandled, 1)
 })
 
+test('order "tier": groups are ranked by best tier then oldest; items without a tier go last; "oldest" keeps first-seen order', () => {
+  const open = [it('a1', 's1', 1), it('b1', 's2', 2, { tier: { severity: 'high', urgency: 'blocked', tier: 0, at: 1 } }), it('c1', 's3', 3, { tier: undefined }), it('d1', 's4', 4)]
+  assert.deepEqual(shape(groupedRows(ui, open, [], 'tier')), ['b1', 'a1', 'd1', 'c1'])
+  assert.deepEqual(shape(groupedRows(ui, open, [], 'oldest')), ['a1', 'b1', 'c1', 'd1'])
+  assert.deepEqual(shape(groupedRows(ui, open, [])), ['a1', 'b1', 'c1', 'd1'])
+})
+
 test('without the module, or with no items, the list stays flat and never throws', () => {
   const open = [it('a1', 's1', 1), it('a2', 's1', 3)]
   assert.deepEqual(shape(groupedRows(undefined, open, [])), ['a1', 'a2'])

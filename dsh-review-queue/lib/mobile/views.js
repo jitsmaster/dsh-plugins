@@ -679,7 +679,7 @@ export function WaitingBody({ st }) {
     <input class="input" type="search" placeholder="Search…" value=${f.query} onInput=${(e) => set({ filter: { ...state.filter, query: e.target.value } })} />
     <div id="wpanel" role="tabpanel" aria-labelledby=${'wtab-' + (f.type || 'all')}>
       ${note ? html`<div class="sub paused-note" role="status">⏸ ${note}</div>` : null}
-      ${shown.length ? groupedRows(st.groupsUi, shown, st.snap ? st.snap.resolved : []).map((r) => (r.head ? html`<${GroupHead} key=${'gh:' + r.head.id} head=${r.head} />` : html`<${ItemRow} key=${r.item.id} item=${r.item} />`)) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
+      ${shown.length ? groupedRows(st.groupsUi, shown, st.snap ? st.snap.resolved : [], st.snap ? st.snap.queueOrder : undefined).map((r) => (r.head ? html`<${GroupHead} key=${'gh:' + r.head.id} head=${r.head} />` : html`<${ItemRow} key=${r.item.id} item=${r.item} />`)) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
     </div>
     <${NewTodoFab} />
   </div>`

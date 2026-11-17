@@ -18,13 +18,19 @@ export function rowBadges(core, item) {
  * The Waiting list as rows: a `{ head }` row (the desktop's groupCardModel) before each multi-item session group, then `{ item }` rows oldest first.
  * `ui` is lib/groups-ui.js (passed in: the phone page loads it like the overlay does); without it, or with no items, the list is flat. Never throws.
  */
-export function groupedRows(ui, open, resolved) {
+export function groupedRows(ui, open, resolved, order) {
   const items = Array.isArray(open) ? open : []
   if (!items.length) return []
   if (!ui || typeof ui.groupsOfOpen !== 'function' || typeof ui.groupCardModel !== 'function') return items.map((item) => ({ item }))
   const index = typeof ui.indexResolved === 'function' ? ui.indexResolved(Array.isArray(resolved) ? resolved : []) : resolved
   const rows = []
-  for (const g of ui.groupsOfOpen(items)) {
+  let groups = ui.groupsOfOpen(items)
+  if (order === 'tier') { // best tier first (no tier last), then oldest; a stable sort keeps first-seen order for ties
+    const rank = (g) => (Number.isInteger(g.topTier) ? g.topTier : Infinity)
+    const age = (g) => (Number.isFinite(g.createdAt) ? g.createdAt : Infinity)
+    groups = [...groups].sort((a, b) => (rank(a) === rank(b) ? (age(a) === age(b) ? 0 : age(a) < age(b) ? -1 : 1) : rank(a) < rank(b) ? -1 : 1))
+  }
+  for (const g of groups) {
     if (g.count > 1) rows.push({ head: ui.groupCardModel(g, index) })
     for (const item of g.items) rows.push({ item })
   }
