@@ -12,9 +12,9 @@ function load(extra = {}, config = {}) {
 }
 const exec = { agent: { id: 'me', session: { header: {} } }, signal: new AbortController().signal, callId: 'c' }
 
-test('registers the five tools; reads are concurrency safe, send, start and archive are not', async () => {
+test('registers the six tools; reads are concurrency safe, send, start and archive are not', async () => {
   const t = load()
-  assert.deepEqual(Object.keys(t).sort(), ['archive_self', 'list_sessions', 'read_session_result', 'send_to_session', 'start_session'])
+  assert.deepEqual(Object.keys(t).sort(), ['archive_self', 'list_sessions', 'read_session_result', 'rename_session', 'send_to_session', 'start_session'])
   assert.ok(!t.archive_self.isConcurrencySafe?.({}))
   assert.ok(!t.start_session.isConcurrencySafe?.({}))
   assert.equal(t.list_sessions.isConcurrencySafe?.({}), true)

@@ -1,6 +1,6 @@
 # dsh-session-link
 
-Lets a DSH session find another open session, ask it to do something, read its last reply, and offer to archive itself. Five tools, available to top-level sessions only (sub-agents are refused):
+Lets a DSH session find another open session, ask it to do something, read its last reply, offer to archive itself, and ask to be renamed. Six tools, available to top-level sessions only (sub-agents are refused):
 
 | Tool | What it does |
 | --- | --- |
@@ -8,6 +8,7 @@ Lets a DSH session find another open session, ask it to do something, read its l
 | `send_to_session` | Asks another session to do something. **Nothing is sent by the call itself**: it creates a follow-up card in the Review Queue and the user confirms or cancels it. |
 | `read_session_result` | Reads the last assistant reply of a loaded session, whether its turn is still running, and the state of the cards you sent it. |
 | `start_session` | Asks for a **new** session. Nothing starts by itself: it creates a card in the Review Queue and the user confirms or cancels it. |
+| `rename_session` | Asks the user to rename **this** session. Nothing is renamed by the call: a question card (old and new title) goes to the Review Queue and the rename happens only on approval. No completion message is sent. |
 | `archive_self` | A finished session offers to archive **itself**. Nothing is archived by the call: it creates an Archive card in the Review Queue (the message is its reason) and the user presses **Archive session** or **Keep session**. |
 
 ## Example calls
@@ -89,6 +90,15 @@ Result: `{ status: "queued-for-confirmation", cardId, offers, sparc, effort? }` 
 - **Limit.** 1 offer per session per minute, kept in memory (a restart resets it). The slot is given back when the queue fails.
 - **Result.** `{ status: "offered", cardId, updated }` or `{ status: "rejected", reason }`. Reasons: `no-sender`, `sub-agent-sender`, `empty`, `no-queue`, `queue-unsupported` (the queue does not declare `offerArchive` support), `disabled`, `rate-limit`, `queue-failed`; an error code from the queue (for example `bad-input`, or `pr-open`) is returned as the reason too. `pr-open`: the session polls a pull request that is still open, so it must not be archived (and no card is created) until the PR is merged or abandoned.
 - **Hub mode.** The hub queue forwards `offerArchive` and reads the switch from this app's own local queue, never from the hub.
+
+## rename_session
+
+`rename_session({ title })`, top-level sessions only. A session asks the user to rename **itself** (the session id comes from the caller, never from an argument).
+
+- **Approval card.** The call asks a normal question in the Review Queue (old title, proposed title; options *Rename* / *Keep current name*). Nothing is renamed unless the user picks *Rename*.
+- **No completion message.** Nothing is sent back to the session or the user after the rename; approval of the card is the end of the flow. A successful call (approved or declined) returns an empty string.
+- **Title.** Cleaned to one line and clipped to 120 characters. Empty is rejected `empty`; the current title is rejected `unchanged`.
+- **Result.** Empty on completion, or `{ status: "rejected", reason }` with `no-sender`, `sub-agent-sender`, `empty`, `unchanged`, `no-questions`, `no-controller`, `question-failed`, `rename-failed`.
 
 ## Unrestricted read warning
 
