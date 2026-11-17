@@ -365,6 +365,8 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     // The token is taken before the empty-reply return: a tool-only offer turn still uses it up.
     const offer = guard(() => openOfSession(store, agent.id).find((i) => i.type === 'archive'))
     if (offer && silencedBy.get(agent.id) !== offer.id) { silencedBy.set(agent.id, offer.id); return }
+    // A question card is waiting for the user's answer: only the question is shown, not a done card next to it (the user would have to confirm both).
+    if (guard(() => openOfSession(store, agent.id).some((i) => i.type === 'question' && !i.detached), false)) return
     if (!reply) return
     // A handoff written in the middle of the session may not be named in this final reply: name it, so the card offers Follow handoff (once per note).
     let shown = reply

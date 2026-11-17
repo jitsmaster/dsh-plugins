@@ -885,6 +885,24 @@ test('a finished turn adds no done card while the session has an open archive ca
   assert.deepEqual(store.snapshot().open.filter((i) => i.sessionId === 'a2').map((i) => i.type), ['completed'])
 })
 
+test('a finished turn adds no done card while the session has an open question card (only the question is shown)', async () => {
+  const { store, fire, agent } = setup()
+  store.add({ type: 'question', sessionId: 'a1', sessionTitle: 'Session One', key: 'c1', payload: { questions: QUESTIONS, callId: 'c1' } })
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Done. Which option do you want?') })
+  assert.deepEqual(store.snapshot().open.filter((i) => i.sessionId === 'a1').map((i) => i.type), ['question'])
+  assert.equal(store.list().filter((i) => i.type === 'completed').length, 0)
+  await fire('agent/turn-stopping', { agent: agent('a2', 'Another session still gets its done card.') })
+  assert.deepEqual(store.snapshot().open.filter((i) => i.sessionId === 'a2').map((i) => i.type), ['completed'])
+})
+
+test('once the question card is answered, the session\'s next finished turn adds its done card again', async () => {
+  const { store, fire, agent } = setup()
+  const q = store.add({ type: 'question', sessionId: 'a1', sessionTitle: 'Session One', key: 'c1', payload: { questions: QUESTIONS, callId: 'c1' } })
+  store.resolve(q.id, { kind: 'answered', by: 'card', answers: ANSWER_B })
+  await fire('agent/turn-stopping', { agent: agent('a1', 'Applied option B.') })
+  assert.deepEqual(store.snapshot().open.filter((i) => i.sessionId === 'a1').map((i) => i.type), ['completed'])
+})
+
 test('only the turn that follows the archive offer is silent: a later finished turn adds its done card even while the archive card stays open', async () => {
   const { store, fire, agent } = setup()
   store.add({ type: 'archive', sessionId: 'a1', sessionTitle: 'Session One', payload: { reason: 'all pushed' } })

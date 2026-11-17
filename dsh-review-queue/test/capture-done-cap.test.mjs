@@ -49,11 +49,13 @@ test('by default the 21st open done card of a session resolves the oldest as tri
 
 test('the cap is per session: another session keeps its cards, questions and permissions are never trimmed', async () => {
   const x = setup({ options: { keepDone: 2 } })
-  void x.fire('user-questions/request', { agent: x.agent('a1'), questions: [{ id: 'q', question: 'Q?', options: [{ label: 'A' }] }], wait: { callId: 'c1' } }, () => new Promise(() => {}))
+  // A session with an open question adds no done card next to it, so the question lives in its own session here.
+  void x.fire('user-questions/request', { agent: x.agent('asker'), questions: [{ id: 'q', question: 'Q?', options: [{ label: 'A' }] }], wait: { callId: 'c1' } }, () => new Promise(() => {}))
   void x.fire('approval/request', { agent: x.agent('a1'), toolName: 'shell', callId: 'p1' }, () => new Promise(() => {}))
   await x.done('other', 'Other 1')
   for (let i = 1; i <= 5; i++) await x.done('a1', 'Result ' + i)
-  assert.deepEqual(x.open('a1').map((i) => i.type + ':' + (i.payload.reply ?? '')), ['question:', 'permission:', 'completed:Result 4', 'completed:Result 5'])
+  assert.deepEqual(x.open('a1').map((i) => i.type + ':' + (i.payload.reply ?? '')), ['permission:', 'completed:Result 4', 'completed:Result 5'])
+  assert.deepEqual(x.open('asker').map((i) => i.type), ['question'])
   assert.equal(x.open('other').length, 1)
   assert.equal(x.real.list({ status: 'resolved' }).filter((i) => i.resolution.kind === 'trimmed').length, 3)
 })
