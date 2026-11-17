@@ -320,3 +320,16 @@ test('stop aborts the chunk requests in flight (the hub then frees its synthesis
   player.stop()
   assert.ok(signals.every((s) => s.aborted))
 })
+
+test('a first chunk that takes too long makes the phone use its own voice', async () => {
+  const log = []
+  const player = createReadAloud({
+    firstChunkTimeoutMs: 10, retryDelayMs: 0,
+    fetchChunk: () => new Promise(() => {}),
+    playBlob: async () => {},
+    speakLocal: async (text) => { log.push('local') },
+  })
+  player.start(item)
+  await sleep(40)
+  assert.deepEqual(log, ['local'])
+})

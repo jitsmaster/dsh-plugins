@@ -131,8 +131,8 @@ export function createHttp({ hub, log = () => {} }) {
     res.once('close', onClose)
     const r = await hub.tts.synth(chunks[n], { signal: gone.signal })
     res.off('close', onClose)
-    if (!r.ok) return send(res, r.error === 'busy' ? 503 : 502, { error: r.error })
     if (res.destroyed) return undefined
+    if (!r.ok) return send(res, r.error === 'busy' ? 503 : 502, { error: r.error })
     res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': r.wav.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-TTS-Chunks': String(chunks.length) })
     res.end(r.wav)
     return undefined

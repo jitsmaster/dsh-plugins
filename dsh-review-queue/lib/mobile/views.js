@@ -141,7 +141,7 @@ function ReadAloud({ item }) {
   const [mode, setMode] = useState('idle')
   const player = useRef(null)
   if (!player.current) player.current = createBrowserReadAloud({ fetchChunk: fetchTtsChunk, onChange: setMode })
-  useEffect(() => () => player.current.stop(), [])
+  useEffect(() => () => player.current.stop(), [item.id]) // leaving the screen or showing another card stops the read
   if (!readAloudVisible({ ios, hasLocalEngine: typeof speechSynthesis !== 'undefined', hasAudio: typeof Audio !== 'undefined', hasText: !!item.spoken })) return null
   const on = mode !== 'idle'
   const toggle = () => { if (on) player.current.stop(); else player.current.start(item) }

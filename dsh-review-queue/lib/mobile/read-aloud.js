@@ -16,7 +16,7 @@ export const readAloudVisible = ({ ios, hasLocalEngine, hasAudio, hasText }) => 
  * @param {{ fetchChunk: (id: string, n: number) => Promise<{ ok: boolean, status?: number, blob?: any, chunks?: number }>, playBlob: (blob: any) => Promise<void>,
  *   speakLocal?: (text: string) => Promise<void>, stopAudio?: () => void, stopLocal?: () => void, prime?: () => void, onChange?: (state: string) => void }} deps
  */
-export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, stopLocal, prime, onChange, retryDelayMs = 300 }) {
+export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, stopLocal, prime, onChange, retryDelayMs = 300, firstChunkTimeoutMs = 8000 }) {
   let token = 0
   let state = 'idle' // idle | loading | playing
   const setState = (s) => { if (s === state) return; state = s; try { if (onChange) onChange(s) } catch { /* a listener must not break the player */ } }
@@ -34,7 +34,9 @@ export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, s
   async function run(item, mine) {
     const alive = () => token === mine
     try {
-      let cur = await safeFetch(item.id, 0)
+      // A PC that is slow or hung must not keep the phone silent: after firstChunkTimeoutMs the request is abandoned and the phone voice takes over.
+      let cur = await Promise.race([safeFetch(item.id, 0), new Promise((r) => setTimeout(() => r({ ok: false, status: 0, timedOut: true }), firstChunkTimeoutMs))])
+      if (cur.timedOut && controller) { try { controller.abort() } catch { /* already aborted */ } }
       if (!alive()) return
       // Busy (503): the PC's TTS is serving something else; one more try after a short wait keeps the PC voice.
       if (!cur.ok && cur.status === 503) {
