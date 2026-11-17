@@ -42,6 +42,8 @@ export const state = {
   toggles: loadToggles(storage),
   // The open bottom confirm sheet (Mark wrong…, Overrule rule, Hold…), in memory only: { kind: 'mark-wrong' | 'overrule' | 'hold', id, text } or null. One at a time; a screen change closes it.
   sheet: null,
+  // lib/groups-ui.js (the desktop's group card model), loaded lazily by loadGroupsUi(); undefined keeps the list flat.
+  groupsUi: undefined,
 }
 const listeners = new Set()
 export const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l) } }
@@ -438,9 +440,18 @@ export function stopThreadPolling(id) {
   if (target !== null && state.threads[target]) setThread(target, trimThread(state.threads[target]))
 }
 
+/** Imports the group model once, dynamically (a static import would break the node tests that import this file). A failure leaves the list flat. */
+let groupsAsked = false
+export function loadGroupsUi(importer = (url) => import(url)) {
+  if (groupsAsked) return
+  groupsAsked = true
+  importer(API + '/m/groups-ui.js').then((m) => set({ groupsUi: m }), (e) => { try { console.warn('review queue: grouping module not loaded, the list stays flat (' + ((e && e.message) || e) + ')') } catch { /* no console */ } })
+}
+
 export async function init() {
   core = await loadCore()
   load()
+  loadGroupsUi()
   set({ ready: false })
   bindDraftFlush(window, document, () => saveTodoDraft(storage, state.todoDraft)) // the latest text once more when the page goes away or to the background
   document.addEventListener('visibilitychange', () => { if (!document.hidden && current) current.abort() }) // a phone that slept has a dead connection

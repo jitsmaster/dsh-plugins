@@ -214,3 +214,5 @@ body.typing .composer { bottom: 0; }
 .chip.tier { background: var(--panel2); color: var(--dim); margin-left: 6px; }
 .chip.tier0 { background: #3b2220; color: #ff9a94; }
 .chip.tier1 { background: #3a2f12; color: #f0c674; }
+.group-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 14px 2px 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.group-head .title { font-weight: 600; }

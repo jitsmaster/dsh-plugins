@@ -5,7 +5,7 @@ import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { backHref, cardError, heldView, listModel, markWrongView, navCounts, nextTabIndex, pausedNote, pausedView, resolvedNavLabel, rowBadges, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
+import { backHref, cardError, groupedRows, heldView, listModel, markWrongView, navCounts, nextTabIndex, pausedNote, pausedView, resolvedNavLabel, rowBadges, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
@@ -655,6 +655,17 @@ export function NewTodoFab() {
   return html`<a class="fab" href="#/new">+ New todo</a>`
 }
 
+/** The header above the rows of one session group (model from groupedRows): title, workspace, best tier, item count (no AI count line on the phone: that banner was removed on purpose). Display only. */
+export function GroupHead({ head }) {
+  const tier = Number.isInteger(head.topTier) && head.topTier >= 0 && head.topTier <= 4 ? 'P' + head.topTier : ''
+  return html`<div class="group-head" data-group=${head.id}>
+    <span class="title">${head.title}</span>
+    ${head.workspace ? html`<span class="sub">${head.workspace}</span>` : null}
+    ${tier ? html`<span class=${'chip tier tier' + head.topTier} title="Highest priority in this session">${tier}</span>` : null}
+    <span class="sub">${head.count} items</span>
+  </div>`
+}
+
 /** The Waiting list: type tabs, search, the rows, and the floating "+ New todo" link. Takes the store (the wrapper below holds the hook). */
 export function WaitingBody({ st }) {
   const c = getCore()
@@ -668,7 +679,7 @@ export function WaitingBody({ st }) {
     <input class="input" type="search" placeholder="Search…" value=${f.query} onInput=${(e) => set({ filter: { ...state.filter, query: e.target.value } })} />
     <div id="wpanel" role="tabpanel" aria-labelledby=${'wtab-' + (f.type || 'all')}>
       ${note ? html`<div class="sub paused-note" role="status">⏸ ${note}</div>` : null}
-      ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
+      ${shown.length ? groupedRows(st.groupsUi, shown, st.snap ? st.snap.resolved : []).map((r) => (r.head ? html`<${GroupHead} key=${'gh:' + r.head.id} head=${r.head} />` : html`<${ItemRow} key=${r.item.id} item=${r.item} />`)) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
     </div>
     <${NewTodoFab} />
   </div>`
