@@ -220,6 +220,17 @@ test('presence carries this app\'s queue order and the hub snapshot exposes it t
   assert.equal(hub.snapshot().queueOrder, 'tier')
 })
 
+test('a later change of the app queue order is reported without waiting for the next probe', async (t) => {
+  const { hub, port } = await startHub(t)
+  let order = 'oldest'
+  const { client } = setup(t, port, { queueOrderOf: () => order, sessionReportMs: 600000, sessionIdleMs: 600000, sessionCheckMs: 20 })
+  client.start()
+  await connected(client)
+  await waitFor(() => hub.instances.queueOrder() === 'oldest', 8000, 'first order')
+  order = 'tier'
+  await waitFor(() => hub.instances.queueOrder() === 'tier', 3000, 'changed order reported')
+})
+
 test('the mirror follows the hub snapshot and the workspace union, and is not ready without the hub', async (t) => {
   const { hub, port } = await startHub(t)
   const { client } = setup(t, port, { workspaces: () => [{ id: 'w1', title: 'alpha', path: 'D:/a' }] })
