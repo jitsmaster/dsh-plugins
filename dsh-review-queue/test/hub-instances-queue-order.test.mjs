@@ -79,3 +79,25 @@ test('a non-deciding app flipping its order does not bump the revision or wake t
   assert.equal(store.snapshot().snapshotId, id)
   assert.equal(woke.length, wakes)
 })
+
+test('an app becoming desktop-active changes the effective order: bumps the revision and wakes, with or without an order in the report', () => {
+  for (const withOrder of [true, false]) {
+    const clock = fakeClock(); let n = 0; const woke = []
+    const store = createHubStore({ now: clock.now, uuid: () => 'u' + ++n, timers: clock, io: memIo() })
+    const commands = createCommands({ now: clock.now, timers: clock })
+    const instances = createInstances({ store, commands, now: clock.now, onSessions: () => woke.push(1) })
+    reg(instances, A, 'k1')
+    reg(instances, B, 'k2')
+    instances.presence(A, { queueOrder: 'tier' })
+    clock.advance(1000)
+    instances.presence(B, { queueOrder: 'oldest', desktopActive: true })
+    assert.equal(instances.queueOrder(), 'oldest')
+    const id = store.snapshot().snapshotId
+    const wakes = woke.length
+    clock.advance(1000)
+    instances.presence(A, withOrder ? { queueOrder: 'tier', desktopActive: true } : { desktopActive: true })
+    assert.equal(instances.queueOrder(), 'tier')
+    assert.notEqual(store.snapshot().snapshotId, id)
+    assert.equal(woke.length, wakes + 1)
+  }
+})
