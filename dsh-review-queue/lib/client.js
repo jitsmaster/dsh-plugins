@@ -324,17 +324,20 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		/** Page-wide hotkey: Ctrl+Alt+L toggles the task list (Ctrl+Alt+V is the voice hotkey, Ctrl+Alt+M stops the TTS). The physical key counts, so AltGr layouts that type another letter still work. */
+		/** Page-wide hotkeys: Ctrl+Alt+N opens the New todo form (opening the task list first), Ctrl+Alt+L toggles the task list (Ctrl+Alt+V is the voice hotkey, Ctrl+Alt+M stops the TTS). The physical key counts, so AltGr layouts that type another letter still work. */
 		function hotkeyAction(e) {
 			if (!e || !e.ctrlKey || !e.altKey || e.shiftKey || e.metaKey || e.isComposing) return undefined;
-			return e.code === "KeyL" || String(e.key).toLowerCase() === "l" ? "toggle" : undefined;
+			if (e.code === "KeyL" || String(e.key).toLowerCase() === "l") return "toggle";
+			return e.code === "KeyN" || String(e.key).toLowerCase() === "n" ? "newTodo" : undefined;
 		}
 
 		/** Listens for the hotkey on `target` (the window), also while typing: a modifier chord is never text. Returns the remover. */
 		function installHotkey(target) {
 			const onKey = (e) => {
-				if (hotkeyAction(e) !== "toggle") return;
+				const action = hotkeyAction(e);
+				if (!action) return;
 				e.preventDefault();
+				if (action === "newTodo") { if (!state.overlay) setOverlay(true); openTodoForm(); return; }
 				setOverlay(!state.overlay);
 			};
 			target.addEventListener("keydown", onKey);

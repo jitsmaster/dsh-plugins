@@ -71,3 +71,20 @@ test('installHotkey: works while typing in a field, ignores other keys, and the 
   off()
   assert.deepEqual(removed, ['keydown', handler])
 })
+
+test('hotkeyAction: Ctrl+Alt+N opens a new todo, not with other modifiers', () => {
+  const { T } = load()
+  assert.equal(T.hotkeyAction(key({ key: 'n', code: 'KeyN' })), 'newTodo')
+  assert.equal(T.hotkeyAction(key({ key: 'N', code: 'KeyN' })), 'newTodo', 'caps lock')
+  assert.equal(T.hotkeyAction(key({ key: 'n', code: 'KeyN', shiftKey: true })), undefined)
+})
+
+test('installHotkey: Ctrl+Alt+N opens the overlay and the New todo form, and swallows the key', () => {
+  const { T } = load()
+  let handler
+  T.installHotkey({ addEventListener: (_t, fn) => { handler = fn }, removeEventListener: () => {} })
+  const e = key({ key: 'n', code: 'KeyN' }); handler(e)
+  assert.equal(T.state.overlay, true)
+  assert.equal(T.state.todoForm.open, true)
+  assert.equal(e.prevented, true)
+})
