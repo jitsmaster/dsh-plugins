@@ -9,6 +9,11 @@
  * @param {{ open: object[], resolved: object[] } | null} snap the /v1/snapshot body
  * @param {{ type?: string, query?: string }} filter
  */
+/** The tier chip and the "Merged N" note of a row, from the desktop's own helpers (no phone rule). Never throws; a missing item has neither. */
+export function rowBadges(core, item) {
+  return { tier: item ? core.tierChip(item) : undefined, merged: item ? core.mergedNote(item) : undefined }
+}
+
 /** The order of the Waiting tabs (the desktop chip order puts Done first; the phone leads with what needs a decision). */
 const WAITING_TAB_ORDER = ['all', 'permission', 'question', 'completed', 'pr-merged', 'todo', 'paused']
 

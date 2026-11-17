@@ -210,3 +210,7 @@ body.typing .composer { bottom: 0; }
 .ai-review .row { flex-wrap: wrap; }
 .sheet .input { margin: 10px 0 0; }
 .sheet .err { margin: 10px 0 0; }
+
+.chip.tier { background: var(--panel2); color: var(--dim); margin-left: 6px; }
+.chip.tier0 { background: #3b2220; color: #ff9a94; }
+.chip.tier1 { background: #3a2f12; color: #f0c674; }

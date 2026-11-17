@@ -5,7 +5,7 @@ import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { backHref, cardError, heldView, listModel, markWrongView, navCounts, nextTabIndex, pausedNote, pausedView, resolvedNavLabel, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
+import { backHref, cardError, heldView, listModel, markWrongView, navCounts, nextTabIndex, pausedNote, pausedView, resolvedNavLabel, rowBadges, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
@@ -614,10 +614,12 @@ export function AiReview({ item }) {
 function ItemRow({ item }) {
   const c = getCore()
   const risky = item.type === 'permission' && item.risks && item.risks.length
+  const badges = rowBadges(c, item)
   return html`<a class="rowitem" href=${'#/item/' + item.id}>
-    <div class="top"><${Chip} type=${item.type} item=${item} />${risky ? html`<span class="risk small">⚠ risky</span>` : null}<span class="age">${ageOf(item)}</span></div>
+    <div class="top"><${Chip} type=${item.type} item=${item} />${badges.tier ? html`<span class=${'chip tier tier' + badges.tier.level} title=${badges.tier.title}>${badges.tier.text}</span>` : null}${risky ? html`<span class="risk small">⚠ risky</span>` : null}<span class="age">${ageOf(item)}</span></div>
     <div class="title">${c.cardTitle(item)}</div>
     ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}</div>` : null}
+    ${badges.merged ? html`<div class="sub merged-note">${badges.merged}</div>` : null}
   </a>`
 }
 
