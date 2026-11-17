@@ -39,22 +39,36 @@ async function readCapped(res, max) {
 /** @param {{ url?: string, fetchFn?: typeof fetch, maxBytes?: number, maxActive?: number, timeoutMs?: number, gender?: 'male' | 'female' }} [opts] */
 export function createTts({ url = DEFAULT_TTS_URL, fetchFn = (...a) => fetch(...a), maxBytes = MAX_BYTES, maxActive = MAX_ACTIVE, timeoutMs = TIMEOUT_MS, gender = 'male' } = {}) {
   let active = 0
+  const cache = new Map() // item id -> chunks of the read in progress (a text change mid-read must not shift later chunks)
+  const CACHE_ITEMS = 16
   return {
     gender,
     /** The read-out of an item cut for speech, at most MAX_CHUNKS pieces. */
-    chunksOf: (item) => chunkForSpeech(fullTextFor(item)).slice(0, MAX_CHUNKS),
+    chunksOf(item, fresh = false) {
+      const key = item && item.id
+      if (key !== undefined && !fresh && cache.has(key)) return cache.get(key)
+      const chunks = chunkForSpeech(fullTextFor(item)).slice(0, MAX_CHUNKS)
+      if (key !== undefined) {
+        cache.delete(key)
+        cache.set(key, chunks)
+        if (cache.size > CACHE_ITEMS) cache.delete(cache.keys().next().value)
+      }
+      return chunks
+    },
     /** @returns {Promise<{ ok: true, wav: Buffer } | { ok: false, error: 'busy' | 'too-large' | 'tts-unavailable' }>} */
-    async synth(text) {
+    async synth(text, { signal } = {}) {
       if (active >= maxActive) return { ok: false, error: 'busy' }
       active++
       const ac = new AbortController()
+      const onAbort = () => ac.abort()
+      if (signal) { if (signal.aborted) ac.abort(); else signal.addEventListener('abort', onAbort, { once: true }) }
       const timer = setTimeout(() => ac.abort(), timeoutMs)
       try {
         const res = await fetchFn(url, { method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, voice_gender: gender }), signal: ac.signal })
         if (!res.ok || !/^audio\//i.test(res.headers.get('content-type') ?? '')) { try { await res.body?.cancel() } catch { /* nothing to cancel */ } return { ok: false, error: 'tts-unavailable' } }
         const wav = await readCapped(res, maxBytes)
         return wav ? { ok: true, wav } : { ok: false, error: 'too-large' }
-      } catch { return { ok: false, error: 'tts-unavailable' } } finally { clearTimeout(timer); active-- }
+      } catch { return { ok: false, error: 'tts-unavailable' } } finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort); active-- }
     },
   }
 }

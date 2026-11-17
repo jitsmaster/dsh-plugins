@@ -226,3 +226,22 @@ test('chunksOf is the read-out text of the item cut for speech, capped in count'
   const huge = { type: 'completed', sessionTitle: 'One', summary: 'Did X.', payload: { reply: Array.from({ length: 3000 }, (_, i) => 'Word' + i + ' goes on and on here.').join(' ') } }
   assert.ok(tts.chunksOf(huge).length <= 200)
 })
+
+test('chunksOf is cached per item so a read does not re-chunk the text for every chunk; fresh=true recomputes', () => {
+  const tts = createTts({ url: DEFAULT_TTS_URL, fetchFn: async () => audioResponse() })
+  const item = { id: 'cache-1', type: 'completed', sessionTitle: 'One', summary: 'Did X.', payload: { reply: LONG } }
+  const a = tts.chunksOf(item)
+  assert.equal(tts.chunksOf(item), a, 'same chunks for the following requests of the read')
+  item.payload = { reply: 'Changed text. Entirely.' }
+  assert.equal(tts.chunksOf(item), a, 'a text change mid-read does not shift the chunks')
+  assert.notEqual(tts.chunksOf(item, true), a, 'the first chunk of a new read recomputes')
+})
+
+test('synth stops and frees its slot when the caller aborts (the phone went away)', async () => {
+  const ac = new AbortController()
+  const tts = createTts({ url: DEFAULT_TTS_URL, maxActive: 1, fetchFn: (url, init) => new Promise((resolve, reject) => { if (init.signal.aborted) return reject(new Error('aborted')); init.signal.addEventListener('abort', () => reject(new Error('aborted'))) }) })
+  const p = tts.synth('x', { signal: ac.signal })
+  ac.abort()
+  assert.deepEqual(await p, { ok: false, error: 'tts-unavailable' })
+  assert.deepEqual(await tts.synth('z', { signal: AbortSignal.abort() }), { ok: false, error: 'tts-unavailable' }, 'slot was freed, not busy')
+})

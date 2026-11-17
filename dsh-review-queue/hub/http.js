@@ -122,11 +122,15 @@ export function createHttp({ hub, log = () => {} }) {
     if (nText !== null && !/^\d{1,5}$/.test(nText)) return send(res, 400, { error: 'bad-input' })
     const item = hub.store?.get(id)
     if (!item) return send(res, 404, { error: 'not-found' })
-    const chunks = hub.tts.chunksOf(item)
     const n = nText === null ? 0 : Number(nText)
+    const chunks = hub.tts.chunksOf(item, n === 0) // chunk 0 starts a read: recompute; later chunks reuse it
     if (!chunks.length) return send(res, 404, { error: 'nothing-to-read' })
     if (n >= chunks.length) return send(res, 404, { error: 'no-chunk' })
-    const r = await hub.tts.synth(chunks[n])
+    const gone = new AbortController() // the phone went away: stop the synthesis and free the slot
+    const onClose = () => { if (!res.writableEnded) gone.abort() }
+    res.once('close', onClose)
+    const r = await hub.tts.synth(chunks[n], { signal: gone.signal })
+    res.off('close', onClose)
     if (!r.ok) return send(res, r.error === 'busy' ? 503 : 502, { error: r.error })
     if (res.destroyed) return undefined
     res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': r.wav.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-TTS-Chunks': String(chunks.length) })
