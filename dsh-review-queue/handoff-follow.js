@@ -70,6 +70,8 @@ export function createHandoffFollow({ serviceOf, store, log }) {
 					// Already followed: the session's other cards that offer a handoff must not offer it again.
 					for (const other of store.list({ status: 'open' })) if (other.sessionId === item.sessionId && handoffFollowable(other)) store.resolve(other.id, { kind: 'handoff-followed', by: 'card', sessionId: result.sessionId })
 				}
+				// The note is gone (already followed or consumed elsewhere): no card of the session may keep offering it.
+				if (!result.ok && result.error === 'no-handoff') for (const other of store.list({ status: 'open' })) if (other.sessionId === item.sessionId && handoffFollowable(other)) store.resolve(other.id, { kind: 'handoff-followed', by: 'elsewhere' })
 				return result
 			} finally { inFlight.delete(item.id) }
 		},

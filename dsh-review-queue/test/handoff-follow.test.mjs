@@ -91,7 +91,7 @@ test('follow: when the service knows no note for the session it is no-handoff an
   const { follow, id, store } = make({ service: { latest: () => undefined, followUp: async () => { calls.push('followUp'); return { status: 200, sessionId: 'x' } } } })
   assert.deepEqual(await follow.follow(id), { ok: false, error: 'no-handoff' })
   assert.deepEqual(calls, [])
-  assert.equal(store.get(id).status, 'open')
+  assert.equal(store.get(id).status, 'resolved', 'the note is gone, so the card stops offering it')
 })
 
 test('follow: the service answering 404 is no-handoff, 409 is follow-busy, anything else is failed; the card stays open', async () => {
@@ -99,7 +99,7 @@ test('follow: the service answering 404 is no-handoff, 409 is follow-busy, anyth
   for (const [result, error] of [[{ status: 404, error: 'this session has no handoff note' }, 'no-handoff'], [{ status: 409, error: 'a follow-up session is already being created' }, 'follow-busy'], [{ status: 500, error: 'spawn failed at D:\\secret\\x' }, 'failed'], [{ status: 200 }, 'failed'], [undefined, 'failed']]) {
     const { follow, id, store } = make({ service: { latest: () => 'D:\\p\\a-handoff.md', followUp: async () => result } })
     assert.deepEqual(await follow.follow(id), { ok: false, error }, JSON.stringify(result))
-    assert.equal(store.get(id).status, 'open')
+    assert.equal(store.get(id).status, error === 'no-handoff' ? 'resolved' : 'open')
   }
 })
 
