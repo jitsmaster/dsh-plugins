@@ -46,7 +46,7 @@ const sleep = (ms, signal) => new Promise((resolve) => {
  *   protocol?: number, workspaces?: () => any[], sessionIds?: () => string[], sessionCheckMs?: number, resyncEveryMs?: number, fetch?: typeof fetch, backoff?: { minMs: number, maxMs: number }, waitMs?: number, log?: (line: string) => void,
  *   now?: () => number, timers?: { setTimeout: Function, clearTimeout: Function } }} opts now and timers are for the thread queue (deadlines, the read timeout); tests inject them
  */
-export function createAgentClient({ baseUrl, secret, instanceKey, adapter, executor, instanceId = randomBytes(8).toString('hex'), label, pluginVersion, pid = process.pid, protocol = PROTOCOL, workspaces = () => [], sessionIds = () => [], sessionCounts = () => undefined, sessionsWatch = () => {}, sessionReportMs = SESSION_REPORT_MS, sessionIdleMs = SESSION_IDLE_MS, sessionCheckMs = SESSION_CHECK_MS, resyncEveryMs = RESYNC_EVERY_MS, fetch, backoff = { minMs: 1000, maxMs: 10_000 }, waitMs = 25_000, log = () => {}, now = Date.now, timers = globalThis }) {
+export function createAgentClient({ baseUrl, secret, instanceKey, adapter, executor, instanceId = randomBytes(8).toString('hex'), label, pluginVersion, pid = process.pid, protocol = PROTOCOL, workspaces = () => [], sessionIds = () => [], sessionCounts = () => undefined, queueOrderOf = () => undefined, sessionsWatch = () => {}, sessionReportMs = SESSION_REPORT_MS, sessionIdleMs = SESSION_IDLE_MS, sessionCheckMs = SESSION_CHECK_MS, resyncEveryMs = RESYNC_EVERY_MS, fetch, backoff = { minMs: 1000, maxMs: 10_000 }, waitMs = 25_000, log = () => {}, now = Date.now, timers = globalThis }) {
   const transport = createTransport({ baseUrl, secret, protocol, instanceId, fetch })
   const mirror = createMirror({ transport, waitMs, backoff, log })
   const stateListeners = new Set()
@@ -121,7 +121,8 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     checkedAt = now()
     if (changed) { reportedSessions = sessionsKey(v); quietProbes = 0 } // a change to report is not held back
     try {
-      const r = await agent('presence', changed ? { sessions: v } : {}, ctl.signal)
+      const order = (() => { try { const o = queueOrderOf(); return o === 'tier' || o === 'oldest' ? { queueOrder: o } : {} } catch { return {} } })() // the display order rides along: the phone follows it
+      const r = await agent('presence', { ...(changed ? { sessions: v } : {}), ...order }, ctl.signal)
       if (r.status === 200) { hubWatch = r.json?.watch === true; quietProbes = hubWatch ? 0 : quietProbes + 1 }
       else if (changed) reportedSessions = before
     } catch { if (changed) reportedSessions = before } finally { reporting = false }

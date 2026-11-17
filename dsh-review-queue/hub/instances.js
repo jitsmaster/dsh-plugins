@@ -223,9 +223,10 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       if (inst) inst.lastSeenAt = now()
       return inst
     },
-    presence(id, { desktopActive, sessions } = {}) {
+    presence(id, { desktopActive, sessions, queueOrder } = {}) {
       const inst = instances.touch(id)
       if (inst && desktopActive === true) inst.lastDesktopActiveAt = now()
+      if (inst && (queueOrder === 'tier' || queueOrder === 'oldest')) { inst.queueOrder = queueOrder; inst.queueOrderAt = now() }
       const clean = cleanSessions(sessions)
       if (inst && clean) { inst.sessions = clean; notifySessions() }
       return inst
@@ -233,6 +234,12 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
 
     /** "N working / M open" summed over the online apps, or undefined when none reports. */
     sessionsTotal: total,
+
+    /** The display order ('tier' | 'oldest') of the online app that is most recently desktop-active (else the latest report); undefined when none reported. */
+    queueOrder() {
+      const best = online().filter((i) => i.queueOrder).sort((a, b) => (b.lastDesktopActiveAt ?? -1) - (a.lastDesktopActiveAt ?? -1) || (b.queueOrderAt ?? 0) - (a.queueOrderAt ?? 0))[0]
+      return best?.queueOrder
+    },
 
     /** Every 10 s: away, gone (settle), expired orphans, forgotten superseded instances. */
     tick() {

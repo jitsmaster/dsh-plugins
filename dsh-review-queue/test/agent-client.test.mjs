@@ -210,6 +210,16 @@ test('presence reaches the hub; the call of an action answers { ok:false } inste
   await client.presence({ desktopActive: true })
 })
 
+test('presence carries this app\'s queue order and the hub snapshot exposes it to the phone', async (t) => {
+  const { hub, port } = await startHub(t)
+  const { client } = setup(t, port, { queueOrderOf: () => 'tier' })
+  client.start()
+  await connected(client)
+  await client.presence({ desktopActive: true })
+  await waitFor(() => hub.instances.queueOrder() === 'tier', 8000, 'order reported')
+  assert.equal(hub.snapshot().queueOrder, 'tier')
+})
+
 test('the mirror follows the hub snapshot and the workspace union, and is not ready without the hub', async (t) => {
   const { hub, port } = await startHub(t)
   const { client } = setup(t, port, { workspaces: () => [{ id: 'w1', title: 'alpha', path: 'D:/a' }] })

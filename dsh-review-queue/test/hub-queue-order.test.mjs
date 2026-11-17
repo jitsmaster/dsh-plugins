@@ -1,38 +1,46 @@
-// Slice 2: in hub mode the snapshot follows the local queue-order switch (the mirror view used to stay oldest-first).
+// Slice 5: an app reports its display order (tier / oldest) with presence; the hub exposes the order of the most recently desktop-active online app.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createHubQueue } from '../agent/hub-queue.js'
+import { createHubStore } from '../hub/hub-store.js'
+import { createCommands } from '../hub/commands.js'
+import { createInstances } from '../hub/instances.js'
+import { fakeClock, memIo } from './hub-helpers.mjs'
 
-const BASE = Date.now() // recent items: aging must not lift both tiers to the cap
-const TIERS = { completed: { severity: 'low', urgency: 'free', tier: 3, at: 0 }, question: { severity: 'medium', urgency: 'blocked', tier: 1, at: 0 } } // the hub snapshot carries each item's stored tier
-const item = (id, type, n) => ({ id, type, status: 'open', sessionId: 's' + id, createdAt: BASE + n, seq: n, tier: TIERS[type], payload: type === 'question' ? { questions: [] } : { reply: 'x' } })
-
-function make(order) {
-  let current = order
-  const local = {
-    snapshot: () => ({ snapshotId: 'L', open: [], resolved: [] }),
-    onChange: () => () => {}, stop: () => ({ ok: true }), uiState: () => ({ seq: 0 }),
-    queueOrder: () => current,
-  }
-  const hubSnap = { snapshotId: 'e:1', open: [item('a', 'completed', 1), item('b', 'question', 2)], resolved: [] }
-  const client = {
-    state: 'connected',
-    mirror: { ready: true, snapshot: () => hubSnap, workspaces: () => [], onChange: () => () => {} },
-    onState: () => () => {}, call: async () => ({ ok: true }),
-  }
-  const queue = createHubQueue({ local, client, speaker: { speak: () => ({ ok: true }), stop() {} }, controllerOf: () => ({}) })
-  return { queue, set: (v) => { current = v } }
+const A = 'aaaa1111'
+const B = 'bbbb2222'
+function make() {
+  const clock = fakeClock()
+  let n = 0
+  const store = createHubStore({ now: clock.now, uuid: () => 'u' + ++n, timers: clock, io: memIo() })
+  const commands = createCommands({ now: clock.now, timers: clock })
+  const instances = createInstances({ store, commands, now: clock.now })
+  return { clock, instances }
 }
+const reg = (instances, id, key) => instances.register({ key, id, label: 'DSH ' + id.slice(0, 1) })
 
-test('hub mode: oldest by default, tier order after the local switch, positions follow', () => {
-  const { queue, set } = make('oldest')
-  assert.deepEqual(queue.snapshot().open.map((i) => i.id), ['a', 'b'])
-  assert.equal(queue.snapshot().queueOrder, 'oldest')
-  set('tier')
-  const snap = queue.snapshot()
-  assert.deepEqual(snap.open.map((i) => i.id), ['b', 'a'])
-  assert.deepEqual(snap.open.map((i) => i.position), [1, 2])
-  assert.equal(snap.queueOrder, 'tier')
-  set('oldest')
-  assert.deepEqual(queue.snapshot().open.map((i) => i.id), ['a', 'b'])
+test('no app reported an order: undefined', () => {
+  const { instances } = make()
+  reg(instances, A, 'k1')
+  assert.equal(instances.queueOrder(), undefined)
+})
+
+test('presence carries the order; only "tier" and "oldest" are accepted', () => {
+  const { instances } = make()
+  reg(instances, A, 'k1')
+  instances.presence(A, { queueOrder: 'tier' })
+  assert.equal(instances.queueOrder(), 'tier')
+  instances.presence(A, { queueOrder: 'bogus' })
+  assert.equal(instances.queueOrder(), 'tier', 'a bad value changes nothing')
+  instances.presence(A, { queueOrder: 'oldest' })
+  assert.equal(instances.queueOrder(), 'oldest')
+})
+
+test('with two apps the most recently desktop-active one decides', () => {
+  const { instances, clock } = make()
+  reg(instances, A, 'k1')
+  reg(instances, B, 'k2')
+  instances.presence(A, { queueOrder: 'tier', desktopActive: true })
+  clock.advance?.(1000)
+  instances.presence(B, { queueOrder: 'oldest', desktopActive: true })
+  assert.equal(instances.queueOrder(), 'oldest')
 })

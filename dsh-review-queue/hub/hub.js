@@ -133,7 +133,8 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
       const snap = queue.snapshot()
       const decorate = (item) => { const v = instances.view(item.owner); return { ...item, ownerLabel: v.label, ownerState: v.state } }
       const sessions = instances.sessionsTotal()
-      return { ...snap, ...(sessions ? { sessions } : {}), open: snap.open.map(decorate), resolved: snap.resolved.map(decorate) }
+      const order = instances.queueOrder()
+      return { ...snap, ...(sessions ? { sessions } : {}), ...(order ? { queueOrder: order } : {}), open: snap.open.map(decorate), resolved: snap.resolved.map(decorate) }
     },
     /** A phone or an open overlay asked for the snapshot: the apps keep their session numbers fresh for the next WATCH_MS. */
     noteWatch() { watchedAt = now() },
