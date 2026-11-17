@@ -6,6 +6,7 @@ import { matchSessions } from './match.js'
 import { readResult } from './result.js'
 import { cleanTitle } from './envelope.js'
 import { createArchiver } from './archiver.js'
+import { createRenamer } from './renamer.js'
 
 // No import of @deepseek-ai/dsh-tools: a plugin linked from D:/dev/ai/dsh-plugins has no node_modules, so the bare import would fail in production (review finding).
 // This local helper builds the same ToolDefinition shape defineTool returns (D:/dev/DSH/packages/core/tools/src/contracts.ts): name, description, parameters as JSON Schema
@@ -59,6 +60,7 @@ export function apply(ctx, config = {}) {
   const sender = createSender({ get, titleOf, log: config.log, guards })
   const starter = createStarter({ get, titleOf, log: config.log, guards })
   const archiver = createArchiver({ get, titleOf, log: config.log, guards })
+  const renamer = createRenamer({ get, titleOf, log: config.log })
   const caller = (exec) => {
     if (!exec.agent) throw new Error('no sender: these tools need a calling session')
     if (isSubagent(exec.agent)) throw new Error('only top-level sessions can use session-link tools')
@@ -119,6 +121,18 @@ export function apply(ctx, config = {}) {
     async execute(args, exec) {
       const me = caller(exec)
       return json(await starter.start({ agent: me, text: args.text, workspace: args.workspace, sparc: args.sparc, effort: args.effort, signal: exec.signal }))
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'rename_session',
+    description: "Ask the user to rename THIS session (for example to \"PR 6785\"). Nothing is renamed by the call itself: it puts a question card (old title, proposed title) in the user's Review Queue and the session is renamed only if the user approves. Approval is the end of the flow: no confirmation is sent back, so do not ask for or wait on one.",
+    parameters: { title: { type: 'string', required: true, description: 'The proposed new session title (one line, 120 characters).' } },
+    output: out,
+    async execute(args, exec) {
+      const me = caller(exec)
+      const res = await renamer.rename({ agent: me, title: args.title, signal: exec.signal })
+      return res === undefined ? '' : json(res)
     },
   }))
 
