@@ -179,6 +179,8 @@ test('pruneSaved keeps only drafts of items still in the queue', () => {
 
 test('resolutionText knows superseded', () => {
   assert.equal(T.resolutionText({ resolution: { kind: 'superseded' } }), 'Replaced by a newer result')
+  assert.equal(T.resolutionText({ resolution: { kind: 'superseded', by: 'merge', assumed: ['Yes', 'No'] } }), 'Replaced by a newer result; assumed answer: Yes, No')
+  assert.equal(T.resolutionText({ resolution: { kind: 'superseded', by: 'merge', assumed: [] } }), 'Replaced by a newer result')
 })
 
 test('mdInline splits inline markdown and only links http(s) URLs', () => {
