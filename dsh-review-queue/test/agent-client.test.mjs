@@ -274,3 +274,19 @@ test('a change the hub makes while connected (reviewed on the phone) is applied 
   await waitFor(() => adapter.get(c.id).status === 'resolved', 5000, 'applied')
   assert.equal(adapter.n, before)
 })
+
+test('after a reconnect the app reports its queue order again (a restarted hub has forgotten it)', async (t) => {
+  const { hub, port } = await startHub(t)
+  const spy = spyFetch()
+  const { client } = setup(t, port, { fetch: spy.fetch, queueOrderOf: () => 'tier', sessionReportMs: 600000, sessionIdleMs: 600000, sessionCheckMs: 20 })
+  client.start()
+  await connected(client)
+  await waitFor(() => hub.instances.queueOrder() === 'tier', 8000, 'first order')
+  await new Promise((r) => setTimeout(r, 150))
+  const before = spy.log.filter((n) => n === 'presence').length
+  spy.failing.add('commands')
+  await waitFor(() => client.state !== 'connected', 8000, 'degraded')
+  spy.failing.delete('commands')
+  await connected(client)
+  await waitFor(() => spy.log.filter((n) => n === 'presence').length > before, 3000, 'order reported again after reconnect')
+})

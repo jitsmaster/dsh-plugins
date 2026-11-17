@@ -172,6 +172,7 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
     adapter.synced(sync.n)
     applyHubView(r.json)
     reportedSessions = sessionsKey(sessions)
+    reportedOrder = '' // a (restarted) hub may have forgotten the order: report it again
     hubWatch = r.json.watch === true
     quietProbes = 0
     return 'ok'
