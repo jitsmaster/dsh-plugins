@@ -239,7 +239,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     /** "N working / M open" summed over the online apps, or undefined when none reports. */
     sessionsTotal: total,
 
-    /** The display order ('tier' | 'oldest') of the online app that is most recently desktop-active (else the latest report); undefined when none reported. */
+    /** The display order ('tier' | 'oldest') of the online app that was desktop-active most recently, when an app reports that; otherwise the app that reported an order last. undefined when none reported. */
     queueOrder() {
       const best = online().filter((i) => i.queueOrder).sort((a, b) => (b.lastDesktopActiveAt ?? -1) - (a.lastDesktopActiveAt ?? -1) || (b.queueOrderAt ?? 0) - (a.queueOrderAt ?? 0))[0]
       return best?.queueOrder

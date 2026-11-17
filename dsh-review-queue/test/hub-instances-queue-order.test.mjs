@@ -40,7 +40,7 @@ test('with two apps the most recently desktop-active one decides', () => {
   reg(instances, A, 'k1')
   reg(instances, B, 'k2')
   instances.presence(A, { queueOrder: 'tier', desktopActive: true })
-  clock.advance?.(1000)
+  clock.advance(1000)
   instances.presence(B, { queueOrder: 'oldest', desktopActive: true })
   assert.equal(instances.queueOrder(), 'oldest')
 })
