@@ -1,12 +1,12 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
 import { createBrowserReadAloud, readAloudVisible } from './read-aloud.js'
-import { state, subscribe, set, act, getCore, fetchTtsChunk, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen } from './api.js'
+import { state, subscribe, set, clearFresh, act, getCore, fetchTtsChunk, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen } from './api.js'
 import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
 import { SettingsView } from './settings.js'
-import { backHref, cardError, heldView, listModel, markWrongView, navCounts, nextTabIndex, pausedNote, pausedView, resolvedNavLabel, rowBadges, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
+import { backHref, cardError, groupedRows, heldView, listModel, markWrongView, navCounts, nextTabIndex, pausedNote, pausedView, resolvedNavLabel, rowBadges, screenFor, todoCancelBody, todoCardModel, todoConfirmBody } from './model.js'
 import { viewIssue } from './view-guard.js'
 import { platformInfo, installHint, isStandalone } from './platform.js'
 import { createDictation } from './dictation.js'
@@ -236,6 +236,21 @@ function PermissionBody({ item }) {
   </div>`
 }
 
+/** The AI's suggested decision of a done card: its text and one option button each; tapping an option fills the reply draft (the composer sends it). Hook-free. */
+export function DecisionOptions({ item, st }) {
+  const d = item && item.decision
+  if (!d || !d.text) return null
+  const reply = (st.replies && st.replies[item.id]) || ''
+  const busy = !!(st.busy && st.busy[item.id])
+  const options = Array.isArray(d.options) ? d.options.filter((o) => typeof o === 'string') : []
+  return html`<div class="decision" data-decision=${item.id}>
+    <div class="text" style="font-weight:600">${String(d.text)}</div>
+    <div class="sub">AI-suggested</div>
+    ${options.map((o) => html`<button key=${o} type="button" class=${'opt' + (reply === o ? ' on' : '')} data-decision-opt=${o} disabled=${busy} aria-pressed=${reply === o}
+      onClick=${() => set({ replies: { ...state.replies, [item.id]: o } })}><span class="mark">${reply === o ? '◉' : '○'}</span><span>${o}</span></button>`)}
+  </div>`
+}
+
 function CompletedBody({ item }) {
   const st = useStore()
   const busy = st.busy[item.id]
@@ -244,6 +259,7 @@ function CompletedBody({ item }) {
   // Writing back to the session is the composer under the card (ItemView): this body keeps the summary, the full reply and Reviewed.
   return html`<div>
     <div class="text" style="white-space:pre-line">${item.summary ? inlineNodes(item.summary) : 'Finished.'}</div>
+    <${DecisionOptions} item=${item} st=${st} />
     ${item.payload && item.payload.reply ? html`<details open=${detailOpen(st.toggles, item.id, 'reply', replyDefault)} onToggle=${(e) => rememberDetail(item.id, 'reply', e.currentTarget.open, replyDefault)}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>
@@ -614,7 +630,8 @@ function ItemRow({ item }) {
   const c = getCore()
   const risky = item.type === 'permission' && item.risks && item.risks.length
   const badges = rowBadges(c, item)
-  return html`<a class="rowitem" href=${'#/item/' + item.id}>
+  const isNew = !!state.fresh[item.id]
+  return html`<a class=${'rowitem' + (isNew ? ' new' : '')} href=${'#/item/' + item.id} onClick=${() => clearFresh(item.id)}>
     <div class="top"><${Chip} type=${item.type} item=${item} />${badges.tier ? html`<span class=${'chip tier tier' + badges.tier.level} title=${badges.tier.title}>${badges.tier.text}</span>` : null}${risky ? html`<span class="risk small">⚠ risky</span>` : null}<span class="age">${ageOf(item)}</span></div>
     <div class="title">${c.cardTitle(item)}</div>
     ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}</div>` : null}
@@ -654,6 +671,17 @@ export function NewTodoFab() {
   return html`<a class="fab" href="#/new">+ New todo</a>`
 }
 
+/** The header above the rows of one session group (model from groupedRows): title, workspace, best tier, item count (no AI count line on the phone: that banner was removed on purpose). Display only. */
+export function GroupHead({ head }) {
+  const tier = Number.isInteger(head.topTier) && head.topTier >= 0 && head.topTier <= 4 ? 'P' + head.topTier : ''
+  return html`<div class="group-head" data-group=${head.id}>
+    <span class="title">${head.title}</span>
+    ${head.workspace ? html`<span class="sub">${head.workspace}</span>` : null}
+    ${tier ? html`<span class=${'chip tier tier' + head.topTier} title="Highest priority in this session">${tier}</span>` : null}
+    <span class="sub">${head.count} items</span>
+  </div>`
+}
+
 /** The Waiting list: type tabs, search, the rows, and the floating "+ New todo" link. Takes the store (the wrapper below holds the hook). */
 export function WaitingBody({ st }) {
   const c = getCore()
@@ -667,7 +695,7 @@ export function WaitingBody({ st }) {
     <input class="input" type="search" placeholder="Search…" value=${f.query} onInput=${(e) => set({ filter: { ...state.filter, query: e.target.value } })} />
     <div id="wpanel" role="tabpanel" aria-labelledby=${'wtab-' + (f.type || 'all')}>
       ${note ? html`<div class="sub paused-note" role="status">⏸ ${note}</div>` : null}
-      ${shown.length ? shown.map((i) => html`<${ItemRow} key=${i.id} item=${i} />`) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
+      ${shown.length ? groupedRows(st.groupsUi, shown, st.snap ? st.snap.resolved : [], st.snap ? st.snap.queueOrder : undefined).map((r) => (r.head ? html`<${GroupHead} key=${'gh:' + r.head.id} head=${r.head} />` : html`<${ItemRow} key=${r.item.id} item=${r.item} />`)) : html`<div class="empty">${all.some((i) => i.type !== 'onhold') ? 'Nothing matches this filter.' : 'Nothing is waiting for you.'}</div>`}
     </div>
     <${NewTodoFab} />
   </div>`

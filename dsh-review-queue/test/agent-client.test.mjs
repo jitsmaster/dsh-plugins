@@ -210,6 +210,27 @@ test('presence reaches the hub; the call of an action answers { ok:false } inste
   await client.presence({ desktopActive: true })
 })
 
+test('presence carries this app\'s queue order and the hub snapshot exposes it to the phone', async (t) => {
+  const { hub, port } = await startHub(t)
+  const { client } = setup(t, port, { queueOrderOf: () => 'tier' })
+  client.start()
+  await connected(client)
+  await client.presence({ desktopActive: true })
+  await waitFor(() => hub.instances.queueOrder() === 'tier', 8000, 'order reported')
+  assert.equal(hub.snapshot().queueOrder, 'tier')
+})
+
+test('a later change of the app queue order is reported without waiting for the next probe', async (t) => {
+  const { hub, port } = await startHub(t)
+  let order = 'oldest'
+  const { client } = setup(t, port, { queueOrderOf: () => order, sessionReportMs: 600000, sessionIdleMs: 600000, sessionCheckMs: 20 })
+  client.start()
+  await connected(client)
+  await waitFor(() => hub.instances.queueOrder() === 'oldest', 8000, 'first order')
+  order = 'tier'
+  await waitFor(() => hub.instances.queueOrder() === 'tier', 3000, 'changed order reported')
+})
+
 test('the mirror follows the hub snapshot and the workspace union, and is not ready without the hub', async (t) => {
   const { hub, port } = await startHub(t)
   const { client } = setup(t, port, { workspaces: () => [{ id: 'w1', title: 'alpha', path: 'D:/a' }] })
@@ -252,4 +273,20 @@ test('a change the hub makes while connected (reviewed on the phone) is applied 
   assert.deepEqual(await hub.act('reviewed', { id: c.id }), { ok: true })
   await waitFor(() => adapter.get(c.id).status === 'resolved', 5000, 'applied')
   assert.equal(adapter.n, before)
+})
+
+test('after a reconnect the app reports its queue order again (a restarted hub has forgotten it)', async (t) => {
+  const { hub, port } = await startHub(t)
+  const spy = spyFetch()
+  const { client } = setup(t, port, { fetch: spy.fetch, queueOrderOf: () => 'tier', sessionReportMs: 600000, sessionIdleMs: 600000, sessionCheckMs: 20 })
+  client.start()
+  await connected(client)
+  await waitFor(() => hub.instances.queueOrder() === 'tier', 8000, 'first order')
+  await new Promise((r) => setTimeout(r, 150))
+  const before = spy.log.filter((n) => n === 'presence').length
+  spy.failing.add('commands')
+  await waitFor(() => client.state !== 'connected', 8000, 'degraded')
+  spy.failing.delete('commands')
+  await connected(client)
+  await waitFor(() => spy.log.filter((n) => n === 'presence').length > before, 3000, 'order reported again after reconnect')
 })

@@ -43,6 +43,30 @@ export const state = {
   toggles: loadToggles(storage),
   // The open bottom confirm sheet (Mark wrong…, Overrule rule, Hold…), in memory only: { kind: 'mark-wrong' | 'overrule' | 'hold', id, text } or null. One at a time; a screen change closes it.
   sheet: null,
+  // lib/groups-ui.js (the desktop's group card model), loaded lazily by loadGroupsUi(); undefined keeps the list flat.
+  groupsUi: undefined,
+  // Ids of items that arrived after the first snapshot and were not opened yet (the row is highlighted). In memory only.
+  fresh: {},
+}
+const KNOWN_IDS_MAX = 3000
+let knownIds = null // ids seen in earlier snapshots; null before the first one (what is there at load is not new)
+/** Marks items that arrive after the first snapshot as new until clearFresh(id). An item that leaves and returns is not new again. */
+export function trackFresh(body) {
+  const ids = ((body && body.open) || []).map((i) => i.id)
+  if (knownIds === null) { knownIds = new Set(ids); return }
+  const live = new Set(ids)
+  const fresh = {}
+  for (const id of Object.keys(state.fresh)) if (live.has(id)) fresh[id] = true
+  for (const id of ids) if (!knownIds.has(id)) fresh[id] = true
+  for (const id of ids) { knownIds.delete(id); knownIds.add(id) }
+  while (knownIds.size > KNOWN_IDS_MAX) knownIds.delete(knownIds.values().next().value)
+  if (Object.keys(fresh).length !== Object.keys(state.fresh).length || Object.keys(fresh).some((k) => !state.fresh[k])) set({ fresh })
+}
+/** Clears the new mark of one item (the user opened it). */
+export function clearFresh(id) {
+  if (!id || !state.fresh[id]) return
+  const { [id]: _gone, ...rest } = state.fresh
+  set({ fresh: rest })
 }
 const listeners = new Set()
 export const subscribe = (l) => { listeners.add(l); return () => { listeners.delete(l) } }
@@ -124,6 +148,7 @@ async function pollLoop() {
       fails = 0
       if (body.unchanged) { if (state.error || state.auth) set({ error: null, auth: false }); continue }
       since = core.sinceOf(body)
+      trackFresh(body)
       const kept = core.pruneSaved({ drafts: state.drafts, replies: state.replies }, body)
       const gone = Object.keys(state.drafts).some((k) => !(k in kept.drafts)) || Object.keys(state.replies).some((k) => !(k in kept.replies))
       const toggles = pruneToggles(state.toggles, body) // the choices of items that left the queue go; the same object when none did
@@ -449,9 +474,18 @@ export function stopThreadPolling(id) {
   if (target !== null && state.threads[target]) setThread(target, trimThread(state.threads[target]))
 }
 
+/** Imports the group model once, dynamically (a static import would break the node tests that import this file). A failure leaves the list flat. */
+let groupsAsked = false
+export function loadGroupsUi(importer = (url) => import(url)) {
+  if (groupsAsked) return
+  groupsAsked = true
+  importer(API + '/m/groups-ui.js').then((m) => set({ groupsUi: m }), (e) => { try { console.warn('review queue: grouping module not loaded, the list stays flat (' + ((e && e.message) || e) + ')') } catch { /* no console */ } })
+}
+
 export async function init() {
   core = await loadCore()
   load()
+  loadGroupsUi()
   set({ ready: false })
   bindDraftFlush(window, document, () => saveTodoDraft(storage, state.todoDraft)) // the latest text once more when the page goes away or to the background
   document.addEventListener('visibilitychange', () => { if (!document.hidden && current) current.abort() }) // a phone that slept has a dead connection

@@ -223,9 +223,12 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       if (inst) inst.lastSeenAt = now()
       return inst
     },
-    presence(id, { desktopActive, sessions } = {}) {
+    presence(id, { desktopActive, sessions, queueOrder } = {}) {
       const inst = instances.touch(id)
+      const beforeOrder = instances.queueOrder()
       if (inst && desktopActive === true) inst.lastDesktopActiveAt = now()
+      if (inst && (queueOrder === 'tier' || queueOrder === 'oldest')) { inst.queueOrder = queueOrder; inst.queueOrderAt = now() }
+      if (inst && instances.queueOrder() !== beforeOrder) { persist(); try { onSessions(total()) } catch { /* one bad listener must not stop the hub */ } } // a new effective order moves the snapshot id and wakes the phones' long polls
       const clean = cleanSessions(sessions)
       if (inst && clean) { inst.sessions = clean; notifySessions() }
       return inst
@@ -233,6 +236,12 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
 
     /** "N working / M open" summed over the online apps, or undefined when none reports. */
     sessionsTotal: total,
+
+    /** The display order ('tier' | 'oldest') of the online app that was desktop-active most recently, when an app reports that; otherwise the app that reported an order last. undefined when none reported. */
+    queueOrder() {
+      const best = online().filter((i) => i.queueOrder).sort((a, b) => (b.lastDesktopActiveAt ?? -1) - (a.lastDesktopActiveAt ?? -1) || (b.queueOrderAt ?? 0) - (a.queueOrderAt ?? 0))[0]
+      return best?.queueOrder
+    },
 
     /** Every 10 s: away, gone (settle), expired orphans, forgotten superseded instances. */
     tick() {

@@ -75,7 +75,7 @@ export function createAgentApi({ hub, instances, commands, store, secret, log = 
       return send(res, 200, { ok: true, accepted: commands.complete(body.instanceId, String(body.cid), body.result) })
     },
     presence(req, res, body) {
-      return instances.presence(body.instanceId, { desktopActive: body.desktopActive === true, sessions: body.sessions }) ? send(res, 200, { ok: true, watch: hub.watching() }) : unknown(res)
+      return instances.presence(body.instanceId, { desktopActive: body.desktopActive === true, sessions: body.sessions, queueOrder: body.queueOrder }) ? send(res, 200, { ok: true, watch: hub.watching() }) : unknown(res)
     },
     bye(req, res, body) {
       const r = instances.bye(body.instanceId)
