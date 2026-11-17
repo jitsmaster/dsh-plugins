@@ -237,6 +237,21 @@ function PermissionBody({ item }) {
   </div>`
 }
 
+/** The AI's suggested decision of a done card: its text and one option button each; tapping an option fills the reply draft (the composer sends it). Hook-free. */
+export function DecisionOptions({ item, st }) {
+  const d = item && item.decision
+  if (!d || !d.text) return null
+  const reply = (st.replies && st.replies[item.id]) || ''
+  const busy = !!(st.busy && st.busy[item.id])
+  const options = Array.isArray(d.options) ? d.options : []
+  return html`<div class="decision" data-decision=${item.id}>
+    <div class="text" style="font-weight:600">${String(d.text)}</div>
+    <div class="sub">AI-suggested</div>
+    ${options.map((o) => html`<button key=${o} type="button" class=${'opt' + (reply === o ? ' on' : '')} data-decision-opt=${o} disabled=${busy} aria-pressed=${reply === o}
+      onClick=${() => set({ replies: { ...state.replies, [item.id]: o } })}><span class="mark">${reply === o ? '◉' : '○'}</span><span>${o}</span></button>`)}
+  </div>`
+}
+
 function CompletedBody({ item }) {
   const st = useStore()
   const busy = st.busy[item.id]
@@ -245,6 +260,7 @@ function CompletedBody({ item }) {
   // Writing back to the session is the composer under the card (ItemView): this body keeps the summary, the full reply and Reviewed.
   return html`<div>
     <div class="text" style="white-space:pre-line">${item.summary ? inlineNodes(item.summary) : 'Finished.'}</div>
+    <${DecisionOptions} item=${item} st=${st} />
     ${item.payload && item.payload.reply ? html`<details open=${detailOpen(st.toggles, item.id, 'reply', replyDefault)} onToggle=${(e) => rememberDetail(item.id, 'reply', e.currentTarget.open, replyDefault)}><summary class="sub">Full reply</summary><${Md} text=${item.payload.reply} /></details>` : null}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${async () => { if (await act('/v1/reviewed', { id: item.id }, item.id)) go('/') }}>Reviewed</button>

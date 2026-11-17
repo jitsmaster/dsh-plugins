@@ -340,6 +340,7 @@
   "test/client-merged-note.test.mjs",
   "test/mobile-row-badges.test.mjs",
   "test/mobile-group-rows.test.mjs",
+  "test/mobile-decision-options.test.mjs",
   "test/mobile-group-header.test.mjs",
   "test/agent-proxy-order.test.mjs",
   "test/todo-first.test.mjs",
