@@ -261,3 +261,17 @@ test('synth treats an empty audio answer as unavailable', async () => {
   const tts = createTts({ url: DEFAULT_TTS_URL, fetchFn: async () => audioResponse(Buffer.alloc(0)) })
   assert.deepEqual(await tts.synth('x'), { ok: false, error: 'tts-unavailable' })
 })
+
+test('/v1/tts has its own per-device limiter (larger budget than the general one): refused with 429 when it is used up', async (t) => {
+  const k = await fakeKokoro(t)
+  const { hub, port } = await startHub(t, { ttsUrl: k.url })
+  const id = feed(hub)
+  let general = 0
+  hub.identify = () => ({ role: 'device', deviceId: 'd1' })
+  hub.deviceLimiter.take = () => { general++; return { ok: true } }
+  assert.equal((await getBin(port, P + '/v1/tts?id=' + id + '&n=0')).status, 200)
+  assert.equal(general, 0, 'the general limiter is not used')
+  hub.ttsLimiter.take = () => ({ ok: false, retryAfterMs: 1000 })
+  assert.equal((await getBin(port, P + '/v1/tts?id=' + id + '&n=0')).status, 429)
+  assert.equal(k.requests.length, 1, 'nothing synthesised once limited')
+})

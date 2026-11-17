@@ -42,6 +42,7 @@ export const WATCH_MS = 60_000
 /** The numbers of many apps (each reports on its own tick) wake the long polls at most this often, once, with the final sum. */
 export const SESSIONS_WAKE_MS = 3000
 const DEVICE_REQUESTS_PER_MINUTE = 120
+const TTS_REQUESTS_PER_MINUTE = 600
 /** The files only this user may read; tightened after they exist (the temp file of every later write is tightened before it replaces them). */
 const PRIVATE_FILES = ['devices.json', 'push.json', 'vapid.json']
 
@@ -91,6 +92,8 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
   let watchedAt = -Infinity // when a phone or an open overlay last polled the snapshot
   let sessionsTimer // the one trailing timer that wakes the listeners for the numbers
   const deviceLimiter = createRateLimiter({ now, limit: DEVICE_REQUESTS_PER_MINUTE, windowMs: 60_000 })
+  // /v1/tts: a read makes a request per chunk plus a prefetch, so it gets its own, larger per-device budget (the general one stays for everything else).
+  const ttsLimiter = createRateLimiter({ now, limit: TTS_REQUESTS_PER_MINUTE, windowMs: 60_000 })
 
   /** Devices, pairing, push and roles (H4): created once the state folder and the config are known. */
   function startPhoneSide({ tightenSecret }) {
@@ -110,7 +113,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
   }
 
   const hub = {
-    hubId, protocol, version, idleExitMs, onShutdown, deviceLimiter, now: () => now(),
+    hubId, protocol, version, idleExitMs, onShutdown, deviceLimiter, ttsLimiter, now: () => now(),
     get port() { return boundPort },
     get store() { return store },
     get config() { return config },

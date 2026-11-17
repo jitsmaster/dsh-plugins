@@ -139,7 +139,7 @@ export function createHttp({ hub, log = () => {} }) {
   }
 
   async function api(req, res, url, path) {
-    // /v1/tts is not counted by the per-device limiter: a read makes one request per chunk plus a prefetch, and hub.tts (2 at once) already bounds the load.
+    // /v1/tts skips the general per-device limiter and is counted by its own larger one (hub.ttsLimiter) in the route below.
     const who = authorize(req, res, { longPoll: path === '/v1/snapshot' && Number(url.searchParams.get('wait')) > 0, skipLimit: path === '/v1/tts' })
     if (!who) return undefined
     const caller = typeof req.headers['x-rq-instance'] === 'string' ? req.headers['x-rq-instance'] : undefined
@@ -156,7 +156,13 @@ export function createHttp({ hub, log = () => {} }) {
       // A paired phone may read it too: it already prompts any session (post, follow-up todo), and its Follow up form picks the session in this dropdown.
       return send(res, 200, await hub.followUpSessions(caller))
     }
-    if (path === '/v1/tts') return await ttsChunk(req, res, url)
+    if (path === '/v1/tts') {
+      if (who.role === 'device' && who.deviceId) {
+        const taken = hub.ttsLimiter.take(who.deviceId)
+        if (!taken.ok) { sendLimited(res, taken.retryAfterMs); return undefined }
+      }
+      return await ttsChunk(req, res, url)
+    }
     if (path.startsWith('/v1/push/')) {
       if (req.method === 'POST' && !originOk(req)) return send(res, 403, { error: 'bad-origin' })
       return await hub.pushRoutes(req, res, path, { readJson, send }, who)
