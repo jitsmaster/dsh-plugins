@@ -308,6 +308,61 @@ test('with onPrCreated: creation hands over to it; this session is neither renam
   assert.equal(h2.created.length, 0)
 })
 
+// ---- detection must survive how the real shell tool is invoked (regression: PRs 6776, 6783, 6785, 6786 were never handed over) ----
+
+test('parsePrCreated finds the command after a newline of a JSON-stringified shell call (here-string body)', () => {
+  const stringified = JSON.stringify({ command: '$body = @"\nx\n"@\naz repos pr create --title t' })
+  assert.equal(parsePrCreated(stringified, '{"pullRequestId": 6783}'), '6783')
+  assert.equal(parsePrCreated(JSON.stringify({ command: 'cd x\r\naz repos pr create' }), '{"pullRequestId": 7}'), '7')
+  assert.equal(parsePrCreated(JSON.stringify({ command: 'cd x\taz repos pr create' }), '{"pullRequestId": 8}'), '8')
+})
+
+test('parsePrCreated finds PR creation through the ado.ps1 wrapper (no leading az)', () => {
+  const cmd = 'pwsh -NoProfile -File "C:\\Users\\awang\\.claude\\skills\\ado-cli\\ado.ps1" repos pr create --title t --target-branch develop'
+  assert.equal(parsePrCreated(cmd, '{"pullRequestId": 6790}'), '6790')
+  assert.equal(parsePrCreated(JSON.stringify({ command: cmd }), '{"pullRequestId": 6791}'), '6791')
+})
+
+test('parsePrCreated still ignores other repos pr commands and a pr create without a pullRequestId', () => {
+  assert.equal(parsePrCreated('az repos pr update --id 5', '{"pullRequestId": 5}'), undefined)
+  assert.equal(parsePrCreated(JSON.stringify({ command: 'ado.ps1 repos pr show --id 5' }), '{"pullRequestId": 5}'), undefined)
+  assert.equal(parsePrCreated('az repos pr create', 'ERROR: failed'), undefined)
+})
+
+test('parsePrCreated ignores commands that only mention repos pr create (echo, grep)', () => {
+  assert.equal(parsePrCreated('echo repos pr create', '{"pullRequestId": 5}'), undefined)
+  assert.equal(parsePrCreated('grep -r "repos pr create" docs', '{"pullRequestId": 5}'), undefined)
+  assert.equal(parsePrCreated('Select-String -Pattern repos pr create x.md', '{"pullRequestId": 5}'), undefined)
+  assert.equal(parsePrCreated('grep -r "az repos pr create" docs', '{"pullRequestId": 5}'), undefined)
+  assert.equal(parsePrCreated('echo "az repos pr create"', '{"pullRequestId": 5}'), undefined)
+  assert.equal(parsePrCreated('echo az repos pr create', '{"pullRequestId": 5}'), undefined)
+  assert.equal(parsePrCreated('cd x && az repos pr create --title t', '{"pullRequestId": 9}'), '9')
+})
+
+test('parsePrCreated: a real call after an earlier mention in the same command is still found', () => {
+  const out = '{"pullRequestId": 12}'
+  assert.equal(parsePrCreated('echo "az repos pr create"; az repos pr create --title t', out), '12')
+  assert.equal(parsePrCreated('grep -r "az repos pr create" docs && az repos pr create', out), '12')
+})
+
+test('parsePrCreated finds PowerShell forms that assign, wrap or nest the call', () => {
+  const out = '{"pullRequestId": 11}'
+  assert.equal(parsePrCreated('$pr = az repos pr create --title t | ConvertFrom-Json', out), '11')
+  assert.equal(parsePrCreated('pwsh -Command "az repos pr create --title t"', out), '11')
+  assert.equal(parsePrCreated('if ($x) { az repos pr create }', out), '11')
+  assert.equal(parsePrCreated('FOO=1 az repos pr create', out), '11')
+  assert.equal(parsePrCreated(JSON.stringify({ command: '$pr = az repos pr create --title "t"' }), out), '11')
+})
+
+test('a multi-line shell command that creates a PR hands over (end to end through tools/post-execute)', async () => {
+  const h = harness({ withCreated: true })
+  await h.shell('$d = @"\ndescription\n"@\naz repos pr create --title t --description $d', '{"pullRequestId": 6783}')
+  assert.deepEqual(h.created, [['a1', '6783']])
+  const h2 = harness({ withCreated: true })
+  await h2.shell('pwsh -NoProfile -File ado.ps1 repos pr create --title t', '{"pullRequestId": 6792}')
+  assert.deepEqual(h2.created, [['a1', '6792']])
+})
+
 test('PR-CREATED marker also renames', async () => {
   const h = harness()
   await h.shell('echo hi', 'PR-CREATED: 55')

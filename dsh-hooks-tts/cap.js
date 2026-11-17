@@ -164,6 +164,8 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
    */
   const check = (agent, allowWarn = true, turnStart = false) => {
     if (skip(agent)) return undefined
+    // A pending PR hand-over already carries the continuation (PR notes + "after PR" session): a cap handoff would replace that job.
+    if (isHandingOver(agent)) return undefined
     // Read the live setting on every check, so a change applies from the very next step.
     const cap = settings.get().contextCapTokens
     if (cap !== lastCap) { lastCap = cap; instructed.clear(); warned.clear() } // a changed cap re-arms every session
@@ -370,6 +372,8 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     if (Date.now() - entry.at > HANDOVER_MAX_AGE_MS) { handingOverPrs.delete(key); return undefined }
     return entry.prId
   }
+  /** True while a live (not expired) PR hand-over of this session is in progress: the cap handoff must not replace it. */
+  const isHandingOver = (agent) => handingOver(agent.id) !== undefined
   const NO_REMAINING = /^\s*NO-REMAINING-WORK\s*$/
 
   /**
@@ -579,9 +583,10 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
   ctx.on('agent/turn-stopping', async ({ agent }) => {
     // A reply that says "Handoff written to <path>" (the SPARC stop message) makes the session offer a follow-up.
     if (handoffs && !skip(agent)) handoffs.observeText(agent.id, lastReply(agent))
+    const handedOver = Boolean(pending.get(agent.id)?.prId) // a live job, not the expiring entry (expiry must not run before touchHandover); this stop belongs to the PR hand-over: no cap handoff on top of it, even once the hand-over finished
     await spawnResume(agent)
     if (turnOpen.delete(agent.id)) { const tokens = contextTokens(ctx, agent); if (tokens !== undefined) growth.turnEnd(agent.id, tokens) }
-    const message = check(agent, false)
+    const message = handedOver ? undefined : check(agent, false)
     if (message) agent.steer(message)
   })
 

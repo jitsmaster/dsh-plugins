@@ -904,13 +904,55 @@ test('handingOver: a second PR joining the hand-over restarts the hour', async (
   } finally { Date.now = realNow }
 })
 
-test('handingOver: a context-cap handoff that replaces the PR hand-over job ends the hand-over (it cannot block the cap handoff archive)', async () => {
+test('handingOver: crossing the cap mid-turn after a PR was created gives no cap handoff and keeps the PR hand-over', async () => {
   const h = harness()
   h.state.title = 'feature'
   await h.prCreated(h.agentRef, '42')
   assert.equal(h.handingOver('a'), '42')
-  assert.deepEqual(await h.step(400_000), ['CONTEXT CAP REACHED'])
-  assert.equal(h.handingOver('a'), undefined, 'the plain handoff took over; the archive after it must not be refused')
+  assert.deepEqual(await h.step(400_000), [], 'the PR notes + "after PR" session carry the continuation')
+  assert.equal(h.handingOver('a'), '42', 'the PR job survives')
+})
+
+test('a stale PR hand-over (older than an hour) no longer suppresses the cap handoff', async () => {
+  const realNow = Date.now
+  let now = 1_000_000
+  Date.now = () => now
+  try {
+    const h = harness()
+    h.state.title = 'feature'
+    await h.prCreated(h.agentRef, '42')
+    now += 61 * 60_000
+    assert.deepEqual(await h.step(400_000), ['CONTEXT CAP REACHED'])
+  } finally { Date.now = realNow }
+})
+
+test('PR created while over the cap: turn end requests the PR notes only, then spawns "PR 42" and "after PR 42" (no plain continuation)', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  await h.prCreated(h.agentRef, '42')
+  await h.stop(400_000)
+  assert.equal(h.steered.length, 1, 'only the PR hand-over instruction, no cap handoff on top')
+  assert.match(h.steered[0].text, /PR 42 WAS JUST CREATED/)
+  assert.doesNotMatch(h.steered[0].text, /CONTEXT CAP REACHED/)
+  const p = pathsOf(h.steered[0])
+  writeFileSync(p.pr, '# pr\nMode: plain\n')
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
+  await h.stop(400_000)
+  assert.equal(h.steered.length, 1)
+  assert.equal(h.calls.create, 2)
+  assert.deepEqual(h.calls.rename, [{ sessionId: 's2', title: 'PR 42' }, { sessionId: 's3', title: 'feature - after PR 42' }])
+  assert.equal(h.handingOver('a'), undefined, 'hand-over ends once the sessions exist')
+})
+
+test('PR created after the cap handoff was already requested: the PR hand-over still runs', async () => {
+  const h = harness()
+  h.state.title = 'feature'
+  await h.step(450_000) // cap handoff instructed first
+  await h.prCreated(h.agentRef, '42')
+  assert.equal(h.handingOver('a'), '42')
+  await h.stop(450_000)
+  assert.equal(h.steered.length, 1)
+  assert.match(h.steered[0].text, /PR 42 WAS JUST CREATED/)
 })
 
 test('handingOver: a disposed session drops its hand-over entry at once', async () => {

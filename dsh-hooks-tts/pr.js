@@ -89,12 +89,31 @@ export function isPrSession(ctx, agent) {
   return PR_TITLE.test(titleOf(ctx, agent) ?? '')
 }
 
+/** `az repos pr create` not glued to a word (a literal \n \r \t before it counts as a break), or the ado.ps1 wrapper form. */
+const PR_CREATE_COMMAND = /(?:(?<![\w.-])|(?<=\\[nrt]))az\s+repos\s+pr\s+create\b|ado\.ps1(?:\\?["'])?\s+repos\s+pr\s+create\b/
+const PR_CREATE_COMMAND_ALL = new RegExp(PR_CREATE_COMMAND.source, 'g') // matchAll clones it, so the shared instance keeps no state
+/** A statement that only prints or searches text: a `repos pr create` inside it is a mention, not a call. */
+const MENTION_STATEMENT = /^\s*(?:echo|grep|egrep|rg|findstr|Select-String|Write-Output|Write-Host|printf|cat|Get-Content|sls)\b/i
+
+/** True when the command really runs `repos pr create` (not just mentions it in an echo/grep statement). */
+function runsPrCreate(command) {
+  for (const match of command.matchAll(PR_CREATE_COMMAND_ALL)) {
+    const statement = command.slice(Math.max(0, match.index - 200), match.index).split(/[;&|\n]|\\[nrt]/).pop() // bounded window: linear on a huge command
+    if (!MENTION_STATEMENT.test(statement)) return true // any real call counts, whatever mentions came before
+  }
+  return false
+}
+
 /** PR id created by a shell command, from `az repos pr create` JSON output or a `PR-CREATED: <id>` marker. */
 export function parsePrCreated(command, output) {
   const marker = /PR-CREATED:[ \t]*(\d+)/.exec(output ?? '')
   if (marker) return marker[1]
-  if (!/\baz\s+repos\s+pr\s+create\b/.test(command ?? '')) return undefined
-  return /"pullRequestId"\s*:\s*(\d+)/.exec(output ?? '')?.[1]
+  // Match `repos pr create` itself: the caller passes JSON.stringify(arguments), where a newline before `az` is the two
+  // characters `\n` (no word boundary before `az`), and `ado.ps1 repos pr create ...` (the ado-cli wrapper) has no `az` at all.
+  // Anchored to `az` (also right after a literal \n, \r or \t) or to the ado.ps1 wrapper, so echo/grep mentions do not count.
+  const id = /"pullRequestId"\s*:\s*(\d+)/.exec(output ?? '')?.[1]
+  if (id === undefined) return undefined // cheap check first: almost every shell call has no pullRequestId
+  return runsPrCreate(command ?? '') ? id : undefined
 }
 
 /** `PR-POLL: <id> seen=<thread>[:<lastComment>],... [resume=suggested|spawned]` -> { id, seen: [[thread, lastComment|null]], resume? }. */
