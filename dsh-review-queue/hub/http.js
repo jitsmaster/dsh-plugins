@@ -139,7 +139,8 @@ export function createHttp({ hub, log = () => {} }) {
   }
 
   async function api(req, res, url, path) {
-    const who = authorize(req, res, { longPoll: path === '/v1/snapshot' && Number(url.searchParams.get('wait')) > 0 })
+    // /v1/tts is not counted by the per-device limiter: a read makes one request per chunk plus a prefetch, and hub.tts (2 at once) already bounds the load.
+    const who = authorize(req, res, { longPoll: path === '/v1/tts' || (path === '/v1/snapshot' && Number(url.searchParams.get('wait')) > 0) })
     if (!who) return undefined
     const caller = typeof req.headers['x-rq-instance'] === 'string' ? req.headers['x-rq-instance'] : undefined
     if (path === '/v1/snapshot' || path === '/v1/workspaces') {

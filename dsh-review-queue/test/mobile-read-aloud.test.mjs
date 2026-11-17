@@ -12,12 +12,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const item = { id: 'it-1', spoken: { full: 'Done in One. All good.' } }
 const blob = (n) => ({ blob: 'wav' + n })
 const tick = () => new Promise((r) => setImmediate(r))
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function rig({ chunks = 3, failAt, failStatus = 502, playFail, local = true } = {}) {
   const log = []
   const states = []
   let release = []
   const player = createReadAloud({
+    retryDelayMs: 0,
     fetchChunk: async (id, n) => { log.push('fetch ' + n); if (n === failAt) return { ok: false, status: failStatus }; return { ok: true, blob: blob(n), chunks } },
     playBlob: (b) => { log.push('play ' + b.blob); return new Promise((resolve, reject) => { release.push({ resolve, reject, b }); if (playFail) reject(new Error('NotAllowed')) }) },
     speakLocal: local ? (text) => { log.push('local ' + text); return new Promise((resolve) => release.push({ resolve })) } : undefined,
@@ -99,7 +101,7 @@ test('when the PC cannot be reached the phone reads the whole text with its own 
   for (const failStatus of [502, 503, 404, 0]) {
     const r = rig({ failAt: 0, failStatus })
     r.player.start(item)
-    await tick(); await tick()
+    await sleep(15); await tick(); await tick()
     assert.ok(r.log.includes('local Done in One. All good.'), 'status ' + failStatus)
     assert.equal(r.player.state(), 'playing')
     await r.finishCurrent()
@@ -285,4 +287,23 @@ test('views.js uses the player: audio from the hub with the device token, the ph
   assert.match(api, /export async function fetchTtsChunk/)
   assert.match(api, /ttsPath\(/)
   assert.match(api, /call\(/)
+})
+
+test('a busy (503) first chunk is fetched once more before the phone voice is used', async () => {
+  const seen = []
+  const mk = (statuses) => createReadAloud({
+    retryDelayMs: 0,
+    fetchChunk: async (id, n) => { const s = statuses.shift(); seen.push(s); return s === 200 ? { ok: true, blob: blob(0), chunks: 1 } : { ok: false, status: s } },
+    playBlob: async () => {},
+    speakLocal: async (text) => { seen.push('local') },
+  })
+  const a = mk([503, 200])
+  a.start(item)
+  await sleep(20)
+  assert.deepEqual(seen, [503, 200], 'second try played from the PC')
+  seen.length = 0
+  const b = mk([503, 503])
+  b.start(item)
+  await sleep(20)
+  assert.deepEqual(seen, [503, 503, 'local'])
 })

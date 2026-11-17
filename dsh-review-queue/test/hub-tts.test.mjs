@@ -245,3 +245,14 @@ test('synth stops and frees its slot when the caller aborts (the phone went away
   assert.deepEqual(await p, { ok: false, error: 'tts-unavailable' })
   assert.deepEqual(await tts.synth('z', { signal: AbortSignal.abort() }), { ok: false, error: 'tts-unavailable' }, 'slot was freed, not busy')
 })
+
+test('/v1/tts is not counted by the per-device rate limiter (a read makes a request per chunk)', async (t) => {
+  const k = await fakeKokoro(t)
+  const { hub, port } = await startHub(t, { ttsUrl: k.url })
+  const id = feed(hub)
+  let taken = 0
+  hub.identify = () => ({ role: 'device', deviceId: 'd1' })
+  hub.deviceLimiter.take = () => { taken++; return { ok: true } }
+  assert.equal((await getBin(port, P + '/v1/tts?id=' + id + '&n=0')).status, 200)
+  assert.equal(taken, 0)
+})

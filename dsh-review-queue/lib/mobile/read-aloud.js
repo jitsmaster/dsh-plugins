@@ -16,7 +16,7 @@ export const readAloudVisible = ({ ios, hasLocalEngine, hasAudio, hasText }) => 
  * @param {{ fetchChunk: (id: string, n: number) => Promise<{ ok: boolean, status?: number, blob?: any, chunks?: number }>, playBlob: (blob: any) => Promise<void>,
  *   speakLocal?: (text: string) => Promise<void>, stopAudio?: () => void, stopLocal?: () => void, prime?: () => void, onChange?: (state: string) => void }} deps
  */
-export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, stopLocal, prime, onChange }) {
+export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, stopLocal, prime, onChange, retryDelayMs = 300 }) {
   let token = 0
   let state = 'idle' // idle | loading | playing
   const setState = (s) => { if (s === state) return; state = s; try { if (onChange) onChange(s) } catch { /* a listener must not break the player */ } }
@@ -35,6 +35,13 @@ export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, s
     try {
       let cur = await safeFetch(item.id, 0)
       if (!alive()) return
+      // Busy (503): the PC's TTS is serving something else; one more try after a short wait keeps the PC voice.
+      if (!cur.ok && cur.status === 503) {
+        await new Promise((r) => setTimeout(r, retryDelayMs))
+        if (!alive()) return
+        cur = await safeFetch(item.id, 0)
+        if (!alive()) return
+      }
       // A 401 is a pairing problem the caller already reported: another voice would hide it.
       if (!cur.ok) { if (cur.status !== 401) await local(item); return }
       const total = Math.max(1, Number(cur.chunks) || 1)
