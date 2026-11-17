@@ -65,7 +65,11 @@ export function createHandoffFollow({ serviceOf, store, log }) {
 			try {
 				const result = await run(service, item)
 				// The follow-up archives the source session, which may already have closed this card: resolve only if it is still open.
-				if (result.ok && store.get(item.id)?.status === 'open') store.resolve(item.id, { kind: 'handoff-followed', by: 'card', sessionId: result.sessionId })
+				if (result.ok) {
+					if (store.get(item.id)?.status === 'open') store.resolve(item.id, { kind: 'handoff-followed', by: 'card', sessionId: result.sessionId })
+					// Already followed: the session's other cards that offer a handoff must not offer it again.
+					for (const other of store.list({ status: 'open' })) if (other.sessionId === item.sessionId && handoffFollowable(other)) store.resolve(other.id, { kind: 'handoff-followed', by: 'card', sessionId: result.sessionId })
+				}
 				return result
 			} finally { inFlight.delete(item.id) }
 		},

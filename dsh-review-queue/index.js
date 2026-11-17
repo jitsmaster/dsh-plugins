@@ -166,6 +166,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   const questionMergeOn = config.questionMerge !== false
   const capture = installCapture(ctx, {
     store, summarizer, log, autoAnswer: config.questionAutoAnswer !== false,
+    handoffOf: (id) => { try { return ctx.get?.('handoffFollowUp')?.latest(id) } catch { return undefined } },
     autoAnswerLeadMs: msOf(config.questionAutoAnswerLeadSeconds, true), defaultWindowMs: msOf(config.questionWindowSeconds, false),
     expireOlder: !questionMergeOn, // with the question merge on, it expires the older detached questions itself after trying to merge them
     keepDone: config.doneKeepPerSession, // capture.js falls back to its default (20) for anything that is not a positive integer

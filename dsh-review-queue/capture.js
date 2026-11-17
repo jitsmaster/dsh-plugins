@@ -12,6 +12,8 @@ import { isPendingResult, replyAnswers, isHumanMessage } from './signals.js'
 import { MAY_HAVE_BEEN_SENT } from './follow-up-shared.js'
 import { parseArchiveCommand, withoutReminders } from './archive-offer.js'
 import { DEFAULT_AUTO_ANSWER_LEAD_MS, autoAnswerText, recommendedAnswers, shownLabel } from './autoanswer.js'
+import { handoffFollowable } from './handoff-follow.js'
+const handoffFollowableText = (reply) => handoffFollowable({ type: 'completed', status: 'open', sessionId: 'x', payload: { reply } })
 
 const TOOL_ARG_KEYS = ['command', 'file_path', 'path', 'url', 'pattern', 'query']
 const MAX_NOTES = 200
@@ -152,7 +154,8 @@ function answerWindowMs(req, seconds, defaultWindowMs) {
  * keepDone: how many open done cards ('completed') one session keeps (default 20, an invalid value falls back to it); past it the oldest is
  * resolved as 'trimmed' and logged.
  */
-export function installCapture(ctx, { store, summarizer, expireOlder = true, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS }) {
+export function installCapture(ctx, { store, summarizer, expireOlder = true, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS, handoffOf = () => undefined }) {
+  const offeredHandoffs = new Set() // 'session|path' of handoff notes already offered on a done card (a mid-session handoff is offered once)
   const keep = Number.isInteger(keepDone) && keepDone > 0 ? keepDone : DEFAULT_KEEP_DONE
   const children = new Set()
   const lastHuman = new Map() // session id -> "<human message count>:<last text>" seen at the previous step (tells a newly typed message from the same history)
@@ -363,7 +366,18 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     const offer = guard(() => openOfSession(store, agent.id).find((i) => i.type === 'archive'))
     if (offer && silencedBy.get(agent.id) !== offer.id) { silencedBy.set(agent.id, offer.id); return }
     if (!reply) return
-    const item = guard(() => store.add({ type: 'completed', ...baseOf(agent), payload: { reply, ...(request ? { request } : {}) } }))
+    // A handoff written in the middle of the session may not be named in this final reply: name it, so the card offers Follow handoff (once per note).
+    let shown = reply
+    guard(() => {
+      const note = handoffOf(agent.id)
+      const key = agent.id + '|' + note
+      if (typeof note === 'string' && note && !offeredHandoffs.has(key)) {
+        offeredHandoffs.add(key)
+        if (offeredHandoffs.size > 500) offeredHandoffs.delete(offeredHandoffs.values().next().value)
+        if (!handoffFollowableText(reply)) shown = reply + '\n\nHandoff written to `' + note + '`'
+      }
+    })
+    const item = guard(() => store.add({ type: 'completed', ...baseOf(agent), payload: { reply: shown, ...(request ? { request } : {}) } }))
     if (!item) return
     // Memory: the cap proper applies after the summarizer's verdict (a card hidden as no-action must not push a real one out); until then
     // only this hard upper bound keeps a verdict that never comes from piling cards up.
