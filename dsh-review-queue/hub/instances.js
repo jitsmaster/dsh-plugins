@@ -226,7 +226,11 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     presence(id, { desktopActive, sessions, queueOrder } = {}) {
       const inst = instances.touch(id)
       if (inst && desktopActive === true) inst.lastDesktopActiveAt = now()
-      if (inst && (queueOrder === 'tier' || queueOrder === 'oldest')) { inst.queueOrder = queueOrder; inst.queueOrderAt = now() }
+      if (inst && (queueOrder === 'tier' || queueOrder === 'oldest')) {
+        const changedOrder = inst.queueOrder !== queueOrder
+        inst.queueOrder = queueOrder; inst.queueOrderAt = now()
+        if (changedOrder) { persist(); try { onSessions(total()) } catch { /* one bad listener must not stop the hub */ } } // a new order moves the snapshot id and wakes the phones' long polls
+      }
       const clean = cleanSessions(sessions)
       if (inst && clean) { inst.sessions = clean; notifySessions() }
       return inst

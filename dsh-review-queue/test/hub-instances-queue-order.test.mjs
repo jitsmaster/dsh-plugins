@@ -44,3 +44,19 @@ test('with two apps the most recently desktop-active one decides', () => {
   instances.presence(B, { queueOrder: 'oldest', desktopActive: true })
   assert.equal(instances.queueOrder(), 'oldest')
 })
+
+test('a changed order bumps the store revision and wakes the long polls; a repeat does neither', () => {
+  const clock = fakeClock(); let n = 0; const woke = []
+  const store = createHubStore({ now: clock.now, uuid: () => 'u' + ++n, timers: clock, io: memIo() })
+  const commands = createCommands({ now: clock.now, timers: clock })
+  const instances = createInstances({ store, commands, now: clock.now, onSessions: () => woke.push(1) })
+  reg(instances, A, 'k1')
+  const before = store.snapshot().snapshotId
+  instances.presence(A, { queueOrder: 'tier' })
+  assert.notEqual(store.snapshot().snapshotId, before)
+  assert.equal(woke.length, 1)
+  const after = store.snapshot().snapshotId
+  instances.presence(A, { queueOrder: 'tier' })
+  assert.equal(store.snapshot().snapshotId, after)
+  assert.equal(woke.length, 1)
+})
