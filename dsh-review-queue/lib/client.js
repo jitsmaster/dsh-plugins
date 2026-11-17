@@ -207,7 +207,7 @@ window.__ModuleLoader__.load({
 				case "followed-up": return "Sent to " + (item.sessionTitle || "the session");
 				case "handoff-followed": return "Followed the handoff in a new session";
 				case "archived": return r.by === "elsewhere" ? "Session archived elsewhere" : "Session archived";
-				case "superseded": return "Replaced by a newer result" + (r.assumed && r.assumed.length ? "; assumed answer: " + r.assumed.join(", ") : "");
+				case "superseded": return "Replaced by a newer result" + (Array.isArray(r.assumed) && r.assumed.length ? "; assumed answer: " + r.assumed.join(", ") : "");
 				case "no-action": return "Hidden: nothing for you to do (judged from the message; Reopen if it was wrong)";
 				case "trimmed": return "Hidden: the session had more than " + (r.limit ? r.limit + " " : "") + "open done results (Reopen to bring it back)";
 				case "replied": return r.by === "session" ? "You continued the session" : "You replied";
