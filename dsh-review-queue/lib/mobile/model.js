@@ -14,6 +14,23 @@ export function rowBadges(core, item) {
   return { tier: item ? core.tierChip(item) : undefined, merged: item ? core.mergedNote(item) : undefined }
 }
 
+/**
+ * The Waiting list as rows: a `{ head }` row (the desktop's groupCardModel) before each multi-item session group, then `{ item }` rows oldest first.
+ * `ui` is lib/groups-ui.js (passed in: the phone page loads it like the overlay does); without it, or with no items, the list is flat. Never throws.
+ */
+export function groupedRows(ui, open, resolved) {
+  const items = Array.isArray(open) ? open : []
+  if (!items.length) return []
+  if (!ui || typeof ui.groupsOfOpen !== 'function' || typeof ui.groupCardModel !== 'function') return items.map((item) => ({ item }))
+  const index = typeof ui.indexResolved === 'function' ? ui.indexResolved(Array.isArray(resolved) ? resolved : []) : resolved
+  const rows = []
+  for (const g of ui.groupsOfOpen(items)) {
+    if (g.count > 1) rows.push({ head: ui.groupCardModel(g, index) })
+    for (const item of g.items) rows.push({ item })
+  }
+  return rows
+}
+
 /** The order of the Waiting tabs (the desktop chip order puts Done first; the phone leads with what needs a decision). */
 const WAITING_TAB_ORDER = ['all', 'permission', 'question', 'completed', 'pr-merged', 'todo', 'paused']
 
