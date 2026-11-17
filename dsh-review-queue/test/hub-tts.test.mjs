@@ -294,3 +294,13 @@ test('chunksOf refreshes recency on a hit (LRU), so a read in progress is not ev
   tts.chunksOf(mk(99))
   assert.equal(tts.chunksOf(mk(0)), first, 'item 0 was used last and is still cached')
 })
+
+test('the WAV cache byte count does not drift when the same text is synthesised twice at once', async () => {
+  let calls = 0
+  const tts = createTts({ url: DEFAULT_TTS_URL, wavCacheBytes: 100, fetchFn: async () => { calls++; return audioResponse(Buffer.alloc(20)) } })
+  await Promise.all([tts.synth('a'), tts.synth('a')])
+  for (const t of ['b', 'c', 'd', 'e']) await tts.synth(t)
+  const before = calls
+  await tts.synth('a')
+  assert.equal(calls, before, 'a is still cached (5 x 20 bytes fits in 100)')
+})

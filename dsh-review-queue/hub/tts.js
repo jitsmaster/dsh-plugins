@@ -37,15 +37,17 @@ async function readCapped(res, max) {
 }
 
 /** @param {{ url?: string, fetchFn?: typeof fetch, maxBytes?: number, maxActive?: number, timeoutMs?: number, gender?: 'male' | 'female' }} [opts] */
-export function createTts({ url = DEFAULT_TTS_URL, fetchFn = (...a) => fetch(...a), maxBytes = MAX_BYTES, maxActive = MAX_ACTIVE, timeoutMs = TIMEOUT_MS, gender = 'male' } = {}) {
+export function createTts({ url = DEFAULT_TTS_URL, fetchFn = (...a) => fetch(...a), maxBytes = MAX_BYTES, maxActive = MAX_ACTIVE, timeoutMs = TIMEOUT_MS, gender = 'male', wavCacheBytes = 16 * 1024 * 1024 } = {}) {
   let active = 0
   const cache = new Map() // item id -> chunks of the read in progress (a text change mid-read must not shift later chunks)
   const CACHE_ITEMS = 16
   const wavs = new Map() // text -> WAV, a small byte-capped LRU: a replay or a retry does not synthesise again
-  const WAV_CACHE_BYTES = 16 * 1024 * 1024
+  const WAV_CACHE_BYTES = wavCacheBytes
   let wavBytes = 0
   const remember = (text, wav) => {
     if (wav.length > WAV_CACHE_BYTES / 4) return
+    const old = wavs.get(text)
+    if (old) { wavBytes -= old.length; wavs.delete(text) }
     wavs.set(text, wav); wavBytes += wav.length
     for (const [k, v] of wavs) { if (wavBytes <= WAV_CACHE_BYTES) break; wavs.delete(k); wavBytes -= v.length }
   }
