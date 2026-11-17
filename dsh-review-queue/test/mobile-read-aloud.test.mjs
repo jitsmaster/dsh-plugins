@@ -333,3 +333,16 @@ test('a first chunk that takes too long makes the phone use its own voice', asyn
   await sleep(40)
   assert.deepEqual(log, ['local'])
 })
+
+test('a later chunk that is busy (503) waits before its retry', async () => {
+  const stamps = []
+  const player = createReadAloud({
+    retryDelayMs: 40,
+    fetchChunk: async (id, n) => { if (n === 0) return { ok: true, blob: blob(0), chunks: 2 }; stamps.push(Date.now()); return { ok: false, status: 503 } },
+    playBlob: async () => {},
+  })
+  player.start(item)
+  await sleep(150)
+  assert.equal(stamps.length, 2)
+  assert.ok(stamps[1] - stamps[0] >= 30, 'delay between the two tries')
+})

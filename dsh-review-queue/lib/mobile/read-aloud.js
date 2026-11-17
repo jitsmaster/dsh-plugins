@@ -35,7 +35,9 @@ export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, s
     const alive = () => token === mine
     try {
       // A PC that is slow or hung must not keep the phone silent: after firstChunkTimeoutMs the request is abandoned and the phone voice takes over.
-      let cur = await Promise.race([safeFetch(item.id, 0), new Promise((r) => setTimeout(() => r({ ok: false, status: 0, timedOut: true }), firstChunkTimeoutMs))])
+      let timer
+      let cur
+      try { cur = await Promise.race([safeFetch(item.id, 0), new Promise((r) => { timer = setTimeout(() => r({ ok: false, status: 0, timedOut: true }), firstChunkTimeoutMs) })]) } finally { clearTimeout(timer) }
       if (cur.timedOut && controller) { try { controller.abort() } catch { /* already aborted */ } }
       if (!alive()) return
       // Busy (503): the PC's TTS is serving something else; one more try after a short wait keeps the PC voice.
@@ -51,12 +53,16 @@ export function createReadAloud({ fetchChunk, playBlob, speakLocal, stopAudio, s
       for (let n = 0; n < total; n++) {
         const next = n + 1 < total ? safeFetch(item.id, n + 1) : null
         setState('playing')
-        try { await playBlob(cur.blob) } catch { if (alive() && n === 0) await local(item); return } // refused audio: the own engine, but only before anything was heard
+        try { await playBlob(cur.blob) } catch { if (controller) { try { controller.abort() } catch { /* already aborted */ } } if (alive() && n === 0) await local(item); return } // refused audio: the own engine, but only before anything was heard
         if (!alive() || !next) return
         cur = await next
         if (!alive()) return
         // A later chunk that fails (not a 401) is fetched once more: a brief hub or Kokoro hiccup must not cut the message short.
-        if (!cur.ok && cur.status !== 401) { cur = await safeFetch(item.id, n + 1); if (!alive()) return }
+        if (!cur.ok && cur.status !== 401) {
+          if (cur.status === 503) { await new Promise((r) => setTimeout(r, retryDelayMs)); if (!alive()) return }
+          cur = await safeFetch(item.id, n + 1)
+          if (!alive()) return
+        }
         if (!cur.ok) return // still failing ends the read: the rest is not repeated in another voice
       }
     } finally { if (token === mine) setState('idle') }

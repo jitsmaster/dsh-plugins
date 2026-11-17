@@ -41,12 +41,20 @@ export function createTts({ url = DEFAULT_TTS_URL, fetchFn = (...a) => fetch(...
   let active = 0
   const cache = new Map() // item id -> chunks of the read in progress (a text change mid-read must not shift later chunks)
   const CACHE_ITEMS = 16
+  const wavs = new Map() // text -> WAV, a small byte-capped LRU: a replay or a retry does not synthesise again
+  const WAV_CACHE_BYTES = 16 * 1024 * 1024
+  let wavBytes = 0
+  const remember = (text, wav) => {
+    if (wav.length > WAV_CACHE_BYTES / 4) return
+    wavs.set(text, wav); wavBytes += wav.length
+    for (const [k, v] of wavs) { if (wavBytes <= WAV_CACHE_BYTES) break; wavs.delete(k); wavBytes -= v.length }
+  }
   return {
     gender,
     /** The read-out of an item cut for speech, at most MAX_CHUNKS pieces. */
     chunksOf(item, fresh = false) {
       const key = item && item.id
-      if (key !== undefined && !fresh && cache.has(key)) return cache.get(key)
+      if (key !== undefined && !fresh && cache.has(key)) { const hit = cache.get(key); cache.delete(key); cache.set(key, hit); return hit }
       const chunks = chunkForSpeech(fullTextFor(item)).slice(0, MAX_CHUNKS)
       if (key !== undefined) {
         cache.delete(key)
@@ -57,6 +65,8 @@ export function createTts({ url = DEFAULT_TTS_URL, fetchFn = (...a) => fetch(...
     },
     /** @returns {Promise<{ ok: true, wav: Buffer } | { ok: false, error: 'busy' | 'too-large' | 'tts-unavailable' }>} */
     async synth(text, { signal } = {}) {
+      const known = wavs.get(text)
+      if (known) { wavs.delete(text); wavs.set(text, known); return { ok: true, wav: known } }
       if (active >= maxActive) return { ok: false, error: 'busy' }
       active++
       const ac = new AbortController()
@@ -68,7 +78,9 @@ export function createTts({ url = DEFAULT_TTS_URL, fetchFn = (...a) => fetch(...
         if (!res.ok || !/^audio\//i.test(res.headers.get('content-type') ?? '')) { try { await res.body?.cancel() } catch { /* nothing to cancel */ } return { ok: false, error: 'tts-unavailable' } }
         const wav = await readCapped(res, maxBytes)
         if (wav && wav.length === 0) return { ok: false, error: 'tts-unavailable' }
-        return wav ? { ok: true, wav } : { ok: false, error: 'too-large' }
+        if (!wav) return { ok: false, error: 'too-large' }
+        remember(text, wav)
+        return { ok: true, wav }
       } catch { return { ok: false, error: 'tts-unavailable' } } finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort); active-- }
     },
   }

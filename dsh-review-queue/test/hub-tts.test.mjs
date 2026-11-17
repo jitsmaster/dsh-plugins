@@ -275,3 +275,22 @@ test('/v1/tts has its own per-device limiter (larger budget than the general one
   assert.equal((await getBin(port, P + '/v1/tts?id=' + id + '&n=0')).status, 429)
   assert.equal(k.requests.length, 1, 'nothing synthesised once limited')
 })
+
+test('synth keeps a small cache of WAVs by text: a replay or retry does not synthesise again', async () => {
+  let calls = 0
+  const tts = createTts({ url: DEFAULT_TTS_URL, fetchFn: async () => { calls++; return audioResponse() } })
+  assert.equal((await tts.synth('same text')).ok, true)
+  assert.equal((await tts.synth('same text')).ok, true)
+  assert.equal(calls, 1)
+  assert.equal((await tts.synth('other text')).ok, true)
+  assert.equal(calls, 2)
+})
+
+test('chunksOf refreshes recency on a hit (LRU), so a read in progress is not evicted first', () => {
+  const tts = createTts({ url: DEFAULT_TTS_URL, fetchFn: async () => audioResponse() })
+  const mk = (i) => ({ id: 'lru-' + i, type: 'completed', sessionTitle: 'One', summary: 'S' + i, payload: { reply: 'r' } })
+  const first = tts.chunksOf(mk(0))
+  for (let i = 1; i < 16; i++) { tts.chunksOf(mk(i)); tts.chunksOf(mk(0)) }
+  tts.chunksOf(mk(99))
+  assert.equal(tts.chunksOf(mk(0)), first, 'item 0 was used last and is still cached')
+})
