@@ -14,7 +14,7 @@ function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'S
   let n = 0
   const store = createStore({ now: () => ++t, uuid: () => 'i' + ++n })
   const summarizer = { summarize: async () => summary }
-  const capture = installCapture(ctx, { store, summarizer, ...(log ? { log } : {}), ...(now ? { now } : {}) })
+  const capture = installCapture(ctx, { store, summarizer, disposeGraceMs: 0, ...(log ? { log } : {}), ...(now ? { now } : {}) })
   const agent = (id = 'a1', reply = 'All done.') => ({
     id,
     session: { id, header: { cwd: 'D:/proj' }, deriveMessages: () => [{ role: 'user', content: 'hi' }, { role: 'assistant', content: [{ type: 'text', text: reply }] }] },

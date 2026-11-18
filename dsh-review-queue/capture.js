@@ -26,6 +26,8 @@ export const DEFAULT_KEEP_DONE = 20
  * user has not had time to read it. Without this the card (often a question in its last paragraph) vanished seconds after it appeared.
  */
 export const DEFAULT_REPLY_GRACE_MS = 30_000
+/** How long a disposed session's done / on-hold / archive / todo cards stay open before they close as session-ended (a DSH shutdown disposes every agent; the process normally exits within this time). */
+export const DEFAULT_DISPOSE_GRACE_MS = 30_000
 
 /** One short line saying what a tool call will do: "shell: git push", "write: D:/a.md", or just the tool name. */
 export function summarizeTool(name, args) {
@@ -154,7 +156,7 @@ function answerWindowMs(req, seconds, defaultWindowMs) {
  * keepDone: how many open done cards ('completed') one session keeps (default 20, an invalid value falls back to it); past it the oldest is
  * resolved as 'trimmed' and logged.
  */
-export function installCapture(ctx, { store, summarizer, expireOlder = true, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS, handoffOf = () => undefined }) {
+export function installCapture(ctx, { store, summarizer, expireOlder = true, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS, handoffOf = () => undefined, disposeGraceMs = DEFAULT_DISPOSE_GRACE_MS }) {
   const offeredHandoffs = new Set() // 'session|path' of handoff notes already offered on a done card (a mid-session handoff is offered once)
   const keep = Number.isInteger(keepDone) && keepDone > 0 ? keepDone : DEFAULT_KEEP_DONE
   const children = new Set()
@@ -550,8 +552,28 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     seen.delete(id)
     silencedBy.delete(id)
     lastHuman.delete(id)
-    const open = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === id).length, 0)
-    if (guard(() => store.resolveSession(id, { kind: 'session-ended' }), false)) log('capture: session-ended: closed ' + open + ' open item(s) of session ' + id)
+    // A DSH shutdown disposes every agent too, so a disposal alone does not mean the user closed the session. A question or permission dies
+    // with its request either way and closes now; every other card (done, on hold, archive, todo, ...) outlives the process and is only
+    // closed when the session is still not live after the grace period.
+    if (disposeGraceMs <= 0) { // no grace: every open card of the session closes at once (the original behaviour)
+      const all = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === id).length, 0)
+      if (guard(() => store.resolveSession(id, { kind: 'session-ended' }), false)) log('capture: session-ended: closed ' + all + ' open item(s) of session ' + id)
+      return
+    }
+    const mine = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === id), [])
+    let closed = 0
+    for (const item of mine) {
+      if ((item.type === 'question' || item.type === 'permission') && guard(() => store.resolve(item.id, { kind: 'session-ended' }), false)) closed++
+    }
+    if (closed) log('capture: session-ended: closed ' + closed + ' open item(s) of session ' + id)
+    const closeRest = () => {
+      if (guard(() => ctx.get?.('agents')?.get(id), undefined)) return // the session is live again: its cards stay
+      const rest = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === id).length, 0)
+      if (guard(() => store.resolveSession(id, { kind: 'session-ended' }), false)) log('capture: session-ended: closed ' + rest + ' open item(s) of session ' + id)
+    }
+    const timer = setTimeout(() => { autoTimers.delete(timer); closeRest() }, disposeGraceMs)
+    timer.unref?.()
+    autoTimers.add(timer)
   })
 
   return {
