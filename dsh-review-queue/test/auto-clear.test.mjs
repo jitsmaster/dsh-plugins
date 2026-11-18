@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
-import { createAutoClear, hasActionItem, DONE_NO_ACTION_MS } from '../auto-clear.js'
+import { createAutoClear, hasActionItem, DONE_NO_ACTION_MS, RESTARTED_QUESTION_TTL_MS } from '../auto-clear.js'
 
 const rig = () => {
   let t = 1_000_000
@@ -30,6 +30,24 @@ test('a question without an expiry, or one still waiting, stays', () => {
   r.tick(30_000)
   assert.deepEqual(r.clear.sweep(), { questions: 0, done: 0 })
   assert.equal(r.store.list({ status: 'open' }).length, 2)
+})
+
+test('a question kept open by a restart (detached + restarted) is not expired by its old deadline', () => {
+  const r = rig()
+  const q = r.store.add({ type: 'question', sessionId: 's', detached: true, restarted: true, expiresAt: 1_000_000 + 5000, payload: { questions: [] } })
+  r.tick(600_000)
+  assert.deepEqual(r.clear.sweep(), { questions: 0, done: 0 })
+  assert.equal(r.store.get(q.id).status, 'open')
+})
+
+test('a restarted question nobody answered is expired after RESTARTED_QUESTION_TTL_MS (7 days), not before', () => {
+  const r = rig()
+  const q = r.store.add({ type: 'question', sessionId: 's', detached: true, restarted: true, payload: { questions: [] } })
+  r.tick(RESTARTED_QUESTION_TTL_MS - 1)
+  assert.deepEqual(r.clear.sweep(), { questions: 0, done: 0 })
+  r.tick(1)
+  assert.deepEqual(r.clear.sweep(), { questions: 1, done: 0 })
+  assert.equal(r.store.get(q.id).resolution.kind, 'expired')
 })
 
 test('a done message with no bold action item is removed 30 seconds after it arrived', () => {

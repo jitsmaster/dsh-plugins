@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { DEFAULT_HUB_PORT, createLauncher, createReconnector, hubPortOf, retryDelayMs } from '../agent/launcher.js'
+import { PROTOCOL, MIN_HUB_PROTOCOL } from '../hub/protocol.js'
 
 const DIR = 'S:/state'
 const PORT = 41234
@@ -219,6 +220,16 @@ test('a strictly newer plugin protocol restarts the older hub with the agent sec
   assert.deepEqual(w.posts, [{ port: PORT, path: '/hub/v1/shutdown', body: { reason: 'upgrade', hubId: 'OLD' }, secret: SECRET }])
   assert.equal(w.spawns.length, 1)
   assert.deepEqual([r.mode, r.info.hubId, r.info.protocol], ['hub', 'H1', 2])
+})
+
+test('with the real protocol constants a protocol 2 hub (it ends open questions on restart) is replaced', async () => {
+  const w = makeWorld({ existing: { pid: 777, hubId: 'OLD', protocol: 2 } })
+  w.nextProtocol = PROTOCOL
+  const r = await launcherOf(w, { protocol: PROTOCOL, minHubProtocol: MIN_HUB_PROTOCOL }).ensureHub()
+  assert.equal(w.posts.length, 1)
+  assert.equal(w.posts[0].body.reason, 'upgrade')
+  assert.equal(w.spawns.length, 1)
+  assert.deepEqual([r.mode, r.info.protocol], ['hub', PROTOCOL])
 })
 
 test('never a downgrade: a hub of the same or a newer protocol than the plugin needs is left alone', async () => {

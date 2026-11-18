@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { createAgentClient } from '../agent/client.js'
 import { createExecutor } from '../agent/executor.js'
 import { createStoreAdapter } from '../agent/store-adapter.js'
+import { PROTOCOL } from '../hub/protocol.js'
 import { raw, waitFor } from './hub-helpers.mjs'
 import { P, SECRET, agentOf, startHub } from './hub-agent-helpers.mjs'
 
@@ -130,10 +131,10 @@ test('a gap in the op numbers makes the client send a full sync, and the counter
   await waitFor(() => hub.store.list().length === 4, 5000, 'op after resync')
 })
 
-test('an instance the hub no longer knows registers again, and its questions come back to life', async (t) => {
+test('an instance the hub no longer knows registers again, and its permissions come back to life', async (t) => {
   const { hub, port } = await startHub(t)
   const { client, adapter } = setup(t, port)
-  const q = adapter.add(item({ type: 'question', payload: { questions: [] } }))
+  const q = adapter.add(item({ type: 'permission', payload: {} }))
   client.start()
   await connected(client)
   hub.instances.bye('aaaa1111') // as if it had slept past the grace
@@ -159,7 +160,7 @@ test('the hub gone and back: the client degrades, keeps its ops, and syncs when 
 })
 
 test('an older client than the hub is told to upgrade and stops talking', async (t) => {
-  const { port } = await startHub(t, { protocol: 4 })
+  const { port } = await startHub(t, { protocol: PROTOCOL + 2 })
   const spy = spyFetch()
   const { client } = setup(t, port, { fetch: spy.fetch })
   client.start()
@@ -178,17 +179,19 @@ test('an instance that a restart replaced stops for good instead of fighting its
   await waitFor(() => client.state === 'superseded', 5000, 'superseded')
 })
 
-test('stop says bye (the questions end at once, the rest stays) unless told not to, and nothing is sent after it', async (t) => {
+test('stop says bye (permissions end at once, questions stay as detached cards, the rest stays) unless told not to, and nothing is sent after it', async (t) => {
   const { hub, port } = await startHub(t)
   const spy = spyFetch()
   const { client, adapter } = setup(t, port, { fetch: spy.fetch })
-  const q = adapter.add(item({ type: 'question', payload: { questions: [] } }))
+  const q = adapter.add(item({ type: 'permission', payload: {} }))
+  const question = adapter.add(item({ type: 'question', sessionId: 's4', payload: { questions: [] } }))
   const c = adapter.add(item({ sessionId: 's2' }))
   client.start()
   await connected(client)
   await client.stop()
   assert.equal(client.state, 'stopped')
   assert.deepEqual([hub.store.get(q.id).status, hub.store.get(c.id).status, hub.instances.get('aaaa1111').state], ['resolved', 'open', 'gone'])
+  assert.deepEqual([hub.store.get(question.id).status, hub.store.get(question.id).detached, hub.store.get(question.id).restarted], ['open', true, true])
   const seen = spy.log.length
   adapter.add(item({ sessionId: 's3' }))
   await new Promise((r) => setTimeout(r, 150))

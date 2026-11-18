@@ -66,16 +66,16 @@ test('stale requests of an earlier run: with no hub, only what was there before 
   const stale = leaveStaleQuestion(world, 12104)
   const p = await startPlugin(t, world, { label: 'T', webPort: 12104 })
   await p.inState('standalone')
-  assert.equal(p.store.get(stale).status, 'resolved')
-  assert.equal(p.store.get(stale).resolution.by, 'restart')
-  assert.ok(readFileSync(join(world.dir, 'review-queue.log'), 'utf8').includes(stale), 'the log names the stale item it cancelled, not only a count')
+  assert.equal(p.store.get(stale).status, 'open')
+  assert.deepEqual([p.store.get(stale).detached, p.store.get(stale).restarted], [true, true])
+  assert.ok(readFileSync(join(world.dir, 'review-queue.log'), 'utf8').includes(stale), 'the log names the stale item it kept open, not only a count')
   const fresh = p.question('s-new')
   assert.equal(p.store.get(fresh.id).status, 'open')
   await new Promise((r) => setTimeout(r, 250)) // later retries do not cancel it
   assert.equal(p.store.get(fresh.id).status, 'open')
 })
 
-test('stale requests of an earlier run: with the hub it is the hub that ends them, not this app', async (t) => {
+test('stale requests of an earlier run: with the hub the question stays open as a detached card owned by the new app, not cancelled', async (t) => {
   const world = await makeWorld(t)
   await world.startHub()
   const first = await startPlugin(t, world, { label: 'T', webPort: 12105 })
@@ -85,8 +85,8 @@ test('stale requests of an earlier run: with the hub it is the hub that ends the
   await first.agent.stop({ bye: false }) // the app died: no goodbye
   const second = await startPlugin(t, world, { label: 'T', webPort: 12105 })
   await second.inState('hub')
-  await waitFor(() => world.hub.store.get(q.id).status === 'resolved', 5000, 'ended by the hub')
-  assert.deepEqual([world.hub.store.get(q.id).resolution.by, world.hub.store.get(q.id).resolution.reason], ['hub', 'restarted'])
+  await waitFor(() => world.hub.store.get(q.id).restarted === true, 5000, 'flagged detached at the hub')
+  assert.deepEqual([world.hub.store.get(q.id).status, world.hub.store.get(q.id).detached], ['open', true])
   assert.notEqual(second.store.get(q.id)?.resolution?.by, 'restart', 'this app did not cancel it itself')
 })
 

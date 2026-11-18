@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
 import { installCapture, summarizeTool, cancelStalePending } from '../capture.js'
 
-function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'Session One' }, services = {}, log, now } = {}) {
+function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'Session One' }, services = {}, log, now, controllerOf } = {}) {
   const handlers = {}
   const ctx = {
     on: (name, fn) => { (handlers[name] ??= []).push(fn) },
@@ -14,7 +14,7 @@ function setup({ summary = { text: 'Did it.', source: 'llm' }, titles = { a1: 'S
   let n = 0
   const store = createStore({ now: () => ++t, uuid: () => 'i' + ++n })
   const summarizer = { summarize: async () => summary }
-  const capture = installCapture(ctx, { store, summarizer, disposeGraceMs: 0, ...(log ? { log } : {}), ...(now ? { now } : {}) })
+  const capture = installCapture(ctx, { store, summarizer, disposeGraceMs: 0, ...(log ? { log } : {}), ...(now ? { now } : {}), ...(controllerOf ? { controllerOf } : {}) })
   const agent = (id = 'a1', reply = 'All done.') => ({
     id,
     session: { id, header: { cwd: 'D:/proj' }, deriveMessages: () => [{ role: 'user', content: 'hi' }, { role: 'assistant', content: [{ type: 'text', text: reply }] }] },
@@ -280,13 +280,14 @@ test('disposing a session ends all its open items', async () => {
   assert.ok(store.snapshot().resolved.every((i) => i.resolution.kind === 'session-ended' || i.resolution.kind === 'cancelled'))
 })
 
-test('after a restart, stale questions and permissions are cancelled but finished work stays', () => {
+test('after a restart, stale permissions are cancelled, questions stay as detached cards and finished work stays', () => {
   const store = createStore()
   store.add({ type: 'question', sessionId: 's', payload: {} })
   store.add({ type: 'permission', sessionId: 's', payload: {} })
   store.add({ type: 'completed', sessionId: 's', payload: {} })
-  assert.equal(cancelStalePending(store), 2)
-  assert.deepEqual(store.snapshot().open.map((i) => i.type), ['completed'])
+  assert.equal(cancelStalePending(store), 1)
+  assert.deepEqual(store.snapshot().open.map((i) => i.type).sort(), ['completed', 'question'])
+  assert.equal(store.snapshot().open.find((i) => i.type === 'question').detached, true)
   assert.equal(store.snapshot().resolved[0].resolution.by, 'restart')
 })
 
@@ -990,4 +991,93 @@ test('once the archive card is closed, the next finished turn adds its done card
   store.resolve(card.id, { kind: 'reviewed', by: 'card' })
   await fire('agent/turn-stopping', { agent: agent('a1', 'More work done.') })
   assert.deepEqual(store.snapshot().open.map((i) => i.type), ['completed'])
+})
+
+// ---- a question that outlived a DSH restart: its answer is a NEW user message to the session ----
+function restartedQuestion(opts = {}) {
+  const prompts = []
+  const controller = { prompt: async (req, signal) => { prompts.push({ req, signal }); if (opts.fail) throw opts.fail; return { accepted: true } } }
+  const x = setup({ ...(opts.noController ? {} : { controllerOf: () => controller }), services: opts.services ?? {} })
+  const item = x.store.add({ type: 'question', sessionId: 'a1', sessionTitle: 'Session One', key: 'c1', detached: true, restarted: true, payload: { callId: 'c1', questions: QUESTIONS } })
+  return { ...x, prompts, id: item.id }
+}
+const textOfPrompt = (p) => p.req.content.map((c) => c.text).join('')
+
+test('a question detached by a restart is answered as a new user message, not through the dead question request', async () => {
+  const services = { userQuestions: { answer: async () => { throw new Error('must not be used') } }, agents: { get: () => undefined } }
+  const x = restartedQuestion({ services })
+  assert.deepEqual(await x.capture.answerQuestion(x.id, ANSWER_B), { ok: true })
+  assert.equal(x.prompts.length, 1)
+  const { req } = x.prompts[0]
+  assert.equal(req.sessionId, 'a1')
+  assert.equal(req.mode, 'queue')
+  assert.match(req.requestId, /^question-/)
+  const text = textOfPrompt(x.prompts[0])
+  assert.ok(text.includes('Which port?') && text.includes('B'), text)
+  const it = x.store.get(x.id)
+  assert.equal(it.status, 'resolved')
+  assert.deepEqual({ kind: it.resolution.kind, by: it.resolution.by, answers: it.resolution.answers }, { kind: 'answered', by: 'card', answers: ANSWER_B })
+})
+
+test('a custom text answer of a restarted question reaches the session in the message', async () => {
+  const x = restartedQuestion()
+  assert.deepEqual(await x.capture.answerQuestion(x.id, [{ id: 'q1', selected: [], custom: 'use port 9000' }]), { ok: true })
+  assert.ok(textOfPrompt(x.prompts[0]).includes('use port 9000'))
+})
+
+test('a restarted question whose session the controller does not know expires with no-session (it can never be answered)', async () => {
+  const x = restartedQuestion({ fail: Object.assign(new Error('x'), { code: 'session/not-found' }) })
+  assert.deepEqual(await x.capture.answerQuestion(x.id, ANSWER_B), { ok: false, error: 'no-session' })
+  const it = x.store.get(x.id)
+  assert.deepEqual([it.status, it.resolution?.kind], ['resolved', 'expired'])
+})
+
+test('a failing prompt or a missing controller keeps the restarted question open', async () => {
+  const bad = restartedQuestion({ fail: new Error('boom: D:/secret/path') })
+  const r = await bad.capture.answerQuestion(bad.id, ANSWER_B)
+  assert.deepEqual(r, { ok: false, error: 'post-failed' })
+  assert.equal(bad.store.get(bad.id).status, 'open')
+  const none = restartedQuestion({ noController: true })
+  assert.deepEqual(await none.capture.answerQuestion(none.id, ANSWER_B), { ok: false, error: 'no-controller' })
+  assert.equal(none.store.get(none.id).status, 'open')
+})
+
+test('an invalid answer to a restarted question sends nothing', async () => {
+  const x = restartedQuestion()
+  assert.equal((await x.capture.answerQuestion(x.id, [{ id: 'q1', selected: ['Z'] }])).error, 'bad-answer')
+  assert.equal(x.prompts.length, 0)
+})
+
+test('two answers at once to a restarted question send one message', async () => {
+  let release
+  const prompts = []
+  const controller = { prompt: (req) => { prompts.push(req); return new Promise((r) => { release = r }) } }
+  const x = setup({ controllerOf: () => controller })
+  const item = x.store.add({ type: 'question', sessionId: 'a1', key: 'c1', detached: true, restarted: true, payload: { callId: 'c1', questions: QUESTIONS } })
+  const first = x.capture.answerQuestion(item.id, ANSWER_B)
+  assert.equal((await x.capture.answerQuestion(item.id, ANSWER_B)).ok, false)
+  release({ accepted: true })
+  assert.deepEqual(await first, { ok: true })
+  assert.equal(prompts.length, 1)
+})
+
+test('a restarted question with a malformed payload (peer app) is refused as bad-answer, never throws', async () => {
+  const prompts = []
+  const controller = { prompt: async (req) => { prompts.push(req) } }
+  const x = setup({ controllerOf: () => controller })
+  const bad = [{ id: 'q1', question: 'Which?', options: 'AB' }, { id: 'q1', question: 5, options: [{ label: 'A' }] }, { id: 'q1', question: 'Which?', options: [null, { label: 'A' }] }]
+  for (const questions of bad) {
+    const item = x.store.add({ type: 'question', sessionId: 'a1', key: 'c' + Math.random(), detached: true, restarted: true, payload: { callId: 'c1', questions } })
+    const r = await x.capture.answerQuestion(item.id, [{ id: 'q1', selected: ['A'] }])
+    assert.deepEqual(r, { ok: false, error: 'bad-answer' }, JSON.stringify(questions))
+  }
+  assert.equal(prompts.length, 0)
+})
+
+test('a custom answer over 20000 characters is refused before any cleaning or sending', async () => {
+  const x = restartedQuestion()
+  const r = await x.capture.answerQuestion(x.id, [{ id: 'q1', selected: [], custom: 'x'.repeat(20_001) }])
+  assert.deepEqual(r, { ok: false, error: 'bad-answer' })
+  assert.equal(x.prompts.length, 0)
+  assert.equal(x.store.get(x.id).status, 'open')
 })

@@ -55,7 +55,12 @@ export function createStoreAdapter({ instanceId, io, legacyRead, now = Date.now,
 
   /** An item moved here (a phone todo started in a workspace of this app, an item the hub gave this app by its session): applied without an op. */
   function adopt(item) {
-    if (inner.get(item.id)) return { ok: true, existing: true }
+    const have = inner.get(item.id)
+    if (have) {
+      // A question the hub kept open after a restart (its request died): the local copy takes the flags, without an op (the hub already has them).
+      if (have.type === 'question' && item.type === 'question' && item.restarted === true && have.restarted !== true && inner.update(item.id, { detached: true, restarted: true })) persist()
+      return { ok: true, existing: true }
+    }
     const fields = Object.fromEntries(Object.entries(item).filter(([k]) => !HUB_ONLY.includes(k)))
     inner.add(fields, { id: item.id, createdAt: item.createdAt })
     persist()

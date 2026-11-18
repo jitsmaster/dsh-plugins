@@ -43,7 +43,7 @@ test('the route rejects a request the Host refuses and strips the prefix otherwi
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('the queue is saved to queue.json and stale questions are cancelled on the next start', async () => {
+test('the queue is saved to queue.json and stale questions stay as detached cards on the next start', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rq-'))
   try {
     const one = fakeCtx()
@@ -55,9 +55,11 @@ test('the queue is saved to queue.json and stale questions are cancelled on the 
     const two = fakeCtx()
     const queue = apply(two.ctx, { hub: false, stateDir: dir })
     const snap = queue.snapshot()
-    assert.deepEqual(snap.open.map((i) => i.type), ['completed'])
-    assert.equal(snap.resolved[0].resolution.by, 'restart')
-    assert.ok(readFileSync(join(dir, 'review-queue.log'), 'utf8').includes(snap.resolved[0].id), 'the log names the stale item it cancelled')
+    assert.deepEqual(snap.open.map((i) => i.type).sort(), ['completed', 'question'])
+    const kept = snap.open.find((i) => i.type === 'question')
+    assert.deepEqual([kept.detached, kept.restarted], [true, true])
+    assert.equal(snap.resolved.length, 0)
+    assert.ok(readFileSync(join(dir, 'review-queue.log'), 'utf8').includes(kept.id), 'the log names the stale item it kept open')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

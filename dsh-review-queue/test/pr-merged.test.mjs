@@ -124,7 +124,7 @@ test('count() reports merged PRs by type', () => {
 
 test('a merged-PR item survives a restart (only questions and permissions are cancelled)', () => {
   const store = createStore()
-  store.add({ type: 'question', sessionId: 's', payload: {} })
+  store.add({ type: 'permission', sessionId: 's', payload: {} })
   store.add({ type: 'pr-merged', sessionId: 's', payload: { prId: '5' } })
   assert.equal(cancelStalePending(store), 1)
   assert.deepEqual(store.snapshot().open.map((i) => i.type), ['pr-merged'])

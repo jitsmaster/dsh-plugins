@@ -14,7 +14,7 @@ import { createExecutor } from './executor.js'
 import { createHubQueue } from './hub-queue.js'
 import { createLauncher, createReconnector } from './launcher.js'
 import { createProxy, driveModeFromClient } from './proxy.js'
-import { cancelStalePending } from '../capture.js'
+import { cancelStalePending, markStaleQuestions } from '../capture.js'
 
 const pluginVersion = () => {
   try { return String(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version) } catch { return undefined }
@@ -41,6 +41,7 @@ export function wireHub({ stateDir, port, hubNode, instanceKey, instanceId, labe
   const hubQueue = createHubQueue({ local, client: handle, speaker, controllerOf, log })
   const secret = () => { try { return readFileSync(join(stateDir, 'hub.secret'), 'utf8').trim() || undefined } catch { return undefined } }
   const staleIds = new Set(adapter.list({ status: 'open' }).map((i) => i.id)) // captured before this process
+  markStaleQuestions(adapter, { only: staleIds, log }) // before the first sync: the owner view then carries the detached flags, so the hub keeps these questions open
   let found
   let attachedTo
   let settled = false

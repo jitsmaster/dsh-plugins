@@ -11,6 +11,8 @@ import { needsUser } from './actionable.js'
 import { recommendedOf } from './speech.js'
 
 export const DONE_NO_ACTION_MS = 30_000
+/** A question kept open across a DSH restart is expired this long after it was asked. */
+export const RESTARTED_QUESTION_TTL_MS = 7 * 24 * 3600 * 1000
 
 /** The summary holds a bold action item. */
 export const hasActionItem = (summary) => typeof summary === 'string' && summary.includes('**')
@@ -19,7 +21,11 @@ export function createAutoClear({ store, now = Date.now, doneMs = DONE_NO_ACTION
   const guard = (fn, fallback) => { try { return fn() } catch (error) { log('auto-clear: ' + String(error?.message ?? error).slice(0, 160)); return fallback } }
 
   function expiredQuestion(item, t) {
-    return item.type === 'question' && Number.isFinite(item.expiresAt) && t >= item.expiresAt
+    if (item.type !== 'question') return false
+    // A question kept open by a restart (restarted) has no live request any more: its old deadline no longer means anything, the user's answer still
+    // reaches the session. Nobody may be able to answer it (session gone, standalone mode), so it expires a long time after it was asked.
+    if (item.restarted === true) return Number.isFinite(item.createdAt) && t - item.createdAt >= RESTARTED_QUESTION_TTL_MS
+    return Number.isFinite(item.expiresAt) && t >= item.expiresAt
   }
   function quietDone(item, t) {
     return item.type === 'completed' && t - item.createdAt >= doneMs && item.actionable !== true && !item.decision

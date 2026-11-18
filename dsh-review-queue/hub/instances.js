@@ -86,11 +86,24 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     return true
   }
 
-  /** Questions and permissions of an owner whose process is gone can never be answered. Idempotent. */
+  /**
+   * A question of an owner whose process is gone stays open as a detached card: its request died, but the user's answer can still reach the
+   * session as a new message (the app that has the session sends it). Flagged once, so settling twice changes nothing.
+   */
+  function detach(item, reason) {
+    if (item.restarted === true && item.detached === true) return false
+    if (!store.update(item.id, { detached: true, restarted: true })) return false
+    log('detached question ' + item.id + ' kept open (' + reason + ')')
+    return true
+  }
+
+  /** Permissions of an owner whose process is gone can never be answered and end; its questions stay as detached cards. Idempotent. */
   function settle(inst, reason) {
     let ended = 0
     for (const item of store.list({ status: 'open' })) {
-      if (item.owner === inst.id && ENDED.has(item.type) && endItem(item, reason)) ended++
+      if (item.owner !== inst.id) continue
+      if (item.type === 'question') detach(item, reason)
+      else if (ENDED.has(item.type) && endItem(item, reason)) ended++
     }
     return ended
   }
@@ -103,12 +116,15 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
   }
 
   // ---- sync: the owner's view of its items (register carries one, resync sends one) ----
-  function patchFor(cur, it) {
+  function patchFor(cur, it, revived = false) {
     const patch = Object.fromEntries(Object.entries(it).filter(([k, v]) => !BLOCKED.includes(k) && !same(v, cur[k])))
-    const unset = Object.keys(cur).filter((k) => !BLOCKED.includes(k) && !(k in it) && cur[k] !== undefined)
+    // The hub's own detached/restarted flags on a question (its request died with the process) are not the app's to unset by an older view.
+    // Exception: the same process coming back (revived) holds the live request again, so its own view is right and clears them.
+    const keep = cur.type === 'question' && cur.restarted === true && !revived ? ['detached', 'restarted'] : []
+    const unset = Object.keys(cur).filter((k) => !BLOCKED.includes(k) && !keep.includes(k) && !(k in it) && cur[k] !== undefined)
     return Object.keys(patch).length || unset.length ? { op: 'update', id: cur.id, patch, unset } : undefined
   }
-  function syncOpen(inst, it, out) {
+  function syncOpen(inst, it, out, revived) {
     const cur = store.get(it.id)
     if (!cur) { store.applyOp({ op: 'add', item: it }, TRUSTED(inst)); return }
     if (cur.owner !== inst.id) { out.foreign.push(it.id); return }
@@ -117,7 +133,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       store.reopen(cur.id)
       out.revived++
     }
-    const update = patchFor(store.get(it.id), it)
+    const update = patchFor(store.get(it.id), it, revived)
     if (update) store.applyOp(update, TRUSTED(inst))
   }
   function syncResolved(inst, it, out) {
@@ -128,11 +144,11 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     } else if (cur.owner !== inst.id) out.foreign.push(it.id)
     else if (cur.status === 'open') store.applyOp({ op: 'resolve', id: it.id, resolution }, { owner: inst.id })
   }
-  function processSync(inst, sync, out) {
+  function processSync(inst, sync, out, revived = false) {
     const open = items(sync.openItems)
     const resolved = items(sync.resolvedItems)
     const mentioned = new Set([...open, ...resolved].map((i) => i.id))
-    for (const it of open) syncOpen(inst, it, out)
+    for (const it of open) syncOpen(inst, it, out, revived)
     for (const it of resolved) syncResolved(inst, it, out)
     for (const id of mentioned) inst.handed.delete(id)
     for (const cur of store.list({ status: 'open' })) {
@@ -152,7 +168,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
     const known = new Set(inst.sessionIds)
     let n = 0
     for (const cur of store.list({ status: 'open' })) {
-      if (!ADOPTABLE.has(cur.type) || !known.has(cur.sessionId) || cur.owner === inst.id || !ownerAbsent(cur.owner)) continue
+      if (!(ADOPTABLE.has(cur.type) || (cur.type === 'question' && cur.restarted === true)) || !known.has(cur.sessionId) || cur.owner === inst.id || !ownerAbsent(cur.owner)) continue
       if (!store.setOwner(cur.id, inst.id)) continue
       handOver(inst, store.get(cur.id), out)
       n++
@@ -191,10 +207,11 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       const prev = byId.get(keyToId.get(key))
       if (prev && prev.id !== id) replace(prev, id, out)
       const inst = existing ?? byId.get(id) ?? blank(key, id)
+      const revived = existing?.state === 'gone' // read before the assign below sets it online: the same process coming back
       Object.assign(inst, { label: typeof label === 'string' && label ? label.slice(0, 80) : 'DSH', pid, protocol, pluginVersion, state: 'online', registered: true, pollsOpen: 0, lastPollAt: now(), lastSeenAt: now(), goneAt: undefined })
       byId.set(id, inst)
       keyToId.set(key, id)
-      if (sync && typeof sync === 'object') processSync(inst, sync, out)
+      if (sync && typeof sync === 'object') processSync(inst, sync, out, revived)
       inst.sessions = cleanSessions(sessions) // a re-register without numbers (an old agent) forgets the old ones
       persist()
       notifySessions()
@@ -267,7 +284,7 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       return { ok: true }
     },
 
-    /** A sync outside of a register (after a 409 resync-needed): the same owner view, answered like register. */
+    /** A sync outside of a register (after a 409 resync-needed): the same owner view, answered like register. Never `revived`: live() refuses a gone instance, which must register again (keep it that way, or the hub flags could be unset by a stale view). */
     sync(id, sync) {
       const inst = live(id)
       if (!inst) return { ok: false, error: 'unknown-instance' }

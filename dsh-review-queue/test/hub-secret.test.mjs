@@ -7,9 +7,9 @@ import { PROTOCOL, MIN_HUB_PROTOCOL } from '../hub/protocol.js'
 import { createHub, PROTOCOL as HUB_PROTOCOL } from '../hub/hub.js'
 import { tmpDir } from './hub-helpers.mjs'
 
-test('the protocol constant is 2 (bumped so a hub older than requireConfirm is restarted) and is the hub one', () => {
-  assert.equal(PROTOCOL, 2)
-  assert.equal(MIN_HUB_PROTOCOL, 2)
+test('the protocol constant is 3 (bumped so a hub that ends questions on restart is replaced) and is the hub one', () => {
+  assert.equal(PROTOCOL, 3)
+  assert.equal(MIN_HUB_PROTOCOL, 3)
   assert.equal(HUB_PROTOCOL, PROTOCOL)
   assert.equal(createHub({ stateDir: 'x' }).protocol, PROTOCOL)
 })

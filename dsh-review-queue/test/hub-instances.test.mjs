@@ -71,7 +71,7 @@ test('a state change moves the hub rev so waiting snapshots refresh, polling doe
   assert.equal(store.rev, rev + 1)
 })
 
-test('away for GRACE_MS since the last sign of life makes it gone; its questions and permissions end, other items stay', () => {
+test('away for GRACE_MS since the last sign of life makes it gone; its permissions end, its questions stay open as detached cards, other items stay', () => {
   const { clock, store, instances } = make()
   reg(instances)
   const q = add(store, A, { type: 'question' })
@@ -82,15 +82,15 @@ test('away for GRACE_MS since the last sign of life makes it gone; its questions
   assert.deepEqual(open(store).sort(), [q, p, c].sort())
   idle(clock, instances, GRACE_MS)
   assert.equal(state(instances), 'gone')
-  assert.deepEqual(open(store), [c])
-  assert.deepEqual(store.get(q).resolution, { kind: 'session-ended', by: 'hub', reason: 'owner-gone' })
+  assert.deepEqual(open(store).sort(), [q, c].sort())
+  assert.deepEqual([store.get(q).detached, store.get(q).restarted], [true, true], 'its request died with the process: the answer will go out as a new message')
   assert.deepEqual(store.get(p).resolution, { kind: 'session-ended', by: 'hub', reason: 'owner-gone' })
 })
 
 test('settling twice changes nothing the second time', () => {
   const { clock, store, instances } = make()
   reg(instances)
-  add(store, A)
+  add(store, A, { type: 'permission' })
   idle(clock, instances, AWAY_MS + GRACE_MS + 1000)
   assert.equal(state(instances), 'gone')
   assert.equal(store.list({ status: 'open' }).length, 0)
@@ -113,7 +113,18 @@ test('the grace is configurable and a gone instance cannot poll', () => {
 // ---- every close the hub makes by itself names the item and the reason in its log ----
 const closeLine = (logs, id) => logs.find((l) => l.includes(id))
 
-test('a gone owner\'s question is closed with a log line naming the item and the reason', () => {
+test('a gone owner\'s permission is closed with a log line naming the item and the reason', () => {
+  const logs = []
+  const { clock, store, instances } = make({ log: (l) => logs.push(l) })
+  reg(instances)
+  const p = add(store, A, { type: 'permission' })
+  idle(clock, instances, AWAY_MS + GRACE_MS + 1000)
+  const line = closeLine(logs, p)
+  assert.ok(line, logs.join(' | '))
+  assert.match(line, /session-ended/)
+})
+
+test('a gone owner\'s question is kept open as detached, with a log line naming the item and the reason', () => {
   const logs = []
   const { clock, store, instances } = make({ log: (l) => logs.push(l) })
   reg(instances)
@@ -121,16 +132,18 @@ test('a gone owner\'s question is closed with a log line naming the item and the
   idle(clock, instances, AWAY_MS + GRACE_MS + 1000)
   const line = closeLine(logs, q)
   assert.ok(line, logs.join(' | '))
-  assert.match(line, /session-ended/)
+  assert.match(line, /detached/)
+  assert.match(line, /owner-gone/)
 })
 
-test('a restarted app\'s dead question is closed with a log line naming the item and the reason', () => {
+test('a restarted app\'s dead question is kept open as detached, with a log line naming the item and the reason', () => {
   const logs = []
   const { store, instances } = make({ log: (l) => logs.push(l) })
   reg(instances, A)
   const q = add(store, A, { type: 'question' })
   reg(instances, B)
   assert.match(closeLine(logs, q) ?? '', /restarted/, logs.join(' | '))
+  assert.match(closeLine(logs, q) ?? '', /detached/, logs.join(' | '))
 })
 
 test('an item the app no longer lists at a sync is closed with a log line naming the item and the reason', () => {
@@ -184,18 +197,21 @@ test('after a hub start every persisted instance gets GRACE_MS to come back, and
 
 // ---- adoption, revival, sync ---------------------------------------------------------------------------------------------------
 
-test('the same key with a new id is a restarted app: its promises are dead, the rest is adopted', () => {
+test('the same key with a new id is a restarted app: its permissions end, its question stays as a detached card, the rest is adopted', () => {
   const { store, instances, commands } = make()
   reg(instances, A)
   const q = add(store, A, { type: 'question' })
+  const perm = add(store, A, { type: 'permission' })
   const done = add(store, A, { type: 'completed' })
   const todo = add(store, A, { type: 'todo', state: 'awaiting-confirm' })
-  const waiting = commands.enqueue(A, { kind: 'approve', itemId: q })
+  const waiting = commands.enqueue(A, { kind: 'approve', itemId: perm })
   const r = reg(instances, B)
   assert.equal(r.ok, true)
-  assert.equal(r.adopted, 2)
-  assert.deepEqual(store.get(q).resolution, { kind: 'session-ended', by: 'hub', reason: 'restarted' })
-  assert.deepEqual([done, todo].map((id) => [store.get(id).owner, store.get(id).status]), [[B, 'open'], [B, 'open']])
+  assert.equal(r.adopted, 3)
+  assert.deepEqual(store.get(perm).resolution, { kind: 'session-ended', by: 'hub', reason: 'restarted' })
+  assert.deepEqual([q, done, todo].map((id) => [store.get(id).owner, store.get(id).status]), [[B, 'open'], [B, 'open'], [B, 'open']])
+  assert.deepEqual([store.get(q).detached, store.get(q).restarted], [true, true])
+  assert.ok(r.adoptedItems.some((i) => i.id === q && i.detached === true && i.restarted === true), 'the new app is handed the question flagged')
   assert.equal(state(instances, A), 'gone')
   assert.equal(state(instances, B), 'online')
   assert.equal(instances.byKey('k1').id, B)
@@ -205,7 +221,7 @@ test('the same key with a new id is a restarted app: its promises are dead, the 
 test('a returning owner revives the items the hub ended while it was away', () => {
   const { clock, store, instances } = make()
   reg(instances)
-  const q = add(store, A, { type: 'question' })
+  const q = add(store, A, { type: 'permission' })
   idle(clock, instances, AWAY_MS + GRACE_MS + 1000)
   assert.equal(store.get(q).status, 'resolved')
   const r = reg(instances, A, { sync: { n: 3, openItems: [store.get(q)], resolvedItems: [], workspaces: [], sessionIds: ['s1'] } })
@@ -258,6 +274,19 @@ test('an item the sync lists that another instance owns is not taken: the owner 
   assert.equal(store.get(mine).owner, B)
 })
 
+test('a detached question of a gone owner is adopted by a new app (another key) that has its session; a live question never is', () => {
+  const { store, instances } = make()
+  reg(instances, A)
+  const gone = add(store, A, { type: 'question', sessionId: 'sq' })
+  instances.bye(A)
+  const r = instances.register({ key: 'k2', id: B, label: 'DSH :2', sync: { n: 0, openItems: [], resolvedItems: [], workspaces: [], sessionIds: ['sq'] } })
+  assert.equal(store.get(gone).owner, B)
+  assert.ok(r.adoptedItems.some((i) => i.id === gone))
+  const fresh = add(store, B, { type: 'question', sessionId: 'sz' })
+  instances.register({ key: 'k3', id: 'cccc3333', label: 'DSH :3', sync: { n: 0, openItems: [], resolvedItems: [], workspaces: [], sessionIds: ['sz'] } })
+  assert.equal(store.get(fresh).owner, B, 'an online owner with a live question is not robbed')
+})
+
 test('orphans of the legacy import are adopted by the instance that has their session', () => {
   const { store, instances } = make()
   const orphan = store.applyOp({ op: 'add', item: { type: 'completed', sessionId: 'sX', payload: {} } }, {}).id
@@ -268,14 +297,16 @@ test('orphans of the legacy import are adopted by the instance that has their se
   assert.equal(store.get(other).owner, undefined)
 })
 
-test('a graceful bye ends questions and permissions at once and keeps the rest as orphans', () => {
+test('a graceful bye ends permissions at once, keeps questions as detached cards and the rest as orphans', () => {
   const { store, instances } = make()
   reg(instances)
   const q = add(store, A, { type: 'question' })
+  const p = add(store, A, { type: 'permission' })
   const c = add(store, A, { type: 'completed' })
   assert.deepEqual(instances.bye(A), { ok: true })
   assert.equal(state(instances), 'gone')
-  assert.equal(store.get(q).resolution.reason, 'owner-gone')
+  assert.equal(store.get(p).resolution.reason, 'owner-gone')
+  assert.deepEqual([store.get(q).status, store.get(q).detached, store.get(q).restarted], ['open', true, true])
   assert.equal(store.get(c).status, 'open')
   assert.deepEqual(instances.bye('nope'), { ok: false, error: 'unknown-instance' })
 })
@@ -344,4 +375,46 @@ test('owner sync drops a malformed decision (wrong type, too many options, long 
   ]
   bad.forEach((decision, n) => reg(instances, A, { sync: { openItems: [{ id: 'bad' + n, type: 'completed', sessionId: 's' + n, payload: {}, decision }] } }))
   for (let n = 0; n < bad.length; n++) assert.equal(store.get('bad' + n)?.decision, undefined, 'malformed decision #' + n)
+})
+test('a sync that lists a restarted question without the detached flags does not unset them on the hub', () => {
+  const { store, instances } = make()
+  reg(instances, A)
+  const q = add(store, A, { type: 'question', sessionId: 'sq' })
+  reg(instances, B)
+  assert.deepEqual([store.get(q).detached, store.get(q).restarted], [true, true])
+  const plain = { ...store.get(q) }
+  delete plain.detached
+  delete plain.restarted
+  instances.sync(B, { n: 1, openItems: [plain], resolvedItems: [], workspaces: [], sessionIds: ['sq'] })
+  assert.deepEqual([store.get(q).detached, store.get(q).restarted], [true, true])
+})
+
+test('the same process coming back (sleep, hub restart) clears the flags the hub set on its live question', () => {
+  const { clock, store, instances } = make()
+  reg(instances)
+  const q = add(store, A, { type: 'question', sessionId: 'sq' })
+  idle(clock, instances, AWAY_MS + GRACE_MS + 1000)
+  assert.equal(state(instances), 'gone')
+  assert.deepEqual([store.get(q).detached, store.get(q).restarted], [true, true])
+  const live = { ...store.get(q) }
+  delete live.detached
+  delete live.restarted
+  reg(instances, A, { sync: { n: 0, openItems: [live], resolvedItems: [], workspaces: [], sessionIds: ['sq'] } })
+  assert.equal(state(instances), 'online')
+  assert.equal(store.get(q).status, 'open')
+  assert.deepEqual([store.get(q).detached, store.get(q).restarted], [undefined, undefined], 'its request is alive again: it is not a restarted question')
+})
+
+test('a graceful bye followed by the same instance coming back also clears the flags; another instance never does', () => {
+  const { store, instances } = make()
+  reg(instances)
+  const q = add(store, A, { type: 'question', sessionId: 'sq' })
+  instances.bye(A)
+  assert.deepEqual([store.get(q).detached, store.get(q).restarted], [true, true])
+  reg(instances, B)
+  const plain = { ...store.get(q) }
+  delete plain.detached
+  delete plain.restarted
+  instances.sync(B, { n: 1, openItems: [plain], resolvedItems: [], workspaces: [], sessionIds: ['sq'] })
+  assert.deepEqual([store.get(q).detached, store.get(q).restarted], [true, true], 'a different app (it never held the request) cannot unset them')
 })

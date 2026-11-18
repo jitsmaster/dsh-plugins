@@ -349,7 +349,7 @@ test('a restart: a todo waiting for confirmation or failed survives, one that wa
   const waiting = store.add({ type: 'todo', text: 'a', sparc: false, state: 'awaiting-confirm' })
   const failed = store.add({ type: 'todo', text: 'b', sparc: false, state: 'failed', error: 'x' })
   const starting = store.add({ type: 'todo', text: 'c', sparc: false, state: 'starting', workspaceId: 'w-plug' })
-  const question = store.add({ type: 'question', sessionId: 's', payload: {} })
+  const question = store.add({ type: 'permission', sessionId: 's', payload: {} })
   assert.equal(cancelStalePending(store), 1)
   assert.equal(store.get(question.id).status, 'resolved')
   assert.equal(store.get(waiting.id).state, 'awaiting-confirm')

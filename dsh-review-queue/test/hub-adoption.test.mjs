@@ -77,14 +77,14 @@ test('items of a gone owner move to a new app with a different key that has thei
   clock.advance(AWAY_MS + GRACE_MS + 1000)
   hub.instances.tick()
   assert.equal(hub.instances.get(a.id).state, 'gone')
-  assert.equal(hub.store.get(a.itemId(3)).resolution.reason, 'owner-gone')
+  assert.deepEqual([hub.store.get(a.itemId(3)).status, hub.store.get(a.itemId(3)).restarted], ['open', true])
 
   const b = agentOf(port, { id: 'bbbb2222', key: 'pid-other', label: 'DSH :2' })
   const r = await b.register({ sync: sync({ sessionIds: ['sa', 'sb', 'sq'] }) })
-  assert.deepEqual(ids(r.json.adoptedItems).sort(), [a.itemId(1), a.itemId(2)])
+  assert.deepEqual(ids(r.json.adoptedItems).sort(), [a.itemId(1), a.itemId(2), a.itemId(3)].sort())
   assert.deepEqual([hub.store.get(a.itemId(1)).owner, hub.store.get(a.itemId(2)).owner], [b.id, b.id])
   const q = hub.store.get(a.itemId(3))
-  assert.deepEqual([q.status, q.resolution.kind, q.resolution.reason, q.owner], ['resolved', 'session-ended', 'owner-gone', a.id], 'the promise died with its process: not adoptable')
+  assert.deepEqual([q.status, q.detached, q.restarted, q.owner], ['open', true, true, b.id], 'the request died with its process: the question stays as a detached card and moves to the app that has its session')
 })
 
 test('an owner that is only away (or not back yet after a hub restart) keeps its items; an online owner is not robbed by another app', async (t) => {
@@ -109,10 +109,10 @@ test('a restart with the same key still hands the new app the items it takes ove
   await a.send(a.add(1, { sessionId: 'sa' }), a.add(2, { type: 'question', sessionId: 'sq', payload: { questions: [] } }))
   const again = agentOf(port, { id: 'cccc3333', key: 'k1' })
   const r = await again.register({ sync: sync() })
-  assert.deepEqual(ids(r.json.adoptedItems), [a.itemId(1)])
-  assert.equal(r.json.adopted, 1)
+  assert.deepEqual(ids(r.json.adoptedItems).sort(), [a.itemId(1), a.itemId(2)].sort())
+  assert.equal(r.json.adopted, 2)
   assert.equal(hub.store.get(a.itemId(1)).owner, again.id)
-  assert.equal(hub.store.get(a.itemId(2)).resolution.reason, 'restarted')
+  assert.deepEqual([hub.store.get(a.itemId(2)).status, hub.store.get(a.itemId(2)).detached, hub.store.get(a.itemId(2)).restarted], ['open', true, true], 'the question stays as a detached card')
 })
 
 test('an item handed over but missing from the next sync (the answer was lost) is handed again, not ended; once the app lists it that stops', async (t) => {

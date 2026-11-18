@@ -66,7 +66,7 @@ test('a trusted todo-link with a workspace and no requireConfirm starts at once 
 })
 
 test('a requireConfirm todo-link never goes to an app of protocol 1: it would drop the flag and start the session at once', async (t) => {
-  const ctx = await startHub(t)
+  const ctx = await startHub(t, { protocol: 2 }) // a hub still within one protocol of the old app (it speaks [protocol-1, protocol])
   const old = agentOf(ctx.port, { protocol: 1 })
   await old.register({ sync: sync({ workspaces: [ws('w1', 'alpha', 'D:/a')] }) })
   const seen = autopilot(t, old, () => ({ ok: true, id: old.itemId(9), state: 'starting' }))

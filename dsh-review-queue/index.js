@@ -170,6 +170,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
     autoAnswerLeadMs: msOf(config.questionAutoAnswerLeadSeconds, true), defaultWindowMs: msOf(config.questionWindowSeconds, false),
     expireOlder: !questionMergeOn, // with the question merge on, it expires the older detached questions itself after trying to merge them
     keepDone: config.doneKeepPerSession, // capture.js falls back to its default (20) for anything that is not a positive integer
+    controllerOf: () => controllerOf(), // answers to questions that outlived a restart go out as a new user message
   })
   const controllerOf = () => { try { return ctx.get?.('sessionController') ?? ctx.sessionController } catch { return undefined } }
 // The default model selection service: a todo that picks another effort gives the default back after selecting it for its session (todo.js applyEffort).

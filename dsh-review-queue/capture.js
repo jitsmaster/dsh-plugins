@@ -59,6 +59,18 @@ const WINDOW_SLACK_BEFORE_MS = 3_000
 const WINDOW_SLACK_AFTER_MS = 5_000
 const SYSTEM_CODE = /^(E[A-Z0-9]+|UND_ERR_\w+)$/ // ETIMEDOUT and friends: a network timeout is not the question's timeout
 const PAIR_WINDOW_MS = 10 * 60 * 1000
+const RESTART_PROMPT_TIMEOUT_MS = 30_000
+const MAX_ANSWER_CHARS = 2000
+
+/** The message that carries the user's card answer into the session after a restart (question and answer text are cleaned and capped). */
+function restartedAnswerText(questions, answers) {
+  const lines = questions.map((q) => {
+    const a = answers.find((x) => x.id === q.id)
+    const parts = [...(a?.selected ?? []).map((s) => cleanText(s, { maxChars: 200 })), ...(a?.custom ? [cleanText(a.custom, { maxChars: MAX_ANSWER_CHARS })] : [])]
+    return '- "' + cleanText(q.question, { maxChars: 200 }) + '": ' + parts.join('; ')
+  })
+  return 'My answer to your earlier question (DSH was restarted before I could answer it):\n' + lines.join('\n')
+}
 
 /** A value for a one-line log entry: whitespace collapsed, capped. */
 const oneLine = (value) => String(value ?? '').replace(/\s+/g, ' ').slice(0, 120)
@@ -110,6 +122,8 @@ function boundedMap(limit) {
   }
 }
 
+const MAX_CUSTOM_ANSWER = 20_000
+
 /** One validated answer per question (options must exist, one choice unless multiSelect, something chosen or typed); undefined when the batch is not acceptable. */
 function cleanAnswers(questions, answers) {
   if (!Array.isArray(answers) || answers.length !== questions.length) return undefined
@@ -117,8 +131,10 @@ function cleanAnswers(questions, answers) {
   for (const a of answers) {
     const q = questions.find((x) => x.id === a?.id)
     if (!q || ids.has(a.id) || !Array.isArray(a.selected)) return undefined
+    if (typeof a.custom === 'string' && a.custom.length > MAX_CUSTOM_ANSWER) return undefined // refuse before any cleaning (a peer or phone body)
+    if (q.options !== undefined && !Array.isArray(q.options)) return undefined // a payload from a peer app can be malformed
     ids.add(a.id)
-    const labels = (q.options ?? []).map((o) => o.label)
+    const labels = (q.options ?? []).map((o) => o?.label)
     if (a.selected.some((v) => !labels.includes(v))) return undefined
     if (!a.selected.length && !(typeof a.custom === 'string' && a.custom.trim())) return undefined
     if (a.selected.length > 1 && !q.multiSelect) return undefined
@@ -156,7 +172,7 @@ function answerWindowMs(req, seconds, defaultWindowMs) {
  * keepDone: how many open done cards ('completed') one session keeps (default 20, an invalid value falls back to it); past it the oldest is
  * resolved as 'trimmed' and logged.
  */
-export function installCapture(ctx, { store, summarizer, expireOlder = true, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS, handoffOf = () => undefined, disposeGraceMs = DEFAULT_DISPOSE_GRACE_MS }) {
+export function installCapture(ctx, { store, summarizer, expireOlder = true, log = () => {}, now = Date.now, autoAnswer = true, autoAnswerLeadMs = DEFAULT_AUTO_ANSWER_LEAD_MS, defaultWindowMs = DEFAULT_ASK_WINDOW_MS, keepDone = DEFAULT_KEEP_DONE, replyGraceMs = DEFAULT_REPLY_GRACE_MS, handoffOf = () => undefined, disposeGraceMs = DEFAULT_DISPOSE_GRACE_MS, controllerOf = () => undefined }) {
   const offeredHandoffs = new Set() // 'session|path' of handoff notes already offered on a done card (a mid-session handoff is offered once)
   const keep = Number.isInteger(keepDone) && keepDone > 0 ? keepDone : DEFAULT_KEEP_DONE
   const children = new Set()
@@ -528,6 +544,32 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     return { ok: true }
   }
 
+  /**
+   * A card answer for a question that outlived a DSH restart (restarted): the question request died with the old process, so the answer
+   * reaches the session as a NEW user message (queued), never through the question service. A transient failure keeps the card open; an unknown session expires it.
+   * The requestId `question-<id>` is stable so a retry after a timeout can be deduplicated by the controller (assumed, not verified here).
+   */
+  async function answerRestarted(item, answers) {
+    const clean = cleanAnswers(item.payload?.questions ?? [], answers)
+    if (!clean) return { ok: false, error: 'bad-answer' }
+    if (detachedInFlight.has(item.id)) return { ok: false, error: 'not-pending' }
+    const controller = guard(() => controllerOf())
+    if (typeof controller?.prompt !== 'function') return { ok: false, error: 'no-controller' }
+    detachedInFlight.add(item.id) // the message reaching the session must not re-label the item before we record it
+    try {
+      await controller.prompt({ requestId: 'question-' + item.id, sessionId: item.sessionId, mode: 'queue', content: [{ type: 'text', text: restartedAnswerText(item.payload?.questions ?? [], clean) }] }, AbortSignal.timeout(RESTART_PROMPT_TIMEOUT_MS))
+    } catch (error) {
+      log('capture: question ' + item.id + ' answer not sent: ' + String(error?.code ?? error?.name ?? 'error').slice(0, 40)) // the code only: an error message can carry a path
+      if (error?.code === 'session/not-found') { // the session is gone for good (closed just before the restart): no answer can ever reach it
+        guard(() => store.resolve(item.id, { kind: 'expired', assumed: [] }))
+        return { ok: false, error: 'no-session' }
+      }
+      return { ok: false, error: 'post-failed' }
+    } finally { detachedInFlight.delete(item.id) }
+    guard(() => store.resolve(item.id, { kind: 'answered', by: 'card', answers: clean }))
+    return { ok: true }
+  }
+
   /** Close the question item (open or expired) of this session and call id, once. */
   function settleQuestion(sessionId, callId, { answers, result }) {
     if (callId === undefined) return
@@ -552,9 +594,10 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     seen.delete(id)
     silencedBy.delete(id)
     lastHuman.delete(id)
-    // A DSH shutdown disposes every agent too, so a disposal alone does not mean the user closed the session. A question or permission dies
-    // with its request either way and closes now; every other card (done, on hold, archive, todo, ...) outlives the process and is only
-    // closed when the session is still not live after the grace period.
+    // A DSH shutdown disposes every agent too, so a disposal alone does not mean the user closed the session. A permission dies with its
+    // request and closes now; every other card (question, done, on hold, archive, todo, ...) is only closed when the session is still not
+    // live after the grace period. On a shutdown the process exits before that timer fires, so the cards stay in the store: a question then
+    // comes back flagged detached + restarted (markStaleQuestions / cancelStalePending) and its answer goes out as a new message.
     if (disposeGraceMs <= 0) { // no grace: every open card of the session closes at once (the original behaviour)
       const all = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === id).length, 0)
       if (guard(() => store.resolveSession(id, { kind: 'session-ended' }), false)) log('capture: session-ended: closed ' + all + ' open item(s) of session ' + id)
@@ -563,7 +606,7 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
     const mine = guard(() => store.list({ status: 'open' }).filter((i) => i.sessionId === id), [])
     let closed = 0
     for (const item of mine) {
-      if ((item.type === 'question' || item.type === 'permission') && guard(() => store.resolve(item.id, { kind: 'session-ended' }), false)) closed++
+      if (item.type === 'permission' && guard(() => store.resolve(item.id, { kind: 'session-ended' }), false)) closed++
     }
     if (closed) log('capture: session-ended: closed ' + closed + ' open item(s) of session ' + id)
     const closeRest = () => {
@@ -588,7 +631,8 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
       const entry = pending.get(itemId)
       if (!entry) {
         const item = store.get(itemId)
-        return item?.type === 'question' && item.status === 'open' && item.detached ? answerDetached(item, answers) : { ok: false, error: 'not-pending' }
+        if (item?.type === 'question' && item.status === 'open' && item.detached) return item.restarted ? answerRestarted(item, answers) : answerDetached(item, answers)
+        return { ok: false, error: 'not-pending' }
       }
       if (entry.type !== 'question') return { ok: false, error: 'not-pending' }
       const clean = cleanAnswers(entry.questions, answers)
@@ -642,6 +686,26 @@ export function installCapture(ctx, { store, summarizer, expireOlder = true, log
 }
 
 /**
+ * Flags the open questions of an earlier process (only: their ids) as detached + restarted: their request died, the answer goes out as a new
+ * message. Hub mode calls it before the first sync so the owner view carries the flags. Returns how many it flagged now (already flagged: 0).
+ */
+export function markStaleQuestions(store, { only, log } = {}) {
+  let n = 0
+  for (const item of store.list({ status: 'open' })) {
+    if (item.type !== 'question' || (only && !only.has(item.id))) continue
+    if (flagRestartedQuestion(store, item, log)) n++
+  }
+  return n
+}
+
+/** Flags one open question as detached + restarted (its request died with the earlier process). Already flagged: nothing, false. */
+function flagRestartedQuestion(store, item, log) {
+  if (item.restarted === true || !store.update(item.id, { detached: true, restarted: true })) return false
+  log?.('capture: question ' + item.id + ' kept open as detached: its request died with the earlier process')
+  return true
+}
+
+/**
  * After a restart no request is waiting any more: open questions and permission requests can no longer be answered
  * from here, so they leave the queue. Finished-work and merged-PR items stay. A todo stays too; one that was being started
  * is a failed one now (Retry starts it, reusing a session that was already created); a follow-up that was being sent is failed with the may-have-been-sent warning instead (its prompt may be in the session already). With { only: Set<id> } just those items
@@ -657,6 +721,11 @@ export function cancelStalePending(store, { only, log } = {}) {
       continue
     }
     if (item.type === 'paused') continue // the next scan of the session logs decides whether it is still cut off
+    if (item.type === 'question') {
+      // The live request died with the process, but the user's answer can still reach the session as a new message (answerDetached), so the card stays open.
+      flagRestartedQuestion(store, item, log)
+      continue
+    }
     if (item.type !== 'completed' && item.type !== 'pr-merged' && item.type !== 'archive' && store.resolve(item.id, { kind: 'cancelled', by: 'restart' })) {
       n++
       log?.('capture: ' + item.type + ' ' + item.id + ' cancelled: its request died with the earlier process')

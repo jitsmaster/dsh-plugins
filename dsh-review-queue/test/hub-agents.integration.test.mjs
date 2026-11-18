@@ -10,6 +10,7 @@ import { createHubQueue } from '../agent/hub-queue.js'
 import { createStoreAdapter } from '../agent/store-adapter.js'
 import { installCapture } from '../capture.js'
 import { AWAY_MS, GRACE_MS } from '../hub/instances.js'
+import { PROTOCOL } from '../hub/protocol.js'
 import { createReviewQueue } from '../service.js'
 import { postJson, raw, waitFor } from './hub-helpers.mjs'
 import { P, SECRET, startHub } from './hub-agent-helpers.mjs'
@@ -19,7 +20,8 @@ const PHONE = { 'x-test-role': 'device' }
 const roleOf = (req) => req.headers['x-test-role'] ?? 'desktop'
 
 /** One DSH app: local store file, real capture and service, real agent client, optional flaky network. */
-function makeApp(t, { port, dir, clock, key, id, label, secret = SECRET, fetch: baseFetch = globalThis.fetch, workspaces = () => [] }) {
+function makeApp(t, { port, dir, clock, key, id, label, secret = SECRET, fetch: baseFetch = globalThis.fetch, workspaces = () => [], promptFails = false }) {
+  const prompts = [] // what this app's fake DSH controller was asked to send into a session
   const file = join(dir, 'local', key + '.json')
   const io = {
     read: () => { try { return readFileSync(file, 'utf8') } catch { return undefined } },
@@ -38,7 +40,8 @@ function makeApp(t, { port, dir, clock, key, id, label, secret = SECRET, fetch: 
   }
   const adapter = createStoreAdapter({ instanceId: id, io, now: clock.now })
   const summarizer = { summarize: async (reply) => ({ text: 'summary of ' + reply.slice(0, 12), source: 'test', title: 'Title ' + reply.slice(0, 6), actionable: true }) }
-  const capture = installCapture({ on() {}, get: () => undefined }, { store: adapter, summarizer, log: (l) => logs.push(l) })
+  const controller = { prompt: async (req) => { if (promptFails) throw Object.assign(new Error('boom'), { code: 'session/busy' }); prompts.push(req) } }
+  const capture = installCapture({ on() {}, get: () => undefined }, { store: adapter, summarizer, log: (l) => logs.push(l), controllerOf: () => controller })
   const queue = createReviewQueue({ store: adapter, capture, controllerOf: () => ({}), now: clock.now })
   const executed = []
   const inner = createExecutor({ queue, adapter })
@@ -50,7 +53,7 @@ function makeApp(t, { port, dir, clock, key, id, label, secret = SECRET, fetch: 
   const session = (sessionId) => ({ id: sessionId, devTitle: 'Title of ' + sessionId, session: { header: { cwd: 'D:/w' }, deriveMessages: () => [{ role: 'user', content: 'do it' }, { role: 'assistant', content: reply }] } })
   let calls = 0
   const app = {
-    id, key, label, adapter, capture, queue, client, hubQueue, executed, logs, net, file,
+    id, key, label, adapter, capture, queue, client, hubQueue, executed, logs, net, file, prompts,
     async completed(sessionId, text) { clock.advance(10); reply = text; await capture.handlers['agent/turn-stopping']({ agent: session(sessionId) }); return adapter.findOpen({ type: 'completed', sessionId }).id },
     async permission(sessionId, command = 'ls') {
       clock.advance(10)
@@ -120,7 +123,7 @@ test('a phone approve of the permission of A runs in A only; the risky one needs
   assert.deepEqual(await phone(port, 'approve', { id: plain.id, confirmed: true }).then((r) => [r.status, r.json.error]), [409, 'not-open'])
 })
 
-test('B restarts with the same key and a new id: its question is gone as session-ended, its completed items are adopted', async (t) => {
+test('B restarts with the same key and a new id: its question stays as a detached card, its completed items are adopted', async (t) => {
   const { hub, port, A, B, common } = await twoApps(t)
   const question = B.question('sb1')
   const done = await B.completed('sb2', 'B finished something')
@@ -130,14 +133,43 @@ test('B restarts with the same key and a new id: its question is gone as session
   const B2 = makeApp(t, { ...common, key: 'kB', id: 'bbbb9999', label: 'DSH :2' })
   B2.client.start()
   await B2.connected()
-  assert.deepEqual(hub.store.get(question.id).resolution, { kind: 'session-ended', by: 'hub', reason: 'restarted' })
+  const kept = hub.store.get(question.id)
+  assert.deepEqual([kept.status, kept.detached, kept.restarted, kept.owner], ['open', true, true, 'bbbb9999'], 'the request died, the question stays as a detached card owned by the new app')
   assert.deepEqual([hub.store.get(done).owner, hub.store.get(done).status], ['bbbb9999', 'open'])
   assert.equal(hub.store.get(aDone).owner, 'aaaa1111')
-  assert.equal(B2.adapter.get(question.id), undefined, 'the stale question of the dead process is dropped from its local store too')
+  assert.equal(B2.adapter.get(question.id).detached, true, 'the new app holds the question too')
   assert.equal(B2.adapter.get(done).status, 'open')
   const snap = (await raw({ port, path: P + '/v1/snapshot' })).json
-  assert.deepEqual(snap.open.map((i) => [i.id, i.ownerState]), [[done, 'online'], [aDone, 'online']])
+  assert.deepEqual(snap.open.map((i) => [i.id, i.ownerState]).sort(), [[question.id, 'online'], [done, 'online'], [aDone, 'online']].sort())
   assert.equal(hub.instances.get('bbbb2222').state, 'gone')
+})
+
+test('a phone answer to a restarted question reaches the new app and goes into the session as a NEW message; a failed send keeps the card open', async (t) => {
+  const { hub, port, B, common } = await twoApps(t)
+  const question = B.question('sb1')
+  await B.drained()
+  await B.client.stop({ bye: false }) // the process dies: no bye
+  const B2 = makeApp(t, { ...common, key: 'kB', id: 'bbbb9999', label: 'DSH :2', promptFails: true })
+  B2.client.start()
+  await B2.connected()
+  await waitFor(() => hub.store.get(question.id)?.owner === 'bbbb9999', 5000, 'question adopted by the new app')
+  const answers = [{ id: 'q1', selected: ['A'] }]
+  const failed = await phone(port, 'answer', { id: question.id, answers })
+  assert.equal(failed.json.ok, false, 'the send failed: ' + JSON.stringify(failed.json))
+  assert.equal(failed.json.error, 'post-failed')
+  assert.equal(hub.store.get(question.id).status, 'open', 'a failed send keeps the card open')
+  assert.deepEqual(B2.prompts, [])
+  const B3 = makeApp(t, { ...common, key: 'kB', id: 'bbbb7777', label: 'DSH :2' })
+  B3.client.start()
+  await B3.connected()
+  await waitFor(() => hub.store.get(question.id)?.owner === 'bbbb7777', 5000, 'question adopted by the third app')
+  const res = await phone(port, 'answer', { id: question.id, answers })
+  assert.deepEqual([res.status, res.json], [200, { ok: true }])
+  assert.equal(B3.prompts.length, 1)
+  assert.deepEqual([B3.prompts[0].requestId, B3.prompts[0].sessionId, B3.prompts[0].mode], ['question-' + question.id, 'sb1', 'queue'])
+  assert.match(B3.prompts[0].content[0].text, /A/)
+  await waitFor(() => hub.store.get(question.id).status === 'resolved', 5000, 'resolved in the hub')
+  assert.equal(hub.store.get(question.id).resolution.kind, 'answered')
 })
 
 test('A sleeps: it goes away, then gone (its permission ends); when it wakes the same process revives it and the phone can approve again', async (t) => {
@@ -202,7 +234,7 @@ test('the hub is killed and its state is gone when it returns: the outbox kept w
 })
 
 test('a hub of a newer protocol: the app is told to upgrade, keeps working on its own items, and its hub queue is the local service', async (t) => {
-  const { port, dir, clock } = await startHub(t, { protocol: 4, roleOf })
+  const { port, dir, clock } = await startHub(t, { protocol: PROTOCOL + 2, roleOf })
   const A = makeApp(t, { port, dir, clock, key: 'kA', id: 'aaaa1111', label: 'DSH :1' })
   const permission = await A.permission('sa1')
   A.client.start()

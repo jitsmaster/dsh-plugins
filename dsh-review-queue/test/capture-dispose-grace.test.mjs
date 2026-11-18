@@ -51,11 +51,25 @@ test('a session that is live again after the grace period keeps its cards', asyn
   assert.equal(store.get(hold.id).status, 'open')
 })
 
-test('a disposal still closes a question or permission card at once (its request died with the session)', () => {
+test('a disposal still closes a permission card at once (its request died with the session)', () => {
   const { store, fire } = setup({ disposeGraceMs: 60_000 })
-  const q = store.add({ type: 'question', sessionId: 's1', payload: { questions: [] } })
   const p = store.add({ type: 'permission', sessionId: 's1', payload: {} })
   fire('agent/disposed', { agent: { id: 's1' } })
-  assert.equal(store.get(q.id).status, 'resolved')
   assert.equal(store.get(p.id).status, 'resolved')
 })
+
+test('a disposal leaves a question card open during the grace period (a DSH shutdown disposes every agent; the card survives the restart)', () => {
+  const { store, fire } = setup({ disposeGraceMs: 60_000 })
+  const q = store.add({ type: 'question', sessionId: 's1', payload: { questions: [] } })
+  fire('agent/disposed', { agent: { id: 's1' } })
+  assert.equal(store.get(q.id).status, 'open')
+})
+
+test('a question card closes as session-ended once the grace passes and the session did not come back', async () => {
+  const { store, fire } = setup({ disposeGraceMs: 20 })
+  const q = store.add({ type: 'question', sessionId: 's1', payload: { questions: [] } })
+  fire('agent/disposed', { agent: { id: 's1' } })
+  await wait(80)
+  assert.equal(store.get(q.id).resolution.kind, 'session-ended')
+})
+

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { AWAY_MS } from '../hub/instances.js'
+import { PROTOCOL } from '../hub/protocol.js'
 import { raw, postJson } from './hub-helpers.mjs'
 import { P, SECRET, agentOf, startHub, sync } from './hub-agent-helpers.mjs'
 
@@ -20,15 +21,16 @@ test('the agent API needs the secret: a wrong or missing one is 401, and so is a
 })
 
 test('an agent of an older protocol, or one that sends none, gets 426 upgrade-required on every route; this protocol and newer are served', async (t) => {
-  const { port } = await startHub(t, { protocol: 4 })
+  const hubProtocol = PROTOCOL + 2 // an agent of the current PROTOCOL (the default of agentOf, also used for undefined) is two behind: too old
+  const { port } = await startHub(t, { protocol: hubProtocol })
   for (const protocol of [1, undefined]) {
     const a = agentOf(port, { protocol })
     const res = await a.register()
-    assert.deepEqual([res.status, res.json], [426, { error: 'upgrade-required', protocol: 4 }], String(protocol))
+    assert.deepEqual([res.status, res.json], [426, { error: 'upgrade-required', protocol: hubProtocol }], String(protocol))
     assert.equal((await a.poll()).status, 426)
     assert.equal((await a.ops([])).status, 426)
   }
-  for (const protocol of [3, 4, 5]) assert.equal((await agentOf(port, { protocol }).register()).status, 200, String(protocol))
+  for (const protocol of [hubProtocol - 1, hubProtocol, hubProtocol + 1]) assert.equal((await agentOf(port, { protocol }).register()).status, 200, String(protocol))
 })
 
 test('only POST registers and only GET polls; unknown agent routes are 404', async (t) => {
@@ -209,15 +211,16 @@ test('a hub restart forgets nobody: the agent registers again with a sync and ev
   assert.deepEqual(second.hub.store.list({ status: 'open' }).map((i) => i.id), [a.itemId(1), a.itemId(2), a.itemId(3)])
 })
 
-test('presence and bye: presence marks the desktop active, bye ends the questions of the instance at once', async (t) => {
+test('presence and bye: presence marks the desktop active, bye ends the permissions of the instance at once (questions stay as detached cards)', async (t) => {
   const { hub, port } = await startHub(t)
   const a = agentOf(port)
   await a.register()
-  await a.send(a.add(1, { type: 'question' }), a.add(2))
+  await a.send(a.add(1, { type: 'permission' }), a.add(2), a.add(3, { type: 'question', sessionId: 'sq3', payload: { questions: [] } }))
   assert.deepEqual((await a.post('presence', { desktopActive: true })).json, { ok: true, watch: false }) // watch: does anybody look at the session numbers (hub.md 6.7a)
   assert.equal(typeof hub.instances.get('aaaa1111').lastDesktopActiveAt, 'number')
   assert.deepEqual((await a.post('bye')).json, { ok: true })
   assert.deepEqual([hub.store.get(a.itemId(1)).status, hub.store.get(a.itemId(2)).status], ['resolved', 'open'])
+  assert.deepEqual([hub.store.get(a.itemId(3)).status, hub.store.get(a.itemId(3)).detached, hub.store.get(a.itemId(3)).restarted], ['open', true, true])
   assert.equal((await a.poll()).status, 409)
 })
 
