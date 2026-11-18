@@ -104,16 +104,33 @@ function runsPrCreate(command) {
   return false
 }
 
-/** PR id created by a shell command, from `az repos pr create` JSON output or a `PR-CREATED: <id>` marker. */
+/** Largest part of the output scanned for the artifactId line (it sits near the top of the PR JSON). */
+const ARTIFACT_SCAN_LIMIT = 64_000
+/** `vstfs:///Git/PullRequestId/<project guid>%2f<repo guid>%2f<id>`: fixed-width guid segments keep the match linear. */
+const ARTIFACT_PR_ID = /Git\/PullRequestId\/[0-9a-f-]{36}%2f[0-9a-f-]{36}%2f(\d{1,10})(?![\w-])/i
+
+/**
+ * PR id created by a shell command, from `az repos pr create` JSON output, a `PR-CREATED: <id>` marker, or (when a filter such as
+ * `Select-String ... | Select -First 3` hid the "pullRequestId" line) the `artifactId` line of that output.
+ */
 export function parsePrCreated(command, output) {
   const marker = /PR-CREATED:[ \t]*(\d+)/.exec(output ?? '')
   if (marker) return marker[1]
-  // Match `repos pr create` itself: the caller passes JSON.stringify(arguments), where a newline before `az` is the two
-  // characters `\n` (no word boundary before `az`), and `ado.ps1 repos pr create ...` (the ado-cli wrapper) has no `az` at all.
+  const direct = /"pullRequestId"\s*:\s*(\d{1,10})(?!\d)/.exec(output ?? '')?.[1]
+  // The command gate (runsPrCreate) matches `repos pr create` itself: the caller passes JSON.stringify(arguments), where a newline before `az`
+  // is the two characters `\n` (no word boundary before `az`), and `ado.ps1 repos pr create ...` (the ado-cli wrapper) has no `az` at all.
   // Anchored to `az` (also right after a literal \n, \r or \t) or to the ado.ps1 wrapper, so echo/grep mentions do not count.
-  const id = /"pullRequestId"\s*:\s*(\d+)/.exec(output ?? '')?.[1]
-  if (id === undefined) return undefined // cheap check first: almost every shell call has no pullRequestId
-  return runsPrCreate(command ?? '') ? id : undefined
+  // The artifact fallback (filtered output) runs only after the gate, so output of other commands never reaches that scan.
+  if (!output || !runsPrCreate(command ?? '')) return undefined
+  return direct ?? artifactPrId(output)
+}
+
+/**
+ * PR id from the `artifactId` line for a call whose output was filtered (`| Select-String 'pullRequestId|"url"' | Select -First 3`
+ * keeps that line and drops the real "pullRequestId" one). The terminal may wrap the line, so line breaks are removed before matching.
+ */
+function artifactPrId(output) {
+  return ARTIFACT_PR_ID.exec(output.slice(0, ARTIFACT_SCAN_LIMIT).replace(/\r?\n/g, ''))?.[1]
 }
 
 /** `PR-POLL: <id> seen=<thread>[:<lastComment>],... [resume=suggested|spawned]` -> { id, seen: [[thread, lastComment|null]], resume? }. */

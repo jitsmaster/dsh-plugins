@@ -354,6 +354,51 @@ test('parsePrCreated finds PowerShell forms that assign, wrap or nest the call',
   assert.equal(parsePrCreated(JSON.stringify({ command: '$pr = az repos pr create --title "t"' }), out), '11')
 })
 
+// PR 6791: the session filtered the JSON with `| Select-String 'pullRequestId|"url"' | Select -First 3`; the case-insensitive match kept
+// the `artifactId` line (vstfs:///Git/PullRequestId/<project>%2f<repo>%2f<id>) and cut off the real "pullRequestId" line.
+const FILTERED_PR_OUTPUT = '\r\n  "artifactId": \r\n"vstfs:///Git/PullRequestId/ae9879c1-8609-4ffe-8242-2256d70f8b1e%2f6dc5d0bc-703d-4add-8785-e9fd2c55f4fc%2f6791",\r\n    "url": "https://spsprodeus21.vssps.visualstudio.com/A67f463cb-78bb-4eb2-b600-630b952e7ef6/_apis/Identities/f25dcfe8\r\n-0d4a-4165-9017-fe90c01ec97e"\r\n'
+const FILTERED_PR_COMMAND = 'az repos pr create --title "t" --target-branch develop --description $desc -o json 2>&1 | Select-String -Pattern \'pullRequestId|"url"\' | Select -First 3'
+
+test('parsePrCreated reads the id from the artifactId line when a filter hid the pullRequestId line (PR 6791)', () => {
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, FILTERED_PR_OUTPUT), '6791')
+  assert.equal(parsePrCreated(JSON.stringify({ command: `$desc = "x"\n${FILTERED_PR_COMMAND}` }), FILTERED_PR_OUTPUT), '6791')
+  // the artifactId line itself wrapped by the terminal inside the guid
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, '"artifactId": "vstfs:///Git/PullRequestId/ae9879c1-8609-4ffe-8242-2256d70f8b1e%2f6dc5d0bc-703d-4add\r\n-8785-e9fd2c55f4fc%2f6791",'), '6791')
+})
+
+test('parsePrCreated ignores an artifactId line unless the command really creates a PR', () => {
+  assert.equal(parsePrCreated('az repos pr show --id 6791', FILTERED_PR_OUTPUT), undefined)
+  assert.equal(parsePrCreated('echo "az repos pr create"', FILTERED_PR_OUTPUT), undefined)
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, 'ERROR: failed'), undefined)
+})
+
+test('parsePrCreated scans only the first 64 KB and ignores a repeated artifact prefix without an id', () => {
+  const big = 'Git/PullRequestId/'.repeat(20_000) // ~360 KB, no quote and no %2f<digits> anywhere
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, big), undefined)
+  // structural cap instead of a wall-clock bound: a valid artifactId line behind 70 KB of filler is not looked at
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, 'x'.repeat(70_000) + FILTERED_PR_OUTPUT), undefined)
+})
+
+test('parsePrCreated finds the artifactId line when the terminal wrapped it inside the PullRequestId/ prefix', () => {
+  const wrapped = FILTERED_PR_OUTPUT.replace('Git/PullRequestId/', 'Git/PullRe\r\nquestId/')
+  assert.notEqual(wrapped, FILTERED_PR_OUTPUT)
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, wrapped), '6791')
+})
+
+test('parsePrCreated takes only a real artifactId shape and ids of at most 10 digits', () => {
+  const guid = 'ae9879c1-8609-4ffe-8242-2256d70f8b1e'
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, `"artifactId": "vstfs:///Git/PullRequestId/${guid}%2f${guid}%2f6791",`), '6791')
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, `"artifactId": "vstfs:///Git/PullRequestId/x%2f6791",`), undefined) // not two guid segments
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, `"artifactId": "vstfs:///Git/PullRequestId/${guid}%2f${guid}%2f12345678901",`), undefined)
+  assert.equal(parsePrCreated(FILTERED_PR_COMMAND, '{"pullRequestId": 12345678901}'), undefined)
+})
+
+test('a PR create whose output was filtered down to the artifactId line still hands over (end to end)', async () => {
+  const h = harness({ withCreated: true })
+  await h.shell(FILTERED_PR_COMMAND, FILTERED_PR_OUTPUT)
+  assert.deepEqual(h.created, [['a1', '6791']])
+})
+
 test('a multi-line shell command that creates a PR hands over (end to end through tools/post-execute)', async () => {
   const h = harness({ withCreated: true })
   await h.shell('$d = @"\ndescription\n"@\naz repos pr create --title t --description $d', '{"pullRequestId": 6783}')
