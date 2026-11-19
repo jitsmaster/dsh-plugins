@@ -46,6 +46,19 @@ test('does not ask a session with a background job still running, nor one whose 
   assert.deepEqual(res.skipped.sort(), ['busy', 'gone'])
 })
 
+test('does not ask a session the PR guard protects (it created, waits for or polls an open PR), and still fills the pass with the others', async () => {
+  const asked = []
+  const prGuardOf = () => ({ check: async (id) => { asked.push(id); return id === 'p1' || id === 'p2' ? { protected: true, prId: '9', status: 'active' } : { protected: false } } })
+  const r = rig([S('p1', 1 * H + 3), S('p2', 1 * H + 2), S('q', 1 * H + 1), S('r', 1 * H)], { prGuardOf, maxPerPass: 1 })
+  assert.deepEqual((await r.asker.check()).asked, ['q'])
+  assert.deepEqual(asked.slice(0, 3), ['p1', 'p2', 'q'], 'stops asking the guard once the pass is full')
+})
+
+test('a guard that throws or is missing does not stop the idle ask', async () => {
+  const r = rig([S('a', 1 * H)], { prGuardOf: () => ({ check: async () => { throw new Error('boom') } }) })
+  assert.deepEqual((await r.asker.check()).asked, ['a'])
+})
+
 test('does not ask a session that already has an open question or permission card', async () => {
   const r = rig([S('a', 1 * H)])
   r.store.add({ type: 'question', sessionId: 'a', questions: [] })
@@ -123,9 +136,11 @@ test('a failing title reader does not stop the others from being asked', async (
 
 test('an Archive answer does not archive the poll session of a still-open PR (once per ask, logged)', async () => {
   const logs = []
-  const guard = { check: async (id) => (id === 'a' ? { protected: true, prId: '5', status: 'active' } : { protected: false }) }
+  let open = false // asked while free; its PR is created before the user answers Archive
+  const guard = { check: async (id) => (id === 'a' && open ? { protected: true, prId: '5', status: 'active' } : { protected: false }) }
   const r = rig([S('a', 1 * H), S('c', 1 * H)], { prGuardOf: () => guard, log: (line) => logs.push(line) })
   await r.asker.check()
+  open = true
   r.setNow(10 * H + 5000)
   for (const session of ['a', 'c']) {
     const q = r.store.add({ type: 'question', sessionId: session, questions: [] })
@@ -140,9 +155,11 @@ test('an Archive answer does not archive the poll session of a still-open PR (on
 
 test('an Archive answer for a session that is handing over a just-created PR is not archived and the log says hand-over', async () => {
   const logs = []
-  const guard = { check: async () => ({ protected: true, prId: '7', status: 'handover' }) }
+  let handover = false // asked while free; it creates a PR before the user answers Archive
+  const guard = { check: async () => (handover ? { protected: true, prId: '7', status: 'handover' } : { protected: false }) }
   const r = rig([S('a', 1 * H)], { prGuardOf: () => guard, log: (line) => logs.push(line) })
   await r.asker.check()
+  handover = true
   r.setNow(10 * H + 5000)
   const q = r.store.add({ type: 'question', sessionId: 'a', questions: [] })
   r.store.resolve(q.id ?? q, { kind: 'answered', by: 'card', answers: [{ id: 'q', selected: ['Archive'] }] })

@@ -112,7 +112,14 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, pr
       .filter((i) => i && typeof i.sessionId === 'string' && isTopLevel(i) && i.running !== true && i.blank !== true && !archived.has(i.sessionId) && !held.has(i.sessionId) && !busyParents.has(i.sessionId)
         && Number.isFinite(i.updatedAt) && t - i.updatedAt <= maxAgeMs && awakeIdle(i.updatedAt) >= idleMs && state[i.sessionId]?.updatedAt !== i.updatedAt && !waiting(i.sessionId))
       .sort((a, b) => b.updatedAt - a.updatedAt)
-    const candidates = (await withoutPrSessions(idle)).slice(0, maxPerPass)
+    const candidates = []
+    for (const item of await withoutPrSessions(idle)) {
+      if (candidates.length >= maxPerPass) break
+      // A session tied to a PR that is not merged or abandoned yet (it created it, waits for it or polls it) is never asked: it is idle on purpose.
+      // The guard answers "open" when it cannot tell, and a missing or failing guard protects nothing.
+      if (await prOpenOf(item.sessionId)) continue
+      candidates.push(item)
+    }
     const result = { ok: true, asked: [], skipped: [] }
     for (const item of candidates) {
       if (readLog && await hasBackgroundJobs(item.sessionId)) { result.skipped.push(item.sessionId); continue }
