@@ -9,6 +9,7 @@ import { loadCore } from './core.js'
 import { normalizeSettings } from './push-client.js'
 import { pollWaitMs, sheetGone, todoConfirmBody } from './model.js'
 import { ttsPath } from './read-aloud.js'
+import { UNDO_MS, isSwipeable, undoToast } from './swipe.js'
 import { bindDraftFlush, dropStaleEffort, dropStaleWorkspace, emptyTodoDraft, loadTodoDraft, saveTodoDraft } from './todo-form.js'
 import { detailOpen, loadToggles, pruneToggles, saveToggles, setDetail } from './toggles.js'
 import {
@@ -47,6 +48,8 @@ export const state = {
   groupsUi: undefined,
   // Ids of items that arrived after the first snapshot and were not opened yet (the row is highlighted). In memory only.
   fresh: {},
+  // The Undo toast of the last swipe-right review ({ id, title, until, error? }), in memory only; one at a time (swipe.js).
+  undo: null,
 }
 const KNOWN_IDS_MAX = 3000
 let knownIds = null // ids seen in earlier snapshots; null before the first one (what is there at load is not new)
@@ -179,6 +182,51 @@ export async function act(path, body, id) {
   } catch (e) { error = 'Request failed: ' + String((e && e.message) || e) }
   set({ busy: { ...state.busy, [id]: false }, errors: { ...state.errors, [id]: error } })
   return !error
+}
+
+// The toast has its own channel (not set()): appearing, expiring or dismissing it must not re-render every screen and the whole Waiting list.
+const undoListeners = new Set()
+export const subscribeUndo = (l) => { undoListeners.add(l); return () => { undoListeners.delete(l) } }
+function setUndo(u) {
+  state.undo = u
+  for (const l of [...undoListeners]) l(u)
+}
+
+let undoTimer
+/** Clears the Undo toast (its time is up, or the user dismissed it). */
+export function dismissUndo() {
+  clearTimeout(undoTimer)
+  if (state.undo) setUndo(null)
+}
+
+/** Shows the toast (with `error` for a failure) and arms the one timer that clears it after UNDO_MS. */
+function showUndo(toast, error) {
+  setUndo(error ? { ...toast, error } : toast)
+  clearTimeout(undoTimer)
+  undoTimer = setTimeout(() => { if (state.undo && state.undo.until === toast.until) setUndo(null) }, UNDO_MS)
+}
+
+/** Swipe right on a Waiting row: the same as Reviewed on the item screen (POST /v1/reviewed), then an Undo toast for UNDO_MS. A failure shows in the toast instead. True when the item was marked reviewed. */
+export async function swipeReview(item) {
+  if (!isSwipeable(item) || state.busy[item.id]) return false
+  const raw = String(core.cardTitle(item) ?? '')
+  const title = raw.length > 80 ? raw.slice(0, 79) + '…' : raw // the toast is one line of text, whatever the card title is
+  const ok = await act('/v1/reviewed', { id: item.id }, item.id)
+  // A failure shows its error only when no earlier swipe's Undo is still live (that Undo must not be lost).
+  if (ok) showUndo(undoToast({ id: item.id, title }, Date.now()))
+  else if (!state.undo) showUndo(undoToast({ id: item.id, title }, Date.now()), state.errors[item.id] || 'Request failed.')
+  return ok
+}
+
+/** Takes the last swipe review back (POST /v1/reopen: the item returns to Waiting in its old place). True on success; a failure brings the toast back with the error (the item is resolved, so no screen would show it). */
+export async function undoSwipe() {
+  const u = state.undo
+  if (!u || u.error) return false
+  dismissUndo()
+  const ok = await act('/v1/reopen', { id: u.id }, u.id)
+  // A newer swipe may have shown its own toast while the reopen was in flight: that one (and its Undo) stays.
+  if (!ok && !state.undo) showUndo({ id: u.id, title: u.title, until: Date.now() + UNDO_MS }, 'Could not undo: ' + (state.errors[u.id] || 'Request failed.'))
+  return ok
 }
 
 /** One WAV chunk of an item's read-out, made by the PC's local TTS (GET /v1/tts). { ok, blob, chunks } or { ok: false, status } (0 = no answer); a lost pairing sends the phone back to pairing. */

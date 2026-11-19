@@ -24,6 +24,7 @@ export const FILES = {
   'view-guard.js': { file: join(M, 'view-guard.js'), type: JS },
   'platform.js': { file: join(M, 'platform.js'), type: JS },
   'hold.js': { file: join(M, 'hold.js'), type: JS },
+  'swipe.js': { file: join(M, 'swipe.js'), type: JS },
   'model.js': { file: join(M, 'model.js'), type: JS },
   'dictation.js': { file: join(M, 'dictation.js'), type: JS },
   'todo-form.js': { file: join(M, 'todo-form.js'), type: JS },

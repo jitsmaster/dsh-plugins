@@ -349,5 +349,10 @@
   "test/service-queue-order.test.mjs",
   "test/question-merge-guard.test.mjs",
   "test/hub-tts.test.mjs",
-  "test/mobile-read-aloud.test.mjs"
+  "test/mobile-read-aloud.test.mjs",
+  "test/mobile-swipe.test.mjs",
+  "test/mobile-swipe-api.test.mjs",
+  "test/mobile-swipe-row.test.mjs",
+  "test/mobile-swipe-wiring.test.mjs",
+  "test/swipe-reopen.test.mjs"
 ]

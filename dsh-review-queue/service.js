@@ -18,6 +18,7 @@ import { todoStatesOf } from './todo-states.js'
 import { createTriageReview } from './triage-review.js'
 import { createHandoffFollow } from './handoff-follow.js'
 import { createTipSurveys, surveyCard } from './tip-survey.js'
+import { openOfSession } from './detached-expiry.js'
 
 const MAX_REPLY = 4000
 /** reading === 'tip:<id>' while the tip of the day is read aloud (lib/client.js keeps its own copy of the string: it is one self-contained script). */
@@ -678,8 +679,15 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
       const kind = item.resolution?.kind
       // An AI-resolved done card or paused session may come back; a question or permission was already answered for real, so it may not.
       const aiBack = kind === 'ai-resolved' && (item.type === 'completed' || item.type === 'paused')
-      const humanBack = item.type === 'completed' && (kind === 'reviewed' || kind === 'superseded' || kind === 'no-action' || kind === 'trimmed')
+      // An archive-ask or PR-merged card taken off with Reviewed / Keep session (also by a phone swipe) can be taken back too.
+      const humanBack = (item.type === 'completed' && (kind === 'reviewed' || kind === 'superseded' || kind === 'no-action' || kind === 'trimmed'))
+        || ((item.type === 'archive' || item.type === 'pr-merged') && kind === 'reviewed')
       if (item.status !== 'resolved' || !(aiBack || humanBack)) return { ok: false, error: 'not-reopenable' }
+      // A new archive-ask / PR-merged offer for the same session (and, for PR merged, the same PR) may have been raised since: no second open card of the kind.
+      if (item.type === 'archive' || item.type === 'pr-merged') {
+        const duplicateOpen = openOfSession(store, item.sessionId).some((i) => i.id !== id && i.type === item.type && (item.type === 'archive' || String(i.payload?.prId ?? '') === String(item.payload?.prId ?? '')))
+        if (duplicateOpen) return { ok: false, error: 'not-reopenable' }
+      }
       return store.reopen(id) ? { ok: true } : { ok: false, error: 'not-reopenable' }
     },
     /** Approve this request and every identical open one of the same session; never a risky one. */

@@ -1,7 +1,8 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
 import { createBrowserReadAloud, readAloudVisible } from './read-aloud.js'
-import { state, subscribe, set, clearFresh, act, getCore, fetchTtsChunk, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen } from './api.js'
+import { state, subscribe, set, clearFresh, act, getCore, fetchTtsChunk, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen, swipeReview, undoSwipe, dismissUndo, subscribeUndo } from './api.js'
+import { isSwipeable, swipeCommitted, swipeIntent, swipeProgress, SWIPE_START_PX } from './swipe.js'
 import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
@@ -24,6 +25,12 @@ export function useStore() {
     return subscribe(() => tick((n) => n + 1))
   }, [])
   return state
+}
+/** The Undo toast of the last swipe review, on its own channel (api.js subscribeUndo) so a toast change re-renders only the toast. */
+export function useUndo() {
+  const [u, setU] = useState(state.undo)
+  useEffect(() => { setU(state.undo); return subscribeUndo(setU) }, [])
+  return u
 }
 export function useRoute() {
   const read = () => location.hash.replace(/^#/, '') || '/'
@@ -626,17 +633,100 @@ export function AiReview({ item }) {
 }
 // ---- screens ----------------------------------------------------------------------------------------------------
 
-function ItemRow({ item }) {
+let swipeTouch = null // the touch in progress on a swipeable row: { id, x, y, intent, dx, dy }
+let swipedId = null // the row a swipe just moved: the click that follows the lift is swallowed (cleared right after the lift)
+let swipeClearTimer // the one timer that clears swipedId after a lift (a newer lift replaces it, so an old timer cannot clear a newer swipe's flag)
+let committedRow = null // the last row a committed swipe left displaced ({ id, row }): Undo puts it back to rest if the snapshot has not removed it yet
+/** Puts a swipe row back to rest (no drag offset, hint hidden). */
+function resetSwipeRow(row) {
+  const link = row && row.querySelector && row.querySelector('.rowitem')
+  const hint = row && row.querySelector && row.querySelector('.swipe-hint')
+  if (link) { link.style.transition = ''; link.style.transform = '' }
+  if (hint) { hint.style.opacity = ''; hint.classList.remove('ready') }
+}
+
+export function ItemRow({ item }) {
   const c = getCore()
   const risky = item.type === 'permission' && item.risks && item.risks.length
   const badges = rowBadges(c, item)
   const isNew = !!state.fresh[item.id]
-  return html`<a class=${'rowitem' + (isNew ? ' new' : '')} href=${'#/item/' + item.id} onClick=${() => clearFresh(item.id)}>
+  // Swipe right = open the item and press Reviewed (swipe.js). Hook-free: the touch in progress is module state (one finger at a time) and the row
+  // follows it by direct style changes, so a drag re-renders nothing and the list tests can still call this function directly.
+  const swipe = isSwipeable(item)
+  const onTouchStart = (e) => {
+    const t = e.touches && e.touches[0]
+    swipeTouch = t && e.touches.length === 1 ? { id: item.id, x: t.clientX, y: t.clientY, intent: 'pending', dx: 0, dy: 0 } : null
+    swipedId = null
+    clearTimeout(swipeClearTimer)
+  }
+  const onTouchMove = (e) => {
+    const tr = swipeTouch
+    const t = e.touches && e.touches[0]
+    if (!tr || tr.id !== item.id || !t || tr.intent === 'scroll') return
+    tr.dx = t.clientX - tr.x
+    tr.dy = t.clientY - tr.y
+    if (tr.intent === 'pending') tr.intent = swipeIntent(tr.dx, tr.dy)
+    if (tr.intent !== 'swipe') return
+    swipedId = item.id
+    if (!tr.link) { // looked up once per drag, and the transition is switched off once
+      tr.link = e.currentTarget.querySelector('.rowitem')
+      tr.hint = e.currentTarget.querySelector('.swipe-hint')
+      if (tr.link) tr.link.style.transition = 'none'
+    }
+    const { link, hint } = tr
+    const progress = swipeProgress(tr.dx)
+    if (link) link.style.transform = 'translateX(' + Math.round(Math.max(0, tr.dx)) + 'px)'
+    if (hint) {
+      hint.style.opacity = String(tr.dx > SWIPE_START_PX ? progress : 0)
+      const ready = progress >= 1
+      if (ready !== !!tr.ready) { tr.ready = ready; hint.classList.toggle('ready', ready) }
+    }
+  }
+  const onTouchEnd = (e) => {
+    const tr = swipeTouch
+    const row = e.currentTarget
+    swipeTouch = null
+    clearTimeout(swipeClearTimer)
+    swipeClearTimer = setTimeout(() => { swipedId = null }, 350) // the click of this lift comes right after touchend (a slow browser may be late); a later keyboard or mouse click is not swallowed
+    if (tr && tr.id === item.id && tr.intent === 'swipe' && swipeCommitted(tr.dx, tr.dy)) {
+      // Committed: the row stays where it is on success (the next snapshot removes it) and springs back only when the review failed.
+      committedRow = { id: item.id, row }
+      Promise.resolve(swipeReview(item)).then((ok) => { if (!ok) { committedRow = null; resetSwipeRow(row) } })
+      return
+    }
+    resetSwipeRow(row)
+  }
+  const onTouchCancel = (e) => { swipeTouch = null; swipedId = null; resetSwipeRow(e.currentTarget) }
+  const onClick = (e) => {
+    if (swipedId === item.id) { e.preventDefault(); swipedId = null; return } // the finger lifted after a swipe: not a tap
+    clearFresh(item.id)
+  }
+  const link = html`<a class=${'rowitem' + (isNew ? ' new' : '')} href=${'#/item/' + item.id} onClick=${onClick}>
     <div class="top"><${Chip} type=${item.type} item=${item} />${badges.tier ? html`<span class=${'chip tier tier' + badges.tier.level} title=${badges.tier.title}>${badges.tier.text}</span>` : null}${risky ? html`<span class="risk small">⚠ risky</span>` : null}<span class="age">${ageOf(item)}</span></div>
     <div class="title">${c.cardTitle(item)}</div>
     ${item.sessionTitle ? html`<div class="sub">${item.sessionTitle}</div>` : null}
     ${badges.merged ? html`<div class="sub merged-note">${badges.merged}</div>` : null}
   </a>`
+  if (!swipe) return link
+  return html`<div class="swipe-row" onTouchStart=${onTouchStart} onTouchMove=${onTouchMove} onTouchEnd=${onTouchEnd} onTouchCancel=${onTouchCancel}>
+    <div class="swipe-hint" aria-hidden="true">✓ Reviewed</div>
+    ${link}
+  </div>`
+}
+
+/** The Undo toast after a swipe-right review (state.undo, cleared by its own timer in api.js): Undo reopens the item, × dismisses. A failed swipe or a failed Undo shows its error instead. */
+export function UndoToast() {
+  const u = useUndo()
+  const last = useRef(null) // id of the toast shown last
+  if (u) last.current = u.id
+  // The toast is gone: release the row element kept for Undo, but only the row of that toast (a newer swipe's row may still be in flight).
+  useEffect(() => { if (!u && committedRow && committedRow.id === last.current) committedRow = null }, [u])
+  if (!u) return null
+  return html`<div class="undo-toast" role="status">
+    <span class="msg">${u.error ? u.error : 'Reviewed: ' + u.title}</span>
+    ${u.error ? null : html`<button class="btn" type="button" onClick=${() => { if (committedRow && committedRow.id === u.id) resetSwipeRow(committedRow.row); committedRow = null; undoSwipe() }}>Undo</button>`}
+    <button class="btn" type="button" aria-label="Dismiss" onClick=${() => dismissUndo()}>×</button>
+  </div>`
 }
 
 /**
@@ -930,6 +1020,7 @@ export function App() {
     <main>
       ${item ? html`<${ItemView} id=${decodeURIComponent(item[1])} />` : isNew ? html`<${NewTodoView} />` : tab === 'resolved' ? html`<${ResolvedList} />` : tab === 'onhold' ? html`<${HeldList} />` : tab === 'settings' ? html`<${SettingsView} />` : html`<${WaitingList} />`}
     </main>
+    <${UndoToast} />
     <${BottomNav} tab=${tab} inItem=${!!item} model=${model} />
   </div>`
 }

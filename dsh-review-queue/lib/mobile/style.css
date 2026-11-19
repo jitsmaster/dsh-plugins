@@ -43,6 +43,16 @@ nav a.on { color: var(--accent); box-shadow: inset 0 3px 0 var(--accent); }
 .rowitem { display: block; min-height: var(--tap); margin: 0 0 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); color: var(--text); text-decoration: none; }
 .rowitem:active { background: var(--panel2); }
 .rowitem.new { border-left: 4px solid var(--info); }
+/* Swipe right to review (swipe.js): the row slides over a "Reviewed" hint; vertical scrolling stays native (pan-y). */
+.swipe-row { position: relative; margin: 0 0 10px; touch-action: pan-y; overflow: hidden; border-radius: var(--r); }
+.swipe-row > .rowitem { position: relative; margin: 0; }
+.swipe-row > .rowitem:focus-visible { outline-offset: -2px; } /* the row clips (overflow hidden): draw the focus ring inside */
+.swipe-hint { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 18px; background: #1c3328; color: var(--accent); font-weight: 700; opacity: 0; }
+.swipe-hint.ready { background: var(--accent); color: var(--accent-ink); }
+/* The Undo toast after a swipe review: above the bottom nav, never under it. */
+.undo-toast { position: fixed; left: calc(12px + env(safe-area-inset-left)); right: calc(12px + env(safe-area-inset-right)); bottom: calc(var(--nav) + env(safe-area-inset-bottom) + 76px); z-index: 7; display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 3px 10px rgba(0, 0, 0, .5); }
+.undo-toast .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.undo-toast .btn { flex: none; min-height: 40px; padding: 0 14px; }
 .resolved-row { margin: 0 0 10px; }
 .resolved-row > .rowitem { margin-bottom: 0; }
 .resolved-row > .row { margin-top: 4px; }
