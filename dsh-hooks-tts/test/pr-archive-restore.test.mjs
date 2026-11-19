@@ -45,9 +45,10 @@ function world({ prStatus = 'active', unarchive = true, titles = {}, restoreDela
     if (state.fetchError) throw new Error('network down')
     if (state.prNotFound) return { ok: false, status: 404, json: async () => ({}) }
     // A PR of another repository: the Ingeniux repo-scoped URL does not know it, the organisation-wide one does.
-    if (state.otherRepo && url.includes('/repositories/')) return { ok: false, status: 404, json: async () => ({}) }
+    if (state.otherRepo && url.includes('/repositories/6dc5d0bc')) return { ok: false, status: 404, json: async () => ({}) }
     if (url.includes('/build/builds')) return { ok: true, status: 200, json: async () => ({ value: [] }) }
-    const body = url.includes('/threads') ? { value: [] } : { pullRequestId: 5, status: state.prStatus, lastMergeSourceCommit: { commitId: 'c1' }, targetRefName: 'refs/heads/develop' }
+    const repository = state.otherRepo ? { repository: { id: 'qa-repo', project: { id: 'qa-project' } } } : {}
+    const body = url.includes('/threads') ? { value: [] } : { pullRequestId: 5, status: state.prStatus, ...repository, lastMergeSourceCommit: { commitId: 'c1' }, targetRefName: 'refs/heads/develop' }
     return { ok: true, status: 200, json: async () => body }
   }
   const poller = installPrPoller(ctx, {}, { settings, fetchImpl, env: { AZURE_DEVOPS_EXT_PAT: PAT }, restoreDelayMs, signal, onPrMerged: async () => {}, ...(onPrCreated ? { onPrCreated } : {}) })
@@ -109,6 +110,17 @@ test('archiveGuard: a PR of another repository (unknown to the Ingeniux repo, fo
   const done = world({ prStatus: 'completed', titles: { x1: 'PR 6796' } })
   done.state.otherRepo = true
   assert.equal((await done.poller.archiveGuard.check('x1')).protected, false)
+})
+
+test('poll: a PR of another repository is read organisation-wide and its threads come from that PR\'s own repository (no 404)', async () => {
+  const w = world()
+  w.state.otherRepo = true
+  w.poller.register({ id: 'a1' }, '5')
+  await w.poller.poll('a1')
+  assert.ok(w.state.urls.some((u) => u === 'https://dev.azure.com/ingeniuxdev/_apis/git/pullrequests/5?api-version=7.1'))
+  assert.ok(w.state.urls.some((u) => u === 'https://dev.azure.com/ingeniuxdev/qa-project/_apis/git/repositories/qa-repo/pullRequests/5/threads?api-version=7.1'), w.state.urls.join('\n'))
+  assert.doesNotMatch(w.log(), /failed: HTTP 404/)
+  w.poller.stopAll()
 })
 
 // ---- a session that created a PR stays protected until the hand-over succeeded ----

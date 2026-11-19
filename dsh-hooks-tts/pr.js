@@ -38,6 +38,8 @@ export function prTitleFor(old, prId) {
 }
 const ADO_ORG = 'https://dev.azure.com/ingeniuxdev'
 const ADO_REPO = 'https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc'
+/** The PR itself, whatever repository of the organisation it is in. */
+const prUrl = (prId) => `${ADO_ORG}/_apis/git/pullrequests/${encodeURIComponent(prId)}?api-version=7.1`
 /** Definition id of the CI AI-review pipeline ("AI review pipeline 80"). */
 const CI_PIPELINE_ID = 80
 const POLL_INTERVAL_MS = 10 * 60 * 1000
@@ -417,8 +419,11 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     const pat = env.AZURE_DEVOPS_EXT_PAT
     if (!pat) { trace(`no AZURE_DEVOPS_EXT_PAT; skipping PR ${entry.prId}`); return }
     try {
-      const base = `${ADO_REPO}/pullRequests/${encodeURIComponent(entry.prId)}`
-      const pr = await getJson(`${base}?api-version=7.1`, pat)
+      // Organisation-wide lookup (a PR of CTnP-QA, xpas, ... is unknown to the Ingeniux repo URL); the threads then come from the PR's own repository.
+      const pr = await getJson(prUrl(entry.prId), pat)
+      const base = pr?.repository?.id && pr?.repository?.project?.id
+        ? `${ADO_ORG}/${encodeURIComponent(pr.repository.project.id)}/_apis/git/repositories/${encodeURIComponent(pr.repository.id)}/pullRequests/${encodeURIComponent(entry.prId)}`
+        : `${ADO_REPO}/pullRequests/${encodeURIComponent(entry.prId)}`
       // A session restored after a restart whose PR is already merged is stopped quietly: its suggestion (if any) was
       // made before the restart, and old PR sessions must not be asked again.
       const quiet = entry.restored
@@ -761,7 +766,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     if (!pat) { trace(`no AZURE_DEVOPS_EXT_PAT; skipping the approval check of PR ${prId}`); return Promise.resolve() }
     return serial(async () => {
       try {
-        const pr = await getJson(`${ADO_REPO}/pullRequests/${encodeURIComponent(prId)}?api-version=7.1`, pat)
+        const pr = await getJson(prUrl(prId), pat)
         if (pr?.status === 'completed' || pr?.status === 'abandoned') { await checkWaitsOnce(pat); return } // the merge (or abandon) hand-over takes over
         const started = await startIfApproved(sessionId, prId, pr)
         trace(`checked approval of PR ${prId} for ${sessionId}: ${started ? 'approved, session told to start' : 'not approved yet'}`)
@@ -778,7 +783,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   async function checkWaitsOnce(pat) {
     for (const [sessionId, prId] of [...waitMap]) {
       try {
-        const pr = await getJson(`${ADO_REPO}/pullRequests/${encodeURIComponent(prId)}?api-version=7.1`, pat)
+        const pr = await getJson(prUrl(prId), pat)
         const merged = pr?.status === 'completed'
         // Without the Schedule service the wait timer is the approval trigger as well.
         if (!merged && pr?.status === 'active' && !approvalSchedule.available()) await startIfApproved(sessionId, prId, pr)

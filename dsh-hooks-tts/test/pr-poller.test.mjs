@@ -480,7 +480,7 @@ test('poll: uses Basic auth with ":" + PAT, hits the PR and threads URLs', async
   h.poller.register(h.agent, '5')
   await h.poller.poll('a1')
   assert.ok(h.state.urls.some((u) => u === 'https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc/pullRequests/5/threads?api-version=7.1'))
-  assert.ok(h.state.urls.some((u) => u.includes('/pullRequests/5?api-version=7.1')))
+  assert.ok(h.state.urls.some((u) => u === 'https://dev.azure.com/ingeniuxdev/_apis/git/pullrequests/5?api-version=7.1'), 'the PR itself is read organisation-wide')
   assert.equal(h.state.headers[0].Authorization, `Basic ${Buffer.from(`:${PAT}`).toString('base64')}`)
   h.poller.stopAll()
 })

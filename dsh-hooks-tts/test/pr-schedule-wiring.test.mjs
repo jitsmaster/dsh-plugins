@@ -137,7 +137,7 @@ function world(t, { withSchedule = true, timeContext = 'after', liveAgents = [],
     },
     taskId: (sessionId = 'a1') => schedule.tasksOf(sessionId)[0]?.id,
     tickFor: (id, extra = {}) => scheduleMessage(renderBatch([{ id, prompt: schedule.all().find((r) => r.id === id)?.prompt ?? 'p', ...extra }])),
-    prFetches: () => state.urls.filter((u) => /pullRequests\/5\?/.test(u)).length,
+    prFetches: () => state.urls.filter((u) => /pullrequests\/5\?/i.test(u)).length,
   }
   return w
 }
@@ -698,7 +698,7 @@ test('a PR id is URL-encoded wherever it is put into an Azure DevOps URL', async
   w.poller.register(w.agent, '5/../x?y=1')
   await w.poller.poll('a1')
   const url = w.state.urls[0]
-  assert.ok(url.includes('/pullRequests/5%2F..%2Fx%3Fy%3D1?api-version=7.1'), url)
+  assert.ok(url.includes('/pullrequests/5%2F..%2Fx%3Fy%3D1?api-version=7.1'), url)
   assert.equal(w.state.urls.some((u) => u.includes('/x?y=1')), false)
 })
 
