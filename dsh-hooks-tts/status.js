@@ -357,9 +357,14 @@ export function startStatusService(ctx, config, stateDir, signal, settings, work
     webCtx.effect(() => webCtx.webServer.register({
       kind: 'prefix',
       path: STATUS_PREFIX,
-      handler: (req, res) => {
+      handler: (req, res, peer) => {
         req.url = (req.url ?? '/').slice(STATUS_PREFIX.length) || '/'
-        handle(req, res, (request) => { const admission = webCtx.connection.admit(request); return 'rejection' in admission ? admission.rejection : undefined })
+        // A Host that admits 'required' routes itself passes the Peer; an older Host passes none, so admit here.
+        handle(req, res, (request) => {
+          if (peer !== undefined) return undefined
+          const admission = webCtx.connection.admit(request)
+          return 'rejection' in admission ? admission.rejection : undefined
+        })
       },
     }), 'hooks-tts: status routes')
   })

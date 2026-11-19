@@ -118,9 +118,12 @@ export function createReviewQueuePlugin(ctx, config = {}) {
       webCtx.effect(() => webCtx.webServer.register({
         kind: 'prefix',
         path: PREFIX,
-        handler: (req, res) => {
-          const admission = webCtx.connection.admit(req)
-          if ('rejection' in admission) { res.statusCode = admission.rejection; res.end(); return }
+        handler: (req, res, peer) => {
+          // A Host that admits 'required' routes itself passes the Peer; an older Host passes none, so admit here.
+          if (peer === undefined) {
+            const admission = webCtx.connection.admit(req)
+            if ('rejection' in admission) { res.statusCode = admission.rejection; res.end(); return }
+          }
           req.url = (req.url ?? '/').slice(PREFIX.length) || '/'
           handle(req, res)
         },
