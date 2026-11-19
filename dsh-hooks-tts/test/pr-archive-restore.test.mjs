@@ -14,10 +14,10 @@ import { fakeSchedule, until } from './pr-schedule-helpers.mjs'
 
 const PAT = 'sup3r-secret-pat'
 
-function world({ prStatus = 'active', unarchive = true, titles = {}, restoreDelayMs = 0, withSchedule = false, signal, ...settingsExtra } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'pra-'))
+function world({ prStatus = 'active', unarchive = true, titles = {}, restoreDelayMs = 0, withSchedule = false, signal, onPrCreated, sessionTitle, dir: givenDir, ...settingsExtra } = {}) {
+  const dir = givenDir ?? mkdtempSync(join(tmpdir(), 'pra-'))
   const settings = createSettings(dir, settingsExtra)
-  const state = { prStatus, fetchError: false, archived: [], unarchives: [], archives: [], titles, urls: [] }
+  const state = { prStatus, fetchError: false, archived: [], unarchives: [], archives: [], titles, urls: [], sessionTitle }
   const handlers = {}
   const fire = async (event, ...args) => { for (const fn of handlers[event] ?? []) await fn(...args, async () => ({ kind: 'continue' })) }
   const changed = () => fire('domain/changed', { domain: 'workspace', table: '', key: '', operation: 'put', value: { archivedSessionIds: [...state.archived] } })
@@ -33,7 +33,7 @@ function world({ prStatus = 'active', unarchive = true, titles = {}, restoreDela
     get: (name) => {
       if (name === 'schedule') return withSchedule ? schedule.service : undefined
       if (name === 'workspaceRegistry') return registry
-      if (name === 'sessionTitle') return { get: () => ({ title: 'PR 5' }) }
+      if (name === 'sessionTitle') return { get: () => ({ title: state.sessionTitle ?? 'PR 5' }) }
       if (name === 'sessionController') return { rename: async () => {}, prompt: async () => {} }
       if (name === 'sessionQuery') return { readTitleSnapshots: async (ids) => ids.map((id) => ({ status: 'fulfilled', value: { title: { title: state.titles[id] ?? 'work' } } })) }
       return undefined
@@ -44,18 +44,25 @@ function world({ prStatus = 'active', unarchive = true, titles = {}, restoreDela
     state.urls.push(url)
     if (state.fetchError) throw new Error('network down')
     if (state.prNotFound) return { ok: false, status: 404, json: async () => ({}) }
+    // A PR of another repository: the Ingeniux repo-scoped URL does not know it, the organisation-wide one does.
+    if (state.otherRepo && url.includes('/repositories/')) return { ok: false, status: 404, json: async () => ({}) }
     if (url.includes('/build/builds')) return { ok: true, status: 200, json: async () => ({ value: [] }) }
     const body = url.includes('/threads') ? { value: [] } : { pullRequestId: 5, status: state.prStatus, lastMergeSourceCommit: { commitId: 'c1' }, targetRefName: 'refs/heads/develop' }
     return { ok: true, status: 200, json: async () => body }
   }
-  const poller = installPrPoller(ctx, {}, { settings, fetchImpl, env: { AZURE_DEVOPS_EXT_PAT: PAT }, restoreDelayMs, signal, onPrMerged: async () => {} })
+  const poller = installPrPoller(ctx, {}, { settings, fetchImpl, env: { AZURE_DEVOPS_EXT_PAT: PAT }, restoreDelayMs, signal, onPrMerged: async () => {}, ...(onPrCreated ? { onPrCreated } : {}) })
   const log = () => { const p = join(dir, 'spawn.log'); return existsSync(p) ? readFileSync(p, 'utf8') : '' }
   /** The user archives the session in the sidebar: the registry gains the id and tells the plugin. */
   const sidebarArchive = async (id = 'a1') => { state.archived.push(id); await changed() }
   /** The user unarchives the session. */
   const userUnarchive = async (id = 'a1') => { state.archived = state.archived.filter((x) => x !== id); await changed() }
-  return { poller, state, settings, log, sidebarArchive, userUnarchive, changed, registry, schedule, fire }
+  return { poller, state, settings, log, sidebarArchive, userUnarchive, changed, registry, schedule, fire, dir }
 }
+
+/** The session ran `az repos pr create` and the output carries the new PR's id. */
+const createPr = (w, id = 'c1', prId = 77) => w.fire('tools/post-execute',
+  { name: 'pwsh', agent: { id }, arguments: { command: 'az repos pr create --title x' } },
+  { content: JSON.stringify({ pullRequestId: prId }) })
 
 // ---- guard exposed by the poller ----
 
@@ -75,11 +82,65 @@ test('archiveGuard: a lookup failure counts as still open', async () => {
   assert.deepEqual(await w.poller.archiveGuard.check('a1'), { protected: true, prId: '5', status: 'unknown' })
 })
 
-test('archiveGuard: a session titled "PR <n>" that was never registered is protected through its title; a follow-up title is not', async () => {
-  const w = world({ titles: { x1: 'PR 7 - Fix: thing - 12345', x2: 'Fix: thing - after PR 7', x3: 'work' } })
+test('archiveGuard: a session titled "PR <n>" that was never registered is protected through its title, so is a follow-up waiting for its PR; other titles are not', async () => {
+  const w = world({ titles: { x1: 'PR 7 - Fix: thing - 12345', x2: 'Fix: thing - after PR 7', x3: 'work', x4: 'Fix: thing - after PR 8, 7' } })
   assert.deepEqual(await w.poller.archiveGuard.check('x1'), { protected: true, prId: '7', status: 'active' })
-  assert.equal((await w.poller.archiveGuard.check('x2')).protected, false)
+  assert.deepEqual(await w.poller.archiveGuard.check('x2'), { protected: true, prId: '7', status: 'active' })
   assert.equal((await w.poller.archiveGuard.check('x3')).protected, false)
+  assert.equal((await w.poller.archiveGuard.check('x4')).protected, true, 'any open PR of the list protects it')
+})
+
+test('archiveGuard: a follow-up session whose PR is merged is no longer protected', async () => {
+  const w = world({ prStatus: 'completed', titles: { x2: 'Fix: thing - after PR 7' } })
+  assert.equal((await w.poller.archiveGuard.check('x2')).protected, false)
+})
+
+test('archiveGuard: a session that waits for a PR (echo PR-WAIT) is protected whatever its title says', async () => {
+  const w = world({ titles: { w1: 'some renamed title' } })
+  w.poller.addWait('w1', '7')
+  assert.deepEqual(await w.poller.archiveGuard.check('w1'), { protected: true, prId: '7', status: 'active' })
+})
+
+test('archiveGuard: a PR of another repository (unknown to the Ingeniux repo, found organisation-wide) is protected while active', async () => {
+  const w = world({ titles: { x1: 'PR 6796' } })
+  w.state.otherRepo = true
+  assert.deepEqual(await w.poller.archiveGuard.check('x1'), { protected: true, prId: '6796', status: 'active' })
+  w.state.prStatus = 'completed'
+  const done = world({ prStatus: 'completed', titles: { x1: 'PR 6796' } })
+  done.state.otherRepo = true
+  assert.equal((await done.poller.archiveGuard.check('x1')).protected, false)
+})
+
+// ---- a session that created a PR stays protected until the hand-over succeeded ----
+
+test('archiveGuard: a session that created a PR is protected from then on, also when the hand-over never finishes', async () => {
+  const w = world({ sessionTitle: 'work', onPrCreated: async () => {} })
+  await createPr(w)
+  assert.deepEqual(await w.poller.archiveGuard.check('c1'), { protected: true, prId: '77', status: 'active' })
+  assert.equal((await w.poller.archiveGuard.check('other')).protected, false)
+})
+
+test('archiveGuard: a created PR that is merged no longer protects, and a successful hand-over releases the session', async () => {
+  const merged = world({ sessionTitle: 'work', onPrCreated: async () => {}, prStatus: 'completed' })
+  await createPr(merged)
+  assert.equal((await merged.poller.archiveGuard.check('c1')).protected, false)
+  const w = world({ sessionTitle: 'work', onPrCreated: async () => {} })
+  await createPr(w)
+  w.poller.forgetCreated('c1')
+  assert.equal((await w.poller.archiveGuard.check('c1')).protected, false)
+})
+
+test('archiveGuard: the created-PR record survives a restart', async () => {
+  const first = world({ sessionTitle: 'work', onPrCreated: async () => {} })
+  await createPr(first)
+  const second = world({ sessionTitle: 'work', dir: first.dir })
+  assert.deepEqual(await second.poller.archiveGuard.check('c1'), { protected: true, prId: '77', status: 'active' })
+})
+
+test('archiveGuard: protectPrSessions off protects a created PR no more than any other', async () => {
+  const w = world({ sessionTitle: 'work', onPrCreated: async () => {}, protectPrSessions: false })
+  await createPr(w)
+  assert.equal((await w.poller.archiveGuard.check('c1')).protected, false)
 })
 
 test('archiveGuard: a finished PR is not protected and needs no lookup', async () => {

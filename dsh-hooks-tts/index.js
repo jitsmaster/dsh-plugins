@@ -345,7 +345,7 @@ export function apply(ctx, baseConfig = {}) {
   try { ctx.provide?.('prArchiveGuard', archiveGuard) } catch { /* optional */ }
   // The review queue's Follow handoff button: the latest note of a session and the same follow-up as the session menu's. Provided after contextCap exists; calls are lazy.
   try { ctx.provide?.('handoffFollowUp', { latest: (id) => handoffs.latest(id), followUp: (id) => contextCap.followUp(id) }) } catch { /* optional */ }
-  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, handoffs, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId), archiveGuard: (sessionId) => archiveGuard.check(sessionId) })
+  contextCap = installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff: (agent) => prPoller.handoffLines(agent.id), groups, handoffs, waitForPr: (sessionId, prId) => prPoller.addWait(sessionId, prId), archiveGuard: (sessionId) => archiveGuard.check(sessionId), onHandedOver: (agent) => prPoller.forgetCreated(agent.id) })
   installAskUserTuning(ctx, { skip, makeMessage })
   installActionItemFormatting(ctx, { skip, makeMessage })
   installHoldTitles(ctx, { skip, stateDir: dirname(settings.path) })

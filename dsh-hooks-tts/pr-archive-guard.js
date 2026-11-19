@@ -14,7 +14,7 @@ const FINAL = new Set(['completed', 'abandoned', 'notFound'])
 /**
  * @param {object} deps
  * @param {() => boolean} [deps.enabled] - the protectPrSessions setting.
- * @param {(sessionId: string) => Promise<string | undefined> | string | undefined} deps.prIdOf - the PR a session polls, if any.
+ * @param {(sessionId: string) => Promise<string | string[] | undefined> | string | string[] | undefined} deps.prIdOf - the PR(s) a session polls, created or waits for, if any.
  * @param {(prId: string) => Promise<string | undefined>} deps.statusOf - the Azure DevOps status of the PR ("notFound" for HTTP 404); may throw.
  * @param {(prId: string) => boolean} [deps.finished] - PRs already known to be over (no lookup needed).
  */
@@ -46,13 +46,18 @@ export function createPrArchiveGuard({ enabled = () => true, prIdOf, statusOf, f
     /** { protected, prId?, status? }; never rejects. */
     async check(sessionId) {
       if (!enabled()) return { protected: false }
-      let prId
-      try { prId = await prIdOf(String(sessionId)) } catch { return { protected: false } }
-      if (!prId) return { protected: false }
-      prId = String(prId)
-      if (finished(prId)) return { protected: false, prId }
-      const status = await statusFor(prId)
-      return { protected: !FINAL.has(status), prId, status }
+      let found
+      try { found = await prIdOf(String(sessionId)) } catch { return { protected: false } }
+      // One PR id, or several (a session that created or waits for more than one PR): any PR still open protects it.
+      const ids = [...new Set((Array.isArray(found) ? found : [found]).filter(Boolean).map(String))]
+      let verdict = { protected: false }
+      for (const prId of ids) {
+        if (finished(prId)) { if (!verdict.prId) verdict = { protected: false, prId }; continue }
+        const status = await statusFor(prId)
+        if (!FINAL.has(status)) return { protected: true, prId, status }
+        verdict = { protected: false, prId, status }
+      }
+      return verdict
     },
   }
 }

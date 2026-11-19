@@ -118,7 +118,7 @@ export function continuationTitle(old) {
   return m ? `${m[1]} - ${Number(m[2]) + 1}` : `${old} - 2`
 }
 
-export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups, waitForPr, handoffs, archiveGuard }) {
+export function installContextCap(ctx, config, { skip, makeMessage, settings, prHandoff, groups, waitForPr, handoffs, archiveGuard, onHandedOver }) {
   const dir = config.handoffDir ?? DEFAULT_HANDOFF_DIR
   const instructed = new Set()
   const warned = new Set()
@@ -478,7 +478,8 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
       ok = Boolean(await spawnSession(agent, { ...job, prId: id, path: job.prNotes[id], kind: 'pr', extra: index === 0 ? extra : '' })) && ok
     }
     if (ok && rest !== undefined && !NO_REMAINING.test(rest)) ok = Boolean(await spawnSession(agent, { ...job, path: job.rest, kind: 'after' }))
-    if (ok) archiveSource(agent) // once, when every session that was asked for exists
+    // Once, when every session that was asked for exists: the PR session(s) took over, so the created-PR record (archive guard) is released first, then the source is archived.
+    if (ok) { try { onHandedOver?.(agent) } catch (error) { trace(`hand-over release failed: ${error}`) } archiveSource(agent) }
   }
 
   /** The first message of the remaining-work session: it asks before doing anything. */

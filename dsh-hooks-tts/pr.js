@@ -36,6 +36,7 @@ export function prTitleFor(old, prId) {
   const title = (stripHold(typeof old === 'string' ? old : '') ?? '').trim()
   return TICKET_TITLE.test(title) && !PR_TITLE.test(title) ? `PR ${prId} - ${title}` : `PR ${prId}`
 }
+const ADO_ORG = 'https://dev.azure.com/ingeniuxdev'
 const ADO_REPO = 'https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc'
 /** Definition id of the CI AI-review pipeline ("AI review pipeline 80"). */
 const CI_PIPELINE_ID = 80
@@ -248,6 +249,27 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     finishedPrs.add(String(prId))
     for (const [sessionId, state] of states) if (String(state.prId) === String(prId)) restored.delete(sessionId)
     try { writeFileSync(finishedFile, JSON.stringify([...finishedPrs].slice(-500))) } catch (error) { trace(`could not save finished PRs: ${scrub(error)}`) }
+  }
+  // PRs a session created and has not handed over yet: such a session is neither polling nor titled "PR <n>", so only this record
+  // (kept on disk, so it survives a restart and a hand-over that never finished) tells the archive guard that it is tied to an open PR.
+  // Released by forgetCreated() once the PR session(s) took over; a merged or abandoned PR stops protecting on its own.
+  const createdFile = join(dirname(settings.path), 'pr-created.json')
+  /** sessionId -> PR ids it created. */
+  const createdPrs = new Map()
+  try { for (const [id, prs] of Object.entries(JSON.parse(readFileSync(createdFile, 'utf8')))) if (Array.isArray(prs) && prs.length) createdPrs.set(id, prs.map(String)) } catch { /* none yet */ }
+  const saveCreated = () => {
+    while (createdPrs.size > 500) createdPrs.delete(createdPrs.keys().next().value)
+    try { writeFileSync(createdFile, JSON.stringify(Object.fromEntries(createdPrs))) } catch (error) { trace(`could not save created PRs: ${scrub(error)}`) }
+  }
+  function noteCreated(sessionId, prId) {
+    const list = createdPrs.get(sessionId) ?? []
+    if (list.includes(String(prId))) return
+    createdPrs.delete(sessionId) // re-inserted last, so Map order is age order
+    createdPrs.set(sessionId, [...list, String(prId)])
+    saveCreated()
+  }
+  function forgetCreated(sessionId) {
+    if (createdPrs.delete(String(sessionId))) saveCreated()
   }
   // The 10-minute trigger: one Automation task per PR session (absent Schedule service: the setInterval fallback below).
   const prSchedule = createPrSchedule({ getSchedule: () => ctx.get('schedule'), stateDir: dirname(settings.path), trace: (line) => trace(scrub(line)), intervalSeconds: Math.round(intervalMs / 1000) })
@@ -524,6 +546,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       if (id && !isPrSession(ctx, agent)) {
         if (onPrCreated) {
           // The PR continues in a NEW session titled "PR <id>" (spawned by cap.js); this one is neither renamed nor polled.
+          // Recorded first: until the hand-over succeeded (forgetCreated) the archive guard keeps this session, whatever happens to the hand-over.
+          noteCreated(agent.id, id)
           try { await onPrCreated(agent, id) } catch (error) { trace(`hand-over to a PR session failed: ${scrub(error)}`) }
         } else {
           await renameToPr(agent, id) // a failed rename is traced; the poll still starts
@@ -796,13 +820,16 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   const archivingOnPurpose = new Set()
   /** The PR a session polls: its live entry, the state kept after a stop, a persisted task, else a "PR <n>" title (a title can drift, so it comes last). */
   async function prIdOfSession(sessionId) {
-    const known = entries.get(sessionId)?.prId ?? states.get(sessionId)?.prId ?? prSchedule.prIdOf(sessionId)
-    if (known) return known
+    // Every PR the session is tied to: the one it polls, the one it waits for (echo PR-WAIT) and the ones it created (until its hand-over succeeded).
+    const ids = [entries.get(sessionId)?.prId ?? states.get(sessionId)?.prId ?? prSchedule.prIdOf(sessionId), waitMap.get(sessionId), ...(createdPrs.get(sessionId) ?? [])].filter(Boolean)
+    if (ids.length) return ids
+    // Else the title: "PR <n>" (a poll session) or "... - after PR <n>[, <m>]" (a follow-up waiting for its PR). A title can drift, so it comes last.
     try {
       const [read] = await ctx.get('sessionQuery').readTitleSnapshots([sessionId])
-      const title = read?.status === 'fulfilled' ? stripHold(typeof read.value?.title?.title === 'string' ? read.value.title.title : '') : ''
-      const m = PR_TITLE.exec(title ?? '')
-      return m ? /\d+/.exec(m[0])[0] : undefined
+      const title = read?.status === 'fulfilled' ? stripHold(typeof read.value?.title?.title === 'string' ? read.value.title.title : '') ?? '' : ''
+      const m = PR_TITLE.exec(title)
+      if (m) return /\d+/.exec(m[0])[0]
+      return /\s-\s+after PR (\d+(?:,\s*\d+)*)$/i.exec(title)?.[1]?.split(/,\s*/)
     } catch { return undefined }
   }
   const archiveGuard = createPrArchiveGuard({
@@ -811,7 +838,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     statusOf: async (prId) => {
       const pat = env.AZURE_DEVOPS_EXT_PAT
       if (!pat) throw new Error('no AZURE_DEVOPS_EXT_PAT')
-      try { return (await getJson(`${ADO_REPO}/pullRequests/${encodeURIComponent(prId)}?api-version=7.1`, pat))?.status } catch (error) { if (/^HTTP 404 /.test(error?.message)) return 'notFound'; throw error }
+      // Organisation-wide lookup: a PR of another repository (CTnP-QA, xpas, ...) is unknown to the Ingeniux repo URL and would answer 404, which must not read as "gone".
+      try { return (await getJson(`${ADO_ORG}/_apis/git/pullrequests/${encodeURIComponent(prId)}?api-version=7.1`, pat))?.status } catch (error) { if (/^HTTP 404 /.test(error?.message)) return 'notFound'; throw error }
     },
     finished: (prId) => finishedPrs.has(String(prId)),
   })
@@ -907,6 +935,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     poll,
     stopAll,
     has: (id) => entries.has(id),
+    /** The PR session(s) of a session's created PR(s) exist: the session is no longer tied to them (see createdPrs). */
+    forgetCreated,
     /** `check(sessionId)` -> { protected, prId?, status? }: whether the session polls a PR that is still open (archiving it would end the poll). */
     archiveGuard,
     /** Lines a handoff note carries so a resumed session can re-register the poll. */
