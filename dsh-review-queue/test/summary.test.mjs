@@ -237,3 +237,20 @@ test('the action sentences always form their own last paragraph, in the model su
   assert.equal(fallbackSummary('Did a lot.\n\nAll set, nothing to do.'), 'All set, nothing to do.')
   assert.equal(fallbackSummary(''), '')
 })
+
+test('the prompt tells the model to write an actionable summary from the position of a user who has not read the session and to quote the deliverable', async () => {
+  const seen = {}
+  await createSummarizer({ llm: fakeLlm({ seen }) }).summarize('Should I use the optimized prompt?')
+  const system = String(seen.req.system)
+  assert.match(system, /has NOT read the session/)
+  assert.match(system, /quote that deliverable itself/)
+  assert.match(system, /recommendation/)
+})
+
+test('an actionable summary may carry up to 1800 characters of context; a no-action summary stays at 500', async () => {
+  const long = 'Context sentence here. '.repeat(70)
+  const yes = await createSummarizer({ llm: fakeLlm({ reply: 'TITLE: Pick prompt\nACTIONABLE: yes\nSUMMARY: ' + long }) }).summarize('Which one?')
+  assert.ok(yes.text.length > 600 && yes.text.length <= 1850, 'yes length ' + yes.text.length)
+  const no = await createSummarizer({ llm: fakeLlm({ reply: 'TITLE: Done\nACTIONABLE: no\nSUMMARY: ' + long }) }).summarize('Done.')
+  assert.ok(no.text.length <= 550, 'no length ' + no.text.length)
+})
