@@ -501,3 +501,42 @@ test('the reported conflict state survives a re-registration of the same PR', as
   assert.equal(w.prompts.length, 1)
   w.poller.stopAll()
 })
+
+// ---- review fixes: combined message and CI project ----
+
+test('a conflict together with new comments scopes the no-push rule to the comment fixes only', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.threads('6776', [thread(7, 2)])
+  w.start(6776)
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  const text = w.texts()[0]
+  assert.match(text, /git merge origin\/develop/)
+  assert.match(text, /New review comments on PR 6776/)
+  assert.doesNotMatch(text, /Do NOT commit, push, post replies or resolve threads until the user has approved at that gate\./)
+  assert.match(text, /applies to the comment fixes only[^\n]*merge-conflict steps/i)
+  w.poller.stopAll()
+})
+
+test('comments alone keep the unscoped approval-gate wording', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS })
+  w.ado.threads('6776', [thread(7, 2)])
+  w.start(6776)
+  await w.poll()
+  assert.match(w.texts()[0], /Do NOT commit, push, post replies or resolve threads until the user has approved at that gate\./)
+  w.poller.stopAll()
+})
+
+test('the CI build lookup uses the project of the PR, not a fixed one', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS })
+  w.start(6776)
+  await w.poll()
+  const build = w.ado.requests.find((u) => u.includes('/_apis/build/builds'))
+  assert.ok(build, 'the build lookup ran')
+  assert.ok(build.startsWith(`${ORG}/${PROJECT}/_apis/build/builds`), build)
+  assert.ok(!build.includes('/Ingeniux/'))
+  w.poller.stopAll()
+})

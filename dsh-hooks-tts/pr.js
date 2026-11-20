@@ -190,13 +190,15 @@ export function ciRunningLine(prId, builds) {
   return `CI review pipeline is running on PR ${prId} (${list}); its findings will arrive as new comment threads.`
 }
 
-function queuedMessage(prId, threadIds, ciBuilds = [], statusLines = []) {
+function queuedMessage(prId, threadIds, ciBuilds = [], statusLines = [], hasConflict = false) {
   return [
     ...statusLines,
     ...(ciBuilds.length ? [ciRunningLine(prId, ciBuilds)] : []),
     `New review comments on PR ${prId} (thread${threadIds.length > 1 ? 's' : ''} ${threadIds.join(', ')}).`,
     `Run the \`ado-pr-implement\` skill on PR ${prId} now, in this session, and take it only up to its user-approval gate: evaluate each comment, then implement fixes and update tests locally.`,
-    'Do NOT commit, push, post replies or resolve threads until the user has approved at that gate.',
+    hasConflict
+      ? 'Do NOT commit, push, post replies or resolve threads for the comment fixes until the user has approved at that gate. This applies to the comment fixes only; the merge-conflict steps above are pre-approved (normal push, never a force-push without asking).'
+      : 'Do NOT commit, push, post replies or resolve threads until the user has approved at that gate.',
   ].join('\n')
 }
 
@@ -372,9 +374,9 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   }
 
   /** Active (queued or running) CI review builds for the PR; undefined when the lookup failed (traced). */
-  async function activeCiBuilds(entry, pat) {
+  async function activeCiBuilds(entry, pat, project) {
     try {
-      const url = `https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/build/builds?definitions=${CI_PIPELINE_ID}&branchName=${encodeURIComponent(`refs/pull/${entry.prId}/merge`)}&statusFilter=inProgress,notStarted&api-version=7.1`
+      const url = `${ADO_ORG}/${encodeURIComponent(project)}/_apis/build/builds?definitions=${CI_PIPELINE_ID}&branchName=${encodeURIComponent(`refs/pull/${entry.prId}/merge`)}&statusFilter=inProgress,notStarted&api-version=7.1`
       const data = await getJson(url, pat)
       return (data?.value ?? []).filter((b) => b?.id != null && (b.status === 'inProgress' || b.status === 'notStarted'))
     } catch (error) {
@@ -476,7 +478,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         ...(status.blockedNew ? [status.blocked.line] : []),
         ...status.voteLines,
       ]
-      const builds = await activeCiBuilds(entry, pat)
+      const builds = await activeCiBuilds(entry, pat, pr?.repository?.project?.id ?? pr?.repository?.project?.name ?? 'Ingeniux')
       const newBuilds = (builds ?? []).filter((b) => !entry.ciReported.has(String(b.id)))
       // recorded only after the queue accepted the message, so a failed hand-over is retried next poll
       const recordReported = () => {
@@ -494,7 +496,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         // Approval and a clean CI review do not end the poll: only a merged or abandoned PR does.
         return
       }
-      await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId), newBuilds, statusLines))
+      await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId), newBuilds, statusLines, status.conflictNew))
       recordReported()
       // Recorded only after the message was queued, so a failed hand-over is retried next poll.
       for (const t of fresh) entry.seen.set(t.threadId, t.lastCommentId)
