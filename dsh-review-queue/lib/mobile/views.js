@@ -990,9 +990,15 @@ export function ItemInfo({ item, resolved }) {
   return html`<div>${sessionLine(c, item)}${raised ? html`<div class="sub">${raised}</div>` : null}</div>`
 }
 
+/** The page itself scrolls on the phone, so a card opened from a scrolled list would start mid-page: show it from the top. Never throws. */
+function resetScroll() {
+  try { window.scrollTo(0, 0) } catch { /* a page that cannot scroll has nothing to reset */ }
+}
+
 function ItemView({ id }) {
   const c = getCore()
   const st = useStore()
+  useLayoutEffect(() => { resetScroll() }, [id]) // before paint, whenever another card is opened (declared before the early return below)
   const open = st.snap && st.snap.open.find((i) => i.id === id)
   const resolved = !open && st.snap && st.snap.resolved.find((i) => i.id === id)
   const item = open || resolved

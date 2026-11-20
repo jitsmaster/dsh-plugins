@@ -2634,7 +2634,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				view === "phone" ? h("div", { className: "rq-body", ...vpanel("phone") }, h(PhoneHost)) : view === "rules" ? h(RulesView) : view === "resolved" ? h("div", { className: "rq-body", ...vpanel("resolved") }, h(ResolvedList, { items: snap ? snap.resolved : [] }))
 					: h("div", { className: "rq-split", ...vpanel(view) },
 						h("div", Object.assign({ className: "rq-side" }, open.length ? { role: "listbox", "aria-label": view === "held" ? "Held sessions" : "Waiting items" } : {}), st.hold && newCount() > 0 ? h("button", { type: "button", className: "rq-btn", "data-new-strip": "1", onClick: releaseHold }, newCount() + " new") : null, open.length ? groupedList(groupsMod, open, snap ? snap.resolved : [], Date.now(), (it) => h(SideRow, { key: it.id, it, selected: !!sel && sel.id === it.id })) : emptySide),
-						h("div", { className: "rq-detail" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip ? h("div", { className: "rq-tipwrap" }, tip) : null),
+						h("div", { className: "rq-detail", key: sel ? sel.id : "none" }, sel ? h(Card, { key: sel.id, item: sel, forceFull: true, selected: false }) : tip ? h("div", { className: "rq-tipwrap" }, tip) : null),
 						h("div", { className: "rq-narrow" }, list)),
 				view === "resolved" || view === "rules" || view === "phone" ? null : h("div", { className: "rq-hint" }, "j / k or ↑ ↓ move · r read aloud · e reviewed · Shift+A approve · Shift+D deny · Enter sends when all questions are answered · Esc or Ctrl+Alt+L close"),
 				h(DialogHost));

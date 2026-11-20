@@ -362,5 +362,7 @@
   "test/mobile-swipe-api.test.mjs",
   "test/mobile-swipe-row.test.mjs",
   "test/mobile-swipe-wiring.test.mjs",
-  "test/swipe-reopen.test.mjs"
+  "test/swipe-reopen.test.mjs",
+  "test/client-detail-scroll-reset.test.mjs",
+  "test/mobile-item-scroll-reset.test.mjs"
 ]
