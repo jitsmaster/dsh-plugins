@@ -153,7 +153,7 @@ function cleanAnswer(raw) {
   return (fenced && !fenced[1].includes('```') ? fenced[1] : unlabeled).trim()
 }
 
-const QUESTIONS_LINE = /^[ \t]*[*_]*(?:open[ \t]+)?questions[*_]*[ \t]*:?[ \t]*[*_]*[ \t]*$/im
+const QUESTIONS_LINE = /^[ \t]*[*_]*(?:open[ \t]+)?questions[ \t*_:]*$/im // one trailing class, no adjacent optional runs (linear time)
 const ITEM_BULLET = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/
 const DEFAULT_MARK = 'Suggested default:'
 const DECIDE_HEADING = /^[ \t]*[*_#]*[ \t]*decide\b[^\n]*$/i

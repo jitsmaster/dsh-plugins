@@ -147,8 +147,9 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, pr
 
   /**
    * The guard's verdict when the session polls a PR that is still open (dsh-hooks-tts's prArchiveGuard). The guard is the authority when it answers.
-   * Without it (plugin missing, protectPrSessions off) or when it throws, nothing is known, so a session whose title names a PR ("PR 6554", "... - after PR 6554")
-   * is still treated as protected: its poller is the reason it is idle.
+   * Without it (plugin missing) or when it throws, nothing is known, so a session whose title names a PR ("PR 6554", "... - after PR 6554")
+   * is still treated as protected: its poller is the reason it is idle. With protectPrSessions off the guard answers "not protected" and that stands.
+   * A guard that does not answer within guardTimeoutMs protects the session (cannot tell = open).
    */
   const prOpenOf = async (sessionId, title) => {
     try {
