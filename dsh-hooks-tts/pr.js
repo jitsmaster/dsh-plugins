@@ -432,7 +432,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     if (!base || !target || MAIN_BRANCHES.has(target)) return undefined
     try {
       const root = base.slice(0, base.lastIndexOf('/pullRequests/'))
-      const data = await getJson(`${root}/pullrequests?searchCriteria.sourceRefName=${encodeURIComponent(`refs/heads/${target}`)}&searchCriteria.status=active&api-version=7.1`, pat)
+      const data = await getJson(`${root}/pullrequests?searchCriteria.sourceRefName=${encodeURIComponent(`refs/heads/${target}`)}&searchCriteria.status=active&$top=5&api-version=7.1`, pat)
       const found = (data?.value ?? []).find((p) => Number.isSafeInteger(Number(p?.pullRequestId)) && Number(p.pullRequestId) > 0 && String(p.pullRequestId) !== entry.prId)
       return found ? { id: found.pullRequestId, conflicts: found.mergeStatus === 'conflicts' } : undefined
     } catch (error) {
