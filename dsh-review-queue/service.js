@@ -7,7 +7,7 @@ import { safeReason } from './tip.js'
 import { spokenFor, titleFor, fullTextFor, chunkForSpeech, tipSentences } from './speech.js'
 import { riskOf } from './risk.js'
 import { createTodos } from './todo.js'
-import { MAX_TODO, PROMPT_TIMEOUT_MS, codeOf, isSentFollowUp } from './follow-up-shared.js'
+import { MAX_DICTATION, MAX_TODO, PROMPT_TIMEOUT_MS, codeOf, isSentFollowUp } from './follow-up-shared.js'
 import { listFollowUpSessions } from './follow-up.js'
 import { RESUME_CONCURRENCY, RESUME_PROMPT, isLimitSignin } from './paused.js'
 import { listRunningSessions } from './userpause.js'
@@ -38,7 +38,7 @@ const needsUser = (item) => (item.type !== 'paused' || isLimitSignin(item)) && i
 // A caller that hosts several apps in one process (tests) passes its own { seq, cmd } per service.
 const sharedUi = { seq: 0, cmd: undefined }
 
-export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, todoImages, tips, tipExpand, tipSurvey: givenSurvey, tipSurveyDeps, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, queueOrderIo, paused, limitSignIn, onHold, threadOf, archiveOfferEnabled = () => true, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
+export function createReviewQueue({ store, capture, controllerOf, instanceId, registryOf = () => undefined, prGuardOf = () => undefined, speaker, llm, tuner, cleaner, todoImages, tips, tipExpand, tipSurvey: givenSurvey, tipSurveyDeps, sessions, titlesOf, snippetsOf, sparcText, suggestTimeoutMs, log, triageApi, aiReportOf, handoffFollowOf = () => undefined, ticketTitleOf, defaultModelOf, queueOrderIo, paused, limitSignIn, onHold, threadOf, archiveOfferEnabled = () => true, posting = new Set(), ui = sharedUi, now = Date.now, uuid = () => randomUUID().slice(0, 8) }) {
   // The sessions a follow-up todo can go to: this app's own (the hub gives a card the union of every app's instead). snippetsOf is optional.
   const attempt = (fn, what) => { try { return fn() } catch (error) { log?.('follow-up: ' + what + ' unavailable: ' + codeOf(error)); return undefined } }
   // opts.query: the words of the follow-up (a ticket number in them may decide without snippets); opts.snippets false: none are read (the hub asks so while a number may still decide).
@@ -52,6 +52,7 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
   const postKeys = new Map() // idempotency key of an accepted post -> { at, result }: a repeat (the phone's retry after a lost answer) is answered, not prompted again
   let runningCall // the last runningSessions list: { done, doneAt, promise }
   let tuning = false // a Tune prompt call is on its way: one at a time per service (each is a paid model call)
+  let cleanCall // the dictation cleanup in flight, { ac, superseded }: one at a time per service (a paid model call); a newer call aborts it
   // The queue order switch: 'oldest' (default) or 'tier'. Persisted through queueOrderIo; anything unreadable fails closed to 'oldest'.
   let order = 'oldest'
   try { const raw = queueOrderIo?.read(); if (raw && JSON.parse(raw)?.order === 'tier') order = 'tier' } catch { /* fail closed */ }
@@ -604,6 +605,36 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
         log?.('service: tune failed: ' + String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 300))
         return { ok: false, error: 'LLM error' }
       } finally { tuning = false }
+    },
+    /**
+     * The phone's dictation cleanup (Haiku): { ok, text } | { ok: false, error }. Adds nothing to the list; the text is never logged and a provider message never reaches the caller.
+     * One paid model call at a time per service, newest wins: a new call aborts the one in flight (it answers 'superseded', which the phone keeps silent) instead of being
+     * turned away, because the older dictation is usually already abandoned by the phone. `signal` (the caller went away, e.g. the standalone route's request closed) cuts the call too.
+     * Through the hub nothing reaches this signal: the hub does not forward a phone's cancel, and the app's command lane (agent/client.js) runs the cleanups one after the other.
+     */
+    async dictationClean(text, { lang, signal } = {}) {
+      const body = typeof text === 'string' ? text.trim() : ''
+      if (!body) return { ok: false, error: 'empty' }
+      if (body.length > MAX_DICTATION) return { ok: false, error: 'too-long' }
+      if (typeof cleaner?.clean !== 'function') return { ok: false, error: 'no model available' }
+      if (signal?.aborted) return { ok: false, error: 'cancelled' }
+      if (cleanCall) { cleanCall.superseded = true; cleanCall.ac.abort() }
+      const mine = { ac: new AbortController(), superseded: false }
+      cleanCall = mine
+      const onCallerGone = () => mine.ac.abort()
+      signal?.addEventListener('abort', onCallerGone, { once: true })
+      try {
+        const result = await cleaner.clean(body, { lang: typeof lang === 'string' ? lang : undefined, signal: mine.ac.signal })
+        return mine.superseded ? { ok: false, error: 'superseded' } : result
+      } catch (error) {
+        if (mine.superseded) return { ok: false, error: 'superseded' }
+        // Security: the provider's message can echo the dictated text, so only the error's code or name is logged.
+        log?.('service: dictation-clean failed: ' + codeOf(error, true)) // strict: a thrown string could be the dictated text
+        return { ok: false, error: 'LLM error' }
+      } finally {
+        signal?.removeEventListener('abort', onCallerGone)
+        if (cleanCall === mine) cleanCall = undefined // a newer call owns the slot by now: leave it
+      }
     },
     workspaces: () => todos.workspaces(),
     /** Open items only: how many wait in total and per type. */

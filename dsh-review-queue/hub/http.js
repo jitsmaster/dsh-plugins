@@ -7,6 +7,7 @@
  */
 import { CONFIRM_BAD_INPUT, MAX_WAIT_MS, PREFIX, outcome, parseSince, readJson, send, stampMatches } from '../server.js'
 import { serveMobile } from '../mobile.js'
+import { LANG_TAG, MAX_DICTATION } from '../follow-up-shared.js' // the longest text of a dictation cleanup (a leaf module: no model code is pulled into the HTTP layer)
 import { createDeviceRoutes, sendLimited } from './device-routes.js'
 
 export { outcome }
@@ -24,7 +25,7 @@ const DESKTOP_LOCAL = new Set(['limit-signin-start', 'limit-signin-code', 'limit
  * not listed here, stays on the desktop (403 desktop-only). The one exception is follow-handoff, which lets a phone open a NEW session resuming a
  * handoff note (the owning app does it; the audit line names the device and item, never the note path). It may dismiss a paused session (paused-dismiss: it needs no action) but not resume one. thread and post are the chat view of a session (docs/mobile.md "Chat thread").
  */
-const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'archive-session', 'follow-handoff', 'paused-dismiss', 'hold', 'hold-release', 'hold-continue', 'todo', 'todo-confirm', 'todo-cancel', 'thread', 'post'])
+const DEVICE_ACTIONS = new Set(['reviewed', 'reopen', 'answer', 'late-answer', 'approve', 'approve-similar', 'deny', 'reply', 'archive', 'archive-session', 'follow-handoff', 'paused-dismiss', 'hold', 'hold-release', 'hold-continue', 'todo', 'todo-confirm', 'todo-cancel', 'thread', 'post', 'dictation-clean'])
 
 /** Client input in a log line: only safe characters, cut short (a line cannot be forged or flooded). Not a string: '?'. */
 const safeId = (value, max) => (typeof value === 'string' ? value.replace(/[^A-Za-z0-9_-]/g, '?').slice(0, max) : '?')
@@ -176,6 +177,7 @@ export function createHttp({ hub, log = () => {} }) {
     if (!originOk(req)) return send(res, 403, { error: 'bad-origin' })
     const body = await readJson(req)
     if (!body.value) return send(res, body.status, { error: 'bad-request' })
+    if (kind === 'dictation-clean') return await dictationClean(res, who, caller, body.value)
     if (who.deviceId) { // a phone can prompt any session (a post, or a follow-up todo): leave a trace of who, which item and session and how long, never the text
       const line = kind === 'post' ? postAudit(who.deviceId, body.value) : kind === 'follow-handoff' ? 'follow-handoff: device ' + who.deviceId + ' item ' + safeId(body.value.id, 40) : followUpAudit(who.deviceId, kind, body.value, hub.store)
       if (line) log(line)
@@ -183,6 +185,17 @@ export function createHttp({ hub, log = () => {} }) {
     const result = await hub.act(kind, body.value, { role: who.role, caller })
     if (who.deviceId && kind === 'follow-handoff') log(followResultAudit(who.deviceId, body.value, result))
     return outcome(res, result, kind === 'todo-confirm' ? CONFIRM_BAD_INPUT : undefined)
+  }
+
+  /** A phone's dictation cleanup: no item, so the text is checked here, every caller has a small limit (a device its own, the desktop one shared), and only the length is logged, never the text. */
+  async function dictationClean(res, who, caller, value) {
+    const text = typeof value.text === 'string' ? value.text.trim() : ''
+    if (!text) return outcome(res, { ok: false, error: 'empty' })
+    if (text.length > MAX_DICTATION) return outcome(res, { ok: false, error: 'too-long' })
+    const taken = hub.dictationLimiter.take(who.deviceId ?? 'desktop') // every caller is counted: a phone by its device, the desktop as one
+    if (!taken.ok) { sendLimited(res, taken.retryAfterMs); return undefined }
+    if (who.deviceId) log('dictation-clean: device ' + safeId(who.deviceId, 40) + ' chars ' + text.length)
+    return outcome(res, await hub.act('dictation-clean', { text, ...(typeof value.lang === 'string' && LANG_TAG.test(value.lang) ? { lang: value.lang } : {}) }, { role: who.role, caller }))
   }
 
   function assetlinks(req, res) {

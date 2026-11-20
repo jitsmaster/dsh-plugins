@@ -195,7 +195,7 @@ function splitQuestions(raw) {
 }
 
 /** The failure of a model call as { error, logged }: the client's words (a generic LLM error for a provider failure) and the line for the log (with the detail). */
-function reasonOf(error, timeoutMs) {
+export function reasonOf(error, timeoutMs) {
   const message = String(error?.message ?? error).replace(/\s+/g, ' ').trim()
   if (message === 'timed out') { const text = 'timed out after ' + timeoutMs / 1000 + ' s'; return { error: text, logged: text } }
   if (message === NO_MODEL) return { error: NO_MODEL, logged: NO_MODEL }

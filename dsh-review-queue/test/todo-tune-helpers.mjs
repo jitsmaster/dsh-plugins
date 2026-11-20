@@ -1,10 +1,10 @@
 // Fakes of the tune tests: an llm service in the shape summary.js / todo.js expect (same as test/todo-suggest.test.mjs).
-export function fakeLlm({ answer = '', chunks, fail, failMessage, hang, noModels, models, providersThrow, seen = {} } = {}) {
+export function fakeLlm({ answer = '', chunks, fail, failMessage, hang, noModels, models, providers, providersThrow, seen = {} } = {}) {
   seen.calls = 0
   seen.providerCalls = 0
   return {
-    listProviders: async () => { seen.providerCalls++; if (providersThrow) throw new Error('providers down'); return [{ id: 'p1' }] },
-    listModels: async () => (noModels ? [] : models ?? [{ id: 'claude-haiku-x' }]),
+    listProviders: async () => { seen.providerCalls++; if (providersThrow) throw new Error('providers down'); return providers ? providers.map((p) => ({ id: p.id })) : [{ id: 'p1' }] },
+    listModels: async (pid) => (noModels ? [] : providers ? providers.find((p) => p.id === pid)?.models ?? [] : models ?? [{ id: 'claude-haiku-x' }]), // providers: [{ id, models }] for a test that cares which provider a model is from
     prepareCall: async (cfg, signal) => ({
       config: {},
       stream: async function* (req) {

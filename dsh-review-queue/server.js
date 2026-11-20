@@ -132,6 +132,7 @@ export function createRouter({ queue, dev, pushRoutes }) {
     '/v1/running-sessions': () => queue.runningSessions(),
     '/v1/todo': (b) => queue.addTodo(b.text, { workspaceId: workspaceOf(b), sparc: b.sparc === true, effort: b.effort, followUp: b.followUp, images: b.images }), // never body.sessions: the candidates are this app's own (the hub gives the union)
     '/v1/todo-tune': (b) => queue.tuneTodo(b.text),
+    '/v1/dictation-clean': (b, ctx) => queue.dictationClean(b.text, { lang: b.lang, signal: ctx?.signal }), // ctx.signal aborts when the client closes the request: the paid call stops
     '/v1/todo-confirm': (b) => queue.confirmTodo(String(b.id), { workspaceId: workspaceOf(b), sessionId: sessionOf(b) }),
     '/v1/todo-cancel': (b) => queue.cancelTodo(String(b.id)),
     '/v1/focus': (b) => (queue.setFocus(b.id === null || b.id === undefined ? undefined : String(b.id)) ? { ok: true } : { ok: false, error: 'not-open' }),
@@ -204,7 +205,12 @@ export function createRouter({ queue, dev, pushRoutes }) {
       if (req.method !== 'POST') return send(res, 405, { error: 'method' })
       const body = await readJson(req)
       if (!body.value) return send(res, body.status, { error: 'bad-request' })
-      return outcome(res, await action(body.value), url.pathname === '/v1/todo-confirm' ? CONFIRM_BAD_INPUT : undefined)
+      // Cost: a request closed before its answer was sent (the phone aborted it) aborts the action's signal, so a paid model call is not left running for nobody.
+      const gone = new AbortController()
+      const abortIfUnsent = () => { if (!res.writableFinished) gone.abort() }
+      res.once('close', abortIfUnsent)
+      if (res.destroyed || res.closed) abortIfUnsent() // closed while the body was being read: 'close' already fired, so the listener above would never run
+      return outcome(res, await action(body.value, { signal: gone.signal }), url.pathname === '/v1/todo-confirm' ? CONFIRM_BAD_INPUT : undefined)
     } catch (error) {
       send(res, 500, { error: 'internal' })
     }

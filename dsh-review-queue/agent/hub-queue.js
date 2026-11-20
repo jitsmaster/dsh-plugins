@@ -146,6 +146,7 @@ export function createHubQueue({ local, client, speaker, controllerOf = () => un
     scanPaused: () => local.scanPaused(), // the session logs are on this PC: always this app that scans
     saveTodoImage: (bytes) => local.saveTodoImage(bytes), // the files are on this PC (a folder every app and the hub share): never asked of the hub
     tuneTodo: (text) => local.tuneTodo(text), // this app's own model: never asked of the hub
+    dictationClean: (text, opts) => local.dictationClean(text, opts), // this app's own Haiku: answered here only in standalone or degraded mode (no hub); with a hub the phone's request goes to the hub (agent/proxy.js HUB_ACTIONS)
     modelEfforts: () => local.modelEfforts(), // this app's own default model: never asked of the hub
     // The session-limit sign-in and Resume all are desktop-only and this app's own (its paused scan owns the pinned card and its sessions): never asked of the hub.
     limitSignInStart: (input) => local.limitSignInStart(input),

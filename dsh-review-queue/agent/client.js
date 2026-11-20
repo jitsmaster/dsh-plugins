@@ -15,6 +15,7 @@
 import { randomBytes } from 'node:crypto'
 import { PROTOCOL } from '../hub/protocol.js'
 import { sessionsKey } from '../sessions.js'
+import { CLEAN_TIMEOUT_MS } from '../follow-up-shared.js'
 import { createMirror } from './mirror.js'
 import { createTransport } from './transport.js'
 
@@ -25,11 +26,18 @@ const CALL_TIMEOUT_MS = 45_000
 /**
  * The lanes of the slow reads that cause no ops (see runLane): reads in flight at once, and commands that may wait for a slot (the next one is answered busy at once).
  * thread is the phone's chat read; sessions-list (the follow-up's session list) has a lane of its own, one at a time and two waiting, so a burst of follow-ups can neither
- * starve the chat reads nor be starved by them.
+ * starve the chat reads nor be starved by them. dictation-clean (the phone's dictation cleanup, one Haiku call) is a read too: one at a time and one waiting, so a cleanup of up to 20 s
+ * never holds up the commands in drain() and never starts behind a slow one after the hub gave up on it.
+ * releaseMs (default THREAD_READ_TIMEOUT_MS): how long a read may keep its slot. minLeftMs (default 0): a read with less than this left of its deadline is not started (cost control: the hub would already have answered it).
  */
-const LANES = { thread: { reads: 2, waiting: 8 }, 'sessions-list': { reads: 1, waiting: 2 } }
-/** A read that has not settled by then gives its slot back (its late result is discarded; the hub answered at its own timeout, 15 s for a thread, 6 s for a list). */
+/** A read that has not settled by then gives its slot back (its late result is discarded; the hub answered at its own timeout, 15 s for a thread, 6 s for a list, 25 s for a cleanup). */
 const THREAD_READ_TIMEOUT_MS = 20_000
+const LANES = {
+  thread: { reads: 2, waiting: 8 },
+  'sessions-list': { reads: 1, waiting: 2 },
+  // The cleaner's own deadline is CLEAN_TIMEOUT_MS: a slot released at that very moment would drop a result that arrives at the limit, so the lane waits a margin longer (still under the hub's 25 s).
+  'dictation-clean': { reads: 1, waiting: 1, releaseMs: CLEAN_TIMEOUT_MS + 3000, minLeftMs: CLEAN_TIMEOUT_MS },
+}
 const SESSION_CHECK_MS = 15_000
 const RESYNC_EVERY_MS = 60_000
 const SESSION_REPORT_MS = 4000
@@ -282,14 +290,17 @@ export function createAgentClient({ baseUrl, secret, instanceKey, adapter, execu
   function runLane(lane) {
     const { queue } = lane
     // A command past its deadline was answered by the hub itself (owner-timeout / unknown-outcome): reading it now would be for nobody.
-    for (let i = queue.length - 1; i >= 0; i--) if (Number.isFinite(queue[i].deadline) && now() >= queue[i].deadline) queue.splice(i, 1)
+    // A lane with minLeftMs (a paid model call) also drops one whose remaining time is less than the call may take: it would finish after the hub already answered owner-timeout.
+    const minLeft = lane.minLeftMs ?? 0
+    const expired = (cmd) => { const left = cmd.deadline - now(); return left <= 0 || left < minLeft } // a command without a (finite) deadline gives NaN: never expired
+    for (let i = queue.length - 1; i >= 0; i--) if (Number.isFinite(queue[i].deadline) && expired(queue[i])) queue.splice(i, 1)
     while (queue.length && lane.active < lane.reads && state === 'connected') {
       const cmd = queue.shift()
       const cycle = ctl
       lane.active++
       let released = false
       const release = () => { if (released) return; released = true; lane.active--; runLane(lane) }
-      const timer = timers.setTimeout(release, THREAD_READ_TIMEOUT_MS) // a read that never settles frees its slot; its late result is dropped below
+      const timer = timers.setTimeout(release, lane.releaseMs ?? THREAD_READ_TIMEOUT_MS) // a read that never settles frees its slot; its late result is dropped below
       timer?.unref?.()
       void (async () => {
         try {

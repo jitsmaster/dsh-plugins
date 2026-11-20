@@ -27,11 +27,22 @@ export const MAX_WAITING_FOLLOW_UPS = 10
 /** The answer for a follow-up added while that many already wait for a confirmation (the same code on the hub and in a standalone app). */
 export const TOO_MANY_FOLLOW_UPS = 'too-many-follow-ups'
 
+/** The longest text of a phone dictation cleanup (dictation-clean.js, service.js, and the hub's POST /v1/dictation-clean in hub/http.js). */
+export const MAX_DICTATION = 2000
+/** The cleaner's own deadline for the model (dictation-clean.js); the hub's command timeout (hub/commands.js) is this plus 5 s. Here so the plain hub need not load the model code. */
+export const CLEAN_TIMEOUT_MS = 20000
+/** The shape of a microphone language tag (en, en-US, zh-CN) a dictation may carry; the hub drops any other value and dictation-clean.js tells the model only a tag of this shape. */
+export const LANG_TAG = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/
+
 /**
  * What a log line says about a failure: the error's code, else its name, else (a string given: an error code that came from another process) the string, cut to safe characters and
  * 40 of them. Never the message: it can carry a path or content. The one copy for the follow-up code; a thrown value that is not an Error and not a string is just 'error'.
+ * Security: with `strict` true a string never passes (the caller knows that no string it can see is a code, and a thrown string could be a dictation): only an Error's code or name is logged.
  */
-export const codeOf = (error) => String(typeof error === 'string' ? error : error?.code ?? error?.name ?? 'error').replace(/[^A-Za-z0-9_:. /-]/g, '?').slice(0, 40)
+export const codeOf = (error, strict = false) => {
+  if (strict && typeof error === 'string') return 'error'
+  return String(typeof error === 'string' ? error : error?.code ?? error?.name ?? 'error').replace(/[^A-Za-z0-9_:. /-]/g, '?').slice(0, 40)
+}
 
 /**
  * A follow-up todo whose message was SENT: state 'started' (resolved followed-up) with the sessionId of the session it went to. Only this todo has a session of its own that the

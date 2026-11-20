@@ -9,7 +9,7 @@ import { SESSIONS_LIMIT, cleanSessions } from '../follow-up-shared.js'
 
 const CACHE_SIZE = 200
 /** Reads: they run at once and their results are not kept. */
-const READS = new Set(['thread', 'sessions-list', 'model-efforts'])
+const READS = new Set(['thread', 'sessions-list', 'model-efforts', 'dictation-clean'])
 
 /**
  * @param {{ queue: any, adapter: any, openSession?: (sessionId: string) => Promise<any>, cacheSize?: number }} deps
@@ -41,6 +41,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
     // Follow-up todo: this app's candidates (a read), the follow-up item with the hub's union of sessions, and the send of its message (an item moved here is adopted first).
     // args.snippets false: the hub is not after the snippets (yet: a ticket number of the words may decide without them).
     'model-efforts': () => queue.modelEfforts(),
+    'dictation-clean': (c) => queue.dictationClean(c.args.text, { lang: c.args.lang }),
     'sessions-list': async (c) => ({ ok: true, sessions: cleanSessions(await (c.args.snippets === false ? queue.followUpSessions({ snippets: false }) : queue.followUpSessions())).slice(0, SESSIONS_LIMIT) }),
     'followup-suggest': (c) => queue.addTodo(c.args.text, { followUp: c.args.followUp, sessions: c.args.sessions, ...(c.args.images !== undefined ? { images: c.args.images } : {}), ...(c.args.skippedApps ? { skippedApps: c.args.skippedApps } : {}), ...(c.args.mode ? { mode: c.args.mode } : {}), ...(c.args.excludeSessionIds ? { excludeSessionIds: c.args.excludeSessionIds } : {}), ...(c.args.source ? { source: c.args.source } : {}) }),
     'followup-send'(c) {
@@ -63,6 +64,7 @@ export function createExecutor({ queue, adapter, openSession, cacheSize = CACHE_
       const result = await handler({ ...cmd, args: cmd.args ?? {} })
       return result && typeof result === 'object' && typeof result.ok === 'boolean' ? result : { ok: false, error: 'failed' }
     } catch (error) {
+      if (cmd.kind === 'dictation-clean') return { ok: false, error: 'LLM error' } // Security: a thrown message can hold the dictated words; only a fixed text goes back to the hub
       return { ok: false, error: String(error?.message ?? error).slice(0, 200) }
     }
   }

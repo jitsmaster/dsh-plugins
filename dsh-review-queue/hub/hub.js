@@ -43,6 +43,8 @@ export const WATCH_MS = 60_000
 export const SESSIONS_WAKE_MS = 3000
 const DEVICE_REQUESTS_PER_MINUTE = 120
 const TTS_REQUESTS_PER_MINUTE = 600
+/** Each dictation cleanup is a paid model call: a phone gets this many a minute (on top of the general limit). */
+const DICTATION_CLEANS_PER_MINUTE = 6
 /** The files only this user may read; tightened after they exist (the temp file of every later write is tightened before it replaces them). */
 const PRIVATE_FILES = ['devices.json', 'push.json', 'vapid.json']
 
@@ -94,6 +96,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
   const deviceLimiter = createRateLimiter({ now, limit: DEVICE_REQUESTS_PER_MINUTE, windowMs: 60_000 })
   // /v1/tts: a read makes a request per chunk plus a prefetch, so it gets its own, larger per-device budget (the general one stays for everything else).
   const ttsLimiter = createRateLimiter({ now, limit: TTS_REQUESTS_PER_MINUTE, windowMs: 60_000 })
+  const dictationLimiter = createRateLimiter({ now, limit: DICTATION_CLEANS_PER_MINUTE, windowMs: 60_000 })
 
   /** Devices, pairing, push and roles (H4): created once the state folder and the config are known. */
   function startPhoneSide({ tightenSecret }) {
@@ -113,7 +116,7 @@ export function createHub({ stateDir, port = 0, now = Date.now, log: injectedLog
   }
 
   const hub = {
-    hubId, protocol, version, idleExitMs, onShutdown, deviceLimiter, ttsLimiter, now: () => now(),
+    hubId, protocol, version, idleExitMs, onShutdown, deviceLimiter, ttsLimiter, dictationLimiter, now: () => now(),
     get port() { return boundPort },
     get store() { return store },
     get config() { return config },

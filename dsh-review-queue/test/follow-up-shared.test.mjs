@@ -201,6 +201,32 @@ test('codeOf is the one log sanitiser of the follow-up code: the code, else the 
   assert.equal(shared.codeOf('x'.repeat(100)).length, 40)
 })
 
+test('codeOf keeps its original behaviour for the existing callers (a string passes through, spaces kept), and strict mode never returns a string\'s own text', () => {
+  assert.equal(shared.codeOf('timed out after 5 s'), 'timed out after 5 s')
+  assert.equal(shared.codeOf('some text'), 'some text')
+  assert.equal(shared.codeOf('a\nb'), 'a?b')
+  assert.equal(shared.codeOf('hello', true), 'error')
+  assert.equal(shared.codeOf('some text', true), 'error')
+  assert.equal(shared.codeOf('timed out after 5 s', true), 'error')
+  assert.equal(shared.codeOf('owner-timeout', true), 'error')
+  assert.equal(shared.codeOf(Object.assign(new Error('x'), { code: 'ECONNRESET' }), true), 'ECONNRESET')
+  assert.equal(shared.codeOf(new TypeError('secret'), true), 'TypeError')
+})
+
+test('the dictation cap is one number in follow-up-shared.js; hub/http.js, service.js and dictation-clean.js import it, the hub HTTP layer not the model module', () => {
+  assert.equal(shared.MAX_DICTATION, 2000)
+  for (const [file, from] of [['hub/http.js', '../follow-up-shared.js'], ['service.js', './follow-up-shared.js'], ['dictation-clean.js', './follow-up-shared.js']]) {
+    assert.ok(importsOf(file).includes(from), file + ' imports follow-up-shared.js')
+    assert.match(source(file), /MAX_DICTATION/, file)
+  }
+  assert.ok(!importsOf('hub/http.js').includes('../dictation-clean.js'), 'hub/http.js does not pull in the model module')
+  assert.doesNotMatch(source('dictation-clean.js'), /MAX_CHARS\s*=\s*\d/)
+})
+
+test('dictation-clean.js and service.js log a failure with codeOf, not their own sanitiser', () => {
+  for (const file of ['dictation-clean.js', 'service.js']) assert.doesNotMatch(source(file), /replace\(\/\[\^\\w\.-\]/, file + ' sanitises a code itself')
+})
+
 test('the four callers import codeOf from follow-up-shared.js and none of them writes the sanitiser again', () => {
   for (const file of ['service.js', 'follow-up.js', 'todo-follow-up.js', 'hub/follow-up.js']) {
     const text = source(file)

@@ -17,13 +17,13 @@
 import { riskOf } from '../risk.js'
 import { postKeyOf } from '../post-key.js'
 import { createHubFollowUps } from './follow-up.js'
-import { checkLinkOptions, isSentFollowUp, stripLinkOptions } from '../follow-up-shared.js'
+import { LANG_TAG, MAX_DICTATION, checkLinkOptions, isSentFollowUp, stripLinkOptions } from '../follow-up-shared.js'
 
 const HUB_LOCAL = ['reviewed', 'reopen']
 const PAUSED_ACTIONS = ['paused-resume', 'paused-dismiss']
 /** Value: the item must still be open (an expired question can still be answered late, any session can be opened, the chat of a finished item can be read and continued). */
 const OWNER_ACTIONS = { answer: true, approve: true, 'approve-similar': true, deny: true, reply: true, archive: true, 'paused-resume': true, 'paused-dismiss': true, hold: true, 'hold-release': true, 'hold-continue': true, 'todo-confirm': true, 'todo-cancel': true, 'late-answer': false, 'archive-session': false, 'follow-handoff': true, 'open-session': false, thread: false, post: false }
-export const ACTION_KINDS = [...HUB_LOCAL, 'todo', 'todo-link', ...Object.keys(OWNER_ACTIONS)]
+export const ACTION_KINDS = [...HUB_LOCAL, 'todo', 'todo-link', 'dictation-clean', ...Object.keys(OWNER_ACTIONS)]
 
 const risksOf = (item) => (item.type === 'permission' ? riskOf({ toolName: item.payload?.toolName, detail: item.payload?.detail ?? item.payload?.summary, path: item.payload?.path, workspace: item.workspace }) : [])
 const text = (v) => (v === undefined || v === null || v === '' ? undefined : String(v))
@@ -182,6 +182,14 @@ export function createRouting({ store, queue, instances, commands, log = () => {
       // The three link options come only through todo-link (desktop role; the plugin's own queue): every 'todo' is stripped here, once, whatever route it came by.
       if (kind === 'todo') { const plain = stripLinkOptions(body); return plain.followUp !== undefined && plain.followUp !== null ? followUps.add(plain, caller, role) : addTodo(plain, caller, role) }
       if (kind === 'todo-link') return body.followUp !== undefined && body.followUp !== null ? followUps.add(body, caller, role, { trusted: true }) : addTodo(body, caller, role, { trusted: true })
+      // The phone's dictation cleanup has no item: the coordinator app (it has a model; the phone has no app of its own) cleans the text.
+      if (kind === 'dictation-clean') {
+        const coordinator = instances.coordinator(caller)
+        // hub.act is a shared entry: the same cap and language shape as hub/http.js are applied here, so no caller can send the app an oversized text or a free-form language.
+        if (typeof body.text === 'string' && body.text.trim().length > MAX_DICTATION) return { ok: false, error: 'too-long' }
+        if (!coordinator) return { ok: false, error: 'no-registry' }
+        return send(coordinator, { kind: 'dictation-clean', args: { text: body.text, ...(typeof body.lang === 'string' && LANG_TAG.test(body.lang) ? { lang: body.lang } : {}) } })
+      }
       const id = String(body.id)
       if (HUB_LOCAL.includes(kind)) return hubLocal(kind, id)
       const item = store.get(id)

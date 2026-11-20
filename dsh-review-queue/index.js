@@ -41,6 +41,7 @@ import { createAutoClear } from './auto-clear.js'
 import { createSummarizer } from './summary.js'
 import { createTitleReader } from './titles.js'
 import { createTuner } from './todo-tune.js'
+import { createDictationCleaner } from './dictation-clean.js'
 import { createTodoImages } from './todo-images.js'
 import { createTipper, recentTopics } from './tip.js'
 import { createExpander } from './tip-expand.js'
@@ -162,6 +163,7 @@ export function createReviewQueuePlugin(ctx, config = {}) {
   try { todoImages?.prune() } catch { /* a net, not a need */ }
   // The new-todo form's Tune prompt button: the same llm service, rules from config.promptTunePath (default: the prompt-tune skill file, else an embedded copy).
   const tuner = createTuner({ llm, rulesPath: config.promptTunePath, log })
+  const cleaner = createDictationCleaner({ llm, log })
   // Question auto-answer: questionAutoAnswer (default on), questionAutoAnswerLeadSeconds (0 = off) and questionWindowSeconds (the window of a question
   // the model gave no timeout: must match the ask_user_question timeout row). A value that is not a finite number in range is passed on as undefined: capture.js applies its defaults.
   const msOf = (seconds, zeroOk) => (Number.isFinite(seconds) && (seconds > 0 || (zeroOk && seconds === 0)) ? seconds * 1000 : undefined)
@@ -294,7 +296,7 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
     log,
     ...(config.tipSurveyDeps ?? {}),
   }
-  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, queueOrderIo: stateDir ? fileIo(join(stateDir, 'queue-order.json')) : undefined, limitSignIn, archiveOfferEnabled, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, tips: tipper, tipExpand, tipSurveyDeps, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
+  const queue = createReviewQueue({ store, capture, controllerOf, defaultModelOf, queueOrderIo: stateDir ? fileIo(join(stateDir, 'queue-order.json')) : undefined, limitSignIn, archiveOfferEnabled, handoffFollowOf, onHold, instanceId, registryOf, prGuardOf, speaker, llm, tuner, cleaner, tips: tipper, tipExpand, tipSurveyDeps, sessions: sessionCounter, titlesOf, snippetsOf: snippetsFromThread(threadOf), sparcText, log, paused, threadOf, todoImages, ...(aiReporter ? { aiReportOf: aiReporter.last } : {}), ...(triageWanted ? { triageApi: { rules: triageRules, memory: triageMemory } } : {}), ...(config.ui ? { ui: config.ui } : {}) })
   // Observe mode only: every new item is judged in the background and an open card that is safe to handle gets the note "AI would have handled this". Nothing is ever done to an item.
   let triage
   if (triageWanted) {

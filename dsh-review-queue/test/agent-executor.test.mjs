@@ -164,3 +164,11 @@ test('a post is still serialized and cached by cid like any other accepted comma
   assert.deepEqual(await executor.execute({ ...p }), { ok: true })
   assert.deepEqual(posts, ['hello'], 'delivered again after a lost response: it does not run twice')
 })
+
+test('a throwing dictation-clean is the fixed "LLM error": the thrown text (the dictated words) never reaches the hub; other commands keep their message', async () => {
+  const executor = createExecutor({ queue: { dictationClean: async () => { throw new Error('secret dictated words') }, deny: () => { throw new Error('plain reason') } }, adapter: {} })
+  const out = await executor.execute({ kind: 'dictation-clean', cid: 'd1', args: { text: 'secret dictated words' } })
+  assert.deepEqual(out, { ok: false, error: 'LLM error' })
+  assert.equal(JSON.stringify(out).includes('secret'), false)
+  assert.deepEqual(await executor.execute({ kind: 'deny', cid: 'd2', itemId: 'i1', args: {} }), { ok: false, error: 'plain reason' })
+})
