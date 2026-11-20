@@ -15,6 +15,7 @@ A session titled `PR <n>` is polled every 10 minutes (see the README, *PR state*
 Notes:
 
 - The first poll of a PR only records the reviewer votes; it does not wake. A vote that is already negative when the poll starts (or after a restart, the record is in memory) is therefore not announced: only a CHANGE is. This keeps a standing -5 from re-waking every restored session on each restart.
+- Re-wakes follow the spec: a PR that stays in conflict is reported again whenever the target branch moves (new target head commit) or the PR branch is pushed (new head commit), at most one message per 10-minute poll. On a busy target branch this can be frequent; switch *Poll PR comments* off to silence it.
 - The reported conflict and block records live in memory only: after a DSH restart a PR that still conflicts (or is still blocked) is reported once more, like comment threads.
 - A resolved conflict (`mergeStatus` back to `succeeded`) wakes nothing; it is traced (`merge conflicts of PR <n> are resolved`) and clears the record, so a later conflict is reported again. `queued` (the server is recomputing) neither reports nor clears.
 - The same conflict state is never re-woken, also after the poll of the session was stopped and registered again (the state is kept per PR for the process lifetime). A failed hand-over is retried on the next poll: the state is recorded only after the queue accepted the message.
