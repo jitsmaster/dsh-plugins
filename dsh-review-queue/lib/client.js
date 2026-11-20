@@ -1652,7 +1652,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		function applyTuneAnswers() {
 			const f = state.todoForm;
 			if (!f.questions) return;
-			const lines = f.questions.filter((q) => q.answer.trim()).map((q) => "- " + q.question + " " + q.answer.trim().replace(/[\s\u0085]+/g, " ")); // the answer box is multi-line: one Decisions line per answer
+			const fold = (s) => s.replace(/[\s\u0085]+/g, " ").trim(); // the answer box is multi-line: one Decisions line per answer; \s omits U+0085
+			const lines = f.questions.map((q) => [q, fold(q.answer)]).filter(([, a]) => a).map(([q, a]) => "- " + q.question + " " + a);
 			set({ todoForm: { ...f, text: lines.length ? f.text.replace(/\s+$/, "") + "\n\nDecisions:\n" + lines.join("\n") : f.text, questions: undefined, error: undefined } });
 		}
 		/** The panel's Skip: the questions are dropped and the prompt stays as tuned. */
@@ -1800,7 +1801,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-sess{font-variant-numeric:tabular-nums;white-space:nowrap}.rq-emptywrap{margin:auto;display:flex;flex-direction:column;gap:16px;align-items:stretch;max-width:100%}.rq-emptywrap .rq-empty{margin:0;padding:8px}"
 			+ ".rq-tip{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;border:1px solid var(--rq-border)!important;border-radius:10px;padding:10px 12px;background:var(--rq-layer)}.rq-tip:hover{background:var(--rq-hover)}.rq-tip.on{border-color:var(--rq-accent)!important}"
 			+ ".rq-tipwrap{max-width:680px;margin:8vh auto 0}.rq-tip-t{font-weight:600;font-size:17px}.rq-tip-b{font-size:16px;line-height:1.5;display:flex;flex-direction:column;gap:10px}.rq-tip-p{display:block}.rq-tip-f{color:var(--rq-mute);font-size:13px}"
-			+ ".rq-tip-dw{display:flex;flex-direction:column;gap:10px;margin-top:10px;padding:0 4px}.rq-tip-d{margin:0;font-size:16px;line-height:1.5}.rq-btn.on{border-color:var(--rq-accent)!important}.rq-tip-actions{margin-top:10px}.rq-tip-use{margin-top:8px}.rq-tip-topicrow{margin-top:18px}.rq-tip-topic{flex:1 1 220px;min-width:0}"
+			+ ".rq-tip-dw{display:flex;flex-direction:column;gap:10px;margin-top:10px;padding:0 4px}.rq-tip-d{margin:0;font-size:16px;line-height:1.5}.rq-btn.on{border-color:var(--rq-accent)!important}.rq-tip-actions{margin-top:10px}.rq-tip-use{margin-top:8px}.rq-tip-topicrow{margin-top:18px;align-items:flex-start}.rq-tip-topic{flex:1 1 220px;min-width:0}"
 			+ ".rq-tip-sv{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:8px 10px;border:1px solid var(--rq-border);border-radius:8px}.rq-tip-sv label{display:flex;gap:8px;align-items:flex-start;cursor:pointer}.rq-tip-sv a{color:var(--rq-accent)}.rq-tip-svw{word-break:break-word}"
 			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
 			+ ".rq-split{flex:1;min-height:0;display:grid;grid-template-columns:minmax(260px,360px) 1fr}.rq-side{border-right:1px solid var(--rq-border);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:4px}"

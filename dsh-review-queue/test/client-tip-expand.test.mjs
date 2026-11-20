@@ -326,7 +326,13 @@ test('a Pop out button opens the tip window as a small popup under /review-queue
 })
 
 test('the topic row has its own space above it, apart from the action buttons', () => {
-  const css = source.match(/\.rq-tip-actions\{margin-top:(\d+)px\}/), gap = source.match(/\.rq-tip-topicrow\{margin-top:(\d+)px\}/)
+  const css = source.match(/\.rq-tip-actions\{margin-top:(\d+)px\}/), gap = source.match(/\.rq-tip-topicrow\{margin-top:(\d+)px[;}]/)
   assert.ok(css && gap)
   assert.ok(Number(gap[1]) >= 16 && Number(gap[1]) > Number(css[1]))
+})
+
+test('the topic row aligns to the top, so the Write tip button does not centre against the taller textarea', () => {
+  const rule = source.match(/\.rq-tip-topicrow\{([^}]*)\}/)
+  assert.ok(rule)
+  assert.match(rule[1], /align-items:flex-start/)
 })

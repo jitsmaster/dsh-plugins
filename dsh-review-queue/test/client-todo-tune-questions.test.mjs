@@ -108,3 +108,13 @@ test('applyTuneAnswers also folds Unicode line separators and tabs into one Deci
   T.applyTuneAnswers()
   assert.equal(formOf(T).text, 'Add X.\n\nDecisions:\n- Which db? SQLite - Evil: yes more end')
 })
+
+test('applyTuneAnswers drops an answer that is only a U+0085 (NEL), which trim() keeps but folding empties', () => {
+  const { T } = loadClient()
+  T.set({ todoForm: FORM({ text: 'Add X.', questions: [{ question: 'Which db?', answer: '\u0085' }, { question: 'Retry?', answer: 'yes' }] }) })
+  T.applyTuneAnswers()
+  assert.equal(formOf(T).text, 'Add X.\n\nDecisions:\n- Retry? yes')
+  T.set({ todoForm: FORM({ text: 'Add X.', questions: [{ question: 'Which db?', answer: ' \u0085\u0085 ' }] }) })
+  T.applyTuneAnswers()
+  assert.equal(formOf(T).text, 'Add X.', 'only blank-after-folding answers: the prompt stays as it is')
+})
