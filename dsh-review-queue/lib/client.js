@@ -1841,6 +1841,11 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return true;
 		}
 
+		/** Send the answers like the Send answer button, then go to the session (when the question is not clear and the user answers with a question). A failed send opens nothing. */
+		async function sendAnswersAndOpen(item, path, answers) {
+			if (await sendAnswers(item, path, answers)) openSession(item);
+		}
+
 		function QuestionBody({ item, full, path = "/v1/answer", sendLabel = "Send answer" }) {
 			const st = useStore();
 			const questions = item.payload.questions || [];
@@ -1872,6 +1877,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				}),
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: !answers || busy, onClick: () => sendAnswers(item, path, answers) }, busy ? "Sending…" : sendLabel),
+					hostApi.openSession && item.sessionId ? h("button", { className: "rq-btn", disabled: !answers || busy, title: "Send this answer, then open the session to follow up (for when the question is not clear and you answer with a question)", onClick: () => sendAnswersAndOpen(item, path, answers) }, "Send reply and open session") : null,
 					!answers ? h("span", { className: "rq-sub" }, "Pick an option or type an answer for every question.") : null));
 		}
 
