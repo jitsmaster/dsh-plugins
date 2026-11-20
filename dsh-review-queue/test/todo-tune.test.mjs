@@ -181,7 +181,7 @@ test('the answer is cleaned: a surrounding code fence and a leading label go, in
   ]
   for (const [raw, expected] of cases) {
     const r = await (await tuner({ llm: fakeLlm({ answer: raw }) })).tune('rough text')
-    assert.deepEqual(r, { ok: true, text: expected }, JSON.stringify(raw))
+    assert.deepEqual(r, { ok: true, ...(typeof expected === 'string' ? { text: expected } : expected) }, JSON.stringify(raw))
   }
 })
 
@@ -350,7 +350,7 @@ test('a trailing Rationale: or Note: block the real prompt-tune sections ask the
   ]
   for (const [raw, expected] of cases) {
     const r = await (await tuner({ llm: fakeLlm({ answer: raw }) })).tune('rough text')
-    assert.deepEqual(r, { ok: true, text: expected }, JSON.stringify(raw))
+    assert.deepEqual(r, { ok: true, ...(typeof expected === 'string' ? { text: expected } : expected) }, JSON.stringify(raw))
   }
   const only = await (await tuner({ llm: fakeLlm({ answer: 'Rationale: only this' }) })).tune('rough text')
   assert.deepEqual(only, { ok: false, error: 'the model returned nothing' }, 'an answer that is only a rationale is not a prompt')
@@ -490,12 +490,12 @@ test('words like rationale, note, why, changed and because inside the prompt, a 
 
 test('a ", because <reason>" or "; because <reason>" after a Suggested default is removed, the closing period stays', async () => {
   const cases = [
-    ['1. Which db? Suggested default: SQLite, because it needs no server.', '1. Which db? Suggested default: SQLite.'],
-    ['2. Retry? Suggested default: yes; because the tests are flaky.', '2. Retry? Suggested default: yes.'],
+    // an answer of only Decide items keeps the typed text and asks them apart, reasons dropped\n    ['1. Which db? Suggested default: SQLite, because it needs no server.', { text: 'rough text', questions: [{ question: 'Which db?', default: 'SQLite' }] }],
+    ['2. Retry? Suggested default: yes; because the tests are flaky.', { text: 'rough text', questions: [{ question: 'Retry?', default: 'yes' }] }],
     ['Q? Suggested default: yes, because it is safe', 'Q? Suggested default: yes'],
     ['Q? Suggested default: A, because X. Another sentence.', 'Q? Suggested default: A. Another sentence.'],
     ['Q? Suggested default: A, because of e.g. the cost, v1.2 and more.', 'Q? Suggested default: A.'],
-    ['- Q one? Suggested default: A, because x.\n- Q two? Suggested default: B, because y.', '- Q one? Suggested default: A.\n- Q two? Suggested default: B.'],
+    ['- Q one? Suggested default: A, because x.\n- Q two? Suggested default: B, because y.', { text: 'rough text', questions: [{ question: 'Q one?', default: 'A' }, { question: 'Q two?', default: 'B' }] }],
     ['Q? Suggested default: A, because X.\nNext line, because Y stays.', 'Q? Suggested default: A.\nNext line, because Y stays.'],
     ['Should we retry, because of flaky tests? Suggested default: yes.', 'Should we retry, because of flaky tests? Suggested default: yes.'],
     ['Q? Suggested default: A.\nUse B because it is faster, because it is simpler.', 'Q? Suggested default: A.\nUse B because it is faster, because it is simpler.'],
@@ -504,6 +504,6 @@ test('a ", because <reason>" or "; because <reason>" after a Suggested default i
   ]
   for (const [raw, expected] of cases) {
     const r = await (await tuner({ llm: fakeLlm({ answer: raw }) })).tune('rough text')
-    assert.deepEqual(r, { ok: true, text: expected }, JSON.stringify(raw))
+    assert.deepEqual(r, { ok: true, ...(typeof expected === 'string' ? { text: expected } : expected) }, JSON.stringify(raw))
   }
 })

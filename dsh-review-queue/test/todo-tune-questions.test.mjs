@@ -45,9 +45,33 @@ test('no questions: the result has no questions key; a QUESTIONS block with noth
   assert.deepEqual(await tune('Do X in Y.\n\nQUESTIONS:\n'), { ok: true, text: 'Do X in Y.' })
 })
 
-test('an answer that is only questions is kept as the text (nothing is moved out of an empty prompt)', async () => {
+// Never lose the typed prompt: when the model answers with questions only (the rules' "ask 1-2 questions if ambiguous" step), the box keeps what the user typed
+// and the questions are asked apart. The questions never land in the prompt box.
+test('an answer that is only Decide items leaves the typed prompt as it is and asks the questions apart', async () => {
   const r = await tune('1. Which db? Suggested default: SQLite.')
-  assert.deepEqual(r, { ok: true, text: '1. Which db? Suggested default: SQLite.' })
+  assert.deepEqual(r, { ok: true, text: 'rough text', questions: [{ question: 'Which db?', default: 'SQLite' }] })
+})
+
+test('a QUESTIONS block with no prompt before it leaves the typed prompt as it is', async () => {
+  const r = await tune('QUESTIONS:\n1. Which db? Suggested default: SQLite.\n2. Which port?')
+  assert.deepEqual(r, { ok: true, text: 'rough text', questions: [{ question: 'Which db?', default: 'SQLite' }, { question: 'Which port?' }] })
+})
+
+test('an answer of plain clarifying questions (no marker, no default) is asked apart when the typed prompt had no question mark', async () => {
+  const r = await tune('Which file do you mean?\nShould it also cover the phone app?')
+  assert.deepEqual(r, { ok: true, text: 'rough text', questions: [{ question: 'Which file do you mean?' }, { question: 'Should it also cover the phone app?' }] })
+})
+
+test('the typed prompt keeps its profile flag when only questions came back', async () => {
+  const { createTuner } = await import('../todo-tune.js')
+  const r = await createTuner({ rulesText: RULES, llm: fakeLlm({ answer: 'Which db?' }) }).tune('add storage --thorough')
+  assert.deepEqual(r, { ok: true, text: 'add storage --thorough', questions: [{ question: 'Which db?' }] })
+})
+
+test('a typed prompt that is itself a question may be rewritten as a question (not treated as clarifying questions)', async () => {
+  const { createTuner } = await import('../todo-tune.js')
+  const r = await createTuner({ rulesText: RULES, llm: fakeLlm({ answer: 'Why does the build fail in CI?' }) }).tune('why does build fail?')
+  assert.deepEqual(r, { ok: true, text: 'Why does the build fail in CI?' })
 })
 
 test('the system prompt tells the model to put questions after a QUESTIONS: line and never inside the prompt', async () => {

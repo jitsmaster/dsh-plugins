@@ -190,8 +190,19 @@ function splitQuestions(raw) {
   while (heading >= 0 && !lines[heading].trim()) heading--
   const dropHeading = heading >= 0 && DECIDE_HEADING.test(lines[heading]) ? heading : -1
   const rest = lines.filter((line, i) => !isItem(line) && i !== dropHeading).join('\n').trim()
-  if (!rest) return { prompt: raw, questions: [] }
+  // No prompt of its own (only questions): the prompt is empty and tune() keeps what the user typed. Questions never replace the box text.
   return { prompt: rest, questions: lines.filter(isItem).map(questionOf).filter(Boolean).slice(0, MAX_QUESTIONS) }
+}
+
+/**
+ * A model answer that is nothing but clarifying questions (the rules' "ask 1-2 questions when ambiguous" step), with no marker and no default:
+ * every line ends with a question mark. Only when the typed prompt itself is not a question, so a prompt that is a question may still be rewritten as one.
+ */
+function plainQuestions(prompt, typedBody) {
+  if (typedBody.includes('?')) return []
+  const lines = cleanAnswer(prompt).split('\n').filter((l) => l.trim())
+  if (!lines.length || !lines.every((l) => /\?[ \t*_]*$/.test(l.replace(ITEM_BULLET, '')))) return []
+  return lines.map(questionOf).filter(Boolean).slice(0, MAX_QUESTIONS)
 }
 
 /** The failure of a model call as { error, logged }: the client's words (a generic LLM error for a provider failure) and the line for the log (with the detail). */
@@ -243,8 +254,13 @@ export function createTuner({ llm, rulesText, rulesPath, timeoutMs = 60000, maxT
     let error
     let logged
     try {
-      const { prompt, questions } = splitQuestions(await within(ask(parsed, ac.signal), timeoutMs, signal))
-      const answer = cleanAnswer(prompt)
+      let { prompt, questions } = splitQuestions(await within(ask(parsed, ac.signal), timeoutMs, signal))
+      if (!questions.length) {
+        const plain = plainQuestions(prompt, parsed.body)
+        if (plain.length) { questions = plain; prompt = '' }
+      }
+      // Questions without a rewritten prompt: the typed text stays in the box untouched (flag included); the questions are asked apart.
+      const answer = questions.length && !cleanAnswer(prompt) ? text : cleanAnswer(prompt)
       if (!answer) error = EMPTY
       else if (answer.length > MAX_TODO) error = TOO_LONG
       else return questions.length ? { ok: true, text: answer, questions } : { ok: true, text: answer }
