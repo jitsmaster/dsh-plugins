@@ -17,24 +17,25 @@ const ACTION_CLOSE = '\u0002'
 /**
  * Plain, single-line text: no markdown, no hidden characters, optionally capped by words or characters.
  * keepAction: leave `<u>**...**</u>` action items in (for text a screen shows, never for speech); a span the cap cuts is closed.
+ * keepLines: keep line breaks (single, and one blank line between paragraphs) instead of flattening to one line, for text a screen shows with pre-line.
  */
-export function cleanText(value, { maxWords, maxChars, keepAction = false } = {}) {
+export function cleanText(value, { maxWords, maxChars, keepAction = false, keepLines = false } = {}) {
   if (typeof value !== 'string') return ''
   let text = value.normalize('NFKC')
-    .replace(/\r\n|\r|\n|\t/g, ' ')
-    .replace(UNSAFE, '')
+    .replace(keepLines ? /\r\n|\r/g : /\r\n|\r|\n|\t/g, keepLines ? '\n' : ' ')
+    .replace(/\t/g, ' ')
+    .replace(UNSAFE, (c) => (keepLines && c === '\n' ? c : ''))
     .replace(ACTION_SPAN, (_, bold, bare) => {
       const inner = (bold ?? bare ?? '').trim()
       return inner ? (keepAction ? ACTION_OPEN + inner + ACTION_CLOSE : inner) : ''
     })
     .replace(/<\/?u>/gi, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/#{1,6}\s+/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .replace(/\*([^*\n]+)\*/g, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/#{1,6}[ \t]+/g, '')
+  text = (keepLines ? tidyLines(text) : text.replace(/\s+/g, ' ')).trim()
   let cut = false
   if (maxWords !== undefined) {
     const words = text.split(' ')
@@ -52,16 +53,26 @@ export function cleanText(value, { maxWords, maxChars, keepAction = false } = {}
 
 const ACTION_ITEM = /<u>\*\*[^*]*?\*\*<\/u>/g
 
+/** Spaces collapsed within each line, lines trimmed, at most one blank line in a row. */
+const tidyLines = (text) => text.replace(/[^\S\n]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n{3,}/g, '\n\n')
+const capChars = (text, max) => (text.length > max ? text.slice(0, max).trimEnd() + '...' : text)
+
 /**
  * A summary (already cleaned with keepAction) with its `<u>**...**</u>` action items moved out of the sentence flow into their own
  * last paragraph, so what the user must do is never buried in the text: "what was done\n\n<action items>". No action item: unchanged.
+ * Line breaks of the text are kept. maxChars caps the text in front of the items (the items are never cut: an item that does not fit is dropped), so a long quote cannot hide the ask.
  */
-export function actionParagraph(text) {
+export function actionParagraph(text, { maxChars } = {}) {
   if (typeof text !== 'string') return ''
-  const items = text.match(ACTION_ITEM)
-  if (!items) return text
-  const rest = text.replace(ACTION_ITEM, ' ').replace(/(^|\s)[.,;:!?]+(?=\s|$)/g, '$1').replace(/\s+/g, ' ').trim()
-  return rest ? rest + '\n\n' + items.join(' ') : items.join(' ')
+  const found = text.match(ACTION_ITEM)
+  if (!found) return maxChars === undefined ? text : capChars(text, maxChars)
+  let used = 0
+  const items = maxChars === undefined ? found : found.filter((item) => (used += item.length + 1) - 1 <= maxChars)
+  const rest = tidyLines(text.replace(ACTION_ITEM, ' ').replace(/(^|\s)[.,;:!?]+(?=\s|$)/g, '$1')).trim()
+  const asks = items.join(' ')
+  const room = maxChars === undefined ? undefined : Math.max(0, maxChars - asks.length - 2)
+  const head = room === undefined ? rest : room > 0 ? capChars(rest, room) : ''
+  return head ? head + (asks ? '\n\n' + asks : '') : asks
 }
 
 /** The last non-empty paragraph of a reply, markdown removed; '' for nothing. */

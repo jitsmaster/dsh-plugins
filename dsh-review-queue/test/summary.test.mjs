@@ -254,3 +254,35 @@ test('an actionable summary may carry up to 1800 characters of context; a no-act
   const no = await createSummarizer({ llm: fakeLlm({ reply: 'TITLE: Done\nACTIONABLE: no\nSUMMARY: ' + long }) }).summarize('Done.')
   assert.ok(no.text.length <= 550, 'no length ' + no.text.length)
 })
+
+// Review finding: the quote and its short lists lost their line breaks (one run-on line), and the cap ran before the action sentence was moved to the end, so a long quote cut it off.
+test('an actionable summary keeps its line breaks (lists, quoted text); the action items stay a paragraph of their own at the end', async () => {
+  const reply = 'TITLE: Pick\nACTIONABLE: yes\nSUMMARY: Options:\n- A: keep it\n- B: drop it\n\nQuote:\n  Fix the cache.\n\n\n\nI recommend A. <u>**Pick A or B?**</u>'
+  const r = await createSummarizer({ llm: fakeLlm({ reply }) }).summarize('Which?')
+  assert.equal(r.text, 'Options:\n- A: keep it\n- B: drop it\n\nQuote:\nFix the cache.\n\nI recommend A.\n\n<u>**Pick A or B?**</u>')
+})
+
+test('a no-action summary stays one line', async () => {
+  const reply = 'TITLE: Done\nACTIONABLE: no\nSUMMARY: Renamed it.\n- tests pass\n- committed'
+  const r = await createSummarizer({ llm: fakeLlm({ reply }) }).summarize('Done.')
+  assert.equal(r.text, 'Renamed it. - tests pass - committed')
+})
+
+test('the length cap never cuts an action item: the text before it is shortened instead', async () => {
+  const long = 'Quoted line of the deliverable here.\n'.repeat(120)
+  const action = '<u>**Use the optimized prompt, yes or no?**</u>'
+  const yes = await createSummarizer({ llm: fakeLlm({ reply: 'TITLE: Pick\nACTIONABLE: yes\nSUMMARY: ' + long + action }) }).summarize('Which?')
+  assert.ok(yes.text.endsWith('\n\n' + action), 'tail ' + yes.text.slice(-80))
+  assert.ok(yes.text.length <= 1850, 'yes length ' + yes.text.length)
+  assert.ok(yes.text.includes('...\n\n'), 'the cut text is marked')
+  const no = await createSummarizer({ llm: fakeLlm({ reply: 'TITLE: Done\nACTIONABLE: no\nSUMMARY: ' + long.repeat(2) + action }) }).summarize('Done.')
+  assert.ok(no.text.endsWith('\n\n' + action), 'no tail ' + no.text.slice(-80))
+  assert.ok(no.text.length <= 550, 'no length ' + no.text.length)
+})
+
+test('the fallback never cuts the action item of a long last paragraph either', () => {
+  const action = '<u>**Which option do you want?**</u>'
+  const text = fallbackSummary('Did a lot.\n\n' + 'All set and long. '.repeat(80) + action)
+  assert.ok(text.endsWith('\n\n' + action), text.slice(-60))
+  assert.ok(text.length <= 520, 'length ' + text.length)
+})

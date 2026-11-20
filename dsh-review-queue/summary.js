@@ -39,11 +39,13 @@ function parseAnswer(out) {
   const s = /^[ \t]*summary:[ \t]*([\s\S]*)$/im.exec(out)
   const body = s ? s[1] : t ? out.replace(t[0], '') : out
   // A card that asks the user to decide may carry the context (and the quoted deliverable) the decision needs; a plain report stays short.
-  return { title, actionable, text: actionParagraph(cleanText(body, { maxChars: actionable === true ? DECISION_MAX_CHARS : 500, keepAction: true })) }
+  // Actionable: line breaks stay (lists, quoted text; the card shows pre-line). The cap applies in actionParagraph, to the text in front of the action items, so it never cuts one.
+  const keepLines = actionable === true
+  return { title, actionable, text: actionParagraph(cleanText(body, { keepAction: true, keepLines }), { maxChars: keepLines ? DECISION_MAX_CHARS : 500 }) }
 }
 
 /** The summary without a model: the reply's last paragraph, its action items (if any) as a paragraph of their own. */
-export const fallbackSummary = (reply) => actionParagraph(cleanText(lastParagraph(reply, { keepAction: true }), { maxChars: 500, keepAction: true }))
+export const fallbackSummary = (reply) => actionParagraph(cleanText(lastParagraph(reply, { keepAction: true }), { keepAction: true }), { maxChars: 500 })
 
 export const within = (promise, ms, signal) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('timed out')), ms)
