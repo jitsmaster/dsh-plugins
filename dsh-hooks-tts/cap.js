@@ -6,9 +6,9 @@
  * so the agent never keeps working past the cap.
  */
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 
 import { isPrSession, PR_TITLE, TICKET_TITLE, prTitleFor } from './pr.js'
 import { firstRequest, afterPrTitle } from './groups.js'
@@ -149,8 +149,10 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const forward = streak >= SHORT_STREAK_FOR_FORWARD
     // A cap handoff replaces a pending PR hand-over job (handleHandover never runs for it): that hand-over is over, so its entry must not veto the archive after this handoff.
     // prHandovers keeps the id on purpose: a second PR created after this cap handoff is not protected (as before), because the PR job is gone and nothing re-arms the entry.
-    if (pending.get(agent.id)?.prId) handingOverPrs.delete(String(agent.id))
+    const replacedPrJob = Boolean(pending.get(agent.id)?.prId)
+    if (replacedPrJob) handingOverPrs.delete(String(agent.id))
     pending.set(agent.id, { path, cwd: agent.session?.header?.cwd, streak })
+    if (replacedPrJob) savePending()
     handoffs?.record(agent.id, path) // offered by the session menu once the note exists
     ctx.logger.warn(`hooks-tts: context ${tokens} ${headline ? 'is close to' : 'exceeds'} cap ${cap}; requesting handoff`)
     trace(`handoff requested for ${agent.id} (${tokens}/${cap}) -> ${path}; session age ${ageMs === undefined ? 'n/a (not a resumed session)' : `${Math.round(ageMs / 60000)}min`}, short streak ${streak}, mode ${forward ? 'FORWARD' : 'normal'}`)
@@ -376,6 +378,40 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
   const isHandingOver = (agent) => handingOver(agent.id) !== undefined
   const NO_REMAINING = /^\s*NO-REMAINING-WORK\s*$/
 
+  // The pending PR hand-over jobs live on disk too: a restart between "PR created" and "sessions spawned" (PR 6825) must not lose them.
+  // Only jobs with a PR are kept (job.at = when the PR was created; a job older than PENDING_MAX_AGE_MS is dropped, at load and at every save).
+  // The file is rewritten after every change and read once at install. A job is deliberately NOT removed on agent/disposed: a shutdown may dispose every agent, which would wipe the job the restart needs.
+  // The job is removed before finishHandover runs (a restart during the spawn must not spawn twice), so a restart inside that short window can still lose it.
+  const pendingFile = join(dirname(settings.path), 'pending-handovers.json')
+  const PENDING_MAX_AGE_MS = 7 * 24 * 3600_000
+  const savePending = () => {
+    try {
+      const out = {}
+      for (const [id, job] of pending) if (job.prId && Date.now() - job.at <= PENDING_MAX_AGE_MS) out[id] = job
+      const tmp = `${pendingFile}.tmp`
+      writeFileSync(tmp, JSON.stringify(out))
+      renameSync(tmp, pendingFile) // atomic: a crash mid-write must not leave a truncated file that drops every job
+    } catch (error) { trace(`could not save pending hand-overs: ${error}`) }
+  }
+  // A restored job feeds file paths, steer text and a shell line, so it is checked like the values parsePrCreated and handoffPath produced: digit-only PR ids, note paths inside the handoff folder.
+  const handoffRoot = resolve(dir)
+  const insideHandoffDir = (p) => typeof p === 'string' && p.endsWith('-handoff.md') && resolve(p).startsWith(handoffRoot + sep)
+  const validJob = (job) => Boolean(job) && typeof job.prId === 'string' && /^\d{1,10}$/.test(job.prId) && typeof job.at === 'number' && job.at <= Date.now() && Number.isFinite(job.attempts)
+    && Array.isArray(job.prIds) && job.prIds.length > 0 && job.prIds.every((id) => /^\d{1,10}$/.test(String(id)))
+    && Boolean(job.prNotes) && job.prIds.every((id) => insideHandoffDir(job.prNotes[id]))
+    && insideHandoffDir(job.rest) && insideHandoffDir(job.pr) && typeof job.base === 'string' && typeof job.stamp === 'string'
+    && (job.cwd === undefined || typeof job.cwd === 'string')
+  try {
+    const saved = JSON.parse(readFileSync(pendingFile, 'utf8'))
+    for (const [id, job] of Object.entries(saved ?? {})) {
+      if (!validJob(job) || Date.now() - job.at > PENDING_MAX_AGE_MS) continue
+      pending.set(id, job)
+      prHandovers.add(id)
+      handingOverPrs.set(id, { prId: job.prId, at: Date.now() })
+      trace(`restored the pending hand-over of PR ${job.prId} for ${id} (attempts ${job.attempts})`)
+    }
+  } catch (error) { if (error?.code !== 'ENOENT') trace(`could not read pending hand-overs: ${error}`) }
+
   /**
    * A session just created PR `id`. At the end of its turn it writes TWO notes (the PR note and the remaining-work
    * note); two new sessions then take over: "PR <id>" (polls the PR comments, never respawned at the cap) and
@@ -390,6 +426,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
         job.prIds.push(id)
         touchHandover(agent)
         job.prNotes[id] = `${job.base}-pr-${id}${job.stamp}-handoff.md`
+        savePending()
         trace(`PR ${id} joined the hand-over of ${agent.id}`)
       }
       return
@@ -403,10 +440,11 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     // auto-complete, work item, notification) still runs in this session first.
     handoffs?.record(agent.id, `${base}-after-pr-${id}${stamp}-handoff.md`) // offered once written
     pending.set(agent.id, {
-      prId: id, prIds: [id], base, stamp, attempts: 0, cwd: agent.session?.header?.cwd, streak: 0,
+      prId: String(id), at: Date.now(), prIds: [id], base, stamp, attempts: 0, cwd: agent.session?.header?.cwd, streak: 0,
       pr: `${base}-pr-${id}${stamp}-handoff.md`, prNotes: { [id]: `${base}-pr-${id}${stamp}-handoff.md` },
       rest: `${base}-after-pr-${id}${stamp}-handoff.md`,
     })
+    savePending()
     trace(`PR ${id} created in ${agent.id}: hand-over notes are requested at the end of the turn`)
   }
 
@@ -437,6 +475,7 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
   async function handleHandover(agent, job) {
     if (job.attempts === 0) {
       job.attempts = 1
+      savePending()
       touchHandover(agent)
       agent.steer(makeMessage(prInstruction(job)))
       trace(`requested hand-over notes for PR ${job.prId} from ${agent.id}`)
@@ -446,12 +485,14 @@ export function installContextCap(ctx, config, { skip, makeMessage, settings, pr
     const missing = [...notes, ['Remaining-work handoff note', job.rest]].filter(([, p]) => !existsSync(p))
     if (missing.length && job.attempts === 1) {
       job.attempts = 2
+      savePending()
       touchHandover(agent)
       agent.steer(makeMessage(`REMINDER: these ${prList(job.prIds)} hand-over notes are still missing, write them now and then stop:\n${missing.map(([label, p]) => `${label} path: ${p}`).join('\n')}`))
       trace(`reminded ${agent.id} about ${missing.length} missing hand-over note(s)`)
       return
     }
     pending.delete(agent.id)
+    savePending()
     // Over once the sessions exist (or it failed). archiveSource() inside finishHandover only runs its guard check after archiveDelayMs (2 s),
     // by when this entry is already cleared: the archive after a hand-over is not blocked by its own entry.
     try { await finishHandover(agent, job) } finally { handingOverPrs.delete(String(agent.id)) }
