@@ -59,6 +59,32 @@ test('a guard that throws or is missing does not stop the idle ask', async () =>
   assert.deepEqual((await r.asker.check()).asked, ['a'])
 })
 
+// Review finding: the title skip was removed with the guard in front, so without the guard (dsh-hooks-tts missing, protectPrSessions off, or a guard that throws) a PR session was asked and an Archive answer archived it.
+test('without a PR guard (missing or throwing) a session whose title names a PR is still never asked', async () => {
+  const items = [S('t1', 1 * H, { title: 'PR 6554 - Fix cache' }), S('t2', 1 * H, { projections: { values: { title: 'Fix cache - after PR #6554' } } }), S('free', 1 * H, { title: 'Prepare the release' })]
+  assert.deepEqual((await rig(items).asker.check()).asked, ['free'])
+  const throwing = rig(items, { prGuardOf: () => ({ check: async () => { throw new Error('boom') } }) })
+  assert.deepEqual((await throwing.asker.check()).asked, ['free'])
+})
+
+test('a working PR guard is the authority: it frees a PR-titled session it does not protect', async () => {
+  const r = rig([S('t1', 1 * H, { title: 'PR 6554 - Fix cache' })], { prGuardOf: () => ({ check: async () => ({ protected: false }) }) })
+  assert.deepEqual((await r.asker.check()).asked, ['t1'])
+})
+
+test('the open question and permission cards are listed once per pass, not once per session', async () => {
+  const items = Array.from({ length: 20 }, (_, i) => S('s' + i, 1 * H + i))
+  let openLists = 0
+  const r = rig(items, {})
+  const list = r.store.list.bind(r.store)
+  r.store.list = (q) => { if (q?.status === 'open') openLists++; return list(q) }
+  await r.asker.check()
+  assert.ok(openLists <= 2, 'open-card lists in one pass: ' + openLists)
+  openLists = 0
+  await r.asker.sample()
+  assert.ok(openLists <= 1, 'open-card lists in one sample: ' + openLists)
+})
+
 test('does not ask a session that already has an open question or permission card', async () => {
   const r = rig([S('a', 1 * H)])
   r.store.add({ type: 'question', sessionId: 'a', questions: [] })

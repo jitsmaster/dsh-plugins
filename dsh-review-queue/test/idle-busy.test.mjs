@@ -106,9 +106,11 @@ test('asker: answering an open question restarts the clock', async () => {
   assert.deepEqual((await r.asker.check()).asked, ['a'])
 })
 
-test('asker: a PR-titled session is treated like any other', async () => {
-  const r = rig([S('p', 1 * H, { projections: { values: { title: 'PR 6554' } } })])
-  assert.deepEqual((await r.asker.check()).asked, ['p'])
+test('asker: a PR-titled session is skipped when no PR guard answers, and asked when the guard says it is free', async () => {
+  const items = [S('p', 1 * H, { projections: { values: { title: 'PR 6554' } } })]
+  assert.deepEqual((await rig(items).asker.check()).asked, [])
+  const free = rig(items, { prGuardOf: () => ({ check: async () => ({ protected: false }) }) })
+  assert.deepEqual((await free.asker.check()).asked, ['p'])
 })
 
 test('resumer: shares the busy tracker, the idle half hour starts when the session last was busy', async () => {
