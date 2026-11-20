@@ -26,6 +26,9 @@ const MAX_LOG_READS = 50
 const RETENTION_MS = 7 * 24 * 3600_000
 const LIST_TIMEOUT_MS = 10_000
 const PROMPT_TIMEOUT_MS = 15_000
+/** A PR guard check can be an Azure DevOps request: a hung one protects the session and cannot stall the asker. */
+const GUARD_TIMEOUT_MS = 10_000
+const GUARD_TIMED_OUT = Symbol('guard timed out')
 const NOT_FOUND = 'session/not-found'
 
 export const ASK_PROMPT = 'This session has been idle for more than an hour. Call ask_user_question once and ask me whether to continue this session or archive it, with the options '
@@ -66,7 +69,7 @@ const titleOf = (item) => { const v = item?.projections?.values?.title; return t
 const archiveWanted = (item) => (item?.resolution?.answers ?? []).some((a) => [...(Array.isArray(a?.selected) ? a.selected : []), a?.custom].some((s) => typeof s === 'string' && /archive/i.test(s)))
 
 export function createIdleAsker({ controllerOf, registryOf = () => undefined, prGuardOf = () => undefined, store, sleep, heldIds = () => new Set(), now = Date.now, idleMs = ASK_IDLE_MS, maxAgeMs = MAX_AGE_MS,
-  maxPerPass = MAX_PER_PASS, io, log = () => {}, readLog, startedAt = 0 }) {
+  maxPerPass = MAX_PER_PASS, io, log = () => {}, readLog, startedAt = 0, guardTimeoutMs = GUARD_TIMEOUT_MS }) {
   let state = {} // sessionId -> { updatedAt, at, archived? }
   try {
     const d = JSON.parse(io?.read?.() ?? 'null')
@@ -121,8 +124,8 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, pr
       if (result.asked.length >= maxPerPass || inspected >= MAX_LOG_READS) break // only the asks are limited; busy sessions cost a log read but not an ask
       // A session tied to a PR that is not merged or abandoned yet (it created it, waits for it, polls it or cleans it up) is never asked: it is idle on purpose.
       // A missing or throwing guard falls back to the PR title (see prOpenOf).
+      inspected++ // guard calls count toward the cap too (each can be a network request), not only log reads
       if (await prOpenOf(raw.sessionId, titleOf(raw))) continue
-      inspected++
       const seen = await busy.inspect(raw)
       if (seen.busy) { result.skipped.push(raw.sessionId); continue }
       if (awakeIdle(seen.since) < idleMs || askedFor(raw.sessionId, seen.since)) continue
@@ -150,7 +153,13 @@ export function createIdleAsker({ controllerOf, registryOf = () => undefined, pr
   const prOpenOf = async (sessionId, title) => {
     try {
       const guard = prGuardOf()
-      if (typeof guard?.check === 'function') { const v = await guard.check(sessionId); return v?.protected ? v : undefined }
+      if (typeof guard?.check === 'function') {
+        let timer
+        const late = new Promise((resolve) => { timer = setTimeout(() => resolve(GUARD_TIMED_OUT), guardTimeoutMs); timer.unref?.() })
+        const v = await Promise.race([Promise.resolve(guard.check(sessionId)), late]).finally(() => clearTimeout(timer))
+        if (v === GUARD_TIMED_OUT) return { protected: true, prId: '?', status: 'unknown' } // cannot tell: treated as open, like the guard's own unreadable status
+        return v?.protected ? v : undefined
+      }
     } catch { /* the guard failed: fall back to the title below */ }
     return isPrTitle(title) ? { protected: true, prId: /\bPR\s*#?(\d+)/i.exec(title)[1], status: 'title' } : undefined
   }

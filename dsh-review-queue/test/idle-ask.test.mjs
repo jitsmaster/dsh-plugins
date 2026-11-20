@@ -67,6 +67,20 @@ test('without a PR guard (missing or throwing) a session whose title names a PR 
   assert.deepEqual((await throwing.asker.check()).asked, ['free'])
 })
 
+// Security review: guard.check can mean an Azure DevOps request. It is time-boxed (a hung one protects the session and cannot stall the asker) and counted toward the per-pass inspection cap.
+test('a PR guard that never answers protects the session after the time box and does not stall the pass', async () => {
+  const r = rig([S('hang', 1 * H + 1), S('free', 1 * H)], { prGuardOf: () => ({ check: (id) => (id === 'hang' ? new Promise(() => {}) : Promise.resolve({ protected: false })) }), guardTimeoutMs: 30 })
+  assert.deepEqual((await r.asker.check()).asked, ['free'])
+})
+
+test('guard calls count toward the per-pass inspection cap', async () => {
+  let calls = 0
+  const items = Array.from({ length: 80 }, (_, i) => S('s' + i, 1 * H + i))
+  const r = rig(items, { prGuardOf: () => ({ check: async () => { calls++; return { protected: true, prId: '1', status: 'active' } } }) })
+  await r.asker.check()
+  assert.ok(calls <= 50, 'guard calls in one pass: ' + calls)
+})
+
 test('a working PR guard is the authority: it frees a PR-titled session it does not protect', async () => {
   const r = rig([S('t1', 1 * H, { title: 'PR 6554 - Fix cache' })], { prGuardOf: () => ({ check: async () => ({ protected: false }) }) })
   assert.deepEqual((await r.asker.check()).asked, ['t1'])

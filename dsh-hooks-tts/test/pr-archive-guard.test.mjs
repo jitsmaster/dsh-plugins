@@ -46,9 +46,13 @@ test('a PR already recorded as finished is not protected without a lookup', asyn
   assert.equal(calls.status.length, 0)
 })
 
-test('a failing session lookup is not a protected session', async () => {
+// Security review: a session whose PR lookup throws used to be archivable while its PR was open (fail open). Like an unreadable status, it now counts as protected.
+test('a failing session lookup fails closed: the session is protected (status unknown), like an unreadable PR status', async () => {
   const guard = createPrArchiveGuard({ prIdOf: async () => { throw new Error('boom') }, statusOf: async () => 'active' })
-  assert.equal((await guard.check('a1')).protected, false)
+  const v = await guard.check('a1')
+  assert.equal(v.protected, true)
+  assert.equal(v.status, 'unknown')
+  assert.equal((await createPrArchiveGuard({ enabled: () => false, prIdOf: async () => { throw new Error('boom') }, statusOf: async () => 'active' }).check('a1')).protected, false, 'switched off: nothing is protected')
 })
 
 test('the status of a PR is cached for the ttl; a failure is never cached', async () => {
