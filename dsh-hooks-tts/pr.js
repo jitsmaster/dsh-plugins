@@ -469,7 +469,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         trace(`polled PR ${entry.prId}: ${data?.value?.length ?? 0} threads, ${found.filter((f) => f.notify).length} new`)
       } else if (!entry.repoUnresolved) {
         entry.repoUnresolved = true
-        trace(`could not resolve the repository of PR ${entry.prId}: the PR names none; its threads are not read (status reports still work)`)
+        trace(`could not resolve the repository of PR ${entry.prId}: the PR names none, or an unusable one; its threads are not read (status reports still work)`)
       }
       for (const t of found.filter((f) => !f.notify)) entry.seen.set(t.threadId, t.lastCommentId)
       const fresh = found.filter((f) => f.notify)

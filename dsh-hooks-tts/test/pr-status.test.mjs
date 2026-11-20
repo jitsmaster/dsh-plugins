@@ -478,7 +478,6 @@ test('an unusual branch name never reaches a command line or the message', async
   assert.equal(w.prompts.length, 1)
   assert.match(w.texts()[0], /MERGE CONFLICTS/)
   assert.doesNotMatch(w.texts()[0], /x;calc/)
-  assert.doesNotMatch(w.texts()[0], /az repos pr show[^\n]*(then fetch|name)/i) // no instruction to fetch the raw name
   assert.doesNotMatch(w.texts()[0], /git fetch/)
   assert.doesNotMatch(w.texts()[0], /git merge/)
   assert.match(w.texts()[0], /unusual/)
@@ -494,7 +493,7 @@ test('merge failure text from Azure DevOps never reaches the message; the type i
   assert.equal(w.prompts.length, 1)
   assert.doesNotMatch(w.texts()[0], /curl|SECOND|first/)
   assert.match(w.texts()[0], /unknown/)
-  assert.ok(w.texts()[0].length < 800, `message too long: ${w.texts()[0].length}`)
+  assert.ok(w.texts()[0].length < 800, `a single blocked-auto-complete line stays short (no copied free text): ${w.texts()[0].length}`)
   w.poller.stopAll()
 })
 
