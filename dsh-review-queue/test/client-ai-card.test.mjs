@@ -332,3 +332,12 @@ test('isReopenable: a done card superseded by a merge is reopenable', () => {
   assert.equal(T.isReopenable({ type: 'completed', resolution: { kind: 'superseded', by: 'merge', into: 'x' } }), true)
   assert.equal(T.isReopenable({ type: 'completed', resolution: { kind: 'superseded', by: 'newer' } }), true)
 })
+
+test('Mark wrong is hidden on a resolved item whose session is gone; Looks right and Overrule rule stay', () => {
+  const { T } = load()
+  const it = aiItem({ sessionGone: true }, { seen: true })
+  expand(T, it)
+  const tree = render(T, it)
+  assert.equal(btn(tree, /Mark wrong/), undefined)
+  assert.ok(btn(tree, /Looks right/) && btn(tree, /Overrule rule/))
+})

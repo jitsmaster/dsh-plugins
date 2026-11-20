@@ -653,7 +653,7 @@ export function AiReview({ item }) {
   const open = (kind) => openSheet(kind, id)
   const close = () => set({ sheet: null })
   const review = (body) => postReview(id, body)
-  const canMarkWrong = item.type !== 'paused' && typeof item.sessionId === 'string' && item.sessionId !== '' // the reply path refuses the others too
+  const canMarkWrong = item.type !== 'paused' && typeof item.sessionId === 'string' && item.sessionId !== '' && !(item.sessionGone === true && item.status !== 'open') // the reply path refuses the others too
   return html`<div class="ai-review">
     <div class="row">
       ${!r.review ? html`<button class="btn" type="button" disabled=${busy} onClick=${() => review({ review: 'agreed' })}>Looks right</button>` : null}

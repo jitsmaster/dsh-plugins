@@ -364,5 +364,6 @@
   "test/mobile-swipe-wiring.test.mjs",
   "test/swipe-reopen.test.mjs",
   "test/client-detail-scroll-reset.test.mjs",
-  "test/mobile-item-scroll-reset.test.mjs"
+  "test/mobile-item-scroll-reset.test.mjs",
+  "test/session-gone.test.mjs"
 ]

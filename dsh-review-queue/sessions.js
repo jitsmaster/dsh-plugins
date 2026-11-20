@@ -14,6 +14,7 @@ export const SESSIONS_TTL_MS = 2000
 export const SESSIONS_MIN_EMIT_MS = 3000
 export const SESSIONS_INTEREST_MS = 60_000
 export const SESSIONS_LIST_GRACE_MS = 1000 // a list call that ignores its signal is given up this long after the signal's time
+export const SESSIONS_GONE_SPAN_MS = 30_000 // a session counts as unlisted only after the host's list lacked it for this long
 const LIST_TIMEOUT_MS = 10_000
 
 const safe = (fn) => { try { return fn() } catch { return undefined } }
@@ -41,9 +42,14 @@ export const sessionsKey = (v) => (Number.isFinite(v?.working) && Number.isFinit
  * @param {{ controllerOf: () => any, registryOf?: () => any, now?: () => number, ttlMs?: number, minEmitMs?: number, timeoutMs?: number, log?: (line: string) => void }} deps
  * @returns {{ current: () => { working: number, open: number } | undefined, runningIds: () => Set<string> | undefined, refresh: () => Promise<void>, onChange: (l: () => void) => () => void }}
  */
-export function createSessionCounter({ controllerOf, registryOf = () => undefined, now = Date.now, ttlMs = SESSIONS_TTL_MS, minEmitMs = SESSIONS_MIN_EMIT_MS, interestMs = SESSIONS_INTEREST_MS, timeoutMs = LIST_TIMEOUT_MS, graceMs = SESSIONS_LIST_GRACE_MS, log = () => {} }) {
+export function createSessionCounter({ controllerOf, registryOf = () => undefined, now = Date.now, ttlMs = SESSIONS_TTL_MS, minEmitMs = SESSIONS_MIN_EMIT_MS, interestMs = SESSIONS_INTEREST_MS, goneSpanMs = SESSIONS_GONE_SPAN_MS, timeoutMs = LIST_TIMEOUT_MS, graceMs = SESSIONS_LIST_GRACE_MS, log = () => {} }) {
   let value
   let running // the ids of the sessions with a turn running at the last answer (undefined while unknown)
+  let known // the ids of every session the host listed at the last answer (undefined while unknown)
+  let knownAt = -Infinity // when that answer arrived
+  let streakStart = -Infinity // when the current unbroken run of list answers began (a gap longer than the interest time starts a new run)
+  let prevAnswerAt = -Infinity // the answer before the latest one within the current run (-Infinity when the latest is the first)
+  const seenAt = new Map() // sessionId -> time of the latest answer that listed it (only ids seen in the last goneSpanMs are kept)
   let startedAt = -Infinity
   let touchedAt = -Infinity // when somebody last looked
   let inflight
@@ -60,12 +66,14 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
 
   async function load() {
     const controller = safe(controllerOf)
-    if (typeof controller?.list !== 'function') { value = undefined; running = undefined; return }
+    if (typeof controller?.list !== 'function') { value = undefined; running = undefined; known = undefined; return }
     const listed = await controller.list({}, AbortSignal.timeout(timeoutMs))
     const archived = new Set((safe(() => registryOf()?.archivedSessionIds) ?? []).map(String))
     const open = openSessionItems(listed, archived)
     if (!open) return undefined
-    return { working: open.filter((i) => i.running === true).length, open: open.length, ids: new Set(open.filter((i) => i.running === true).map((i) => i.sessionId)) }
+    // Every listed session, archived and child ones too: a session is gone only when the host no longer lists it at all.
+    const knownNow = new Set(listed.items.filter((i) => i && typeof i === 'object' && typeof i.sessionId === 'string').map((i) => i.sessionId))
+    return { working: open.filter((i) => i.running === true).length, open: open.length, ids: new Set(open.filter((i) => i.running === true).map((i) => i.sessionId)), known: knownNow }
   }
 
   async function run(mine) {
@@ -73,7 +81,16 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
     try {
       const next = await load()
       if (mine !== generation) return
-      if (next) { if (!sameIds(running, next.ids)) dirty = true; value = { working: next.working, open: next.open }; running = next.ids }
+      if (next) {
+        if (!sameIds(running, next.ids)) dirty = true // the known ids alone wake nobody: child and blank sessions come and go often, and the next snapshot reads them anyway
+        value = { working: next.working, open: next.open }; running = next.ids
+        const at = now()
+        if (at - knownAt > interestMs) { streakStart = at; prevAnswerAt = -Infinity; seenAt.clear() } // the counter stopped listing while nobody looked: what was seen before says nothing
+        else prevAnswerAt = knownAt
+        for (const id of next.known) seenAt.set(id, at)
+        for (const [id, seen] of seenAt) if (seen < Math.min(at - goneSpanMs, prevAnswerAt)) seenAt.delete(id) // older than the span and than the previous answer: the run start bounds it just as well
+        known = next.known; knownAt = at
+      }
     } catch (error) {
       if (mine !== generation) return
       // The code only: an error message can carry a path or content. The last known numbers stay.
@@ -109,6 +126,21 @@ export function createSessionCounter({ controllerOf, registryOf = () => undefine
     runningIds() {
       void refresh()
       return running
+    },
+    /** The ids of every session the host lists, archived and child ones included (a Set; undefined while unknown). Like current(), never waits. */
+    knownIds() {
+      void refresh()
+      return known && now() - knownAt <= interestMs ? known : undefined // the counter stops listing when nobody looks: an older answer says nothing about sessions created since
+    },
+    /**
+     * True when the host's list did not hold this session for at least goneSpanMs: it is absent from the latest answer, and neither the last time any answer listed
+     * it nor the start of the current unbroken run of answers is closer than the span (a host that lists a subset while loading is not a deleted session).
+     * Reads the state only; knownIds() is what starts a refresh.
+     */
+    isUnlisted(sessionId) {
+      if (!known || now() - knownAt > interestMs || known.has(sessionId)) return false
+      if (!(prevAnswerAt >= streakStart) || (seenAt.get(sessionId) ?? -Infinity) >= prevAnswerAt) return false // the answer before this one must have lacked it too: one sparse answer never counts
+      return knownAt - Math.max(streakStart, seenAt.get(sessionId) ?? -Infinity) >= goneSpanMs
     },
     refresh,
     onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },

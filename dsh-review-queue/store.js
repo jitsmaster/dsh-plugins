@@ -151,6 +151,24 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       changed()
       return true
     },
+    /**
+     * Patch several items at once: [{ id, patch }]. One version bump, one save and one listener round for the whole batch (a mass flag change is not N full-file writes).
+     * Unknown ids are skipped; returns how many items were patched.
+     */
+    updateMany(entries) {
+      let n = 0
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        const { id, patch } = entry && typeof entry === 'object' ? entry : {}
+        const item = items.get(id)
+        if (!item) continue
+        const { tier: _ignored, ...rest } = patch ?? {} // same rule as update: a tier never arrives through a generic patch
+        Object.assign(item, capped(rest))
+        reindex(item)
+        n++
+      }
+      if (n) changed()
+      return n
+    },
     /** Replace the tier of an item with a well-formed one (the triage runner, after the judge); false for an unknown id or a malformed tier. */
     setTier(id, tier) {
       const item = items.get(id)
@@ -171,6 +189,7 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
       const resolution = item.resolution
       delete item.resolvedAt
       delete item.resolution
+      delete item.sessionGone // judged on resolved items only: an open item is back under the usual rules
       // A card brought back from a merge no longer sits inside the newer card: its "Merged N" note drops by one (gone at 1). A missing target is skipped.
       if (resolution?.by === 'merge' && typeof resolution.into === 'string') {
         const target = items.get(resolution.into)
@@ -258,6 +277,17 @@ export function createStore({ now = Date.now, uuid = () => randomUUID().slice(0,
     peekOpen: (sessionId) => [...(openBy.get(sessionId) ?? [])].sort(order),
     /** How many items the test accepts, looking at the LIVE items (no copies: the test must not mutate them). For a cap or a counter that would otherwise clone every item with list(). */
     count(test) { let n = 0; for (const item of items.values()) if (test(item)) n++; return n },
+    /** The ids of the first `limit` LIVE items the test accepts (no copies, the test must not mutate them): lets a caller pick work without cloning every item with list(). */
+    pick(test, limit = Infinity) {
+      const ids = []
+      if (!(limit > 0)) return ids
+      for (const item of items.values()) {
+        if (!test(item)) continue
+        ids.push(item.id)
+        if (ids.length >= limit) break
+      }
+      return ids
+    },
     list: ({ status } = {}) => [...items.values()].filter((i) => status === undefined || i.status === status).sort(order).map(copy),
     /** Open items, oldest first, each with its position (1 = oldest); resolved items, newest first. */
     snapshot({ order: queueOrder } = {}) {

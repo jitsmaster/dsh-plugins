@@ -418,3 +418,16 @@ test('a graceful bye followed by the same instance coming back also clears the f
   instances.sync(B, { n: 1, openItems: [plain], resolvedItems: [], workspaces: [], sessionIds: ['sq'] })
   assert.deepEqual([store.get(q).detached, store.get(q).restarted], [true, true], 'a different app (it never held the request) cannot unset them')
 })
+
+test('a sync carries sessionGone of a resolved item the hub already holds: set, then taken back', () => {
+  const { store, instances } = make()
+  reg(instances)
+  const id = add(store, A, { type: 'completed' })
+  store.applyOp({ op: 'resolve', id, resolution: { kind: 'reviewed', by: 'screen' } }, { owner: A })
+  assert.equal(store.get(id).status, 'resolved')
+  reg(instances, A, { sync: { n: 1, openItems: [], resolvedItems: [{ ...store.get(id), sessionGone: true }], workspaces: [], sessionIds: [] } })
+  assert.equal(store.get(id).sessionGone, true)
+  const { sessionGone, ...without } = store.get(id)
+  reg(instances, A, { sync: { n: 2, openItems: [], resolvedItems: [without], workspaces: [], sessionIds: [] } })
+  assert.notEqual(store.get(id).sessionGone, true)
+})

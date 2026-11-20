@@ -197,3 +197,22 @@ test('a missing or corrupt file starts empty and never throws', () => {
   assert.equal(broken.add(item()).type, 'completed')
   void adapter
 })
+
+test('updateMany records one op per item (unset for undefined) and persists the file once', () => {
+  const { adapter, file } = make()
+  const a = adapter.add(item({ sessionId: 'a' })); const b = adapter.add(item({ sessionId: 'b' }))
+  adapter.resolve(a.id, { kind: 'reviewed' }); adapter.resolve(b.id, { kind: 'reviewed' })
+  adapter.update(a.id, { sessionGone: true })
+  const before = ops(adapter).length
+  const w = file.writes
+  const heard = []
+  adapter.onOp((o) => heard.push(o.op))
+  const n = adapter.updateMany([{ id: a.id, patch: { sessionGone: undefined } }, { id: b.id, patch: { sessionGone: true } }, { id: 'nope', patch: { sessionGone: true } }])
+  assert.equal(n, 2)
+  const added = ops(adapter).slice(before)
+  assert.deepEqual(added.map((o) => [o.op, o.id, o.patch, o.unset]), [['update', a.id, {}, ['sessionGone']], ['update', b.id, { sessionGone: true }, undefined]])
+  assert.equal(file.writes - w, 1, 'one write of the file for the whole batch')
+  assert.deepEqual(heard, ['update', 'update'], 'the op listeners hear one op per patched item')
+  assert.notEqual(adapter.get(a.id).sessionGone, true)
+  assert.equal(adapter.get(b.id).sessionGone, true)
+})

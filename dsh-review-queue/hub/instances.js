@@ -143,6 +143,10 @@ export function createInstances({ store, commands, now = Date.now, log = () => {
       if (store.applyOp({ op: 'add', item: it }, TRUSTED(inst)).ok) store.applyOp({ op: 'resolve', id: it.id, resolution }, { owner: inst.id })
     } else if (cur.owner !== inst.id) out.foreign.push(it.id)
     else if (cur.status === 'open') store.applyOp({ op: 'resolve', id: it.id, resolution }, { owner: inst.id })
+    else if (cur.status === 'resolved' && (cur.sessionGone === true) !== (it.sessionGone === true)) {
+      // The app's view of "its session is gone" wins: a flag change that never arrived as an update op (hub down, outbox overflow) is caught up by the next sync.
+      store.applyOp(it.sessionGone === true ? { op: 'update', id: cur.id, patch: { sessionGone: true } } : { op: 'update', id: cur.id, patch: {}, unset: ['sessionGone'] }, TRUSTED(inst))
+    }
   }
   function processSync(inst, sync, out, revived = false) {
     const open = items(sync.openItems)

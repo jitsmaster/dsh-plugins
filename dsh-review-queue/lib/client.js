@@ -2211,7 +2211,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		}
 
 		/** A resolved card can jump to its session when the host can open sessions and the item knows one (also after session-ended: the host may still refuse). */
-		function resolvedOpenAction(it, hostHasOpen) { return hostHasOpen && it && typeof it.sessionId === "string" && it.sessionId ? "open" : "none"; }
+		function resolvedOpenAction(it, hostHasOpen) { return hostHasOpen && it && typeof it.sessionId === "string" && it.sessionId && !(it.sessionGone === true && it.status !== "open") ? "open" : "none"; }
 		/** True when a click landed on (or inside) a button, link or form control: those keep their own action. */
 		function isButtonClick(target) { return !!(target && typeof target.closest === "function" && target.closest("button, a, input, textarea, select, summary")); }
 
@@ -2234,7 +2234,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		/** Review actions of an opened AI card: Looks right acts at once; Mark wrong… and Overrule rule… each open a dialog (DialogHost) whose confirm button acts. */
 		function aiReviewNode(it, st) {
 			const r = it.resolution;
-			const canMarkWrong = it.type !== "paused" && typeof it.sessionId === "string" && it.sessionId !== ""; // the reply path refuses the others too
+			const canMarkWrong = it.type !== "paused" && typeof it.sessionId === "string" && it.sessionId !== "" && !(it.sessionGone === true && it.status !== "open"); // the reply path refuses the others too
 			return h("div", { className: "rq-aid" },
 				h("div", { className: "rq-row" },
 					!r.review ? h("button", { className: "rq-btn", disabled: st.busy[it.id], onClick: () => act("/v1/triage-review", { id: it.id, review: "agreed" }, it.id) }, "Looks right") : null,

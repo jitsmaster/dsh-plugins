@@ -70,11 +70,11 @@ export function createStoreAdapter({ instanceId, io, legacyRead, now = Date.now,
   const emit = () => { for (const l of [...listeners]) safe(() => l()) }
   inner.onChange(emit)
 
-  function record(op) {
+  function record(op, { save = true } = {}) {
     n++
     outbox.push({ n, ...op })
     if (outbox.length > maxOutbox) { outbox = []; resync = true }
-    persist()
+    if (save) persist()
     for (const l of [...opListeners]) safe(() => l({ n, ...op }))
   }
 
@@ -97,6 +97,19 @@ export function createStoreAdapter({ instanceId, io, legacyRead, now = Date.now,
       const unset = entries.filter(([, v]) => v === undefined).map(([k]) => k)
       record({ op: 'update', id, patch: Object.fromEntries(entries.filter(([, v]) => v !== undefined)), ...(unset.length ? { unset } : {}) })
       return true
+    },
+    /** Several updates at once ([{ id, patch }]): one op per patched item (the hub applies them one by one), but the store and the file are written once. Returns how many were patched. */
+    updateMany(entries) {
+      const list = (Array.isArray(entries) ? entries : []).filter((e) => inner.get(e?.id) !== undefined)
+      if (!list.length) return 0
+      const done = inner.updateMany(list)
+      for (const { id, patch } of list) {
+        const pairs = Object.entries(patch ?? {})
+        const unset = pairs.filter(([, v]) => v === undefined).map(([k]) => k)
+        record({ op: 'update', id, patch: Object.fromEntries(pairs.filter(([, v]) => v !== undefined)), ...(unset.length ? { unset } : {}) }, { save: false })
+      }
+      persist()
+      return done
     },
     resolve,
     /** Resolves only an open item that passes `test` (the inner store's contract); written out here so it neither depends on `this` nor skips the hub op. */

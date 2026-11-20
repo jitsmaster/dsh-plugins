@@ -29,6 +29,8 @@ const PR_VERDICT_TTL_MS = 30_000 // how long a PR guard verdict is trusted by th
 const RUNNING_POLL_LIST_MS = 5_000 // the session list call of runningSessions (Resume all asks every 3 s)
 const RUNNING_SHARE_MS = 1_500 // an answer of runningSessions is reused this long after it completed (several lanes or windows ask on the same rhythm)
 const RUNNING_LIST_LIMIT_MS = RUNNING_POLL_LIST_MS + 1_000 // a list call that has not answered by then fails for every caller sharing it
+const GONE_GRACE_MS = 60_000 // a resolved item is judged "session gone" only this long after it was resolved (a session just created may not be listed yet)
+const GONE_MAX_WRITES = 500 // flag changes written per snapshot, in ONE batch (one save, one wake-up)
 const TYPES = ['question', 'permission', 'completed', 'pr-merged', 'archive', 'todo', 'paused', 'onhold']
 /** A todo being started, a session paused by a restart, or a session on hold (each has its own count or queue), is not waiting on the user. */
 const needsUser = (item) => (item.type !== 'paused' || isLimitSignin(item)) && item.type !== 'onhold' && !(item.type === 'todo' && item.state === 'starting')
@@ -205,6 +207,33 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
     for (const item of store.snapshot().open) if ((item.type === 'pr-merged' || item.type === 'archive') && archived.has(String(item.sessionId)) && store.resolve(item.id, { kind: 'archived', by: 'elsewhere' })) log?.('service: merged-PR item ' + item.id + ' closed: its session was archived elsewhere')
   }
 
+  /**
+   * Marks resolved items whose session the host no longer lists with sessionGone (stored data, so the hub and the phone get it through the ordinary update op); the item itself stays.
+   * Nothing is judged while the list is unknown, empty or older than the counter's interest time; an item is judged only GONE_GRACE_MS after it was resolved, and only when its
+   * session was missing from the host's list for a whole span (a busy or half-loaded host lists a subset once). The flag is taken back at once when the session is listed again.
+   * A change is written only when the flag differs, so calling this often is cheap.
+   */
+  const settleGone = () => {
+    let known
+    try { known = sessions?.knownIds?.() } catch { return }
+    if (!known || known.size === 0) return
+    // Set only on positive evidence of "gone" (the host's list lacked the session for a whole span, the item is past its grace time); taken back only on positive evidence
+    // that the session is listed. "Not yet provable" (the span restarts after an idle gap) changes nothing, so a flag never flickers.
+    const isGone = (item) => !known.has(item.sessionId) && sessions?.isUnlisted?.(item.sessionId) === true && now() - (item.resolvedAt ?? now()) >= GONE_GRACE_MS
+    const next = (item) => (item.sessionGone === true ? !known.has(item.sessionId) : isGone(item)) // the flag the item should carry
+    const stale = (item) => item.status === 'resolved' && typeof item.sessionId === 'string' && item.sessionId !== '' && next(item) !== (item.sessionGone === true)
+    if (typeof store.count === 'function' && store.count(stale) === 0) return // the usual case: no copies of the resolved items, no write
+    // Only the stale items are copied (never every resolved item); one batch per pass, capped so a huge mass change cannot burst the hub outbox (the rest follows on the next snapshot).
+    const ids = typeof store.pick === 'function' ? store.pick(stale, GONE_MAX_WRITES) : store.list({ status: 'resolved' }).filter(stale).slice(0, GONE_MAX_WRITES).map((i) => i.id)
+    const entries = []
+    for (const id of ids) {
+      const item = store.get(id)
+      if (item) entries.push({ id, patch: { sessionGone: next(item) ? true : undefined } })
+    }
+    if (typeof store.updateMany === 'function') store.updateMany(entries) // one change, one save for the whole batch
+    else for (const { id, patch } of entries) store.update(id, patch)
+  }
+
   /** One call of the tip expander; a missing expander is no model, a throwing one a generic error (the provider's text can carry endpoints or key fragments: only the log gets a short detail). */
   async function tipCall(call, method) {
     if (typeof tipExpand?.[method] !== 'function') return { ok: false, error: 'no model available' }
@@ -254,8 +283,9 @@ export function createReviewQueue({ store, capture, controllerOf, instanceId, re
      */
     snapshot(opts) {
       settleArchived()
-      const snap = store.snapshot({ order })
       if (opts?.watch || opts?.tip === true) sessions?.touch()
+      try { settleGone() } catch (error) { log?.('service: session-gone pass failed: ' + safeReason(error, new Set())) } // a flag that cannot be written never breaks the snapshot
+      const snap = store.snapshot({ order })
       const tip = snap.open.some((i) => i.type !== 'onhold') || opts?.tip !== true ? undefined : tipNow() // the tip exists only while nothing waits (held sessions wait for nobody): nothing is generated for a busy list
       const counts = sessions?.current()
       const running = sessions?.runningIds?.()

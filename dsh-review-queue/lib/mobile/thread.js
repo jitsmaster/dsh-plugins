@@ -112,7 +112,7 @@ const POST_ERRORS = {
 export const postErrorText = (code) => (typeof code === 'string' && Object.hasOwn(POST_ERRORS, code) ? POST_ERRORS[code] : undefined)
 
 /** The conversation of an item can be read when it has a session (every type except a todo, which has none of its own; a paused item too). A follow-up todo that was sent has the session it went to, but the phone never reads or posts into it (hub/routing.js refuses both to a phone): its card only says where it was sent. */
-export const hasThread = (item) => !!item && item.type !== 'todo' && typeof item.sessionId === 'string' && item.sessionId !== ''
+export const hasThread = (item) => !!item && item.type !== 'todo' && typeof item.sessionId === 'string' && item.sessionId !== '' && !(item.sessionGone === true && item.status !== 'open') // sessionGone (resolved items only): the host no longer lists the session, so there is nothing to read, write to or archive
 /** A follow-up can be written to such an item, except a paused one (resuming it is done at the PC) and one on hold (Continue it first). */
 export const canPost = (item) => hasThread(item) && item.type !== 'paused' && item.type !== 'onhold'
 

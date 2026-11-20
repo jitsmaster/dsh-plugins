@@ -346,3 +346,10 @@ test('AiReview source: the success path closes the sheet, and no inline-form sta
   assert.match(between('export function AiReview', '// ---- screens'), /set\(\{ sheet: null \}\)/)
   assert.doesNotMatch(viewsSource, /aiCorrection|aiOverrule|closeKey/)
 })
+
+test('AiReview: Mark wrong is hidden on a resolved item whose session is gone; Looks right and Overrule rule stay', () => {
+  fresh()
+  const t = draw('AiReview', { item: aiItem({ sessionGone: true }, { seen: true }) })
+  assert.equal(btn(t, /Mark wrong/), undefined)
+  assert.ok(btn(t, /Looks right/) && btn(t, /Overrule rule/))
+})
