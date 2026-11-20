@@ -286,10 +286,10 @@ window.__ModuleLoader__.load({
 
 		/** Enter sends a reply; Shift+Enter is a new line and Enter during IME composition belongs to the IME. */
 		const isSendKey = (e) => !!e && e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229;
-		/** Enter in a question's "Other answer…" box: the answers to send, or undefined (do nothing). Plain Enter only (no modifier, no IME keyCode 229),
+		/** Enter in a question's "Other answer…" box: the answers to send, or undefined (do nothing). Plain Enter only (isSendKey already refuses Shift and IME; no Ctrl/Alt/Meta here),
 		 *  this box has text, and every other question already has an answer (buildAnswers is the Send answer button's own check). */
 		function enterAnswers(e, questions, drafts, qid) {
-			if (!isSendKey(e) || e.ctrlKey || e.altKey || e.metaKey || e.keyCode === 229) return undefined;
+			if (!isSendKey(e) || e.ctrlKey || e.altKey || e.metaKey) return undefined;
 			const d = drafts && drafts[qid];
 			if (!d || !(d.custom || "").trim()) return undefined;
 			return buildAnswers(questions, drafts);

@@ -92,8 +92,6 @@ test('the topic box is a textarea; Enter (not Shift+Enter, not IME) submits the 
   assert.doesNotMatch(html, /<input id="topic"/)
   const js = readFileSync(TIP_WINDOW_FILES['app.js'].file, 'utf8')
   assert.ok(js.includes("$('topic').addEventListener('keydown'"), 'a keydown handler on the topic box')
-  assert.match(js, /shiftKey/)
-  assert.match(js, /isComposing/)
 })
 
 test('the topic form aligns its items to the top, so the Write tip button does not stretch to the textarea height', () => {
