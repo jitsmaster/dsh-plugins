@@ -186,7 +186,8 @@ function suggestionMessage(prId) {
 
 /** One line naming the active CI review runs. */
 export function ciRunningLine(prId, builds) {
-  const list = builds.map((b) => `build ${b.buildNumber ?? b.id}, ${b.status}`).join('; ')
+  const label = (b) => (/^[\w.-]{1,40}$/.test(String(b.buildNumber ?? '')) ? b.buildNumber : Number.isSafeInteger(Number(b.id)) ? b.id : '?')
+  const list = builds.map((b) => `build ${label(b)}, ${b.status}`).join('; ')
   return `CI review pipeline is running on PR ${prId} (${list}); its findings will arrive as new comment threads.`
 }
 
@@ -368,15 +369,16 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     const res = await fetchImpl(url, {
       headers: { Authorization: `Basic ${Buffer.from(`:${pat}`).toString('base64')}`, Accept: 'application/json' },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      redirect: 'error', // the Authorization header must never follow a redirect
     })
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
     return res.json()
   }
 
   /** Active (queued or running) CI review builds for the PR; undefined when the lookup failed (traced). */
-  async function activeCiBuilds(entry, pat, project) {
+  async function activeCiBuilds(entry, pat, project) { // `project`: an already validated URL segment (see repoPrBase)
     try {
-      const url = `${ADO_ORG}/${encodeURIComponent(project)}/_apis/build/builds?definitions=${CI_PIPELINE_ID}&branchName=${encodeURIComponent(`refs/pull/${entry.prId}/merge`)}&statusFilter=inProgress,notStarted&api-version=7.1`
+      const url = `${ADO_ORG}/${project}/_apis/build/builds?definitions=${CI_PIPELINE_ID}&branchName=${encodeURIComponent(`refs/pull/${entry.prId}/merge`)}&statusFilter=inProgress,notStarted&api-version=7.1`
       const data = await getJson(url, pat)
       return (data?.value ?? []).filter((b) => b?.id != null && (b.status === 'inProgress' || b.status === 'notStarted'))
     } catch (error) {
@@ -429,7 +431,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     try {
       const root = base.slice(0, base.lastIndexOf('/pullRequests/'))
       const data = await getJson(`${root}/pullrequests?searchCriteria.sourceRefName=${encodeURIComponent(`refs/heads/${target}`)}&searchCriteria.status=active&api-version=7.1`, pat)
-      const found = (data?.value ?? []).find((p) => p?.pullRequestId != null && String(p.pullRequestId) !== entry.prId)
+      const found = (data?.value ?? []).find((p) => Number.isSafeInteger(Number(p?.pullRequestId)) && Number(p.pullRequestId) > 0 && String(p.pullRequestId) !== entry.prId)
       return found ? { id: found.pullRequestId, conflicts: found.mergeStatus === 'conflicts' } : undefined
     } catch (error) {
       trace(`target PR lookup for PR ${entry.prId} failed: ${scrub(error)}`)
@@ -478,7 +480,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         ...(status.blockedNew ? [status.blocked.line] : []),
         ...status.voteLines,
       ]
-      const builds = await activeCiBuilds(entry, pat, pr?.repository?.project?.id ?? pr?.repository?.project?.name ?? 'Ingeniux')
+      const project = base?.slice(ADO_ORG.length + 1).split('/')[0] // no resolved repository: no build lookup (it could match another repository's PR of that number)
+      const builds = project ? await activeCiBuilds(entry, pat, project) : undefined
       const newBuilds = (builds ?? []).filter((b) => !entry.ciReported.has(String(b.id)))
       // recorded only after the queue accepted the message, so a failed hand-over is retried next poll
       const recordReported = () => {
