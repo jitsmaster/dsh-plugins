@@ -137,6 +137,7 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 @keyframes micpulse { 50% { opacity: .65; } }
 .inwrap { display: flex; align-items: flex-start; gap: 8px; }
 .inwrap .input { flex: 1; min-width: 0; }
+.inwrap textarea.input, .sheet textarea.input { resize: vertical; line-height: 1.45; }
 .inwrap .micwrap .sub { max-width: 40vw; }
 .newtodo .field { display: block; margin-top: 12px; color: var(--dim); font-size: 14px; }
 .newtodo .followup-query { margin-top: 12px; }

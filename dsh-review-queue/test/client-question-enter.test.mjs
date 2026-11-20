@@ -25,7 +25,8 @@ function load({ fetchImpl } = {}) {
   return { T: mod.__test }
 }
 const walk = (n, out = []) => { if (n && typeof n === 'object') { out.push(n); (n.children || []).forEach((c) => walk(c, out)) } return out }
-const boxes = (tree) => walk(tree).filter((n) => n.type === 'input' && n.props.className === 'rq-input')
+// The free-text answer box is a multi-line textarea (Shift+Enter adds a line, plain Enter sends), never a one-line input.
+const boxes = (tree) => walk(tree).filter((n) => n.type === 'textarea' && n.props.placeholder === 'Other answer…')
 const sendButton = (tree) => walk(tree).find((n) => n.type === 'button' && n.props.className === 'rq-btn pri')
 const plain = (v) => JSON.parse(JSON.stringify(v))
 
@@ -144,7 +145,7 @@ test('Enter with another question unanswered sends nothing and leaves the key al
   boxes(env.render())[0].props.onKeyDown(e)
   await tick()
   assert.equal(env.calls.length, 0)
-  assert.equal(e.prevented, 0)
+  assert.equal(e.prevented, 1, 'a plain Enter adds no line to the textarea (the old one-line box ignored it)')
   assert.deepEqual(plain(env.T.state.drafts.q1), { a: draft('typed') }, 'the draft is untouched')
 })
 
@@ -152,10 +153,15 @@ test('Shift+Enter, IME composition and an empty box send nothing', async () => {
   const it = item({ payload: { questions: [Q('a')] } })
   const env = setup({ it, drafts: { a: draft('typed') } })
   need(env.T, 'QuestionBody')
-  for (const over of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }, { ctrlKey: true }]) {
+  for (const over of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
     const e = keyEvent(over)
     boxes(env.render())[0].props.onKeyDown(e)
     assert.equal(e.prevented, 0, JSON.stringify(over))
+  }
+  for (const over of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+    const e = keyEvent(over)
+    boxes(env.render())[0].props.onKeyDown(e)
+    assert.equal(e.prevented, 1, JSON.stringify(over) + ': does nothing, so no newline either')
   }
   env.T.set({ drafts: { q1: { a: draft('') } } })
   boxes(env.render())[0].props.onKeyDown(keyEvent())
@@ -200,7 +206,21 @@ test('a card that is already busy ignores Enter', async () => {
   boxes(env.render())[0].props.onKeyDown(e)
   await tick()
   assert.equal(env.calls.length, 0)
-  assert.equal(e.prevented, 0)
+  assert.equal(e.prevented, 1, 'still no newline')
+})
+
+test('plain Enter in an empty box sends nothing and adds no line; Shift+Enter is left to the textarea (a new line)', async () => {
+  const it = item({ payload: { questions: [Q('a')] } })
+  const env = setup({ it, drafts: { a: draft('') } })
+  need(env.T, 'QuestionBody')
+  const plainEnter = keyEvent()
+  boxes(env.render())[0].props.onKeyDown(plainEnter)
+  assert.equal(plainEnter.prevented, 1)
+  const shiftEnter = keyEvent({ shiftKey: true })
+  boxes(env.render())[0].props.onKeyDown(shiftEnter)
+  assert.equal(shiftEnter.prevented, 0)
+  await tick()
+  assert.equal(env.calls.length, 0)
 })
 
 test('a failed send keeps the draft, so Enter can try again', async () => {
@@ -227,7 +247,7 @@ test('the late-answer form of an expired question sends to the late-answer route
   boxes(env.render())[0].props.onKeyDown(e)
   await tick()
   assert.equal(env.calls.length, 0, 'the other question is unanswered')
-  assert.equal(e.prevented, 0)
+  assert.equal(e.prevented, 1)
   env.T.set({ drafts: { q2: { a: draft('typed'), b: draft('', ['Yes']) } } })
   boxes(env.render())[0].props.onKeyDown(keyEvent())
   await tick()
@@ -239,6 +259,16 @@ test('Enter in the box is not an overlay hotkey: the overlay key map has no Ente
   assert.equal(T.keyAction({ key: 'Enter', target: { tagName: 'INPUT' } }), undefined)
   assert.equal(T.keyAction({ key: 'Enter', target: { tagName: 'DIV' } }), undefined)
   for (const k of ['e', 'r', 'j', 'k', 'A', 'D']) assert.equal(T.keyAction({ key: k, shiftKey: k === 'A' || k === 'D', target: { tagName: 'INPUT' } }), undefined, k + ' typed in a box')
+})
+
+test('the "Other answer…" box is a textarea of several rows, and no one-line input is left in the card', () => {
+  const env = setup({ drafts: { a: draft('x'), b: draft('y') } })
+  need(env.T, 'QuestionBody')
+  const tree = env.render()
+  const areas = boxes(tree)
+  assert.equal(areas.length, 2, 'one textarea per question')
+  for (const a of areas) assert.ok(a.props.rows >= 2, 'at least two rows')
+  assert.equal(walk(tree).filter((n) => n.type === 'input').length, 0)
 })
 
 // ---------- the hint ----------

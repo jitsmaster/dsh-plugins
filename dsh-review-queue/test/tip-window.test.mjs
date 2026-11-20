@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import vm from 'node:vm'
 import { existsSync, readFileSync } from 'node:fs'
 import { createStore } from '../store.js'
 import { createReviewQueue } from '../service.js'
@@ -66,4 +67,34 @@ test('the topic form has more space above it than a plain button row', () => {
   const row = /\.row\s*\{[^}]*margin-top:\s*([\d.]+)rem/.exec(css)
   assert.ok(form && row)
   assert.ok(Number(form[1]) > Number(row[1]))
+})
+
+test('tip window script: plain Enter in the topic box clicks Write tip; Shift+Enter and IME Enter do not', () => {
+  const js = readFileSync(TIP_WINDOW_FILES['app.js'].file, 'utf8')
+  const els = {}
+  const el = (id) => (els[id] ??= { id, listeners: {}, clicks: 0, style: {}, textContent: '', addEventListener(t, f) { this.listeners[t] = f }, click() { this.clicks++ }, appendChild() {} })
+  const document = { getElementById: el, hidden: false, addEventListener() {}, createElement: () => el('n' + Math.random()) }
+  vm.runInNewContext(js, { document, fetch: () => new Promise(() => {}), setInterval() {}, console })
+  const press = (over) => { const e = { key: 'Enter', shiftKey: false, isComposing: false, keyCode: 13, prevented: 0, preventDefault() { this.prevented++ }, ...over }; els.topic.listeners.keydown(e); return e }
+  const ok = press({})
+  assert.equal(els.write.clicks, 1)
+  assert.equal(ok.prevented, 1)
+  for (const over of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }, { key: 'a' }]) {
+    const e = press(over)
+    assert.equal(els.write.clicks, 1, JSON.stringify(over))
+    assert.equal(e.prevented, 0, JSON.stringify(over))
+  }
+})
+
+test('the topic box is a textarea; Enter (not Shift+Enter, not IME) submits the form', () => {
+  const html = readFileSync(TIP_WINDOW_FILES['index.html'].file, 'utf8')
+  assert.match(html, /<textarea id="topic"/)
+  assert.doesNotMatch(html, /<input id="topic"/)
+  const js = readFileSync(TIP_WINDOW_FILES['app.js'].file, 'utf8')
+  assert.ok(js.includes("$('topic').addEventListener('keydown'"), 'a keydown handler on the topic box')
+})
+
+test('the topic form aligns its items to the top, so the Write tip button does not stretch to the textarea height', () => {
+  const css = readFileSync(TIP_WINDOW_FILES['style.css'].file, 'utf8')
+  assert.match(css, /#topic-form\s*\{[^}]*align-items:\s*flex-start/)
 })

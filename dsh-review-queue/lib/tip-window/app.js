@@ -62,6 +62,12 @@
     if (!topic) return
     run(async () => { reading = false; tip = (await call('tip-next', { topic })).tip; $('topic').value = ''; render() })
   })
+  // A textarea does not submit its form on Enter: plain Enter does (Shift+Enter adds a line, an IME composition is left alone).
+  $('topic').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return
+    event.preventDefault()
+    $('write').click()
+  })
   $('go-deeper').addEventListener('click', () => run(async () => { const r = await call('tip-deeper', { id: tip.id }); tip = { ...tip, deeper: r.deeper }; render() }))
   $('read').addEventListener('click', () => run(async () => {
     if (reading) { await call('stop'); reading = false } else { await call('read-tip', { id: tip.id }); reading = true }

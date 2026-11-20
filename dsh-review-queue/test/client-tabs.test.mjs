@@ -486,7 +486,7 @@ test('Hold dialog: the reason input, Put on hold posts {id, reason} and closes i
   const { T, calls } = load()
   T.state.snap = snap({ open: [done()] })
   T.set({ dialog: { kind: 'hold', id: 'd1', text: '' } })
-  const input = () => findAll(dialogOf(T), (n) => n.type === 'input')[0]
+  const input = () => findAll(dialogOf(T), (n) => n.type === 'textarea')[0]
   assert.equal(input().props.placeholder.startsWith('Why?'), true)
   input().props.onChange({ target: { value: 'waiting for the customer' } })
   assert.equal(T.state.dialog.text, 'waiting for the customer')

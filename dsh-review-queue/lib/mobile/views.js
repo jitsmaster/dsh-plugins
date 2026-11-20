@@ -241,7 +241,7 @@ function QuestionBody({ item, path = '/v1/answer', sendLabel = 'Send answer' }) 
           <span class="mark">${d.selected.includes(o.label) ? (q.multiSelect ? '☑' : '◉') : (q.multiSelect ? '☐' : '○')}</span>
           <span><span>${c.recommended(q, o.label) ? '★ ' : ''}${o.label}</span>${o.description ? html`<div class="d"><${ActionText} text=${o.description} /></div>` : null}</span></button>`)}
         <div class="inwrap">
-          <input class="input" placeholder="Other answer…" value=${d.custom || ''} disabled=${busy} onInput=${(e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value })} />
+          <textarea class="input" rows="2" placeholder="Other answer…" aria-label="Other answer" value=${d.custom || ''} disabled=${busy} onInput=${(e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value })}></textarea>
           <${Mic} text=${d.custom || ''} disabled=${busy} onText=${(t) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: t })} />
         </div>
       </div>`
@@ -425,8 +425,8 @@ export function HoldSheet({ item }) {
   const busy = !!state.busy[item.id]
   return html`<${Sheet} title="Put this session on hold?" lines=${['It moves to the On hold tab until it can continue.']} confirmLabel=${busy ? 'Holding…' : 'Put on hold'} confirmDisabled=${busy}
     error=${state.errors[item.id]} onConfirm=${() => confirmHold(item, reason)} onCancel=${() => set({ sheet: null })}>
-    <input class="input" placeholder="Why? (optional, e.g. waiting for the customer)" maxlength="300" aria-label="Reason (optional)" value=${reason} disabled=${busy}
-      onInput=${(e) => setReason(e.target.value)} />
+    <textarea class="input" rows="2" placeholder="Why? (optional, e.g. waiting for the customer)" maxlength="300" aria-label="Reason (optional)" value=${reason} disabled=${busy}
+      onInput=${(e) => setReason(e.target.value)}></textarea>
   <//>`
 }
 /** A session on hold: why, the ticket being watched and when it was last checked; Continue prompts the session now, Release takes it off hold. */
