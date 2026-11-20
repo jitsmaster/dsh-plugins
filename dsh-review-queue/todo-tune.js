@@ -172,7 +172,7 @@ function questionOf(line) {
 /**
  * The open questions of the model answer, apart from the prompt: { prompt, questions } (questions [] when there are none).
  * They come from a QUESTIONS: block after the prompt, or, failing that, from the "<question>? Suggested default: <X>." items of a Decide list inside
- * a prompt that has text of its own (an answer that is only such items stays as it is: nothing is moved out of an empty prompt).
+ * a prompt that has text of its own. An answer that is only such items comes back with an empty prompt and the questions; tune() then keeps the typed text (flag stripped).
  */
 function splitQuestions(raw) {
   const mark = QUESTIONS_LINE.exec(raw)
@@ -259,8 +259,8 @@ export function createTuner({ llm, rulesText, rulesPath, timeoutMs = 60000, maxT
         const plain = plainQuestions(prompt, parsed.body)
         if (plain.length) { questions = plain; prompt = '' }
       }
-      // Questions without a rewritten prompt: the typed text stays in the box untouched (flag included); the questions are asked apart.
-      const answer = questions.length && !cleanAnswer(prompt) ? text : cleanAnswer(prompt)
+      // Questions without a rewritten prompt: the typed text stays in the box (its trailing flag stripped, so a Decisions list added after it never strands the flag mid-text); the questions are asked apart.
+      const answer = questions.length && !cleanAnswer(prompt) ? parsed.body.trimEnd() : cleanAnswer(prompt)
       if (!answer) error = EMPTY
       else if (answer.length > MAX_TODO) error = TOO_LONG
       else return questions.length ? { ok: true, text: answer, questions } : { ok: true, text: answer }

@@ -62,10 +62,11 @@ test('an answer of plain clarifying questions (no marker, no default) is asked a
   assert.deepEqual(r, { ok: true, text: 'rough text', questions: [{ question: 'Which file do you mean?' }, { question: 'Should it also cover the phone app?' }] })
 })
 
-test('the typed prompt keeps its profile flag when only questions came back', async () => {
+// The kept text has the trailing flag stripped: "Add answers" appends a Decisions list after it, which would leave the flag mid-text where it no longer counts as a flag.
+test('the typed prompt comes back without its profile flag when only questions came back', async () => {
   const { createTuner } = await import('../todo-tune.js')
   const r = await createTuner({ rulesText: RULES, llm: fakeLlm({ answer: 'Which db?' }) }).tune('add storage --thorough')
-  assert.deepEqual(r, { ok: true, text: 'add storage --thorough', questions: [{ question: 'Which db?' }] })
+  assert.deepEqual(r, { ok: true, text: 'add storage', questions: [{ question: 'Which db?' }] })
 })
 
 test('a typed prompt that is itself a question may be rewritten as a question (not treated as clarifying questions)', async () => {

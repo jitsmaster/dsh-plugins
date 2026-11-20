@@ -490,7 +490,8 @@ test('words like rationale, note, why, changed and because inside the prompt, a 
 
 test('a ", because <reason>" or "; because <reason>" after a Suggested default is removed, the closing period stays', async () => {
   const cases = [
-    // an answer of only Decide items keeps the typed text and asks them apart, reasons dropped\n    ['1. Which db? Suggested default: SQLite, because it needs no server.', { text: 'rough text', questions: [{ question: 'Which db?', default: 'SQLite' }] }],
+    // an answer of only Decide items keeps the typed text and asks them apart, reasons dropped
+    ['1. Which db? Suggested default: SQLite, because it needs no server.', { text: 'rough text', questions: [{ question: 'Which db?', default: 'SQLite' }] }],
     ['2. Retry? Suggested default: yes; because the tests are flaky.', { text: 'rough text', questions: [{ question: 'Retry?', default: 'yes' }] }],
     ['Q? Suggested default: yes, because it is safe', 'Q? Suggested default: yes'],
     ['Q? Suggested default: A, because X. Another sentence.', 'Q? Suggested default: A. Another sentence.'],
