@@ -14,7 +14,7 @@ A session titled `PR <n>` is polled every 10 minutes (see the README, *PR state*
 
 Notes:
 
-- The first poll of a PR only records the reviewer votes; it does not wake.
+- The first poll of a PR only records the reviewer votes; it does not wake. A vote that is already negative when the poll starts (or after a restart, the record is in memory) is therefore not announced: only a CHANGE is. This keeps a standing -5 from re-waking every restored session on each restart.
 - A resolved conflict (`mergeStatus` back to `succeeded`) wakes nothing; it is traced (`merge conflicts of PR <n> are resolved`) and clears the record, so a later conflict is reported again. `queued` (the server is recomputing) neither reports nor clears.
 - The same conflict state is never re-woken, also after the poll of the session was stopped and registered again (the state is kept per PR for the process lifetime). A failed hand-over is retried on the next poll: the state is recorded only after the queue accepted the message.
 - Status lines and new-comment lines share one message (status first, then the CI line, then the comments). Switch everything off with *Poll PR comments*.
@@ -23,7 +23,7 @@ Notes:
 
 It tells the session to: fetch the target branch, merge it into the PR source branch in the PR's worktree, resolve the conflicts, run the project's relevant tests, push with a normal push (no force-push without asking the user through `ask_user_question`), then re-check `mergeStatus` with `az repos pr show --id <n> --query mergeStatus` (ado-cli skill).
 
-**Stacked PRs.** The branch is the PR's real `targetRefName`, not `develop`: `git fetch origin <target>` / `git merge origin/<target>`. The message says the PR is stacked, and when the target branch is the source branch of another ACTIVE PR of the same repository (found with `searchCriteria.sourceRefName`) that has conflicts itself, it says so and tells the session to coordinate that PR first. Example: CTnP-QA PR 6796 targeted `task/26078-ai-005-stream-abort` (the source of PR 6776).
+**Stacked PRs.** The branch is the PR's real `targetRefName`, not `develop`: `git fetch origin <target>` / `git merge origin/<target>`. The message names the target branch ("targets the branch X, not develop", plus "stacked on active PR n" when that PR is found), and when the target branch is the source branch of another ACTIVE PR of the same repository (found with `searchCriteria.sourceRefName`) that has conflicts itself, it says so and tells the session to coordinate that PR first. Example: CTnP-QA PR 6796 targeted `task/26078-ai-005-stream-abort` (the source of PR 6776).
 
 **Security.** Branch names, reviewer names and merge-failure text come from Azure DevOps and end up in a prompt that tells an agent to run git commands. A branch name is printed only when it is a plain branch name (letters, digits, `._/-`; no `..`, no leading `-`); otherwise the message points to `az repos pr show` instead. Free text is flattened to one line of at most 200 characters.
 
@@ -35,4 +35,4 @@ Not changed: the CI AI-review build lookup (pipeline 80) is an Ingeniux-project 
 
 ## Real example
 
-CTnP-QA PR 6776 (repo `db3faf01-5377-41f4-b989-5f8ba0052b4e`, project Ingeniux, `task/26078-ai-005-stream-abort` into `develop`) had merge conflicts with `develop` (8 files); the fixtures in the tests use its real commit ids and Laska's -5 vote. At the time of writing its `mergeStatus` is `succeeded` again (develop was merged into the branch).
+CTnP-QA PR 6796 (repo `db3faf01-5377-41f4-b989-5f8ba0052b4e`) targeted `task/26078-ai-005-stream-abort`, the source branch of PR 6776, and its poll answered HTTP 404 because the Ingeniux repository id was used. The tests model that shape (a stacked PR in a non-Ingeniux repository) with a fake Azure DevOps client.

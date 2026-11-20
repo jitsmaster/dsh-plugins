@@ -94,14 +94,13 @@ function blockedNotice(prId, pr, key) {
 /**
  * What the current PR JSON says, compared with `state` (nothing is changed here):
  * `conflictKey` (set while mergeStatus is conflicts: PR + head commit + target head commit), `blocked` ({ key, line }),
- * `votes` ({ lines, next } or undefined without a reviewers list) and `resolved` (a reported conflict or block is gone).
+ * and `votes` ({ lines, next } or undefined without a reviewers list).
  */
 export function evaluateStatus(state, prId, pr) {
   const head = String(pr?.lastMergeSourceCommit?.commitId ?? 'unknown')
   const targetHead = String(pr?.lastMergeTargetCommit?.commitId ?? 'unknown')
   const key = `${prId}|${head}|${targetHead}`
   return {
-    resolved: pr?.mergeStatus === 'succeeded' && Boolean(state.conflictKey || state.blockedKey),
     conflictKey: pr?.mergeStatus === 'conflicts' ? key : undefined,
     blocked: blockedNotice(prId, pr, key),
     votes: Array.isArray(pr?.reviewers) ? voteNotices(prId, state.votes, pr.reviewers) : undefined,
@@ -116,12 +115,12 @@ export function conflictLine(prId, pr, { targetPr } = {}) {
   const target = branchOf(pr?.targetRefName)
   const source = branchOf(pr?.sourceRefName)
   const heads = [shortSha(pr?.lastMergeSourceCommit?.commitId) && `head ${shortSha(pr.lastMergeSourceCommit.commitId)}`, shortSha(pr?.lastMergeTargetCommit?.commitId) && `target head ${shortSha(pr.lastMergeTargetCommit.commitId)}`].filter(Boolean)
-  const stacked = Boolean(target && !MAIN_BRANCHES.has(target))
+  const offMain = Boolean(target && !MAIN_BRANCHES.has(target))
   const show = pr?.autoCompleteSetBy ? ' It cannot merge, auto-complete stays blocked, and' : ' It cannot be merged and'
   const where = source ? `the worktree of ${source}` : 'the worktree of the PR source branch'
   return [
     `PR ${prId} has MERGE CONFLICTS with ${target ?? 'its target branch'}${heads.length ? ` (${heads.join(', ')})` : ''}.${show} the CI review pipeline cannot run until they are resolved.`,
-    ...(stacked ? [`This is a stacked PR: its target is the feature branch ${target}, not develop. Merge that branch, not develop.`] : []),
+    ...(offMain ? [`This PR targets the branch ${target}, not develop${targetPr ? ` (stacked on active PR ${targetPr.id})` : ''}. Merge that branch, not develop.`] : []),
     ...(targetPr?.conflicts && target ? [`The target branch ${target} is the source branch of active PR ${targetPr.id}, which also has merge conflicts: resolve or coordinate that PR first, then merge the updated ${target}.`] : []),
     'Resolve them now, in this session:',
     target

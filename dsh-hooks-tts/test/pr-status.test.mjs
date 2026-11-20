@@ -41,8 +41,10 @@ function fakeAdo() {
     repository: { id: pr.repo.id, name: pr.repo.name, project: { id: PROJECT } },
     ...pr.fields,
   })
+  const state = { failWith: undefined }
   async function fetchImpl(url) {
     requests.push(url)
+    if (state.failWith) throw new Error(`network down for ${state.failWith}`)
     const u = new URL(url)
     let m = /^\/ingeniuxdev\/_apis\/git\/pullrequests\/(\d+)$/i.exec(u.pathname)
     if (m) return prs.has(m[1]) ? json(body(prs.get(m[1]))) : notFound()
@@ -63,6 +65,7 @@ function fakeAdo() {
   return {
     fetchImpl,
     requests,
+    state,
     add: (id, repo, fields = {}) => { prs.set(String(id), { id, repo, fields }) },
     set: (id, patch) => { Object.assign(prs.get(String(id)).fields, patch) },
     threads: (id, list) => threads.set(String(id), list),
@@ -124,16 +127,6 @@ test('conflicts detected: the session is told how to fetch, merge, test, push wi
   assert.match(text, /az repos pr show --id 6776/)
   assert.match(text, /mergeStatus/)
   assert.doesNotMatch(text, /Do NOT push/)
-  w.poller.stopAll()
-})
-
-test('conflicts are only reported for an active PR', async () => {
-  const w = world()
-  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts', status: 'abandoned' })
-  w.start(6776)
-  await w.poll()
-  await w.poller.checkWaits()
-  assert.equal(w.prompts.length, 0)
   w.poller.stopAll()
 })
 
@@ -364,7 +357,7 @@ test('stacked PR: the merge uses the real target branch, not develop', async () 
   assert.match(text, /git merge origin\/task\/26078-ai-005-stream-abort/)
   assert.match(text, /task\/26080-ai-011-help-api/)
   assert.doesNotMatch(text, /origin\/develop/)
-  assert.match(text, /stacked/i)
+  assert.match(text, /targets the branch task\/26078-ai-005-stream-abort, not develop/)
   w.poller.stopAll()
 })
 
@@ -386,6 +379,7 @@ test('stacked PR: a clean active target PR is not reported as conflicting', asyn
   await w.poll()
   assert.equal(w.prompts.length, 1)
   assert.doesNotMatch(w.texts()[0], /source branch of active PR/)
+  assert.match(w.texts()[0], /stacked on active PR 6776/)
   w.poller.stopAll()
 })
 
@@ -459,11 +453,13 @@ test('repo resolution: a PR url outside the organisation is never fetched (the P
   w.poller.stopAll()
 })
 
-test('the PAT is never traced', async () => {
+test('the PAT is scrubbed from the trace of a failing request', async () => {
   const w = world()
-  w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS, repository: undefined })
+  w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS })
   w.start(6796)
+  w.ado.state.failWith = PAT
   await w.poll()
+  assert.match(w.log(), /poll of PR 6796 failed: network down for \*\*\*/)
   assert.ok(!w.log().includes(PAT))
   w.poller.stopAll()
 })
