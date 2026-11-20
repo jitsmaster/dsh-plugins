@@ -53,7 +53,7 @@ function fakeAdo() {
     m = /^\/ingeniuxdev\/([^/]+)\/_apis\/git\/repositories\/([^/]+)\/pullRequests\/(\d+)\/threads$/.exec(u.pathname)
     if (m) {
       const pr = prs.get(m[3])
-      return pr && pr.repo.id === m[2] && m[1] === PROJECT ? json({ value: threads.get(m[3]) ?? [] }) : notFound()
+      return pr && pr.repo.id === m[2] && m[1] === (pr.fields.repository?.project?.id ?? PROJECT) ? json({ value: threads.get(m[3]) ?? [] }) : notFound()
     }
     m = /^\/ingeniuxdev\/([^/]+)\/_apis\/git\/repositories\/([^/]+)\/pullrequests$/i.exec(u.pathname)
     if (m) {
@@ -616,5 +616,52 @@ test('the CI build lookup uses the project of the PR, not a fixed one', async ()
   assert.ok(build, 'the build lookup ran')
   assert.ok(build.startsWith(`${ORG}/${PROJECT}/_apis/build/builds`), build)
   assert.ok(!build.includes('/Ingeniux/'))
+  w.poller.stopAll()
+})
+
+// ---- regression review fixes ----
+
+test('no CI build lookup for a PR outside the project that owns the CI pipeline', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, repository: { id: CTNP_QA.id, name: 'x', project: { id: 'other-project-id' } } })
+  w.start(6776)
+  await w.poll()
+  assert.ok(!w.ado.requests.some((u) => u.includes('/_apis/build/builds')), w.ado.requests.join('\n'))
+  w.poller.stopAll()
+})
+
+test('a conflict sharing a message with comments: merge and push first, then the comment fixes', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.threads('6776', [thread(7, 2)])
+  w.start(6776)
+  await w.poll()
+  assert.match(w.texts()[0], /merge-conflict steps first[^\n]*before (starting|you start) the comment fixes/i)
+  w.poller.stopAll()
+})
+
+test('a reviewer group (container) vote change wakes nothing', async () => {
+  const w = world()
+  const group = (vote) => ({ id: 'grp', displayName: 'Reviewers', vote, isRequired: true, isContainer: true })
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, reviewers: [group(0)] })
+  w.start(6776)
+  await w.poll()
+  w.ado.set('6776', { reviewers: [group(-5)] })
+  await w.poll()
+  assert.equal(w.prompts.length, 0)
+  w.poller.stopAll()
+})
+
+test('two negative votes in one poll ask for ado-pr-implement once', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, reviewers: [reviewer('Laska Fitzhugh', 0, true), reviewer('Sam', 0)] })
+  w.start(6776)
+  await w.poll()
+  w.ado.set('6776', { reviewers: [reviewer('Laska Fitzhugh', -5, true), reviewer('Sam', -10)] })
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  assert.equal((w.texts()[0].match(/ado-pr-implement/g) ?? []).length, 1)
+  assert.match(w.texts()[0], /Laska Fitzhugh/)
+  assert.match(w.texts()[0], /Sam/)
   w.poller.stopAll()
 })

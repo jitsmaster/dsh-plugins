@@ -42,6 +42,8 @@ const ADO_ORG = 'https://dev.azure.com/ingeniuxdev'
 const prUrl = (prId) => `${ADO_ORG}/_apis/git/pullrequests/${encodeURIComponent(prId)}?api-version=7.1`
 /** Definition id of the CI AI-review pipeline ("AI review pipeline 80"). */
 const CI_PIPELINE_ID = 80
+/** The project that owns that pipeline (its id as the repository's `project.id` reads, and its name). */
+const CI_PROJECTS = new Set(['ae9879c1-8609-4ffe-8242-2256d70f8b1e', 'Ingeniux'])
 const POLL_INTERVAL_MS = 10 * 60 * 1000
 const FETCH_TIMEOUT_MS = 30_000
 /** Thread statuses that mean the reviewer's point is settled. */
@@ -198,7 +200,7 @@ function queuedMessage(prId, threadIds, ciBuilds = [], statusLines = [], hasConf
     `New review comments on PR ${prId} (thread${threadIds.length > 1 ? 's' : ''} ${threadIds.join(', ')}).`,
     `Run the \`ado-pr-implement\` skill on PR ${prId} now, in this session, and take it only up to its user-approval gate: evaluate each comment, then implement fixes and update tests locally.`,
     hasConflict
-      ? 'Do NOT commit, push, post replies or resolve threads for the comment fixes until the user has approved at that gate. This applies to the comment fixes only; the merge-conflict steps above are pre-approved (normal push, never a force-push without asking).'
+      ? 'Do the merge-conflict steps first, and push the merge before starting the comment fixes, so the fixes are not committed with it. Do NOT commit, push, post replies or resolve threads for the comment fixes until the user has approved at that gate. This applies to the comment fixes only; the merge-conflict steps above are pre-approved (normal push, never a force-push without asking).'
       : 'Do NOT commit, push, post replies or resolve threads until the user has approved at that gate.',
   ].join('\n')
 }
@@ -480,8 +482,9 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         ...(status.blockedNew ? [status.blocked.line] : []),
         ...status.voteLines,
       ]
-      const project = base?.slice(ADO_ORG.length + 1).split('/')[0] // no resolved repository: no build lookup (it could match another repository's PR of that number)
-      const builds = project ? await activeCiBuilds(entry, pat, project) : undefined
+      // The CI pipeline (definition 80) belongs to the Ingeniux project: no lookup for a PR of another project, nor without a resolved repository.
+      const project = base?.slice(ADO_ORG.length + 1).split('/')[0]
+      const builds = project && CI_PROJECTS.has(project) ? await activeCiBuilds(entry, pat, project) : undefined
       const newBuilds = (builds ?? []).filter((b) => !entry.ciReported.has(String(b.id)))
       // recorded only after the queue accepted the message, so a failed hand-over is retried next poll
       const recordReported = () => {
