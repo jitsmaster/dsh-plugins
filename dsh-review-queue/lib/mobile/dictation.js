@@ -7,6 +7,8 @@
  * plain speech to text. Pure and node-tested with an injected fake recognition class (no DOM, no network, no api.js).
  */
 
+import { endSentence, formatDictation } from './punctuation.js'
+
 /** The SpeechRecognition constructor of this window (standard first, then webkit-prefixed), or null when there is none. */
 export function dictationSupport(win) {
   if (!win) return null
@@ -59,16 +61,24 @@ let haltRunning = null
 /**
  * One dictation controller (one per Mic button).
  * @param {{ win?: object, onText?: (text: string, isFinal: boolean) => void, onState?: (listening: boolean) => void,
- *   onError?: (message: string | null) => void, lang?: string, ios?: boolean }} opts
+ *   onError?: (message: string | null) => void, onEnd?: (info: { base: string, text: string, lang: string }) => void, lang?: string, ios?: boolean,
+ *   punctuate?: boolean, keepListeningMs?: number, now?: () => number }} opts
+ *   onEnd: called once when a dictation ends naturally (stop pressed, or silence for too long) with something dictated: the box text when it began, the text now and the mic language.
+ *   punctuate: spoken punctuation, capitals and the pause full stop (default true). keepListeningMs / now: the silence limit and the clock (tests inject them).
  * @returns {{ start: (base?: string) => void, stop: () => void, halt: () => void, readonly listening: boolean } | null} null without speech recognition
  */
-export function createDictation({ win, onText, onState, onError, lang, ios, keepListeningMs = KEEP_LISTENING_MS, now = Date.now } = {}) {
+export function createDictation({ win, onText, onState, onError, onEnd, lang, ios, punctuate = true, keepListeningMs = KEEP_LISTENING_MS, now = Date.now } = {}) {
   const Recognition = dictationSupport(win)
   if (!Recognition) return null
+  const micLang = () => lang || (win.navigator && win.navigator.language) || 'en-US'
+  // punctuate (default on): spoken punctuation words become symbols, sentences are capitalised, and a pause (the engine ending on silence while the
+  // user did not press stop) closes the sentence with a full stop. false keeps the raw merge.
+  const render = (base, transcript) => (punctuate ? formatDictation(base, transcript, micLang()) : mergeDictation(base, transcript))
   let session = null // the recognition in flight: { rec, base, ended }
   let listening = false
   let startedAt = 0
   let wantOn = false // the user has not pressed stop (nor halted): an ended recognition is restarted
+  let runBase = '' // the box text when this dictation began (it survives the pause restarts), for onEnd
 
   const setListening = (on) => { if (listening === on) return; listening = on; if (onState) onState(on) }
   /** Closes a session once: later events of its recognition (a late result) are ignored. */
@@ -100,7 +110,7 @@ export function createDictation({ win, onText, onState, onError, lang, ios, keep
       transcript += (list[i] && list[i][0] && list[i][0].transcript) || ''
       if (!(list[i] && list[i].isFinal)) final = false
     }
-    const text = mergeDictation(s.base, transcript)
+    const text = render(s.base, transcript)
     if (String(transcript).trim()) { s.last = text; s.heardAt = now() }
     if (onText) onText(text, final)
   }
@@ -108,6 +118,8 @@ export function createDictation({ win, onText, onState, onError, lang, ios, keep
     if (s.ended) return
     const code = event && event.error
     if (wantOn && (code === 'aborted' || (code === 'no-speech' && now() - s.heardAt < keepListeningMs))) return // silence: onend restarts it
+    // The silence timeout after something was dictated is a natural end (onend reports it through onEnd), not a failure to complain about.
+    if (code === 'no-speech' && s.last !== runBase) return
     s.fatal = true
     const message = dictationError(code, { ios })
     if (message && onError) onError(message)
@@ -119,11 +131,12 @@ export function createDictation({ win, onText, onState, onError, lang, ios, keep
       if (haltRunning && haltRunning !== halt) haltRunning()
       if (onError) onError(null)
       wantOn = true
+      runBase = base == null ? '' : String(base)
       startedAt = now()
     }
     const rec = new Recognition()
     const s = { rec, base: base == null ? '' : String(base), ended: false, last: base == null ? '' : String(base), heardAt: again ? again.heardAt : now() }
-    rec.lang = lang || (win.navigator && win.navigator.language) || 'en-US'
+    rec.lang = micLang()
     rec.interimResults = true // the box shows the text live while it refines
     rec.continuous = false // Chrome on Android is unreliable with continuous recognition
     rec.onstart = () => { if (!s.ended) setListening(true) }
@@ -135,11 +148,19 @@ export function createDictation({ win, onText, onState, onError, lang, ios, keep
       if (wantOn && !s.fatal && now() - s.heardAt < keepListeningMs) {
         s.ended = true
         if (session === s) session = null
+        // The pause: something was dictated in this chunk, so close its sentence (a full stop unless it already ends in punctuation) and show it.
+        if (punctuate && s.last !== s.base) {
+          const closed = endSentence(s.last)
+          if (closed !== s.last) { s.last = closed; if (onText) onText(closed, false) }
+        }
         start(s.last, { heardAt: s.heardAt })
         return
       }
       wantOn = false
       finish(s)
+      // A natural end (stop pressed, or silence for too long) with something dictated: report the whole dictation once. Not after halt() (it
+      // closes the session first, so this handler returned above) and not after a real error.
+      if (onEnd && !s.fatal && s.last !== runBase) onEnd({ base: runBase, text: s.last, lang: micLang() })
     }
     session = s
     haltRunning = halt

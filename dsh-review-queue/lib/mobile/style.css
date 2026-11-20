@@ -194,6 +194,8 @@ summary { min-height: var(--tap); display: flex; align-items: center; cursor: po
 .composer-input[readonly] { opacity: .6; }
 .composer-row .micwrap { position: relative; }
 .composer-row .micwrap .sub { position: absolute; right: 0; bottom: calc(100% + 6px); width: max-content; max-width: 70vw; padding: 4px 8px; background: var(--panel2); border-radius: 8px; }
+/* The Undo button is out of the flow like the notes, so the sticky composer keeps its height; outside the composer it stacks normally. */
+.composer-row .micwrap .undo { position: absolute; right: 0; bottom: calc(100% + 6px); min-height: 0; padding: 6px 12px; border-radius: 8px; }
 .send { flex: none; min-height: var(--tap); }
 /* A text field outside the composer has the focus (view-guard.js watchTyping): the bar gives its room to the keyboard. The composer sticks to the edge then. */
 body.typing nav { display: none; }

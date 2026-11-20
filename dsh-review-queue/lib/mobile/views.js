@@ -1,8 +1,9 @@
 /** Phone views (Preact + htm, no build step). Card logic comes from the shared core (api.js getCore()). */
 import { Component, h, html, useState, useEffect, useLayoutEffect, useRef } from './vendor/preact-htm.js'
 import { createBrowserReadAloud, readAloudVisible } from './read-aloud.js'
-import { state, subscribe, set, clearFresh, act, getCore, fetchTtsChunk, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen, swipeReview, undoSwipe, dismissUndo, subscribeUndo } from './api.js'
+import { state, subscribe, set, clearFresh, act, getCore, fetchTtsChunk, loadWorkspaces, loadEfforts, loadFollowSessions, startTodo, NEW_TODO_ID, loadThread, loadEarlier, postFollowUp, startThreadPolling, stopThreadPolling, saveNow, rememberDetail, markAiSeen, swipeReview, undoSwipe, dismissUndo, subscribeUndo, cleanDictation } from './api.js'
 import { isSwipeable, swipeCommitted, swipeIntent, swipeProgress, SWIPE_START_PX } from './swipe.js'
+import { applyCleaned, cleanFailureNote, cleanWorthy, dictatedPart } from './punctuation.js'
 import { detailOpen } from './toggles.js'
 import { HOLD_MS, holdState } from './hold.js'
 import { PairView } from './pairing.js'
@@ -164,20 +165,53 @@ function ReadAloud({ item }) {
 function Mic({ text, onText, disabled, halt }) {
   const [on, setOn] = useState(false)
   const [problem, setProblem] = useState(null)
+  const [cleaning, setCleaning] = useState(false)
+  const [undo, setUndo] = useState(null) // { after, before }: the text after the model cleanup and the text it replaced
   const latest = useRef(onText)
   latest.current = onText
+  const live = useRef(text) // the box text as of the last render: a cleaned answer is applied only when the box is still what was sent
+  live.current = text
+  const seq = useRef(0) // bumped by every new dictation, halt and unmount: an answer of an older run is dropped
+  const mounted = useRef(true)
   const dictation = useRef(undefined)
+  const ending = useRef(null)
+  const abortRef = useRef(null) // aborts the cleanup request in flight (its answer would be dropped anyway). That only closes this phone's fetch: with a hub the paid model call runs on until it ends (the app's command lane then runs a newer cleanup after it)
+  // After a dictation ends (stop pressed or silence), a dictated part of 3+ words is tidied by the PC's Haiku (POST via api.cleanDictation).
+  // The local punctuation text stays in the box meanwhile; on failure or a changed box it simply stays.
+  ending.current = ({ base, text: sent, lang }) => {
+    const part = dictatedPart(base, sent)
+    if (!cleanWorthy(part)) return
+    const mine = ++seq.current
+    abortRef.current?.abort() // a request of an older run is cancelled; this one gets a fresh controller
+    const ac = (abortRef.current = new AbortController())
+    setUndo(null)
+    setCleaning(true)
+    cleanDictation(part, lang, ac.signal).then((res) => {
+      if (!mounted.current || mine !== seq.current) return
+      setCleaning(false)
+      if (!res.ok) { const note = cleanFailureNote(res.error); if (note) setProblem(note); return }
+      const next = applyCleaned({ base, sent, current: live.current, cleaned: res.text })
+      if (next === null) return
+      setUndo({ after: next, before: sent })
+      latest.current(next)
+    })
+  }
   // iOS words the permission errors differently (Settings > Safari, Siri & Dictation).
   const ios = platformInfo({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }).ios
-  if (dictation.current === undefined) dictation.current = createDictation({ win: window, ios, onText: (t) => latest.current(t), onState: setOn, onError: setProblem })
+  if (dictation.current === undefined) dictation.current = createDictation({ win: window, ios, onText: (t) => latest.current(t), onState: setOn, onError: setProblem, onEnd: (info) => ending.current(info) })
   const d = dictation.current
-  if (halt) halt.current = () => { if (d) d.halt() }
-  useEffect(() => { if (disabled && d) d.halt() }, [disabled]) // a post or an answer is running: nothing more may reach the box
-  useEffect(() => () => { if (d) d.halt() }, []) // leaving the screen releases the microphone, and a late result lands nowhere
+  const drop = () => { seq.current++; abortRef.current?.abort(); setCleaning(false) } // forget a cleanup in flight and cancel its request (seq changed, so an aborted result is discarded, no failure note)
+  if (halt) halt.current = () => { if (d) { drop(); d.halt() } }
+  useEffect(() => { if (disabled && d) drop(), d.halt() }, [disabled]) // a post or an answer is running: nothing more may reach the box
+  useEffect(() => () => { mounted.current = false; drop(); if (d) d.halt() }, []) // leaving the screen releases the microphone, and a late result lands nowhere (mounted starts true)
   if (!d) return null
+  const start = () => { drop(); setUndo(null); d.start(text) }
+  const undoClean = () => { if (undo && live.current === undo.after) latest.current(undo.before); setUndo(null) }
   return html`<div class="micwrap">
     <button class=${'btn mic' + (on ? ' on' : '')} type="button" aria-pressed=${on} aria-label=${on ? 'Stop dictation' : 'Dictate'} disabled=${disabled}
-      onClick=${() => (on ? d.stop() : d.start(text))}>${on ? '■' : '🎤'}</button>
+      onClick=${() => (on ? d.stop() : start())}>${on ? '■' : '🎤'}</button>
+    <div class=${cleaning ? 'sub' : ''} role="status">${cleaning ? 'Cleaning…' : ''}</div>
+    ${undo && text === undo.after && !cleaning ? html`<button class="btn sub undo" type="button" onClick=${undoClean}>Undo</button>` : null}
     ${problem ? html`<div class="sub" role="status">${problem}</div>` : null}
   </div>`
 }

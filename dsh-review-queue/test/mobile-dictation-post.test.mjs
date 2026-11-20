@@ -52,7 +52,7 @@ test('(A) a late final result after an accepted post does not write the sent tex
   instances[0].onstart()
   instances[0].onresult(results(result('please run the tests')))
   await wait(40) // the buffer flushed the interim text into state.replies
-  assert.equal(api.state.replies[ID], 'please run the tests')
+  assert.equal(api.state.replies[ID], 'Please run the tests') // the local punctuation layer capitalises the start
   const sending = glue.send()
   await wait(5)
   assert.equal(api.state.busy[ID], true)

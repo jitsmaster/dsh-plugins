@@ -302,6 +302,15 @@ test('the Mic halts (not just stops) its dictation when it is removed: a final r
   assert.doesNotMatch(mic, /\(\)\s*=>\s*\(\)\s*=>\s*\{[^}]*\.stop\(\)/, 'and does not merely stop')
 })
 
+test('the Mic cancels a cleanup request in flight: one AbortController in a ref, its signal passed to cleanDictation, aborted by drop() and on unmount', () => {
+  const mic = body(views, 'Mic')
+  assert.match(mic, /abortRef\s*=\s*useRef\(/, 'the controller lives in a ref')
+  assert.match(mic, /new AbortController\(\)/, 'a controller is created')
+  assert.match(mic, /cleanDictation\(\s*part\s*,\s*lang\s*,\s*[^)]*\.signal\s*\)/, 'its signal goes to cleanDictation')
+  assert.match(mic, /const drop\s*=\s*\(\)\s*=>\s*\{[^}]*abortRef\.current[^}]*\.abort\(\)[^}]*\}/, 'drop() aborts it')
+  assert.match(mic, /\(\)\s*=>\s*\(\)\s*=>\s*\{[^}]*\bdrop\(\)[^}]*\}\s*,\s*\[\s*\]\s*\)/, 'the unmount cleanup drops (and so aborts) it')
+})
+
 test('the composer gives the Mic a halt ref and calls it before the post, after the draft was last written', () => {
   const c = body(views, 'Composer')
   const tag = [...c.matchAll(/<\$\{Mic\}[^>]*>/g)].map((x) => x[0])[0]

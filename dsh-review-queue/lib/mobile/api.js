@@ -295,6 +295,31 @@ export async function loadFollowSessions() {
 /** The unsent "+ New todo" form is thrown away, in state and on disk (after a successful start). */
 export const clearTodoDraft = () => set({ todoDraft: emptyTodoDraft() }) // set() writes the saved draft at once
 
+const DICTATION_CLEAN_TIMEOUT_MS = 30000
+/**
+ * Asks the PC's Haiku to tidy dictated text (POST /v1/dictation-clean, answered by the hub's coordinator app). { ok: true, text } or { ok: false, error };
+ * never throws, sends nothing for blank text, and a lost pairing sends the phone back to pairing. The text is never stored or logged here.
+ */
+export async function cleanDictation(text, lang, signal) {
+  if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'empty' }
+  if (signal?.aborted) return { ok: false, error: 'failed' } // already cancelled: no request
+  // A hung connection must not leave the phone waiting for ever: the request is cut off just above the hub's 25 s command timeout (hub/commands.js).
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), DICTATION_CLEAN_TIMEOUT_MS)
+  // Memory: the caller's signal (the Mic leaving, halting or starting again) closes this fetch at once, so it does not stay open for the full timeout. The model call itself is stopped only by a standalone server (the closed request, or a newer cleanup replacing it), not by a hub.
+  const onAbort = () => ac.abort()
+  signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    const body = { text }
+    if (typeof lang === 'string' && lang) body.lang = lang
+    const res = await call(API + '/v1/dictation-clean', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal })
+    const j = await res.json().catch(() => null)
+    if (handleAuthFailure(res.status, j)) return { ok: false, error: 'signed-out' }
+    if (res.ok && j && j.ok === true && typeof j.text === 'string' && j.text.trim()) return { ok: true, text: j.text }
+    return { ok: false, error: (j && typeof j.error === 'string' && j.error) || 'failed' }
+  } catch { return { ok: false, error: 'failed' } } finally { clearTimeout(timer); signal?.removeEventListener('abort', onAbort) }
+}
+
 /** Id under which the "+ New todo" form keeps its busy flag and error in state. */
 export const NEW_TODO_ID = 'new-todo'
 

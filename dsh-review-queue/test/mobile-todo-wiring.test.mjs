@@ -46,6 +46,13 @@ test('the new CSS classes exist in style.css: .mic, .mic.on (listening) and .new
   assert.match(css, /(^|\n|\})\s*\.newtodo\b[^{]*\{/)
 })
 
+test('the Undo button in the composer is positioned like the .sub notes so the sticky composer does not change height', () => {
+  const mic = body(views, 'Mic')
+  assert.match(mic, /<button class="[^"]*\bsub\b[^"]*\bundo\b[^"]*"[^>]*onClick=\$\{undoClean\}/, 'the Undo button carries the sub and undo classes')
+  assert.match(css, /\.composer-row \.micwrap \.undo\b[^{]*\{[^}]*position:\s*absolute/, 'a composer rule takes the Undo out of the flow')
+  assert.doesNotMatch(css, /(^|\n)\s*\.undo\s*\{[^}]*position:\s*absolute/, 'outside the composer the Undo stays in the normal flow')
+})
+
 // ---- views.js imports and routing -------------------------------------------------------------------------------------------------
 
 test('views.js imports the dictation and todo-form modules and uses them', () => {

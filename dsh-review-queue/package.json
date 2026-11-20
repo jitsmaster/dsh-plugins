@@ -21,6 +21,7 @@
     "actionable.js",
     "autoanswer.js",
     "todo-tune.js",
+    "dictation-clean.js",
     "ado-ticket.js",
     "ado-create.js",
     "ticket-session.js",

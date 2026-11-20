@@ -27,6 +27,7 @@ export const FILES = {
   'swipe.js': { file: join(M, 'swipe.js'), type: JS },
   'model.js': { file: join(M, 'model.js'), type: JS },
   'dictation.js': { file: join(M, 'dictation.js'), type: JS },
+  'punctuation.js': { file: join(M, 'punctuation.js'), type: JS },
   'todo-form.js': { file: join(M, 'todo-form.js'), type: JS },
   'toggles.js': { file: join(M, 'toggles.js'), type: JS },
   'thread.js': { file: join(M, 'thread.js'), type: JS },
