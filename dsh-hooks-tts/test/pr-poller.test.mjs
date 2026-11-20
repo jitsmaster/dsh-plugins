@@ -51,7 +51,7 @@ function harness({ intervalMs = 600_000, env = { AZURE_DEVOPS_EXT_PAT: PAT }, wi
       if (state.commitFail) throw new Error('commit lookup failed')
       return { ok: true, status: 200, json: async () => ({ committer: { date: state.commitDate } }) }
     }
-    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, reviewers: state.reviewers, lastMergeSourceCommit: { commitId: state.headCommit ?? 'c1' }, mergeStatus: state.mergeStatus, targetRefName: 'refs/heads/develop' }
+    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, repository: { id: '6dc5d0bc-703d-4add-8785-e9fd2c55f4fc', name: 'Ingeniux', project: { id: 'ae9879c1-8609-4ffe-8242-2256d70f8b1e' } }, status: state.prStatus, createdBy: state.createdBy ? { id: state.createdBy } : undefined, reviewers: state.reviewers, lastMergeSourceCommit: { commitId: state.headCommit ?? 'c1' }, mergeStatus: state.mergeStatus, targetRefName: 'refs/heads/develop' }
     return { ok: true, status: 200, json: async () => { if (state.badJson) throw new SyntaxError('Unexpected token < in JSON'); return body } }
   }
   const created = []
@@ -479,7 +479,7 @@ test('poll: uses Basic auth with ":" + PAT, hits the PR and threads URLs', async
   const h = harness()
   h.poller.register(h.agent, '5')
   await h.poller.poll('a1')
-  assert.ok(h.state.urls.some((u) => u === 'https://dev.azure.com/ingeniuxdev/Ingeniux/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc/pullRequests/5/threads?api-version=7.1'))
+  assert.ok(h.state.urls.some((u) => u === 'https://dev.azure.com/ingeniuxdev/ae9879c1-8609-4ffe-8242-2256d70f8b1e/_apis/git/repositories/6dc5d0bc-703d-4add-8785-e9fd2c55f4fc/pullRequests/5/threads?api-version=7.1'))
   assert.ok(h.state.urls.some((u) => u === 'https://dev.azure.com/ingeniuxdev/_apis/git/pullrequests/5?api-version=7.1'), 'the PR itself is read organisation-wide')
   assert.equal(h.state.headers[0].Authorization, `Basic ${Buffer.from(`:${PAT}`).toString('base64')}`)
   h.poller.stopAll()
@@ -732,7 +732,8 @@ test('merge conflicts: reported once per head commit, again after a new conflict
   const text = h.calls.prompt[0].content[0].text
   assert.match(text, /PR 5 has MERGE CONFLICTS with develop/)
   assert.match(text, /origin\/develop/)
-  assert.match(text, /Do NOT push/)
+  assert.match(text, /Do NOT force-push without asking the user/)
+  assert.match(text, /git merge origin\/develop/)
   await h.poller.poll('a1')
   assert.equal(h.calls.prompt.length, 1) // same head: not repeated
   h.state.headCommit = 'c2'
