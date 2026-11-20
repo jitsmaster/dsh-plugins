@@ -109,7 +109,7 @@ test('the Hold button opens the Hold dialog; Put on hold posts the id and the re
   assert.deepEqual({ ...T.state.dialog }, { kind: 'hold', id: 'd1', text: '' }, 'the Hold button opens the dialog')
   T.set({ dialog: { kind: 'hold', id: 'd1', text: 'waiting for the customer' } })
   const form = T.DialogHost()
-  assert.equal(findAll(form, (n) => n.type === 'input')[0].props.value, 'waiting for the customer')
+  assert.equal(findAll(form, (n) => n.type === 'textarea')[0].props.value, 'waiting for the customer')
   button(form, 'Put on hold').props.onClick()
   await tick()
   await tick()

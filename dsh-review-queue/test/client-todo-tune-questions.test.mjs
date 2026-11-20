@@ -87,3 +87,24 @@ test('source: TodoForm shows the questions panel with an input per question, Add
   assert.match(form, /applyTuneAnswers/)
   assert.match(form, /skipTuneQuestions/)
 })
+
+test('source: each tune-question answer is a multi-line textarea, not a one-line input', () => {
+  const form = source.slice(source.indexOf('function TodoForm'), source.indexOf('function Head('))
+  const tq = form.slice(form.indexOf('rq-tq'), form.indexOf('applyTuneAnswers'))
+  assert.match(tq, /h\("textarea"/)
+  assert.doesNotMatch(tq, /h\("input"/)
+})
+
+test('applyTuneAnswers keeps a multi-line answer on its own Decisions line (newlines become spaces)', () => {
+  const { T } = loadClient()
+  T.set({ todoForm: FORM({ text: 'Add X.', questions: [{ question: 'Which db?', answer: 'SQLite\n  for now\r\nonly' }, { question: 'Retry?', answer: 'yes' }] }) })
+  T.applyTuneAnswers()
+  assert.equal(formOf(T).text, 'Add X.\n\nDecisions:\n- Which db? SQLite for now only\n- Retry? yes')
+})
+
+test('applyTuneAnswers also folds Unicode line separators and tabs into one Decisions line', () => {
+  const { T } = loadClient()
+  T.set({ todoForm: FORM({ text: 'Add X.', questions: [{ question: 'Which db?', answer: 'SQLite\u2028- Evil: yes\u0085more\tend' }] }) })
+  T.applyTuneAnswers()
+  assert.equal(formOf(T).text, 'Add X.\n\nDecisions:\n- Which db? SQLite - Evil: yes more end')
+})

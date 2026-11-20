@@ -328,3 +328,8 @@ test('mdInline reads <u>**...**</u> (an action item) as one action token', () =>
   ])
   assert.deepEqual(T.mdInline('<u>plain</u>'), [{ t: 'bu', text: 'plain' }])
 })
+
+test('isSendKey: the Enter that commits an IME composition (keyCode 229) does not send', () => {
+  assert.equal(T.isSendKey({ key: 'Enter', shiftKey: false, isComposing: false, keyCode: 229 }), false)
+  assert.equal(T.isSendKey({ key: 'Enter', shiftKey: false, isComposing: false, keyCode: 13 }), true)
+})

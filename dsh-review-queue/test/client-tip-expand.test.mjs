@@ -287,9 +287,9 @@ test('Another tip shows a busy label and closes the workspace pick while it work
 test('a topic box and a Write tip button ask for a tip on that topic; Enter does the same; an empty box does nothing', async () => {
   const { T, calls } = load({ routes: { [RQ + '/v1/tip-next']: () => [200, { ok: true, tip: { ...TIP, id: 't2' } }] } })
   T.state.snap = snap({ tip: TIP })
-  const box = () => findAll(card(T), (n) => n.type === 'input' && n.props.className?.includes('rq-tip-topic'))[0]
+  const box = () => findAll(card(T), (n) => n.type === 'textarea' && n.props.className?.includes('rq-tip-topic'))[0]
   assert.ok(box(), 'a topic input')
-  assert.equal(box().props.type, 'text')
+  assert.ok(box().props.rows >= 2, 'a multi-line box')
   assert.equal(box().props.maxLength, 120)
   assert.equal(await buttonText(card(T), /Write tip/).props.onClick(), false, 'an empty box asks for nothing')
   assert.equal(calls.filter(([u]) => u.includes('tip-next')).length, 0)
@@ -299,7 +299,7 @@ test('a topic box and a Write tip button ask for a tip on that topic; Enter does
   assert.deepEqual(calls.filter(([u]) => u.includes('tip-next')), [[RQ + '/v1/tip-next', { topic: 'raft leader election' }]])
   assert.equal(T.state.tipTopic, '', 'the box is cleared once the tip is there')
   box().props.onChange({ target: { value: 'quic' } })
-  await box().props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  await box().props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault() {} })
   assert.deepEqual(calls.filter(([u]) => u.includes('tip-next')).at(-1), [RQ + '/v1/tip-next', { topic: 'quic' }])
 })
 

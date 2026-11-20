@@ -208,3 +208,12 @@ test('a Mic callback only edits the draft: in the composer and answer boxes it u
     for (const tag of m) assert.doesNotMatch(tag, /\bact\s*\(|\bsend\s*\(|\bsubmit\w*\s*\(/, 'Mic props never call the send path')
   }
 })
+
+test('the phone answer box and the Hold reason are multi-line textareas, not one-line inputs', () => {
+  const question = body(views, 'QuestionBody')
+  assert.match(question, /<textarea[^>]*placeholder="Other answer…"/)
+  assert.doesNotMatch(question, /<input/)
+  const hold = body(views, 'HoldSheet')
+  assert.match(hold, /<textarea[^>]*aria-label="Reason \(optional\)"/)
+  assert.doesNotMatch(hold, /<input/)
+})

@@ -285,7 +285,7 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Enter sends a reply; Shift+Enter is a new line and Enter during IME composition belongs to the IME. */
-		const isSendKey = (e) => !!e && e.key === "Enter" && !e.shiftKey && !e.isComposing;
+		const isSendKey = (e) => !!e && e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229;
 		/** Enter in a question's "Other answer…" box: the answers to send, or undefined (do nothing). Plain Enter only (no modifier, no IME keyCode 229),
 		 *  this box has text, and every other question already has an answer (buildAnswers is the Send answer button's own check). */
 		function enterAnswers(e, questions, drafts, qid) {
@@ -1652,7 +1652,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 		function applyTuneAnswers() {
 			const f = state.todoForm;
 			if (!f.questions) return;
-			const lines = f.questions.filter((q) => q.answer.trim()).map((q) => "- " + q.question + " " + q.answer.trim());
+			const lines = f.questions.filter((q) => q.answer.trim()).map((q) => "- " + q.question + " " + q.answer.trim().replace(/[\s\u0085]+/g, " ")); // the answer box is multi-line: one Decisions line per answer
 			set({ todoForm: { ...f, text: lines.length ? f.text.replace(/\s+$/, "") + "\n\nDecisions:\n" + lines.join("\n") : f.text, questions: undefined, error: undefined } });
 		}
 		/** The panel's Skip: the questions are dropped and the prompt stays as tuned. */
@@ -1867,7 +1867,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 							onClick: () => setDraft(q.id, toggleChoice(d, o.label, !!q.multiSelect)), "aria-pressed": d.selected.includes(o.label),
 						}, h("span", null, d.selected.includes(o.label) ? (q.multiSelect ? "☑" : "◉") : (q.multiSelect ? "☐" : "○")),
 							h("span", null, h("span", null, recommended(q, o.label) ? h("span", { className: "rq-star" }, "★ ") : null, o.label), o.description ? h("div", { className: "d" }, actionNodes(o.description)) : null))),
-						h("input", { className: "rq-input", placeholder: "Other answer…", value: d.custom || "", disabled: busy, onChange: (e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value }), onKeyDown: (e) => { const sendNow = enterAnswers(e.nativeEvent || e, questions, drafts, q.id); if (sendNow && !busy) { e.preventDefault(); sendAnswers(item, path, sendNow); } } }));
+						h("textarea", { className: "rq-ta", rows: 2, placeholder: "Other answer…", "aria-label": "Other answer", value: d.custom || "", disabled: busy, onChange: (e) => setDraft(q.id, { selected: q.multiSelect ? d.selected : [], custom: e.target.value }), onKeyDown: (e) => { const ne = e.nativeEvent || e; if (!isSendKey(ne)) return; e.preventDefault(); /* Enter, with or without Ctrl/Alt/Meta, never adds a line: the box is multi-line only through Shift+Enter; enterAnswers sends on a plain Enter only */ const sendNow = enterAnswers(ne, questions, drafts, q.id); if (sendNow && !busy) sendAnswers(item, path, sendNow); } }));
 				}),
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: !answers || busy, onClick: () => sendAnswers(item, path, answers) }, busy ? "Sending…" : sendLabel),
@@ -2174,7 +2174,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			if (d.kind === "hold") {
 				const send = () => run("/v1/hold", { reason: d.text }, { advance: true });
 				title = "Put this session on hold";
-				body = [h("input", { key: "i", className: "rq-input", placeholder: "Why? (optional, e.g. waiting for the customer)", value: d.text, disabled: busy, maxLength: 300, autoFocus: true, onChange: (e) => setText(e.target.value), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); send(); } } }),
+				body = [h("textarea", { key: "i", className: "rq-ta", rows: 2, placeholder: "Why? (optional, e.g. waiting for the customer)", "aria-label": "Reason (optional)", value: d.text, disabled: busy, maxLength: 300, autoFocus: true, onChange: (e) => setText(e.target.value), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); send(); } } }),
 					h("div", { key: "n", className: "rq-sub" }, "With an Azure DevOps ticket in the title it is watched and continued when the ticket changes.")];
 				confirm = [btn("ok", busy ? "Holding…" : "Put on hold", send, true)];
 			} else if (d.kind === "wrong") {
@@ -2433,7 +2433,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					h("div", { className: "rq-sub" }, "The tuned prompt has open choices. Answer what you want to decide (a blank answer leaves it out):"),
 					f.questions.map((q, i) => h("label", { key: i, className: "rq-tq" },
 						h("span", null, q.question),
-						h("input", { className: "rq-input", type: "text", value: q.answer, maxLength: 300, placeholder: q.default ? "Suggested: " + q.default : "Your answer", "aria-label": q.question, disabled: f.busy, onChange: (e) => setTuneAnswer(i, e.target.value) }))),
+						h("textarea", { className: "rq-ta", rows: 2, value: q.answer, maxLength: 300, placeholder: q.default ? "Suggested: " + q.default : "Your answer", "aria-label": q.question, disabled: f.busy, onChange: (e) => setTuneAnswer(i, e.target.value) }))),
 					h("div", { className: "rq-row" },
 						h("button", { className: "rq-btn", disabled: f.busy, onClick: applyTuneAnswers }, "Add answers to the prompt"),
 						h("button", { className: "rq-link", disabled: f.busy, onClick: skipTuneQuestions }, "Skip"))) : null,
@@ -2567,8 +2567,8 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 					h("button", { type: "button", className: "rq-btn", title: "Open this tip in its own small window", onClick: popOutTip }, "Pop out"),
 					h("button", { type: "button", className: "rq-btn" + (use ? " on" : ""), "aria-expanded": use, title: "Draft a todo that applies this tip to one of your workspaces", onClick: toggleTipUse }, "Use in my code")),
 				h("div", { className: "rq-row rq-tip-topicrow" },
-					h("input", { type: "text", className: "rq-input rq-tip-topic", maxLength: 120, value: st.tipTopic || "", placeholder: "Or type a topic for a new tip…", "aria-label": "Topic for a new tip", disabled: !!st.busy["tip-next"],
-						onChange: (e) => set({ tipTopic: e.target.value }), onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); return anotherTip(state.tipTopic || ""); } } }),
+					h("textarea", { className: "rq-ta rq-tip-topic", rows: 2, maxLength: 120, value: st.tipTopic || "", placeholder: "Or type a topic for a new tip… (Enter writes it, Shift+Enter for a new line)", "aria-label": "Topic for a new tip", disabled: !!st.busy["tip-next"],
+						onChange: (e) => set({ tipTopic: e.target.value }), onKeyDown: (e) => { if (isSendKey(e.nativeEvent || e)) { e.preventDefault(); return anotherTip(state.tipTopic || ""); } } }),
 					h("button", { type: "button", className: "rq-btn pri", title: "Write a tip on the topic you typed", disabled: !!st.busy["tip-next"], onClick: () => anotherTip(state.tipTopic || "") }, "Write tip")),
 				use ? h("div", { className: "rq-row rq-tip-use" },
 					h("select", { className: "rq-input rq-sel", value: picked, disabled: !!st.busy[todoKey], "aria-label": "Workspace for the todo", onChange: (e) => set({ tipUse: { ...state.tipUse, workspaceId: e.target.value } }) }, list.map((w) => h("option", { key: w.id, value: w.id }, w.title))),
