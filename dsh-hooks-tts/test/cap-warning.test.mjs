@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installContextCap } from '../cap.js'
@@ -9,8 +9,8 @@ import { createGroups, deriveGroupName } from '../groups.js'
 import { createHandoffTracker } from '../handoffs.js'
 import { withHandover } from '../pr-archive-guard.js'
 
-function harness({ cap = 400_000, prLines, archiveFails = false, noArchive = false, archiveGuard, ...extra } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'cap-'))
+function harness({ cap = 400_000, prLines, archiveFails = false, noArchive = false, archiveGuard, dir: givenDir, ...extra } = {}) {
+  const dir = givenDir ?? mkdtempSync(join(tmpdir(), 'cap-'))
   const settings = createSettings(dir, { contextCapTokens: cap, ...extra })
   const state = { tokens: 0, title: undefined, events: [], workspace: undefined, messages: [] }
   let sink
@@ -254,6 +254,168 @@ test('prCreated: spawns "PR 42" (plain, poll marker) and a gated SPARC "<title> 
   assert.match(b, /Remain in SPARC mode/)
   await h.stop(10_000) // only once
   assert.equal(h.calls.create, 2)
+})
+
+// ---- the pending hand-over survives a restart (PR 6825: the job lived in memory only) ----
+
+test('restart: notes requested, plugin restarted, notes written -> the next turn end still spawns both sessions', async () => {
+  const a = harness()
+  const p = await startHandover(a)
+  writeFileSync(p.pr, '# pr\nMode: plain\n')
+  writeFileSync(p.rest, '# rest\nMode: sparc\n')
+  const b = harness({ dir: a.dir }) // a new plugin instance over the same state folder
+  b.state.title = 'feature'
+  const prompts = []
+  b.setPromptSink(prompts)
+  await b.stop(10_000)
+  assert.equal(b.calls.create, 2)
+  assert.deepEqual(b.calls.rename, [{ sessionId: 's2', title: 'PR 42' }, { sessionId: 's3', title: 'feature - after PR 42' }])
+  assert.match(prompts[0].content[0].text, /^PR-POLL: 42$/m)
+  await b.settled()
+  assert.equal(b.archives.length, 1)
+})
+
+test('restart: PR created but the turn had not ended -> the restarted plugin requests the notes at the next turn end', async () => {
+  const a = harness()
+  a.state.title = 'feature'
+  await a.prCreated(a.agentRef, '42')
+  const b = harness({ dir: a.dir })
+  b.state.title = 'feature'
+  await b.stop(10_000)
+  assert.equal(b.steered.length, 1)
+  assert.match(b.steered[0].text, /PR 42 WAS JUST CREATED/)
+  assert.equal(b.calls.create, 0)
+})
+
+test('restart: a hand-over that finished is not repeated after another restart', async () => {
+  const a = harness()
+  const p = await startHandover(a)
+  writeFileSync(p.pr, '# pr\n')
+  writeFileSync(p.rest, 'NO-REMAINING-WORK\n')
+  await a.stop(10_000)
+  assert.equal(a.calls.create, 1)
+  const b = harness({ dir: a.dir })
+  b.state.title = 'feature'
+  await b.stop(10_000)
+  assert.equal(b.calls.create, 0)
+  assert.equal(b.steered.length, 0)
+})
+
+test('restart: a restored job counts as a hand-over in progress (no cap handoff over it)', async () => {
+  const a = harness()
+  a.state.title = 'feature'
+  await a.prCreated(a.agentRef, '42')
+  const b = harness({ dir: a.dir })
+  assert.equal(b.handingOver('a'), '42')
+})
+
+const pendingFileOf = (h) => join(h.dir, 'pending-handovers.json')
+
+test('restart: notes asked once and one still missing -> reminder, then the PR session alone from a fallback note', async () => {
+  const a = harness()
+  const p = await startHandover(a) // attempts is 1 and saved
+  writeFileSync(p.pr, '# pr\n')
+  const b = harness({ dir: a.dir })
+  b.state.title = 'feature'
+  await b.stop(10_000) // remaining-work note missing: the reminder
+  assert.equal(b.steered.length, 1)
+  assert.match(b.steered[0].text, /REMINDER/)
+  assert.equal(b.calls.create, 0)
+  await b.stop(10_000)
+  assert.equal(b.calls.create, 1)
+  assert.equal(b.calls.rename[0].title, 'PR 42')
+})
+
+test('restart: a joined PR is saved and restored (two PR sessions)', async () => {
+  const a = harness()
+  a.state.title = 'feature'
+  await a.prCreated(a.agentRef, '42')
+  await a.prCreated(a.agentRef, '43')
+  const saved = JSON.parse(readFileSync(pendingFileOf(a), 'utf8'))
+  assert.deepEqual(saved.a.prIds, ['42', '43'])
+  const b = harness({ dir: a.dir })
+  b.state.title = 'feature'
+  await b.stop(10_000)
+  const msg = b.steered[0].text
+  const notes = [...msg.matchAll(/PR (\d+) handoff note path: (.+)/g)].map((m) => [m[1], m[2]])
+  assert.deepEqual(notes.map(([id]) => id), ['42', '43'])
+  for (const [, path] of notes) writeFileSync(path, '# pr\n')
+  writeFileSync(/Remaining-work handoff note path: (.+)/.exec(msg)[1], 'NO-REMAINING-WORK\n')
+  await b.stop(10_000)
+  assert.equal(b.calls.create, 2)
+})
+
+test('restart: a cap handoff that replaces the PR job removes it from the saved file', async () => {
+  const realNow = Date.now
+  let now = Date.now()
+  Date.now = () => now
+  try {
+    const a = harness()
+    a.state.title = 'feature'
+    await a.prCreated(a.agentRef, '42')
+    assert.equal(JSON.parse(readFileSync(pendingFileOf(a), 'utf8')).a.prId, '42')
+    now += 61 * 60_000 // the hand-over entry expired (session never reached the notes pass), so the cap handoff is allowed to replace the job
+    await a.step(400_000)
+    assert.deepEqual(JSON.parse(readFileSync(pendingFileOf(a), 'utf8')), {})
+    const b = harness({ dir: a.dir })
+    assert.equal(b.handingOver('a'), undefined)
+  } finally { Date.now = realNow }
+})
+
+test('restart: one malformed entry is skipped, a good one is restored', async () => {
+  const a = harness()
+  a.state.title = 'feature'
+  await a.prCreated(a.agentRef, '42')
+  const file = JSON.parse(readFileSync(pendingFileOf(a), 'utf8'))
+  writeFileSync(pendingFileOf(a), JSON.stringify({ bad: { prId: '9', at: Date.now() }, other: null, ...file }))
+  const b = harness({ dir: a.dir })
+  assert.equal(b.handingOver('a'), '42')
+  assert.equal(b.handingOver('bad'), undefined)
+})
+
+test('restart: a tampered entry (non-numeric PR id, note path outside the handoff folder, future timestamp) is not restored', async () => {
+  const a = harness()
+  a.state.title = 'feature'
+  await a.prCreated(a.agentRef, '42')
+  const good = JSON.parse(readFileSync(pendingFileOf(a), 'utf8')).a
+  const variants = {
+    id: { ...good, prId: '42; calc', prIds: ['42; calc'], prNotes: { '42; calc': good.pr } },
+    outside: { ...good, rest: join(tmpdir(), 'elsewhere', 'x-handoff.md') },
+    sibling: { ...good, rest: `${a.dir}-other${join('/', 'x-handoff.md')}` },
+    suffix: { ...good, rest: join(a.dir, 'x.txt') },
+    future: { ...good, at: Date.now() + 3600_000 },
+    cwd: { ...good, cwd: 42 },
+  }
+  for (const [name, job] of Object.entries(variants)) {
+    writeFileSync(pendingFileOf(a), JSON.stringify({ a: job }))
+    const b = harness({ dir: a.dir })
+    assert.equal(b.handingOver('a'), undefined, `${name} must be rejected`)
+  }
+  writeFileSync(pendingFileOf(a), JSON.stringify({ a: good }))
+  assert.equal(harness({ dir: a.dir }).handingOver('a'), '42', 'the untouched job is restored')
+})
+
+test('restart: a save that fails does not break the hand-over', async () => {
+  const a = harness()
+  mkdirSync(pendingFileOf(a)) // a directory where the file should go: every write fails
+  a.state.title = 'feature'
+  await a.prCreated(a.agentRef, '42')
+  await a.stop(10_000)
+  assert.equal(a.steered.length, 1)
+})
+
+test('restart: an unreadable or stale job file is ignored', async () => {
+  const a = harness()
+  writeFileSync(join(a.dir, 'pending-handovers.json'), '{ not json')
+  const b = harness({ dir: a.dir })
+  b.state.title = 'feature'
+  await b.stop(10_000)
+  assert.equal(b.steered.length, 0)
+  writeFileSync(join(a.dir, 'pending-handovers.json'), JSON.stringify({ a: { prId: '42', prIds: ['42'], base: 'x', stamp: '', attempts: 0, pr: 'x', prNotes: { 42: 'x' }, rest: 'y', at: Date.now() - 30 * 24 * 3600_000 } }))
+  const c = harness({ dir: a.dir })
+  c.state.title = 'feature'
+  await c.stop(10_000)
+  assert.equal(c.steered.length, 0)
 })
 
 test('prCreated: a remaining-work note saying NO-REMAINING-WORK spawns only the PR session', async () => {
