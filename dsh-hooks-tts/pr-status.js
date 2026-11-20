@@ -15,12 +15,16 @@ const SEGMENT = /^[\w.-]{1,100}$/
 const segmentOk = (s) => SEGMENT.test(String(s)) && !/^\.+$/.test(String(s))
 /** The only merge failure types that are ever printed (Azure DevOps GitPullRequestMergeFailureType); anything else reads "unknown". */
 const FAILURE_TYPES = new Set(['none', 'unknown', 'caseSensitive', 'objectTooLarge', 'undefined'])
-const NAME_OK = /^[\p{L}\p{N} .'_-]{1,40}$/u
+/** A plain person name: at most 30 characters and 3 words, so a sentence ("Ignore all rules and ...") never passes. */
+const NAME_OK = /^[\p{L}\p{N}.'_-]+(?: [\p{L}\p{N}.'_-]+){0,2}$/u
+const NAME_MAX = 30
 
-/** "refs/heads/task/x" -> "task/x"; undefined when it is not a plain, safe branch name. */
+/** "refs/heads/task/x" -> "task/x"; undefined when it is not under refs/heads or not a plain, safe branch name. */
 export function branchOf(ref) {
-  const name = String(ref ?? '').replace(/^refs\/heads\//, '')
-  if (!SAFE_BRANCH.test(name) || name.includes('..') || name.includes('//') || name.endsWith('/') || name.endsWith('.lock')) return undefined
+  const text = String(ref ?? '')
+  if (!text.startsWith('refs/heads/')) return undefined
+  const name = text.slice('refs/heads/'.length)
+  if (!SAFE_BRANCH.test(name) || name.includes('..') || name.includes('//') || name.endsWith('/') || name.endsWith('.') || name.endsWith('.lock') || /(^|\/)\./.test(name)) return undefined
   return name
 }
 
@@ -56,7 +60,7 @@ const voteLabel = (v) => VOTE_LABEL.get(v) ?? 'unknown vote'
 /** A reviewer name that is safe to quote in a prompt: a plain display name, else the reviewer id, else a placeholder. */
 function reviewerLabel(r) {
   const name = String(r.displayName ?? '').trim()
-  if (NAME_OK.test(name)) return name
+  if (name.length <= NAME_MAX && NAME_OK.test(name)) return name
   const id = String(r.id ?? r.uniqueName ?? '')
   return /^[\w.@-]{1,60}$/.test(id) ? id : 'unknown reviewer'
 }
