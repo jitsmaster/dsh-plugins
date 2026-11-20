@@ -79,3 +79,13 @@ test("an item that briefly leaves the open list and returns is not new again", (
   next(["a", "b"])
   assert.deepEqual(Object.keys(T.state.fresh), [])
 })
+
+test('the selected row uses the sidebar selected fill (hover token, no accent), and new rows use a different color (success green)', () => {
+  const T = setup()
+  const sel = /\.rq-row-i\.sel,\.rq-row-i\[aria-selected=true\]\{([^}]*)\}/.exec(T.CSS)[1]
+  const neu = /\.rq-row-i\.new\{([^}]*)\}/.exec(T.CSS)[1]
+  assert.match(sel, /background:var\(--rq-hover\)/)
+  assert.doesNotMatch(sel, /accent/)
+  assert.match(neu, /--rq-ok/)
+  assert.doesNotMatch(neu, /--rq-accent/)
+})

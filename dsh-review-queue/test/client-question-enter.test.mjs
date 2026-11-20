@@ -271,6 +271,71 @@ test('the "Other answer…" box is a textarea of several rows, and no one-line i
   assert.equal(walk(tree).filter((n) => n.type === 'input').length, 0)
 })
 
+// ---------- Send reply and open session ----------
+// When the question is not clear enough, the user answers with a question and goes to the session to follow the conversation:
+// one button sends the answer exactly like Send answer, then opens the session. Only on a desktop host that can open a session.
+
+const REPLY_OPEN = 'Send reply and open session'
+const replyOpenButton = (tree) => walk(tree).find((n) => n.type === 'button' && n.children.includes(REPLY_OPEN))
+const openable = (over = {}) => item({ sessionId: 'sess1', payload: { questions: [Q('a')] }, ...over })
+
+test('Send reply and open session posts the answers like Send answer, then opens the session', async () => {
+  const it = openable()
+  const env = setup({ it, drafts: { a: draft('what do you mean by X?') } })
+  need(env.T, 'setHostOpen')
+  const opened = []
+  env.T.setHostOpen(async (id) => { opened.push([id, env.calls.length]) })
+  const button = replyOpenButton(env.render())
+  assert.ok(button, 'the button is on the card')
+  assert.notEqual(button.props.disabled, true)
+  button.props.onClick()
+  await tick(); await tick()
+  assert.deepEqual(plain(env.calls), [['/review-queue/v1/answer', { id: 'q1', answers: [{ id: 'a', selected: [], custom: 'what do you mean by X?' }] }]])
+  assert.deepEqual(opened, [['sess1', 1]], 'opened once, after the answer was posted')
+  assert.equal(env.T.state.drafts.q1, undefined, 'the draft is forgotten, as after Send answer')
+})
+
+test('Send reply and open session is disabled until the answers are complete, and while a send is in flight', () => {
+  const it = openable({ payload: { questions: [Q('a'), Q('b')] } })
+  const env = setup({ it, drafts: { a: draft('typed') } })
+  need(env.T, 'setHostOpen')
+  env.T.setHostOpen(async () => {})
+  assert.equal(replyOpenButton(env.render()).props.disabled, true, 'question b is unanswered')
+  env.T.set({ drafts: { q1: { a: draft('typed'), b: draft('', ['Yes']) } } })
+  assert.notEqual(replyOpenButton(env.render()).props.disabled, true)
+  env.T.set({ busy: { q1: true } })
+  assert.equal(replyOpenButton(env.render()).props.disabled, true)
+})
+
+test('Send reply and open session is absent when the host cannot open a session', () => {
+  const env = setup({ it: openable(), drafts: { a: draft('typed') } })
+  assert.equal(replyOpenButton(env.render()), undefined)
+})
+
+test('a failed send does not open the session, and the draft stays', async () => {
+  const it = openable()
+  const env = setup({ it, drafts: { a: draft('typed') }, fetchImpl: async () => okJson({ ok: false, error: 'not-open' }, 409) })
+  need(env.T, 'setHostOpen')
+  let opened = 0
+  env.T.setHostOpen(async () => { opened++ })
+  replyOpenButton(env.render()).props.onClick()
+  await tick(); await tick()
+  assert.equal(opened, 0)
+  assert.deepEqual(plain(env.T.state.drafts.q1), { a: draft('typed') })
+})
+
+test('the late-answer form has the button too and posts to the late-answer route', async () => {
+  const it = openable({ id: 'q2' })
+  const env = setup({ it, path: '/v1/late-answer', drafts: { a: draft('typed') } })
+  need(env.T, 'setHostOpen')
+  const opened = []
+  env.T.setHostOpen(async (id) => { opened.push(id) })
+  replyOpenButton(env.render()).props.onClick()
+  await tick(); await tick()
+  assert.equal(env.calls[0][0], '/review-queue/v1/late-answer')
+  assert.deepEqual(opened, ['sess1'])
+})
+
 // ---------- the hint ----------
 
 test('the key legend of the Task list says Enter sends when every question is answered', () => {

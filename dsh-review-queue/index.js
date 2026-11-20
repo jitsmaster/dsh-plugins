@@ -368,13 +368,13 @@ const defaultModelOf = () => { try { return ctx.get?.('agentDefaultModel') ?? ct
   if (askWanted) {
     const sleep = createSleepTracker({ io: stateDir ? fileIo(join(stateDir, 'sleep.json')) : undefined })
     const asker = createIdleAsker({
-      controllerOf, registryOf, prGuardOf, store, sleep, heldIds, log, startedAt, titlesOf,
+      controllerOf, registryOf, prGuardOf, store, sleep, heldIds, log, startedAt,
       readLog: config.idleDeps?.readLog ?? createLogReader({ root: sessionsRoot }),
       idleMs: Number.isFinite(config.idleAskMinutes) && config.idleAskMinutes > 0 ? config.idleAskMinutes * 60_000 : ASK_IDLE_MS,
       io: stateDir ? fileIo(join(stateDir, 'idle-ask.json')) : undefined,
     })
     sleep.beat()
-    const beat = setInterval(() => sleep.beat(), BEAT_MS); beat.unref?.()
+    const beat = setInterval(() => { sleep.beat(); void asker.sample() }, BEAT_MS); beat.unref?.() // the sample keeps the busy clock exact between the 10-minute checks
     const first = setTimeout(() => { void asker.check() }, config.idleAskStartMs ?? 90_000); first.unref?.()
     const every = setInterval(() => { void asker.check() }, config.idleAskCheckMs ?? ASK_CHECK_MS); every.unref?.()
     askTimers.push(beat, first, every)

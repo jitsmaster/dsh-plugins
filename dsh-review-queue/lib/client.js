@@ -1760,7 +1760,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-body{flex:1;min-height:0;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px}.rq-banner{padding:8px 14px;background:#f25a5a22;color:var(--rq-err);font-size:12px}.rq-notice{padding:6px 14px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#8883}.rq-notice-warn{background:#f2b5301f;color:var(--rq-fg)}"
 			+ ".rq-empty{margin:auto;text-align:center;color:var(--rq-mute);padding:32px 24px}"
 			+ ".rq-card{border:1px solid var(--rq-border);border-radius:9px;background:var(--rq-layer);padding:12px 14px;display:flex;flex-direction:column;gap:10px}.rq-card.sel{border-color:var(--rq-accent)}"
-			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}.rq-tier{opacity:.85}.rq-group-h{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:6px 4px 0;border-bottom:1px solid var(--rq-layer2)}.rq-group-title{font-weight:600}.rq-row-i.new{background:color-mix(in srgb,var(--rq-accent,#3b82f6) 13%,transparent);box-shadow:inset 3px 0 0 var(--rq-accent,#3b82f6);font-weight:600}.rq-tier0{outline:1px solid var(--rq-err)}.rq-tier1{outline:1px solid var(--rq-warn)}"
+			+ ".rq-card-h{display:flex;align-items:center;gap:8px;cursor:pointer;min-width:0}.rq-chip{flex:none;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600;background:var(--rq-layer2)}.rq-tier{opacity:.85}.rq-group-h{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:6px 4px 0;border-bottom:1px solid var(--rq-layer2)}.rq-group-title{font-weight:600}.rq-row-i.new{background:color-mix(in srgb,var(--rq-ok,#22c55e) 14%,transparent);box-shadow:inset 3px 0 0 var(--rq-ok,#22c55e);font-weight:600}.rq-tier0{outline:1px solid var(--rq-err)}.rq-tier1{outline:1px solid var(--rq-warn)}"
 			+ ".rq-chip.question{color:var(--rq-accent)}.rq-chip.permission{color:var(--rq-warn)}.rq-chip.completed{color:var(--rq-ok)}.rq-chip.pr-merged{color:var(--rq-ok)}.rq-chip.archive{color:var(--rq-warn)}.rq-chip.todo{color:var(--rq-accent)}.rq-chip.paused{color:var(--rq-warn)}.rq-chip.onhold{color:var(--rq-mute)}.rq-pos{flex:none;color:var(--rq-mute);font-size:12px}"
 			+ ".rq-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.rq-meta{margin-left:auto;flex:none;color:var(--rq-mute);font-size:12px;display:flex;gap:8px}"
 			+ ".rq-left{color:var(--rq-warn);font-variant-numeric:tabular-nums}.rq-left.soon{color:var(--rq-err);font-weight:600}"
@@ -1806,7 +1806,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			+ ".rq-modal-back{position:fixed;inset:0;z-index:9990;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px}.rq-modal{width:min(640px,100%);max-height:100%;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 40px #000a}.rq-ov-back{position:fixed;inset:0;z-index:9980;background:#0009;padding:54px 24px 24px;display:flex}.rq-ov{flex:1;min-width:0;border:1px solid var(--rq-border);border-radius:12px;background:var(--rq-base);overflow:hidden;display:flex;flex-direction:column}"
 			+ ".rq-split{flex:1;min-height:0;display:grid;grid-template-columns:minmax(260px,360px) 1fr}.rq-side{border-right:1px solid var(--rq-border);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:4px}"
 			+ ".rq-detail{overflow:auto;padding:16px 20px}.rq-row-i{display:flex;flex-direction:column;gap:2px;text-align:left;border:1px solid transparent!important;border-radius:8px;padding:8px 10px}"
-			+ ".rq-row-i{cursor:pointer}.rq-row-i:hover{background:var(--rq-hover)}.rq-row-i.sel,.rq-row-i[aria-selected=true]{background:var(--rq-layer2);border-color:var(--rq-border)!important}"
+			+ ".rq-row-i{cursor:pointer}.rq-row-i:hover{background:var(--rq-hover)}.rq-row-i.sel,.rq-row-i[aria-selected=true]{background:var(--rq-hover);border-color:transparent!important}"
 			+ "@media (max-width:820px){.rq-split{display:block;overflow:auto}.rq-side{display:none}.rq-detail{display:none}.rq-split .rq-narrow{display:flex}}.rq-narrow{display:none;flex-direction:column;gap:12px;padding:12px}";
 
 		let styled = false;
@@ -1841,6 +1841,11 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 			return true;
 		}
 
+		/** Send the answers like the Send answer button, then go to the session (when the question is not clear and the user answers with a question). A failed send opens nothing. */
+		async function sendAnswersAndOpen(item, path, answers) {
+			if (await sendAnswers(item, path, answers)) openSession(item);
+		}
+
 		function QuestionBody({ item, full, path = "/v1/answer", sendLabel = "Send answer" }) {
 			const st = useStore();
 			const questions = item.payload.questions || [];
@@ -1872,6 +1877,7 @@ const followTitle = (list, id) => { const c = Array.isArray(list) && id ? list.f
 				}),
 				h("div", { className: "rq-row" },
 					h("button", { className: "rq-btn pri", disabled: !answers || busy, onClick: () => sendAnswers(item, path, answers) }, busy ? "Sending…" : sendLabel),
+					hostApi.openSession && item.sessionId ? h("button", { className: "rq-btn", disabled: !answers || busy, title: "Send this answer, then open the session to follow up (for when the question is not clear and you answer with a question)", onClick: () => sendAnswersAndOpen(item, path, answers) }, "Send reply and open session") : null,
 					!answers ? h("span", { className: "rq-sub" }, "Pick an option or type an answer for every question.") : null));
 		}
 

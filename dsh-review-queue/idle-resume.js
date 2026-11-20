@@ -14,6 +14,7 @@ import { RESUME_PROMPT, classifyLog, parseLog } from './paused.js'
 import { createModelRun, NOTE_NO_MODEL, NOTE_UNUSABLE } from './summary.js'
 import { findSessionLog } from './thread.js'
 import { isTopLevel } from './userpause.js'
+import { createBusyTracker, logBusy } from './idle-busy.js'
 
 export const IDLE_MS = 30 * 60_000
 /** The check runs this often. */
@@ -162,6 +163,7 @@ export function createIdleJudge({ llm, timeoutMs = 30_000, maxTokens = 300, log 
  */
 export function createIdleResumer({ controllerOf, registryOf = () => undefined, readLog, judge, unsure = () => {}, resumed = () => {}, now = Date.now, startedAt = 0,
   idleMs = IDLE_MS, maxAgeMs = MAX_AGE_MS, maxPerPass = MAX_PER_PASS, io, heldIds = () => new Set(), log = () => {} }) {
+  const busy = createBusyTracker({ now, startedAt }) // the idle clock starts at the last moment a session was busy
   let state = {} // sessionId -> { updatedAt, at, resumes: [ms] }
   try {
     const data = JSON.parse(io?.read?.() ?? 'null')
@@ -213,10 +215,11 @@ export function createIdleResumer({ controllerOf, registryOf = () => undefined, 
     const archived = new Set((() => { try { return registryOf()?.archivedSessionIds ?? [] } catch { return [] } })().map(String))
     const busyParents = new Set(items.filter((i) => i?.running === true && i.parentSessionId).map((i) => String(i.parentSessionId)))
     const t = now()
+    busy.observe(items)
     const held = heldIds() // a session on hold is parked on purpose: never resumed by the idle check
     const candidates = items
       .filter((i) => i && typeof i.sessionId === 'string' && !held.has(i.sessionId) && isTopLevel(i) && i.running !== true && i.blank !== true && !archived.has(i.sessionId) && !busyParents.has(i.sessionId)
-        && Number.isFinite(i.updatedAt) && t - i.updatedAt >= idleMs && t - i.updatedAt <= maxAgeMs && !isHandled(i))
+        && Number.isFinite(i.updatedAt) && t - busy.sinceOf(i) >= idleMs && t - i.updatedAt <= maxAgeMs && !isHandled(i))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, maxPerPass)
     const result = { ok: true, checked: 0, resumed: [], asked: [], skipped: { background: 0, unreadable: 0, noModel: 0 } }
@@ -224,7 +227,10 @@ export function createIdleResumer({ controllerOf, registryOf = () => undefined, 
       const log1 = await readLog(item.sessionId)
       if (!log1) { result.skipped.unreadable++; continue }
       result.checked++
+      const seen = logBusy(log1.records, { startedAt })
+      // An open turn or unanswered call in a session that is not running is a cut-off (resumed below), not work: only live background jobs are busy here.
       if (liveBackgroundJobs(log1.records, { startedAt }).length) { result.skipped.background++; continue }
+      if (Number.isFinite(seen.lastTime) && t - seen.lastTime < idleMs) continue
       const classified = classifyLog(log1.records, { torn: log1.torn })
       const texts = lastTexts(log1.records)
       const c = { sessionId: item.sessionId, title: classified.title ?? '', cwd: classified.head?.cwd ?? item.cwd ?? '', lastWrite: item.updatedAt, endKind: classified.endKind,

@@ -47,7 +47,8 @@ export function createPrArchiveGuard({ enabled = () => true, prIdOf, statusOf, f
     async check(sessionId) {
       if (!enabled()) return { protected: false }
       let found
-      try { found = await prIdOf(String(sessionId)) } catch { return { protected: false } }
+      // A lookup that throws fails closed, like an unreadable PR status: a hiccup must never let a PR session be lost.
+      try { found = await prIdOf(String(sessionId)) } catch { return { protected: true, status: 'unknown' } }
       // One PR id, or several (a session that created or waits for more than one PR): any PR still open protects it.
       const ids = [...new Set((Array.isArray(found) ? found : [found]).filter(Boolean).map(String))]
       let verdict = { protected: false }

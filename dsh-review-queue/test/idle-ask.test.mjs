@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createStore } from '../store.js'
-import { createIdleAsker, createSleepTracker, ASK_PROMPT, isPrTitle } from '../idle-ask.js'
+import { createIdleAsker, createSleepTracker, ASK_PROMPT } from '../idle-ask.js'
 
 const H = 3600_000
 const memIo = () => { const io = { text: undefined, read: () => io.text, write: (t) => { io.text = t } }; return io }
@@ -59,6 +59,46 @@ test('a guard that throws or is missing does not stop the idle ask', async () =>
   assert.deepEqual((await r.asker.check()).asked, ['a'])
 })
 
+// Review finding: the title skip was removed with the guard in front, so without the guard (dsh-hooks-tts missing, protectPrSessions off, or a guard that throws) a PR session was asked and an Archive answer archived it.
+test('without a PR guard (missing or throwing) a session whose title names a PR is still never asked', async () => {
+  const items = [S('t1', 1 * H, { title: 'PR 6554 - Fix cache' }), S('t2', 1 * H, { projections: { values: { title: 'Fix cache - after PR #6554' } } }), S('free', 1 * H, { title: 'Prepare the release' })]
+  assert.deepEqual((await rig(items).asker.check()).asked, ['free'])
+  const throwing = rig(items, { prGuardOf: () => ({ check: async () => { throw new Error('boom') } }) })
+  assert.deepEqual((await throwing.asker.check()).asked, ['free'])
+})
+
+// Security review: guard.check can mean an Azure DevOps request. It is time-boxed (a hung one protects the session and cannot stall the asker) and counted toward the per-pass inspection cap.
+test('a PR guard that never answers protects the session after the time box and does not stall the pass', async () => {
+  const r = rig([S('hang', 1 * H + 1), S('free', 1 * H)], { prGuardOf: () => ({ check: (id) => (id === 'hang' ? new Promise(() => {}) : Promise.resolve({ protected: false })) }), guardTimeoutMs: 30 })
+  assert.deepEqual((await r.asker.check()).asked, ['free'])
+})
+
+test('guard calls count toward the per-pass inspection cap', async () => {
+  let calls = 0
+  const items = Array.from({ length: 80 }, (_, i) => S('s' + i, 1 * H + i))
+  const r = rig(items, { prGuardOf: () => ({ check: async () => { calls++; return { protected: true, prId: '1', status: 'active' } } }) })
+  await r.asker.check()
+  assert.ok(calls <= 50, 'guard calls in one pass: ' + calls)
+})
+
+test('a working PR guard is the authority: it frees a PR-titled session it does not protect', async () => {
+  const r = rig([S('t1', 1 * H, { title: 'PR 6554 - Fix cache' })], { prGuardOf: () => ({ check: async () => ({ protected: false }) }) })
+  assert.deepEqual((await r.asker.check()).asked, ['t1'])
+})
+
+test('the open question and permission cards are listed once per pass, not once per session', async () => {
+  const items = Array.from({ length: 20 }, (_, i) => S('s' + i, 1 * H + i))
+  let openLists = 0
+  const r = rig(items, {})
+  const list = r.store.list.bind(r.store)
+  r.store.list = (q) => { if (q?.status === 'open') openLists++; return list(q) }
+  await r.asker.check()
+  assert.ok(openLists <= 2, 'open-card lists in one pass: ' + openLists)
+  openLists = 0
+  await r.asker.sample()
+  assert.ok(openLists <= 1, 'open-card lists in one sample: ' + openLists)
+})
+
 test('does not ask a session that already has an open question or permission card', async () => {
   const r = rig([S('a', 1 * H)])
   r.store.add({ type: 'question', sessionId: 'a', questions: [] })
@@ -105,33 +145,6 @@ test('the prompt tells a model that wraps the question in run_code to raise that
 
 test('the prompt asks with ask_user_question, recommends only for unfinished work, and waits forever otherwise', () => {
   for (const needle of ['ask_user_question', 'Continue', 'Archive', '(Recommended)', 'timeout 600', 'no timeout']) assert.ok(ASK_PROMPT.includes(needle), needle)
-})
-
-test('isPrTitle: sessions that name a pull request, and only those', () => {
-  for (const title of ['PR 6554', 'PR 6568 - Fix: Widget - 25719', 'Grab 4 tickets - after PR 6578', 'use all-4-1 skill ... - after PR 6602, 66', 'Continue PR 12']) assert.equal(isPrTitle(title), true, title)
-  for (const title of ['Fix: Widget - 25719', 'Improve the PRODUCT page', 'spring cleaning', '', undefined]) assert.equal(isPrTitle(title), false, String(title))
-})
-
-test('never asks a session titled with a PR (its poller automation is why it is idle), by row title or by the title reader', async () => {
-  const old = 1 * H
-  const row = (id, title, extra = {}) => S(id, old, { projections: { values: { title } }, ...extra })
-  const r = rig([row('pr', 'PR 6554'), row('wait', 'Grab 4 tickets - after PR 6578'), row('plain', 'Fix: Widget - 25719'), S('read', old), S('readplain', old)], {
-    titlesOf: async (ids) => new Map(ids.map((id) => [id, id === 'read' ? 'PR 77 - Fix: x' : 'Just work'])),
-  })
-  assert.deepEqual((await r.asker.check()).asked.sort(), ['plain', 'readplain'])
-})
-
-test('PR-titled sessions do not use up the per-pass limit of the others', async () => {
-  const items = []
-  for (let i = 0; i < 6; i++) items.push(S('pr' + i, 1 * H + i, { projections: { values: { title: 'PR ' + (100 + i) } } }))
-  items.push(S('free', 1 * H, { projections: { values: { title: 'free work' } } }))
-  const r = rig(items)
-  assert.deepEqual((await r.asker.check()).asked, ['free'])
-})
-
-test('a failing title reader does not stop the others from being asked', async () => {
-  const r = rig([S('a', 1 * H)], { titlesOf: async () => { throw new Error('boom') } })
-  assert.deepEqual((await r.asker.check()).asked, ['a'])
 })
 
 test('an Archive answer does not archive the poll session of a still-open PR (once per ask, logged)', async () => {

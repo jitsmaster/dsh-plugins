@@ -153,7 +153,7 @@ function cleanAnswer(raw) {
   return (fenced && !fenced[1].includes('```') ? fenced[1] : unlabeled).trim()
 }
 
-const QUESTIONS_LINE = /^[ \t]*[*_]*(?:open[ \t]+)?questions[*_]*[ \t]*:?[ \t]*[*_]*[ \t]*$/im
+const QUESTIONS_LINE = /^[ \t]*[*_]*(?:open[ \t]+)?questions[ \t*_:]*$/im // one trailing class, no adjacent optional runs (linear time)
 const ITEM_BULLET = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/
 const DEFAULT_MARK = 'Suggested default:'
 const DECIDE_HEADING = /^[ \t]*[*_#]*[ \t]*decide\b[^\n]*$/i
@@ -172,7 +172,7 @@ function questionOf(line) {
 /**
  * The open questions of the model answer, apart from the prompt: { prompt, questions } (questions [] when there are none).
  * They come from a QUESTIONS: block after the prompt, or, failing that, from the "<question>? Suggested default: <X>." items of a Decide list inside
- * a prompt that has text of its own (an answer that is only such items stays as it is: nothing is moved out of an empty prompt).
+ * a prompt that has text of its own. An answer that is only such items comes back with an empty prompt and the questions; tune() then keeps the typed text (flag stripped).
  */
 function splitQuestions(raw) {
   const mark = QUESTIONS_LINE.exec(raw)
@@ -190,8 +190,19 @@ function splitQuestions(raw) {
   while (heading >= 0 && !lines[heading].trim()) heading--
   const dropHeading = heading >= 0 && DECIDE_HEADING.test(lines[heading]) ? heading : -1
   const rest = lines.filter((line, i) => !isItem(line) && i !== dropHeading).join('\n').trim()
-  if (!rest) return { prompt: raw, questions: [] }
+  // No prompt of its own (only questions): the prompt is empty and tune() keeps what the user typed. Questions never replace the box text.
   return { prompt: rest, questions: lines.filter(isItem).map(questionOf).filter(Boolean).slice(0, MAX_QUESTIONS) }
+}
+
+/**
+ * A model answer that is nothing but clarifying questions (the rules' "ask 1-2 questions when ambiguous" step), with no marker and no default:
+ * every line ends with a question mark. Only when the typed prompt itself is not a question, so a prompt that is a question may still be rewritten as one.
+ */
+function plainQuestions(prompt, typedBody) {
+  if (typedBody.includes('?')) return []
+  const lines = cleanAnswer(prompt).split('\n').filter((l) => l.trim())
+  if (!lines.length || !lines.every((l) => /\?[ \t*_]*$/.test(l.replace(ITEM_BULLET, '')))) return []
+  return lines.map(questionOf).filter(Boolean).slice(0, MAX_QUESTIONS)
 }
 
 /** The failure of a model call as { error, logged }: the client's words (a generic LLM error for a provider failure) and the line for the log (with the detail). */
@@ -243,8 +254,13 @@ export function createTuner({ llm, rulesText, rulesPath, timeoutMs = 60000, maxT
     let error
     let logged
     try {
-      const { prompt, questions } = splitQuestions(await within(ask(parsed, ac.signal), timeoutMs, signal))
-      const answer = cleanAnswer(prompt)
+      let { prompt, questions } = splitQuestions(await within(ask(parsed, ac.signal), timeoutMs, signal))
+      if (!questions.length) {
+        const plain = plainQuestions(prompt, parsed.body)
+        if (plain.length) { questions = plain; prompt = '' }
+      }
+      // Questions without a rewritten prompt: the typed text stays in the box (its trailing flag stripped, so a Decisions list added after it never strands the flag mid-text); the questions are asked apart.
+      const answer = questions.length && !cleanAnswer(prompt) ? parsed.body.trimEnd() : cleanAnswer(prompt)
       if (!answer) error = EMPTY
       else if (answer.length > MAX_TODO) error = TOO_LONG
       else return questions.length ? { ok: true, text: answer, questions } : { ok: true, text: answer }
