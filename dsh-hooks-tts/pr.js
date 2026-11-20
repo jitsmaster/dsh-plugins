@@ -464,9 +464,14 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       if (pr?.status === 'abandoned') { finish(id, 'PR abandoned'); void serial(() => handleAbandoned(entry.prId, [id])); void checkWaits(); return }
       let found = []
       if (base) {
-        const data = await getJson(`${base}/threads?api-version=7.1`, pat)
-        found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
-        trace(`polled PR ${entry.prId}: ${data?.value?.length ?? 0} threads, ${found.filter((f) => f.notify).length} new`)
+        // An unreadable thread list (403/404/5xx) must not suppress the status reports below: trace it and carry on.
+        try {
+          const data = await getJson(`${base}/threads?api-version=7.1`, pat)
+          found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
+          trace(`polled PR ${entry.prId}: ${data?.value?.length ?? 0} threads, ${found.filter((f) => f.notify).length} new`)
+        } catch (error) {
+          trace(`thread read of PR ${entry.prId} failed: ${scrub(error)}`)
+        }
       } else if (!entry.repoUnresolved) {
         entry.repoUnresolved = true
         trace(`could not resolve the repository of PR ${entry.prId}: the PR names none, or an unusable one; its threads are not read (status reports still work)`)

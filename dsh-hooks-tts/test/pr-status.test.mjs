@@ -42,7 +42,7 @@ function fakeAdo() {
     repository: { id: pr.repo.id, name: pr.repo.name, project: { id: PROJECT } },
     ...pr.fields,
   })
-  const state = { failWith: undefined, builds: undefined }
+  const state = { failWith: undefined, builds: undefined, threadsStatus: undefined }
   async function fetchImpl(url, init) {
     requests.push(url)
     inits.push(init)
@@ -51,6 +51,7 @@ function fakeAdo() {
     let m = /^\/ingeniuxdev\/_apis\/git\/pullrequests\/(\d+)$/i.exec(u.pathname)
     if (m) return prs.has(m[1]) ? json(body(prs.get(m[1]))) : notFound()
     m = /^\/ingeniuxdev\/([^/]+)\/_apis\/git\/repositories\/([^/]+)\/pullRequests\/(\d+)\/threads$/.exec(u.pathname)
+    if (m && state.threadsStatus) return { ok: false, status: state.threadsStatus, json: async () => ({}) }
     if (m) {
       const pr = prs.get(m[3])
       return pr && pr.repo.id === m[2] && m[1] === (pr.fields.repository?.project?.id ?? PROJECT) ? json({ value: threads.get(m[3]) ?? [] }) : notFound()
@@ -662,5 +663,17 @@ test('two negative votes in one poll ask for ado-pr-implement once', async () =>
   assert.equal((w.texts()[0].match(/ado-pr-implement/g) ?? []).length, 1)
   assert.match(w.texts()[0], /Laska Fitzhugh/)
   assert.match(w.texts()[0], /Sam/)
+  w.poller.stopAll()
+})
+
+test('an unreadable thread list (HTTP 403/404/5xx) does not suppress the status reports', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.state.threadsStatus = 404
+  w.start(6776)
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  assert.match(w.texts()[0], /MERGE CONFLICTS/)
+  assert.match(w.log(), /thread read of PR 6776 failed: HTTP 404/)
   w.poller.stopAll()
 })
