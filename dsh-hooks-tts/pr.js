@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path'
 import { stripHold } from './hold.js'
 import { createPrArchiveGuard } from './pr-archive-guard.js'
 import { APPROVAL_SPEC, createPrSchedule, installPrScheduleHooks, taskTitle, textOf } from './pr-schedule.js'
-import { MAIN_BRANCHES, branchOf, conflictLine, createStatusState, evaluateStatus, repoPrBase } from './pr-status.js'
+import { branchOf, conflictLine, createStatusState, evaluateStatus, isMainBranchIgnoreCase, repoPrBase } from './pr-status.js'
 
 export const PR_TITLE = /^PR \d+/
 /**
@@ -200,7 +200,7 @@ function queuedMessage(prId, threadIds, ciBuilds = [], statusLines = [], hasConf
     `New review comments on PR ${prId} (thread${threadIds.length > 1 ? 's' : ''} ${threadIds.join(', ')}).`,
     `Run the \`ado-pr-implement\` skill on PR ${prId} now, in this session, and take it only up to its user-approval gate: evaluate each comment, then implement fixes and update tests locally.`,
     hasConflict
-      ? 'Do the merge-conflict steps first, and push the merge before starting the comment fixes, so the fixes are not committed with it. Do NOT commit, push, post replies or resolve threads for the comment fixes until the user has approved at that gate. This applies to the comment fixes only; the merge-conflict steps above are pre-approved (normal push, never a force-push without asking).'
+      ? 'Do the merge-conflict steps first: commit the merge, but do not push it yet; note its SHA with `git rev-parse HEAD` right after committing the merge. Then commit the comment fixes locally as their own commit, separate from the merge. Do NOT push, post replies or resolve threads until the user has approved. One gate covers both: step 4\'s question above is replaced by this one gate, so do not ask earlier; ask once with `ask_user_question` what may be pushed (only the merge commit (`git push origin <merge-sha>:<source-branch>`, the PR source branch named in step 1), both commits, or nothing); this question replaces the ado-pr-implement approval question. Both commits: push both, then post the replies and resolve the threads. Only the merge commit: no replies or thread resolving, leave the comment fixes local and tell the user. If nothing, leave both commits local. The re-check in step 5 runs after the push chosen at the gate, and is skipped if nothing was pushed.'
       : 'Do NOT commit, push, post replies or resolve threads until the user has approved at that gate.',
   ].join('\n')
 }
@@ -346,7 +346,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
     // What an earlier registration of this PR already announced wins over the marker's list.
     const seen = new Map(retainedSeen.get(String(prId)) ?? [])
     for (const [t, c] of seenEntries) if (!seen.has(t)) seen.set(t, c)
-    const entry = { agent, prId: String(prId), seen, ciReported: new Set(), status: createStatusState(retainedStatus.get(String(prId))), repoUnresolved: false, timer: undefined, inFlight: undefined, restored }
+    const entry = { agent, prId: String(prId), seen, ciReported: new Set(), status: createStatusState(retainedStatus.get(String(prId))), repoUnresolved: false, threadReadFailed: undefined, timer: undefined, inFlight: undefined, restored }
     // A resumed marker carrying resume=suggested/spawned means the merged-PR suggestion was already made.
     // An existing state for the same PR (poll stopped after the merge, then re-registered) is kept, never reset.
     const prior = states.get(agent.id)?.prId === entry.prId ? states.get(agent.id) : undefined
@@ -429,7 +429,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
   /** Stacked PR: the active PR (same repository) whose source branch is this PR's target branch, as { id, conflicts }; undefined for a PR into develop/main, or when there is none or the lookup failed (traced). */
   async function targetPrOf(entry, pr, base, pat) {
     const target = branchOf(pr?.targetRefName)
-    if (!base || !target || MAIN_BRANCHES.has(target)) return undefined
+    if (!base || !target || isMainBranchIgnoreCase(target)) return undefined
     try {
       const root = base.slice(0, base.lastIndexOf('/pullRequests/'))
       const data = await getJson(`${root}/pullrequests?searchCriteria.sourceRefName=${encodeURIComponent(`refs/heads/${target}`)}&searchCriteria.status=active&$top=5&api-version=7.1`, pat)
@@ -468,9 +468,13 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         try {
           const data = await getJson(`${base}/threads?api-version=7.1`, pat)
           found = detectNewThreads(data?.value, entry.seen, pr?.createdBy?.id)
+          entry.threadReadFailed = undefined
           trace(`polled PR ${entry.prId}: ${data?.value?.length ?? 0} threads, ${found.filter((f) => f.notify).length} new`)
         } catch (error) {
-          trace(`thread read of PR ${entry.prId} failed: ${scrub(error)}`)
+          // A persistent failure is traced once, not every poll; a different cause (404 -> 401) or a later success re-arms it.
+          const why = scrub(error)
+          if (entry.threadReadFailed !== why) trace(`thread read of PR ${entry.prId} failed: ${why}`)
+          entry.threadReadFailed = why
         }
       } else if (!entry.repoUnresolved) {
         entry.repoUnresolved = true
@@ -486,6 +490,8 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         ...(status.conflictNew ? [conflictLine(entry.prId, pr, { targetPr })] : []),
         ...(status.blockedNew ? [status.blocked.line] : []),
         ...status.voteLines,
+        // The comments message already asks for ado-pr-implement: do not ask twice.
+        ...(!fresh.length && status.votes?.implement ? [status.votes.implement] : []),
       ]
       // The CI pipeline (definition 80) belongs to the Ingeniux project: no lookup for a PR of another project, nor without a resolved repository.
       const project = base?.slice(ADO_ORG.length + 1).split('/')[0]
@@ -507,7 +513,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
         // Approval and a clean CI review do not end the poll: only a merged or abandoned PR does.
         return
       }
-      await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId), newBuilds, statusLines, status.conflictNew))
+      await queueMessage(entry, queuedMessage(entry.prId, fresh.map((t) => t.threadId), newBuilds, statusLines, status.conflictNew && Boolean(branchOf(pr?.targetRefName))))
       recordReported()
       // Recorded only after the message was queued, so a failed hand-over is retried next poll.
       for (const t of fresh) entry.seen.set(t.threadId, t.lastCommentId)

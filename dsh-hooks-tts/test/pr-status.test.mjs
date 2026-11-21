@@ -109,7 +109,7 @@ const QA_FIELDS = { sourceRefName: 'refs/heads/task/26078-ai-005-stream-abort', 
 
 // ---- conflicts detected ----
 
-test('conflicts detected: the session is told how to fetch, merge, test, push without force and re-check', async () => {
+test('conflicts detected: the session is told how to fetch, merge, test, commit without pushing until the user approves, and re-check', async () => {
   const w = world()
   w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts', reviewers: [reviewer('Laska Fitzhugh', -5)] })
   w.start(6776)
@@ -130,7 +130,11 @@ test('conflicts detected: the session is told how to fetch, merge, test, push wi
   assert.match(text, /ask_user_question/)
   assert.match(text, /az repos pr show --id 6776/)
   assert.match(text, /mergeStatus/)
-  assert.doesNotMatch(text, /Do NOT push/)
+  assert.match(text, /4\. Commit the merge[^\n]*Do NOT push[^\n]*ask_user_question/)
+  assert.doesNotMatch(text, /pre-approved|normal push/i)
+  // mergeStatus only changes after a push: the re-check comes after the approved push, not before it.
+  assert.match(text, /5\. After the approved push, re-check the merge status[^\n]*a local merge does not change it/)
+  assert.match(text, /5\. [^\n]*Skip this step if the push was declined/)
   w.poller.stopAll()
 })
 
@@ -593,7 +597,7 @@ test('a conflict together with new comments scopes the no-push rule to the comme
   assert.match(text, /git merge origin\/develop/)
   assert.match(text, /New review comments on PR 6776/)
   assert.doesNotMatch(text, /Do NOT commit, push, post replies or resolve threads until the user has approved at that gate\./)
-  assert.match(text, /applies to the comment fixes only[^\n]*merge-conflict steps/i)
+  assert.match(text, /One gate covers both/)
   w.poller.stopAll()
 })
 
@@ -630,13 +634,28 @@ test('no CI build lookup for a PR outside the project that owns the CI pipeline'
   w.poller.stopAll()
 })
 
-test('a conflict sharing a message with comments: merge and push first, then the comment fixes', async () => {
+test('a conflict sharing a message with comments: commit the merge first, then the comment fixes; a declined push does not block them', async () => {
   const w = world()
   w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
   w.ado.threads('6776', [thread(7, 2)])
   w.start(6776)
   await w.poll()
-  assert.match(w.texts()[0], /merge-conflict steps first[^\n]*before (starting|you start) the comment fixes/i)
+  const text = w.texts()[0]
+  // one sequence, one gate: commit the merge, do the fixes as their own commit, then ask once what may be pushed
+  assert.match(text, /merge-conflict steps first: commit the merge, but do not push it yet/i)
+  assert.match(text, /commit the comment fixes locally as their own commit, separate from the merge\. Do NOT push, post replies or resolve threads until the user has approved/)
+  assert.match(text, /One gate covers both[^\n]*ask once with `ask_user_question`[^\n]*only the merge commit \(`git push origin <merge-sha>:<source-branch>`/)
+  assert.match(text, /if nothing, leave both commits local/i)
+  // review: no early second question, defined placeholders, and what each answer authorises
+  assert.match(text, /step 4's question above is replaced by this one gate, so do not ask earlier/)
+  assert.match(text, /note its SHA with `git rev-parse HEAD` right after committing the merge/)
+  assert.match(text, /this question replaces the ado-pr-implement approval question/)
+  assert.match(text, /Both commits: push both, then post the replies and resolve the threads/)
+  assert.match(text, /Only the merge commit: no replies or thread resolving, leave the comment fixes local and tell the user/)
+  assert.match(text, /re-check in step 5 runs after the push chosen at the gate, and is skipped if nothing was pushed/)
+  // no contradiction and nothing impossible to follow
+  assert.doesNotMatch(text, /Do NOT commit, push, post replies or resolve threads for the comment fixes/)
+  assert.doesNotMatch(text, /do not wait for the answer|own gate|the one commit allowed/i)
   w.poller.stopAll()
 })
 
@@ -705,4 +724,112 @@ test('a target ref that is not under refs/heads, or has a dot component, is trea
     assert.match(w.texts()[0], /unusual/, ref)
     w.poller.stopAll()
   }
+})
+
+// ---- follow-up: push gate, trace once, target casing, one ado-pr-implement line ----
+
+test('a conflict sharing a message with comments: the push is gated by the user, not pre-approved', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.threads('6776', [thread(7, 2)])
+  w.start(6776)
+  await w.poll()
+  const text = w.texts()[0]
+  assert.doesNotMatch(text, /pre-approved|normal push/i)
+  assert.match(text, /4\. Commit the merge[^\n]*Do NOT push until the user approves[^\n]*ask_user_question/)
+  assert.match(text, /One gate covers both[^\n]*ask once with `ask_user_question`[^\n]*what may be pushed/i)
+  w.poller.stopAll()
+})
+
+test('a persistent thread-read failure is traced once, and again after a successful read', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS })
+  w.ado.state.threadsStatus = 403
+  w.start(6776)
+  await w.poll()
+  await w.poll()
+  await w.poll()
+  const count = () => (w.log().match(/thread read of PR 6776 failed/g) ?? []).length
+  assert.equal(count(), 1)
+  w.ado.state.threadsStatus = undefined
+  await w.poll()
+  w.ado.state.threadsStatus = 403
+  await w.poll()
+  assert.equal(count(), 2)
+  w.poller.stopAll()
+})
+
+test('a thread-read failure with a different cause is traced again (a 404 turning into a 401 is not hidden)', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS })
+  w.ado.state.threadsStatus = 404
+  w.start(6776)
+  await w.poll()
+  await w.poll()
+  w.ado.state.threadsStatus = 401
+  await w.poll()
+  await w.poll()
+  const lines = w.log().split('\n').filter((l) => /thread read of PR 6776 failed/.test(l))
+  assert.equal(lines.length, 2)
+  assert.match(lines[0], /HTTP 404/)
+  assert.match(lines[1], /HTTP 401/)
+  w.poller.stopAll()
+})
+
+test('a target branch spelled Develop or MAIN makes no target-PR lookup, but keeps the off-main warning (refs are case-sensitive)', async () => {
+  for (const ref of ['refs/heads/Develop', 'refs/heads/MAIN']) {
+    const w = world()
+    w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, targetRefName: ref, mergeStatus: 'conflicts' })
+    w.start(6776)
+    await w.poll()
+    assert.equal(w.prompts.length, 1, ref)
+    assert.doesNotMatch(w.texts()[0], /stacked on/, ref)
+    assert.equal(w.ado.requests.filter((u) => /searchCriteria/.test(u)).length, 0, ref)
+    // origin/Develop can be a different branch from origin/develop: the message still warns and asks to look at the merge first.
+    assert.match(w.texts()[0], /not develop/, ref)
+    assert.match(w.texts()[0], /look at what the merge brought in/i, ref)
+    w.poller.stopAll()
+  }
+})
+
+test('a negative vote together with new comments asks for ado-pr-implement once', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, reviewers: [reviewer('Laska Fitzhugh', 0, true)] })
+  w.start(6776)
+  await w.poll()
+  w.ado.set('6776', { reviewers: [reviewer('Laska Fitzhugh', -5, true)] })
+  w.ado.threads('6776', [thread(7, 2)])
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  assert.equal((w.texts()[0].match(/ado-pr-implement/g) ?? []).length, 1)
+  assert.match(w.texts()[0], /Laska Fitzhugh/)
+  assert.match(w.texts()[0], /changed their vote[^\n]*-5/)
+  assert.match(w.texts()[0], /New review comments on PR 6776/)
+  w.poller.stopAll()
+})
+
+test('an unusual target branch name: no fetch or merge, and the re-check does not refer to a push that was never asked for', async () => {
+  const w = world()
+  w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS, targetRefName: 'refs/tags/v1', mergeStatus: 'conflicts' })
+  w.start(6796)
+  await w.poll()
+  const text = w.texts()[0]
+  assert.doesNotMatch(text, /git fetch|git merge/)
+  assert.doesNotMatch(text, /After the approved push|Skip this step if the push was declined/)
+  assert.match(text, /2\. Only if the user later has you merge and push[^\n]*re-check the merge status/)
+  w.poller.stopAll()
+})
+
+test('an unusual target branch name together with comments: no merge was made, so the message does not mention a merge commit or the combined gate', async () => {
+  const w = world()
+  w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS, targetRefName: 'refs/tags/v1', mergeStatus: 'conflicts' })
+  w.ado.threads('6796', [thread(7, 2)])
+  w.start(6796)
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  const text = w.texts()[0]
+  assert.match(text, /New review comments on PR 6796/)
+  assert.doesNotMatch(text, /merge-sha|commit the merge|One gate covers both/i)
+  assert.match(text, /Do NOT commit, push, post replies or resolve threads until the user has approved at that gate\./)
+  w.poller.stopAll()
 })

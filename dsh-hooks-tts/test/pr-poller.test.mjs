@@ -732,7 +732,7 @@ test('merge conflicts: reported once per head commit, again after a new conflict
   const text = h.calls.prompt[0].content[0].text
   assert.match(text, /PR 5 has MERGE CONFLICTS with develop/)
   assert.match(text, /origin\/develop/)
-  assert.match(text, /Do NOT force-push without asking the user/)
+  assert.match(text, /Do NOT push until the user approves[^\n]*ask_user_question/)
   assert.match(text, /git merge origin\/develop/)
   await h.poller.poll('a1')
   assert.equal(h.calls.prompt.length, 1) // same head: not repeated
