@@ -200,7 +200,7 @@ function queuedMessage(prId, threadIds, ciBuilds = [], statusLines = [], hasConf
     `New review comments on PR ${prId} (thread${threadIds.length > 1 ? 's' : ''} ${threadIds.join(', ')}).`,
     `Run the \`ado-pr-implement\` skill on PR ${prId} now, in this session, and take it only up to its user-approval gate: evaluate each comment, then implement fixes and update tests locally.`,
     hasConflict
-      ? 'Do the merge-conflict steps first: commit the merge, but do not push it yet; note its SHA with `git rev-parse HEAD` right after committing the merge. Then commit the comment fixes locally as their own commit, separate from the merge. Do NOT push, post replies or resolve threads until the user has approved. One gate covers both: step 4\'s question above is replaced by this one gate, so do not ask earlier; ask once with `ask_user_question` what may be pushed (only the merge commit (`git push origin <merge-sha>:<source-branch>`, the PR source branch named in step 1), both commits, or nothing); this question replaces the ado-pr-implement approval question. Both commits: push both, then post the replies and resolve the threads. Only the merge commit: no replies or thread resolving, leave the comment fixes local and tell the user. If nothing, leave both commits local. The re-check in step 5 runs after the push chosen at the gate, and is skipped if nothing was pushed.'
+      ? 'Do the merge-conflict steps first: commit the merge, but do not push it yet; note its SHA with `git rev-parse HEAD` right after committing the merge. Then commit the comment fixes locally as their own commit, separate from the merge. Do NOT push, post replies or resolve threads until the user has approved. One gate covers both: step 4\'s question above is replaced by this one gate, so do not ask earlier; ask once with `ask_user_question` what may be pushed (only the merge commit (`git push origin <merge-sha>:<source-branch>`, where <source-branch> is the branch checked out in the merge worktree), both commits, or nothing); this question replaces the ado-pr-implement approval question. Both commits: push both, then post the replies and resolve the threads. Only the merge commit: no replies or thread resolving, leave the comment fixes local and tell the user. If nothing, leave both commits local. The re-check in step 5 runs after the push chosen at the gate, and is skipped if nothing was pushed.'
       : 'Do NOT commit, push, post replies or resolve threads until the user has approved at that gate.',
   ].join('\n')
 }
@@ -437,7 +437,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       return found ? { id: found.pullRequestId, conflicts: found.mergeStatus === 'conflicts' } : undefined
     } catch (error) {
       trace(`target PR lookup for PR ${entry.prId} failed: ${scrub(error)}`)
-      return undefined
+      return { failed: true } // not "no stacked PR": the conflict is reported on a later poll, once the lookup works
     }
   }
 
@@ -485,7 +485,9 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       // Status reports (see pr-status.js): merge conflicts, a blocked auto-complete and reviewer vote changes. Each is reported once per state:
       // conflicts per (PR, head commit, target head commit); the record is cleared when the merge status turns to succeeded, so a later conflict is reported again.
       const status = state(entry, pr)
-      const targetPr = status.conflictNew ? await targetPrOf(entry, pr, base, pat) : undefined
+      const lookup = status.conflictNew ? await targetPrOf(entry, pr, base, pat) : undefined
+      const targetPr = lookup?.failed ? undefined : lookup
+      if (lookup?.failed) status.conflictNew = false // retried next poll (the conflict key is not recorded)
       const statusLines = [
         ...(status.conflictNew ? [conflictLine(entry.prId, pr, { targetPr })] : []),
         ...(status.blockedNew ? [status.blocked.line] : []),

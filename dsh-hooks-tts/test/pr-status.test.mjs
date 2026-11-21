@@ -43,7 +43,7 @@ function fakeAdo() {
     repository: { id: pr.repo.id, name: pr.repo.name, project: { id: PROJECT } },
     ...pr.fields,
   })
-  const state = { failWith: undefined, builds: undefined, threadsStatus: undefined }
+  const state = { failWith: undefined, builds: undefined, threadsStatus: undefined, searchStatus: undefined }
   async function fetchImpl(url, init) {
     requests.push(url)
     inits.push(init)
@@ -58,6 +58,7 @@ function fakeAdo() {
       return pr && pr.repo.id === m[2] && m[1] === (pr.fields.repository?.project?.id ?? PROJECT) ? json({ value: threads.get(m[3]) ?? [] }) : notFound()
     }
     m = /^\/ingeniuxdev\/([^/]+)\/_apis\/git\/repositories\/([^/]+)\/pullrequests$/i.exec(u.pathname)
+    if (m && state.searchStatus) return { ok: false, status: state.searchStatus, json: async () => ({}) }
     if (m) {
       const ref = u.searchParams.get('searchCriteria.sourceRefName')
       const found = [...prs.values()].filter((p) => p.repo.id === m[2] && body(p).status === 'active' && body(p).sourceRefName === ref).map(body)
@@ -422,6 +423,40 @@ test('stacked PR: a clean active target PR is not reported as conflicting', asyn
   assert.equal(w.prompts.length, 1)
   assert.doesNotMatch(w.texts()[0], /source branch of active PR/)
   assert.match(w.texts()[0], /stacked on active PR 6776/)
+  w.poller.stopAll()
+})
+
+test('stacked PR: a failed target-PR lookup is retried on the next poll, not recorded as "no stacked PR"', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.state.searchStatus = 503
+  w.start(6796)
+  await w.poll()
+  assert.equal(w.prompts.length, 0, 'no conflict message without knowing whether the PR is stacked')
+  assert.match(w.log(), /target PR lookup for PR 6796 failed/)
+  w.ado.state.searchStatus = undefined
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  assert.match(w.texts()[0], /source branch of active PR 6776[^\n]*merge conflicts/)
+  await w.poll()
+  assert.equal(w.prompts.length, 1, 'reported once after the retry')
+  w.poller.stopAll()
+})
+
+test('a conflict with comments and an unusual source branch name: the push instruction does not point at a branch name step 1 never showed', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, sourceRefName: 'refs/heads/odd name;rm', mergeStatus: 'conflicts' })
+  w.ado.threads('6776', [thread(7, 2)])
+  w.start(6776)
+  await w.poll()
+  const text = w.texts()[0]
+  assert.match(text, /One gate covers both/)
+  assert.doesNotMatch(text, /odd name/)
+  assert.doesNotMatch(text, /named in step 1/)
+  assert.match(text, /git push origin <merge-sha>:<source-branch>/)
+  assert.match(text, /<source-branch> is the branch checked out in the merge worktree/)
+  assert.match(text, /only the merge commit \(`git push origin <merge-sha>:<source-branch>`/)
   w.poller.stopAll()
 })
 
