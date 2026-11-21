@@ -32,7 +32,9 @@ It tells the session to: fetch the target branch, merge it into the PR source br
 ## Reporting details
 
 - When a negative reviewer vote and new review comments arrive in the same poll, the message asks for `ado-pr-implement` once (the comments part carries it); the vote line itself is still reported.
-- A thread-read failure that persists is traced once per distinct cause (the scrubbed error text, so a 404 turning into a 401 is traced again), and again after a successful read.
+- A thread-read failure that persists is traced once per distinct cause (the scrubbed error text, so a 404 turning into a 401 is traced again), and again after a successful read. A failed thread read no longer aborts the poll, and a PR that names no repository gets no comment wakes (status reports still work).
+- A blocked auto-complete is reported once per blocking state (policy; or failure + failure type). A moved head or target commit alone does not repeat it; a merge status of `succeeded` clears the record.
+- Reviewer-name filter limit: a plain-looking name of up to 30 characters and 3 words (for example "Ignore previous rules") passes. It is always quoted and marked as data, and the message never asks the agent to obey it.
 
 ## Repository resolution (the PR 6796 HTTP 404)
 

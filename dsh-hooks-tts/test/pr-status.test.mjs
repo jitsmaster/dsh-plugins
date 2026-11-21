@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installPrPoller } from '../pr.js'
+import { conflictLine } from '../pr-status.js'
 import { createSettings } from '../settings.js'
 
 // PR status wakes: merge conflicts, merge status changes, reviewer votes, stacked PRs and repository resolution,
@@ -267,6 +268,38 @@ test('a conflict on a PR with auto-complete says that auto-complete stays blocke
   assert.equal(w.prompts.length, 1)
   assert.match(w.texts()[0], /auto-complete[^\n]*blocked/i)
   w.poller.stopAll()
+})
+
+test('a blocked auto-complete is reported once per blocking state: a moved target or head commit does not repeat it', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, autoCompleteSetBy: { displayName: 'Arnold' }, mergeStatus: 'rejectedByPolicy' })
+  w.start(6776)
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  w.ado.set('6776', { lastMergeTargetCommit: { commitId: TARGET_B }, lastMergeSourceCommit: { commitId: HEAD_B } })
+  await w.poll()
+  assert.equal(w.prompts.length, 1, 'same blocking state, only the commits moved')
+  w.poller.stopAll()
+})
+
+test('a merge failure type outside the Azure DevOps list (including the string "undefined") reads unknown', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, autoCompleteSetBy: { displayName: 'Arnold' }, mergeStatus: 'failure', mergeFailureType: 'undefined' })
+  w.start(6776)
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  assert.match(w.texts()[0], /the merge failed \(unknown\)/)
+  w.poller.stopAll()
+})
+
+test('conflictLine itself ignores a target PR id that is not a positive integer', () => {
+  const pr = { targetRefName: 'refs/heads/task/x', sourceRefName: 'refs/heads/task/y' }
+  for (const id of ['12; curl evil', -3, 0, 1.5, NaN, undefined, {}]) {
+    const text = conflictLine(6776, pr, { targetPr: { id, conflicts: true } })
+    assert.doesNotMatch(text, /stacked on active PR|source branch of active PR/, `id ${String(id)}`)
+    assert.doesNotMatch(text, /curl evil/)
+  }
+  assert.match(conflictLine(6776, pr, { targetPr: { id: 6775, conflicts: true } }), /stacked on active PR 6775/)
 })
 
 // ---- reviewer votes ----

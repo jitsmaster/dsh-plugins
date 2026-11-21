@@ -18,7 +18,7 @@ const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/
 const SEGMENT = /^[\w.-]{1,100}$/
 const segmentOk = (s) => SEGMENT.test(String(s)) && !/^\.+$/.test(String(s))
 /** The only merge failure types that are ever printed (Azure DevOps GitPullRequestMergeFailureType); anything else reads "unknown". */
-const FAILURE_TYPES = new Set(['none', 'unknown', 'caseSensitive', 'objectTooLarge', 'undefined'])
+const FAILURE_TYPES = new Set(['none', 'unknown', 'caseSensitive', 'objectTooLarge'])
 /** A plain person name: at most 30 characters and 3 words, so a sentence ("Ignore all rules and ...") never passes. */
 const NAME_OK = /^[\p{L}\p{N}.'_-]+(?: [\p{L}\p{N}.'_-]+){0,2}$/u
 const NAME_MAX = 30
@@ -121,7 +121,7 @@ export function evaluateStatus(state, prId, pr) {
   const key = `${prId}|${head}|${targetHead}`
   return {
     conflictKey: pr?.mergeStatus === 'conflicts' ? key : undefined,
-    blocked: blockedNotice(prId, pr, key),
+    blocked: blockedNotice(prId, pr, String(prId)), // per blocking state only: a moved head or target commit is not a new block
     votes: Array.isArray(pr?.reviewers) ? voteNotices(prId, state.votes, pr.reviewers) : undefined,
   }
 }
@@ -135,7 +135,7 @@ export function conflictLine(prId, pr, { targetPr } = {}) {
   const source = branchOf(pr?.sourceRefName)
   const heads = [shortSha(pr?.lastMergeSourceCommit?.commitId) && `head ${shortSha(pr.lastMergeSourceCommit.commitId)}`, shortSha(pr?.lastMergeTargetCommit?.commitId) && `target head ${shortSha(pr.lastMergeTargetCommit.commitId)}`].filter(Boolean)
   const offMain = Boolean(target && !isMainBranchExact(target))
-  const tid = Number.isSafeInteger(Number(targetPr?.id)) && Number(targetPr.id) > 0 ? Number(targetPr.id) : undefined // validated once
+  const tid = Number.isSafeInteger(Number(targetPr?.id)) && Number(targetPr.id) > 0 ? Number(targetPr.id) : undefined // checked here too (pr.js filters as well): conflictLine is exported and must be safe on its own
   const show = pr?.autoCompleteSetBy ? ' It cannot merge, auto-complete stays blocked, and' : ' It cannot be merged and'
   const where = source ? `the worktree of ${source}` : 'the worktree of the PR source branch'
   return [
