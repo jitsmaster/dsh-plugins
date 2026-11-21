@@ -13,7 +13,7 @@ const WORK = new Set(['turn/start', 'turn/end', 'user/message', 'assistant/messa
  * Turns and calls from before the app started (startedAt) are stale (a restart ended them), not work.
  * @returns {{ busy: boolean, lastTime?: number }}
  */
-export function logBusy(records, { startedAt = 0, now = Date.now } = {}) {
+export function logBusy(records, { startedAt = 0, now = Date.now, running = true } = {}) {
   let openTurn = null // time the open turn started
   const calls = new Map() // callId -> time
   const inbox = []
@@ -35,8 +35,8 @@ export function logBusy(records, { startedAt = 0, now = Date.now } = {}) {
     }
   }
   const fresh = (time) => time >= startedAt
-  const busy = (openTurn !== null && fresh(openTurn))
-    || [...calls.values()].some(fresh)
+  // An open turn or unanswered call in a session that is not running is a cut-off (the process ended), not work: only a running session can be mid-turn.
+  const busy = (running !== false && ((openTurn !== null && fresh(openTurn)) || [...calls.values()].some(fresh)))
     || (inbox.length > 0 && fresh(inboxAt))
     || liveBackgroundJobs(list, { startedAt }).length > 0
   return { busy, lastTime }
@@ -71,7 +71,7 @@ export function createBusyTracker({ now = Date.now, waitingOf = () => false, rea
       try {
         const log = await readLog(item.sessionId)
         if (!log) return { busy: true, since }
-        const r = logBusy(log.records, { startedAt, now })
+        const r = logBusy(log.records, { startedAt, now, running: item?.running === true })
         return { busy: r.busy, since: Math.max(since, Number.isFinite(r.lastTime) ? r.lastTime : 0) }
       } catch { return { busy: true, since } }
     },
