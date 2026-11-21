@@ -128,7 +128,7 @@ test('conflicts detected: the session is told how to fetch, merge, test, commit 
   assert.match(text, /worktree/i)
   assert.match(text, /relevant tests/i)
   assert.match(text, /push/i)
-  assert.match(text, /force-push/i)
+  assert.match(text, /never force-push \(no `--force`, no `--force-with-lease`\)/i)
   assert.match(text, /ask_user_question/)
   assert.match(text, /az repos pr show --id 6776/)
   assert.match(text, /mergeStatus/)
@@ -866,6 +866,32 @@ test('a sentence-like reviewer display name is replaced by the reviewer id', asy
   assert.equal(w.prompts.length, 1)
   assert.doesNotMatch(w.texts()[0], /Ignore all rules/)
   assert.match(w.texts()[0], /reviewer "u-9"/)
+  w.poller.stopAll()
+})
+
+test('a reviewer display name with an option-like word is replaced by the reviewer id', async () => {
+  for (const displayName of ['git push --force', 'rm -rf', '-x now']) {
+    const w = world()
+    const odd = { id: 'u-9', displayName, vote: 0, isRequired: true, isContainer: false }
+    w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, reviewers: [odd] })
+    w.start(6776)
+    await w.poll()
+    w.ado.set('6776', { reviewers: [{ ...odd, vote: -5 }] })
+    await w.poll()
+    assert.equal(w.prompts.length, 1, displayName)
+    assert.doesNotMatch(w.texts()[0], /--force|rm -rf|-x now/, displayName)
+    assert.match(w.texts()[0], /reviewer "u-9"/, displayName)
+    w.poller.stopAll()
+  }
+  // a normal hyphenated name still passes
+  const w = world()
+  const ok = { id: 'u-8', displayName: "Mary-Jane O'Neil", vote: 0, isRequired: true, isContainer: false }
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, reviewers: [ok] })
+  w.start(6776)
+  await w.poll()
+  w.ado.set('6776', { reviewers: [{ ...ok, vote: -5 }] })
+  await w.poll()
+  assert.match(w.texts()[0], /reviewer "Mary-Jane O'Neil"/)
   w.poller.stopAll()
 })
 

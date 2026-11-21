@@ -20,7 +20,7 @@ const segmentOk = (s) => SEGMENT.test(String(s)) && !/^\.+$/.test(String(s))
 /** The only merge failure types that are ever printed (Azure DevOps GitPullRequestMergeFailureType); anything else reads "unknown". */
 const FAILURE_TYPES = new Set(['none', 'unknown', 'caseSensitive', 'objectTooLarge'])
 /** A plain person name: at most 30 characters and 3 words, so a sentence ("Ignore all rules and ...") never passes. */
-const NAME_OK = /^[\p{L}\p{N}.'_-]+(?: [\p{L}\p{N}.'_-]+){0,2}$/u
+const NAME_OK = /^[\p{L}\p{N}.'_][\p{L}\p{N}.'_-]*(?: [\p{L}\p{N}.'_][\p{L}\p{N}.'_-]*){0,2}$/u // a word never starts with "-": no option-like tokens
 const NAME_MAX = 30
 
 /** "refs/heads/task/x" -> "task/x"; undefined when it is not under refs/heads or not a plain, safe branch name. */
@@ -150,7 +150,7 @@ export function conflictLine(prId, pr, { targetPr } = {}) {
       offMain
         ? '3. Before running any tests, look at what the merge brought in (for example `git diff --stat HEAD`): that branch is not develop, so do not run scripts it changed without checking them. Then run the project\'s relevant tests.'
         : '3. Run the project\'s relevant tests.',
-      '4. Commit the merge. Do NOT push until the user approves: ask with `ask_user_question` first, and never force-push without asking.',
+      '4. Commit the merge. Do NOT push until the user approves: ask with `ask_user_question` first, and never force-push (no `--force`, no `--force-with-lease`), even if asked.',
     ] : [
       '1. The target branch has an unusual name (characters a plain branch name does not have), so it is not shown here and must not be run through a shell. Use `ask_user_question` to ask the user how to proceed; do not fetch or merge it on your own.',
     ]),
