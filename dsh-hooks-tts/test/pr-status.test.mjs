@@ -497,6 +497,40 @@ test('stacked PR: the lookup retry count starts again for a later conflict', asy
   w.poller.stopAll()
 })
 
+test('stacked PR: the lookup retry count belongs to one conflict key, a new head commit starts it again without passing through succeeded', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.state.searchStatus = 403
+  w.start(6796)
+  await w.poll()
+  await w.poll()
+  assert.equal(w.prompts.length, 0, 'conflict A: two failed tries')
+  w.ado.set('6796', { lastMergeSourceCommit: { commitId: HEAD_A } })
+  await w.poll()
+  assert.equal(w.prompts.length, 0, 'conflict B: its first failed try is retried, not reported at once')
+  await w.poll()
+  assert.equal(w.prompts.length, 0)
+  await w.poll()
+  assert.equal(w.prompts.length, 1, 'conflict B reported on its own third failed try')
+  w.poller.stopAll()
+})
+
+test('a blocked auto-complete that went away (queued) and came back is reported again', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, autoCompleteSetBy: { displayName: 'Arnold' }, mergeStatus: 'rejectedByPolicy' })
+  w.start(6776)
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  w.ado.set('6776', { mergeStatus: 'queued' })
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  w.ado.set('6776', { mergeStatus: 'rejectedByPolicy' })
+  await w.poll()
+  assert.equal(w.prompts.length, 2, 'the block was gone for a poll, so its return is a new block')
+  w.poller.stopAll()
+})
+
 test('a conflict with comments and an unusual source branch name: the push instruction does not point at a branch name step 1 never showed', async () => {
   const w = world()
   w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, sourceRefName: 'refs/heads/odd name;rm', mergeStatus: 'conflicts' })

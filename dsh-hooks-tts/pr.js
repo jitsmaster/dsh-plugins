@@ -421,6 +421,10 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       entry.targetLookupFailures = 0
     }
     const evaluated = evaluateStatus(entry.status, entry.prId, pr)
+    // The stacked-PR lookup retry count belongs to one conflict key: a new head or target commit (or no conflict) starts it again.
+    if (evaluated.conflictKey !== entry.lookupFor) { entry.targetLookupFailures = 0; entry.lookupFor = evaluated.conflictKey }
+    // A block that is gone for a poll (queued, conflicts, auto-complete cancelled) is a new block when it returns.
+    if (!evaluated.blocked) entry.status.blockedKey = undefined
     return {
       ...evaluated,
       conflictNew: Boolean(evaluated.conflictKey) && evaluated.conflictKey !== entry.status.conflictKey,
