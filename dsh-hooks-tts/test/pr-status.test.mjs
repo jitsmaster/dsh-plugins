@@ -475,6 +475,28 @@ test('stacked PR: a lookup that keeps failing does not hide the conflict forever
   w.poller.stopAll()
 })
 
+test('stacked PR: the lookup retry count starts again for a later conflict', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.state.searchStatus = 403
+  w.start(6796)
+  await w.poll()
+  await w.poll()
+  await w.poll()
+  assert.equal(w.prompts.length, 1, 'given up after three tries')
+  w.ado.set('6796', { mergeStatus: 'succeeded' })
+  await w.poll()
+  w.ado.set('6796', { mergeStatus: 'conflicts', lastMergeTargetCommit: { commitId: TARGET_A } })
+  await w.poll()
+  assert.equal(w.prompts.length, 1, 'new conflict: first failed try is retried, not reported at once')
+  await w.poll()
+  assert.equal(w.prompts.length, 1)
+  await w.poll()
+  assert.equal(w.prompts.length, 2, 'reported on the third failed try of the new conflict')
+  w.poller.stopAll()
+})
+
 test('a conflict with comments and an unusual source branch name: the push instruction does not point at a branch name step 1 never showed', async () => {
   const w = world()
   w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, sourceRefName: 'refs/heads/odd name;rm', mergeStatus: 'conflicts' })

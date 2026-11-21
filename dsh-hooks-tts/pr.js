@@ -418,6 +418,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       if (entry.status.conflictKey) trace(`merge conflicts of PR ${entry.prId} are resolved`)
       entry.status.conflictKey = undefined
       entry.status.blockedKey = undefined
+      entry.targetLookupFailures = 0
     }
     const evaluated = evaluateStatus(entry.status, entry.prId, pr)
     return {
@@ -509,7 +510,7 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       // recorded only after the queue accepted the message, so a failed hand-over is retried next poll
       const recordReported = () => {
         for (const b of newBuilds) entry.ciReported.add(String(b.id))
-        if (status.conflictNew) entry.status.conflictKey = status.conflictKey
+        if (status.conflictNew) { entry.status.conflictKey = status.conflictKey; entry.targetLookupFailures = 0 }
         if (status.blockedNew) entry.status.blockedKey = status.blocked.key
         if (status.votes) entry.status.votes = status.votes.next
       }
