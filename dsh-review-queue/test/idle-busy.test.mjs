@@ -232,3 +232,17 @@ test('asker: a session cut off in an open turn (not running) is asked once its h
   assert.deepEqual(res.asked, ['cut'])
   assert.deepEqual(res.skipped, [])
 })
+
+test('tracker.inspect: a list item without a running flag keeps the old fail-toward-busy behaviour (only an explicit false is a cut-off)', async () => {
+  const open = [{ type: 'turn/start', time: 2 * H, data: { turn: 1 } }]
+  const tracker = createBusyTracker({ now: () => 10 * H, readLog: async () => ({ records: open }) })
+  assert.equal((await tracker.inspect({ sessionId: 'nf', updatedAt: 1 * H })).busy, true)
+  assert.equal((await tracker.inspect(S('f', 1 * H, { running: false }))).busy, false)
+})
+
+test('asker: a turn that started after the session list was read (stale running false) is not asked, the log time restarts the idle hour', async () => {
+  const fresh = [{ type: 'turn/start', time: 10 * H - 1 * M, data: { turn: 1 } }, call('c', 10 * H - 1 * M + 1)]
+  const r = rig([S('racy', 1 * H)], { readLog: async () => ({ records: fresh }) })
+  const res = await r.asker.check()
+  assert.deepEqual(res.asked, [])
+})

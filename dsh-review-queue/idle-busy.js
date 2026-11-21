@@ -1,5 +1,5 @@
 /**
- * Busy tracking for the idle checks: a session is idle only when nothing is working in it. Busy means: a turn running, a tool call without a result,
+ * Busy tracking for the idle checks: a session is idle only when nothing is working in it. Busy means: a turn running or a tool call without a result (in a session the list does not report as stopped),
  * a prompt queued for the next turn, a running child session (sub-agent), a background job not collected or killed, or an open question/permission
  * card. The idle clock starts at the LAST moment the session was busy, not at its last message.
  */
@@ -11,6 +11,8 @@ const WORK = new Set(['turn/start', 'turn/end', 'user/message', 'assistant/messa
 /**
  * Folds a session log: is work still in it, and when was the last record?
  * Turns and calls from before the app started (startedAt) are stale (a restart ended them), not work.
+ * running: false (the session list says the session is not running) makes an open turn or unanswered call a cut-off, not work; true or missing keeps them busy.
+ * Queued prompts and live background jobs are busy either way. idle-ask only inspects sessions that are not running, so a stale list is the only way a mid-turn session reaches here; its fresh log time then restarts the idle hour.
  * @returns {{ busy: boolean, lastTime?: number }}
  */
 export function logBusy(records, { startedAt = 0, now = Date.now, running = true } = {}) {
@@ -71,7 +73,7 @@ export function createBusyTracker({ now = Date.now, waitingOf = () => false, rea
       try {
         const log = await readLog(item.sessionId)
         if (!log) return { busy: true, since }
-        const r = logBusy(log.records, { startedAt, now, running: item?.running === true })
+        const r = logBusy(log.records, { startedAt, now, running: item?.running !== false }) // only an explicit false (the list says it stopped) makes an open turn a cut-off; a missing flag stays fail-toward-busy
         return { busy: r.busy, since: Math.max(since, Number.isFinite(r.lastTime) ? r.lastTime : 0) }
       } catch { return { busy: true, since } }
     },
