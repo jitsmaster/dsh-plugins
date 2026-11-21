@@ -135,13 +135,14 @@ export function conflictLine(prId, pr, { targetPr } = {}) {
   const source = branchOf(pr?.sourceRefName)
   const heads = [shortSha(pr?.lastMergeSourceCommit?.commitId) && `head ${shortSha(pr.lastMergeSourceCommit.commitId)}`, shortSha(pr?.lastMergeTargetCommit?.commitId) && `target head ${shortSha(pr.lastMergeTargetCommit.commitId)}`].filter(Boolean)
   const offMain = Boolean(target && !isMainBranchExact(target))
-  const tid = Number.isSafeInteger(Number(targetPr?.id)) && Number(targetPr.id) > 0 ? Number(targetPr.id) : undefined // checked here too (pr.js filters as well): conflictLine is exported and must be safe on its own
+  const tidText = typeof targetPr?.id === 'number' || typeof targetPr?.id === 'string' ? String(targetPr.id) : ''
+  const tid = /^[1-9]\d{0,8}$/.test(tidText) ? Number(tidText) : undefined // checked here too (pr.js filters as well): conflictLine is exported and must be safe on its own; digits only, no 0x, exponent, spaces or booleans
   const show = pr?.autoCompleteSetBy ? ' It cannot merge, auto-complete stays blocked, and' : ' It cannot be merged and'
   const where = source ? `the worktree of ${source}` : 'the worktree of the PR source branch'
   return [
-    `PR ${prId} has MERGE CONFLICTS with ${target ?? 'its target branch'}${heads.length ? ` (${heads.join(', ')})` : ''}.${show} the CI review pipeline cannot run until they are resolved.`,
-    ...(offMain ? [`This PR targets the branch ${target}, not develop${tid ? ` (stacked on active PR ${tid})` : ''}. Merge that branch, not develop.`] : []),
-    ...(tid && targetPr?.conflicts && target ? [`The target branch ${target} is the source branch of active PR ${tid}, which also has merge conflicts: resolve or coordinate that PR first, then merge the updated ${target}.`] : []),
+    `PR ${prId} has MERGE CONFLICTS with ${target ? `\`${target}\`` : 'its target branch'}${heads.length ? ` (${heads.join(', ')})` : ''}.${show} the CI review pipeline cannot run until they are resolved.`,
+    ...(offMain ? [`This PR targets the branch \`${target}\`, not develop${tid ? ` (stacked on active PR ${tid})` : ''}. Merge that branch, not develop.`] : []),
+    ...(tid && targetPr?.conflicts && target ? [`The target branch \`${target}\` is the source branch of active PR ${tid}, which also has merge conflicts: resolve or coordinate that PR first, then merge the updated \`${target}\`.`] : []),
     'Resolve them now, in this session:',
     ...(target ? [
       `1. In ${where} (see \`git worktree list\`; create one for the branch if there is none) run \`git fetch origin ${target}\`.`,

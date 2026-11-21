@@ -121,7 +121,7 @@ test('conflicts detected: the session is told how to fetch, merge, test, commit 
   assert.equal(w.prompts[0].sessionId, 'a1')
   assert.equal(w.prompts[0].mode, 'queue')
   const text = w.texts()[0]
-  assert.match(text, /PR 6776 has MERGE CONFLICTS with develop/)
+  assert.match(text, /PR 6776 has MERGE CONFLICTS with `develop`/)
   assert.match(text, /git fetch origin develop/)
   assert.match(text, /git merge origin\/develop/)
   assert.match(text, /task\/26078-ai-005-stream-abort/)
@@ -295,7 +295,7 @@ test('a merge failure type outside the Azure DevOps list (including the string "
 
 test('conflictLine itself ignores a target PR id that is not a positive integer', () => {
   const pr = { targetRefName: 'refs/heads/task/x', sourceRefName: 'refs/heads/task/y' }
-  for (const id of ['12; curl evil', -3, 0, 1.5, NaN, undefined, {}]) {
+  for (const id of ['12; curl evil', -3, 0, 1.5, NaN, undefined, {}, '0x10', ' 12 ', true, '1e3', 1234567890123]) {
     const text = conflictLine(6776, pr, { targetPr: { id, conflicts: true } })
     assert.doesNotMatch(text, /stacked on active PR|source branch of active PR/, `id ${String(id)}`)
     assert.doesNotMatch(text, /curl evil/)
@@ -395,12 +395,12 @@ test('stacked PR: the merge uses the real target branch, not develop', async () 
   w.start(6796)
   await w.poll()
   const text = w.texts()[0]
-  assert.match(text, /PR 6796 has MERGE CONFLICTS with task\/26078-ai-005-stream-abort/)
+  assert.match(text, /PR 6796 has MERGE CONFLICTS with `task\/26078-ai-005-stream-abort`/)
   assert.match(text, /git fetch origin task\/26078-ai-005-stream-abort/)
   assert.match(text, /git merge origin\/task\/26078-ai-005-stream-abort/)
   assert.match(text, /task\/26080-ai-011-help-api/)
   assert.doesNotMatch(text, /origin\/develop/)
-  assert.match(text, /targets the branch task\/26078-ai-005-stream-abort, not develop/)
+  assert.match(text, /targets the branch `task\/26078-ai-005-stream-abort`, not develop/)
   w.poller.stopAll()
 })
 
@@ -410,7 +410,7 @@ test('stacked PR: says so when the target branch is an active PR that has confli
   w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS, mergeStatus: 'conflicts' })
   w.start(6796)
   await w.poll()
-  assert.match(w.texts()[0], /target branch task\/26078-ai-005-stream-abort is the source branch of active PR 6776[^\n]*merge conflicts/)
+  assert.match(w.texts()[0], /target branch `task\/26078-ai-005-stream-abort` is the source branch of active PR 6776[^\n]*merge conflicts/)
   w.poller.stopAll()
 })
 
@@ -714,6 +714,7 @@ test('a conflict sharing a message with comments: commit the merge first, then t
   assert.match(text, /commit the comment fixes locally as their own commit, separate from the merge\. Do NOT push, post replies or resolve threads until the user has approved/)
   assert.match(text, /One gate covers both[^\n]*ask once with `ask_user_question`[^\n]*only the merge commit \(`git push origin <merge-sha>:<source-branch>`/)
   assert.match(text, /if nothing, leave both commits local/i)
+  assert.match(text, /never use `--force`/i)
   // review: no early second question, defined placeholders, and what each answer authorises
   assert.match(text, /step 4's question above is replaced by this one gate, so do not ask earlier/)
   assert.match(text, /note its SHA with `git rev-parse HEAD` right after committing the merge/)
