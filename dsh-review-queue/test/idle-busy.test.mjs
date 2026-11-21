@@ -8,6 +8,7 @@ const H = 3600_000
 const M = 60_000
 const memIo = () => { const io = { text: undefined, read: () => io.text, write: (t) => { io.text = t } }; return io }
 const S = (id, updatedAt, more = {}) => ({ sessionId: id, updatedAt, running: false, ...more })
+const queued = (time) => [{ type: 'agent/inbox/spliced', time, data: { target: 'next-turn', start: 0, removedCount: 0, inserted: [{}] } }]
 const call = (id, time) => ({ type: 'assistant/message', time, data: { message: { content: [{ type: 'tool-call', id, name: 'pwsh' }] } } })
 
 test('logBusy: an open turn, an unanswered tool call, a queued next-turn prompt or a live background job is busy', () => {
@@ -41,7 +42,7 @@ test('tracker: running, running child, open question and open permission count a
 })
 
 test('tracker.inspect: unreadable log is busy; a log with later activity moves the idle start; no readLog means no log check', async () => {
-  const logs = { late: [{ type: 'turn/end', time: 9 * H, data: { reason: { kind: 'completed' } } }], work: [call('c', 1)] }
+  const logs = { late: [{ type: 'turn/end', time: 9 * H, data: { reason: { kind: 'completed' } } }], work: queued(1) }
   const tracker = createBusyTracker({ now: () => 10 * H, readLog: async (id) => (logs[id] ? { records: logs[id] } : undefined) })
   assert.deepEqual(await tracker.inspect(S('late', 1 * H)), { busy: false, since: 9 * H })
   assert.equal((await tracker.inspect(S('work', 1 * H))).busy, true)
@@ -72,7 +73,7 @@ test('asker: the idle hour starts when the session last was busy, not at its las
 })
 
 test('asker: log activity after the last message delays the ask; a busy log skips it', async () => {
-  const logs = { late: [{ type: 'turn/end', time: 10 * H - 20 * M, data: { reason: { kind: 'completed' } } }], work: [call('c', 1)], old: [{ type: 'turn/end', time: 1 * H, data: { reason: { kind: 'completed' } } }] }
+  const logs = { late: [{ type: 'turn/end', time: 10 * H - 20 * M, data: { reason: { kind: 'completed' } } }], work: queued(1), old: [{ type: 'turn/end', time: 1 * H, data: { reason: { kind: 'completed' } } }] }
   const r = rig([S('late', 1 * H), S('work', 1 * H), S('old', 1 * H)], { readLog: async (id) => ({ records: logs[id] }) })
   const res = await r.asker.check()
   assert.deepEqual(res.asked, ['old'])
@@ -180,7 +181,7 @@ test('asker.sample(): overlapping samples share one list call', async () => {
 })
 
 test('asker: sessions that are busy in their log do not starve older idle ones', async () => {
-  const work = [{ type: 'turn/start', time: 10 * H - 1, data: { turn: 1 } }]
+  const work = queued(10 * H - 1)
   const idleLog = [{ type: 'turn/end', time: 1 * H, data: { reason: { kind: 'completed' } } }]
   const items = [S('b1', 5 * H), S('b2', 5 * H - 1), S('b3', 5 * H - 2), S('b4', 5 * H - 3), S('b5', 5 * H - 4), S('old', 1 * H)]
   const r = rig(items, { maxPerPass: 1, readLog: async (id) => ({ records: id === 'old' ? idleLog : work }) })
@@ -203,4 +204,45 @@ test('asker: an already-asked session is not log-read again on the next pass', a
   const before = reads.length
   await r.asker.check()
   assert.equal(reads.length, before)
+})
+
+test('logBusy: an open turn or unanswered call in a session that is not running is a cut-off, not work (running defaults to true)', () => {
+  const open = [{ type: 'turn/start', time: 100, data: { turn: 1 } }]
+  assert.equal(logBusy(open, { startedAt: 0, running: false }).busy, false)
+  assert.equal(logBusy([call('c1', 100)], { startedAt: 0, running: false }).busy, false)
+  assert.equal(logBusy(open, { startedAt: 0, running: false }).lastTime, 100, 'the idle clock still starts at its last record')
+  assert.equal(logBusy(open, { startedAt: 0 }).busy, true, 'default keeps the old behaviour')
+  assert.equal(logBusy(open, { startedAt: 0, running: true }).busy, true)
+  assert.equal(logBusy(queued(100), { startedAt: 0, running: false }).busy, true, 'a queued prompt is still work')
+  const job = [{ type: 'tool/result', time: 100, data: { content: 'started background job j1' } }]
+  assert.equal(logBusy(job, { startedAt: 0, running: false }).busy, true, 'a live background job is still work')
+})
+
+test('tracker.inspect: a not-running session with an open turn in its log is not busy and its idle start is the last record', async () => {
+  const open = [{ type: 'turn/start', time: 2 * H, data: { turn: 1 } }, call('c', 2 * H + 1)]
+  const tracker = createBusyTracker({ now: () => 10 * H, readLog: async () => ({ records: open }) })
+  assert.deepEqual(await tracker.inspect(S('cut', 1 * H)), { busy: false, since: 2 * H + 1 })
+  assert.equal((await tracker.inspect(S('live', 1 * H, { running: true }))).busy, true)
+})
+
+test('asker: a session cut off in an open turn (not running) is asked once its hour is up, not skipped as busy until restart', async () => {
+  const open = [{ type: 'turn/start', time: 1 * H, data: { turn: 1 } }, call('c', 1 * H + 1)]
+  const r = rig([S('cut', 1 * H)], { readLog: async () => ({ records: open }) })
+  const res = await r.asker.check()
+  assert.deepEqual(res.asked, ['cut'])
+  assert.deepEqual(res.skipped, [])
+})
+
+test('tracker.inspect: a list item without a running flag keeps the old fail-toward-busy behaviour (only an explicit false is a cut-off)', async () => {
+  const open = [{ type: 'turn/start', time: 2 * H, data: { turn: 1 } }]
+  const tracker = createBusyTracker({ now: () => 10 * H, readLog: async () => ({ records: open }) })
+  assert.equal((await tracker.inspect({ sessionId: 'nf', updatedAt: 1 * H })).busy, true)
+  assert.equal((await tracker.inspect(S('f', 1 * H, { running: false }))).busy, false)
+})
+
+test('asker: a turn that started after the session list was read (stale running false) is not asked, the log time restarts the idle hour', async () => {
+  const fresh = [{ type: 'turn/start', time: 10 * H - 1 * M, data: { turn: 1 } }, call('c', 10 * H - 1 * M + 1)]
+  const r = rig([S('racy', 1 * H)], { readLog: async () => ({ records: fresh }) })
+  const res = await r.asker.check()
+  assert.deepEqual(res.asked, [])
 })
