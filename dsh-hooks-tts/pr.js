@@ -46,6 +46,8 @@ const CI_PIPELINE_ID = 80
 const CI_PROJECTS = new Set(['ae9879c1-8609-4ffe-8242-2256d70f8b1e', 'Ingeniux'])
 const POLL_INTERVAL_MS = 10 * 60 * 1000
 const FETCH_TIMEOUT_MS = 30_000
+/** A failing stacked-PR lookup is retried this many polls before the conflict is reported without the stacked-PR hint. */
+const TARGET_LOOKUP_TRIES = 3
 /** Thread statuses that mean the reviewer's point is settled. */
 const RESOLVED = new Set(['fixed', 'closed', 'wontFix', 'byDesign'])
 const SHELL_TOOLS = /^(bash|pwsh|powershell|shell)$/i
@@ -487,7 +489,12 @@ export function installPrPoller(ctx, _config, { settings, skip = () => false, fe
       const status = state(entry, pr)
       const lookup = status.conflictNew ? await targetPrOf(entry, pr, base, pat) : undefined
       const targetPr = lookup?.failed ? undefined : lookup
-      if (lookup?.failed) status.conflictNew = false // retried next poll (the conflict key is not recorded)
+      if (lookup?.failed) {
+        // Retried on the next polls (the conflict key is not recorded), but a lookup that keeps failing (403, 404) must not hide the conflict
+        // forever: after the third failed try it is reported without the stacked-PR hint.
+        entry.targetLookupFailures = (entry.targetLookupFailures ?? 0) + 1
+        if (entry.targetLookupFailures < TARGET_LOOKUP_TRIES) status.conflictNew = false
+      } else if (status.conflictNew) entry.targetLookupFailures = 0
       const statusLines = [
         ...(status.conflictNew ? [conflictLine(entry.prId, pr, { targetPr })] : []),
         ...(status.blockedNew ? [status.blocked.line] : []),

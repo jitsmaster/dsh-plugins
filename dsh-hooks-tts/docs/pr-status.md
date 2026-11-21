@@ -33,6 +33,8 @@ It tells the session to: fetch the target branch, merge it into the PR source br
 
 - When a negative reviewer vote and new review comments arrive in the same poll, the message asks for `ado-pr-implement` once (the comments part carries it); the vote line itself is still reported.
 - A thread-read failure that persists is traced once per distinct cause (the scrubbed error text, so a 404 turning into a 401 is traced again), and again after a successful read. A failed thread read no longer aborts the poll, and a PR that names no repository gets no comment wakes (status reports still work).
+- The conflict record is cleared only when `mergeStatus` is `succeeded`: a PR that goes `conflicts` -> `queued`/`failure` -> `conflicts` with the same head and target head commits is not reported again. Vote records are in memory too, so a vote change made while DSH was down is not announced (the first poll after a restart only records).
+- `redirect: 'error'` applies to every Azure DevOps request of the poller (PR, threads, builds, target-PR lookup, merged/approval checks), so a redirect fails that call and is traced instead of sending the PAT elsewhere.
 - A blocked auto-complete is reported once per blocking state (policy; or failure + failure type). A moved head or target commit alone does not repeat it; a merge status of `succeeded` clears the record.
 - Reviewer-name filter limit: a plain-looking name of up to 30 characters and 3 words (for example "Ignore previous rules") passes. It is always quoted and marked as data, and the message never asks the agent to obey it.
 

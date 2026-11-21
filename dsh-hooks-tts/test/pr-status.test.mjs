@@ -358,6 +358,19 @@ test('a response without a reviewers list does not reset the recorded votes', as
   w.poller.stopAll()
 })
 
+test('a reviewer removed from the PR and added again starts from no vote, not from the stale one', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, reviewers: [reviewer('Laska Fitzhugh', 10, true), reviewer('Sam', 0)] })
+  w.start(6776)
+  await w.poll()
+  w.ado.set('6776', { reviewers: [reviewer('Sam', 0)] })
+  await w.poll()
+  w.ado.set('6776', { reviewers: [reviewer('Laska Fitzhugh', 0, true), reviewer('Sam', 0)] })
+  await w.poll()
+  assert.equal(w.prompts.length, 0, 're-added with no vote: nothing changed')
+  w.poller.stopAll()
+})
+
 test('status notices and new comments share one message, status first', async () => {
   const w = world()
   w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, reviewers: [reviewer('Laska Fitzhugh', 0, true)] })
@@ -441,6 +454,24 @@ test('stacked PR: a failed target-PR lookup is retried on the next poll, not rec
   assert.match(w.texts()[0], /source branch of active PR 6776[^\n]*merge conflicts/)
   await w.poll()
   assert.equal(w.prompts.length, 1, 'reported once after the retry')
+  w.poller.stopAll()
+})
+
+test('stacked PR: a lookup that keeps failing does not hide the conflict forever (reported without the stacked-PR hint after three tries, once)', async () => {
+  const w = world()
+  w.ado.add('6776', CTNP_QA, { ...QA_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.add('6796', CTNP_QA, { ...STACK_FIELDS, mergeStatus: 'conflicts' })
+  w.ado.state.searchStatus = 403
+  w.start(6796)
+  await w.poll()
+  await w.poll()
+  assert.equal(w.prompts.length, 0, 'still retrying')
+  await w.poll()
+  assert.equal(w.prompts.length, 1, 'third failed try: report anyway')
+  assert.match(w.texts()[0], /MERGE CONFLICTS/)
+  assert.doesNotMatch(w.texts()[0], /source branch of active PR|stacked on active PR/)
+  await w.poll()
+  assert.equal(w.prompts.length, 1, 'reported once')
   w.poller.stopAll()
 })
 

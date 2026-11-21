@@ -75,7 +75,7 @@ function reviewerLabel(r) {
  * (the first poll only records).
  */
 function voteNotices(prId, previous, reviewers) {
-  const next = new Map(previous ?? [])
+  const next = new Map() // current reviewers only: a removed reviewer is forgotten, so a re-added one starts from no vote
   const lines = []
   let negative = false
   for (const r of reviewers) {
