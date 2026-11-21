@@ -81,7 +81,7 @@ function world(t, { withSchedule = true, timeContext = 'after', liveAgents = [],
     state.urls.push(url)
     if (state.gate) await state.gate
     if (url.includes('/build/builds')) return { ok: true, status: 200, json: async () => ({ value: [] }) }
-    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, status: state.prStatus, lastMergeSourceCommit: { commitId: 'c1' }, targetRefName: 'refs/heads/develop' }
+    const body = url.includes('/threads') ? { value: state.threads } : { pullRequestId: 5, repository: { id: '6dc5d0bc-703d-4add-8785-e9fd2c55f4fc', name: 'Ingeniux', project: { id: 'ae9879c1-8609-4ffe-8242-2256d70f8b1e' } }, status: state.prStatus, lastMergeSourceCommit: { commitId: 'c1' }, targetRefName: 'refs/heads/develop' }
     return { ok: true, status: 200, json: async () => body }
   }
 
