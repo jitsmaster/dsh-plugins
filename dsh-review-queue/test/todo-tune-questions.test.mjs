@@ -84,3 +84,107 @@ test('the system prompt tells the model to put questions after a QUESTIONS: line
   assert.match(after, /never (put|write|place) (any )?questions? (in|inside) the (rewritten )?prompt/i)
   assert.match(after, /<question>\? Suggested default: <X>\./)
 })
+
+
+// ---- shapes of model answers that used to leave the questions in the prompt box ----
+const tuneTyped = async (typed, answer) => {
+  const { createTuner } = await import('../todo-tune.js')
+  return createTuner({ rulesText: RULES, llm: fakeLlm({ answer }) }).tune(typed)
+}
+
+test('an inline "QUESTIONS: <q>? Suggested default: <x>. <q>?" line is split into questions and leaves the prompt', async () => {
+  const r = await tune('Fix login in the web app.\n\nQUESTIONS: Which file? Suggested default: login.js. Which error?')
+  assert.deepEqual(r, { ok: true, text: 'Fix login in the web app.', questions: [{ question: 'Which file?', default: 'login.js' }, { question: 'Which error?' }] })
+})
+
+test('a "Clarifying questions:" or "Open questions" heading counts like QUESTIONS', async () => {
+  const a = await tune('Fix login in web app.\n\nClarifying questions:\n- Which file?\n- Which error?')
+  assert.deepEqual(a, { ok: true, text: 'Fix login in web app.', questions: [{ question: 'Which file?' }, { question: 'Which error?' }] })
+  const b = await tune('Fix login in the web app.\n\nOpen questions\nWhich file?\nWhich error?')
+  assert.deepEqual(b, { ok: true, text: 'Fix login in the web app.', questions: [{ question: 'Which file?' }, { question: 'Which error?' }] })
+})
+
+test('numbered question lines without a default inside the prompt are moved out', async () => {
+  const r = await tune('Fix login in the web app.\n1. Which file is it in?\n2. What error appears?')
+  assert.deepEqual(r, { ok: true, text: 'Fix login in the web app.', questions: [{ question: 'Which file is it in?' }, { question: 'What error appears?' }] })
+})
+
+test('a lead-in line ("I need to know:") with only questions under it keeps the typed prompt and asks them apart', async () => {
+  const r = await tune('Before I rewrite this I need to know:\n- Which file?\n- Which error?')
+  assert.deepEqual(r, { ok: true, text: 'rough text', questions: [{ question: 'Which file?' }, { question: 'Which error?' }] })
+})
+
+test('questions in front of the prompt are moved out and the prompt stays', async () => {
+  const r = await tune('Which file should the fix go in? And what error do you see?\n\nFix login in the web app.')
+  assert.deepEqual(r, { ok: true, text: 'Fix login in the web app.', questions: [{ question: 'Which file should the fix go in?' }, { question: 'And what error do you see?' }] })
+})
+
+test('a typed prompt that has a question mark is never split into questions by the loose shapes', async () => {
+  const r = await tuneTyped('Why does login fail?', 'Find why login fails.\n1. Which file is it in?\n2. What error appears?')
+  assert.deepEqual(r, { ok: true, text: 'Find why login fails.\n1. Which file is it in?\n2. What error appears?' })
+})
+
+test('a numbered task list that is not questions, and a sentence that only ends in a question, stay in the prompt', async () => {
+  const a = await tune('Fix login.\n1. Open the form.\n2. Check the error.')
+  assert.deepEqual(a, { ok: true, text: 'Fix login.\n1. Open the form.\n2. Check the error.' })
+  const b = await tune('Fix login in web app. Is it the form? Make it work.')
+  assert.deepEqual(b, { ok: true, text: 'Fix login in web app. Is it the form? Make it work.' })
+})
+
+
+// ---- structured reply: the model answers with { prompt, questions } so no text shape has to be guessed ----
+const json = (o) => JSON.stringify(o)
+
+test('a JSON reply is read by its fields: prompt goes to the box, questions (with defaults) are asked apart', async () => {
+  const r = await tune(json({ prompt: 'Fix login in the web app.', questions: [{ question: 'Which file?', default: 'login.js' }, { question: 'Which error?' }] }))
+  assert.deepEqual(r, { ok: true, text: 'Fix login in the web app.', questions: [{ question: 'Which file?', default: 'login.js' }, { question: 'Which error?' }] })
+})
+
+test('a JSON reply inside a code fence, or with plain strings as questions, is read the same way', async () => {
+  const r = await tune('```json\n' + json({ prompt: 'Fix login.', questions: ['Which file?', 'Which error?'] }) + '\n```')
+  assert.deepEqual(r, { ok: true, text: 'Fix login.', questions: [{ question: 'Which file?' }, { question: 'Which error?' }] })
+})
+
+test('a JSON reply with no questions has no questions key', async () => {
+  assert.deepEqual(await tune(json({ prompt: 'Fix login.', questions: [] })), { ok: true, text: 'Fix login.' })
+  assert.deepEqual(await tune(json({ prompt: 'Fix login.' })), { ok: true, text: 'Fix login.' })
+})
+
+test('a JSON reply with an empty prompt and questions keeps the typed text and asks apart', async () => {
+  const r = await tune(json({ prompt: '', questions: [{ question: 'Which file?' }] }))
+  assert.deepEqual(r, { ok: true, text: 'rough text', questions: [{ question: 'Which file?' }] })
+})
+
+test('a JSON prompt that is itself a question stays in the box (nothing is guessed from its shape)', async () => {
+  const r = await tuneTyped('why does login fail', json({ prompt: 'Find why login fails. Is it the form? Report the cause.', questions: [] }))
+  assert.deepEqual(r, { ok: true, text: 'Find why login fails. Is it the form? Report the cause.' })
+})
+
+test('a JSON prompt that still carries a Decide list is split, the questions merged after the JSON ones, at most 5', async () => {
+  const r = await tune(json({ prompt: 'Add X.\n\nDecide:\n1. Which db? Suggested default: SQLite.', questions: [{ question: 'Retry?', default: 'yes' }] }))
+  assert.deepEqual(r, { ok: true, text: 'Add X.', questions: [{ question: 'Retry?', default: 'yes' }, { question: 'Which db?', default: 'SQLite' }] })
+  const many = await tune(json({ prompt: 'Do X.', questions: Array.from({ length: 8 }, (_v, i) => 'Q' + i + '?') }))
+  assert.equal(many.questions.length, 5)
+})
+
+test('JSON entries that are not questions are skipped; question and default are cut at 300 characters', async () => {
+  const r = await tune(json({ prompt: 'Do X.', questions: [42, null, { question: '   ' }, { default: 'x' }, { question: 'q'.repeat(500), default: 'd'.repeat(500) }] }))
+  assert.equal(r.questions.length, 1)
+  assert.ok(r.questions[0].question.length <= 300 && r.questions[0].default.length <= 300)
+})
+
+test('text that is not a JSON reply (no string prompt, broken JSON, prose first) still goes through the shape rules', async () => {
+  assert.deepEqual(await tune('{"note": "x"}'), { ok: true, text: '{"note": "x"}' })
+  assert.deepEqual(await tune('{"prompt": "Fix login.", "questions": ['), { ok: true, text: '{"prompt": "Fix login.", "questions": [' })
+  const plain = await tune('Fix login.\n\nQUESTIONS:\n- Which file?')
+  assert.deepEqual(plain, { ok: true, text: 'Fix login.', questions: [{ question: 'Which file?' }] })
+})
+
+test('the system prompt asks for one JSON object with prompt and questions fields', async () => {
+  const seen = {}
+  await tune('x', { seen })
+  const after = systemOf(seen).slice(systemOf(seen).indexOf(RULES) + RULES.length)
+  assert.match(after, /JSON object/)
+  assert.match(after, /"prompt"/)
+  assert.match(after, /"questions"/)
+})

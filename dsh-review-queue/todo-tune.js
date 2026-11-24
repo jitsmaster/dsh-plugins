@@ -27,7 +27,9 @@ export const MAX_QUESTION_CHARS = 300
 const OVERRIDE = 'OVERRIDE, wins over every rule above: output only the rewritten prompt, nothing else: no rationale, no explanation of what changed or why, no notes, '
   + "no preface, no trailing section, and no 'because ...' reason after a suggested default. A Decide item is just '<question>? Suggested default: <X>.' "
   + 'QUESTIONS: never put questions in the rewritten prompt, not even a Decide list. Put every open choice the rules call for after the prompt, on a line of its own that says QUESTIONS:, '
-  + "one per line as '<question>? Suggested default: <X>.' (at most " + MAX_QUESTIONS + '); they are asked of the user separately. Without an open choice write no QUESTIONS line.'
+  + "one per line as '<question>? Suggested default: <X>.' (at most " + MAX_QUESTIONS + '); they are asked of the user separately. Without an open choice write no QUESTIONS line. '
+  + 'FORMAT, wins over the layout above: reply with one JSON object and nothing else, {"prompt": "<the rewritten prompt, as one string>", "questions": [{"question": "<question>?", "default": "<X>"}]}. '
+  + 'The "prompt" holds only the rewritten prompt, never a question or a Decide list; every open choice or clarifying question goes in "questions" ("default" is optional, "questions" is [] when there is none).'
 /** The most of the rules file that goes to the model (a hand-edited or wrong file must not blow up every request). */
 export const MAX_RULES_CHARS = 12000
 
@@ -153,7 +155,9 @@ function cleanAnswer(raw) {
   return (fenced && !fenced[1].includes('```') ? fenced[1] : unlabeled).trim()
 }
 
-const QUESTIONS_LINE = /^[ \t]*[*_]*(?:open[ \t]+)?questions[ \t*_:]*$/im // one trailing class, no adjacent optional runs (linear time)
+// A QUESTIONS heading ("QUESTIONS:", "**Questions:**", "Open questions", "Clarifying questions:"), alone on its line or with the questions on the same line (group 1).
+// The colon separates the two trailing classes, so there are no adjacent optional runs (linear time).
+const QUESTIONS_LINE = /^[ \t]*[*_]*(?:(?:open|clarifying)[ \t]+)?questions[ \t*_]*(?::[ \t*_]*([^\n]*))?$/im
 const ITEM_BULLET = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/
 const DEFAULT_MARK = 'Suggested default:'
 const DECIDE_HEADING = /^[ \t]*[*_#]*[ \t]*decide\b[^\n]*$/i
@@ -169,27 +173,99 @@ function questionOf(line) {
   return given ? { question, default: given.slice(0, MAX_QUESTION_CHARS) } : { question }
 }
 
+/** One entry of the "questions" field as { question, default? }: a string, or an object with a text; anything else is skipped. */
+function jsonQuestionOf(entry) {
+  const text = typeof entry === 'string' ? entry : entry && typeof entry === 'object' && typeof entry.question === 'string' ? entry.question : ''
+  const question = text.trim().slice(0, MAX_QUESTION_CHARS)
+  if (!question) return undefined
+  const given = entry && typeof entry === 'object' && typeof entry.default === 'string' ? entry.default.trim().slice(0, MAX_QUESTION_CHARS) : ''
+  return given ? { question, default: given } : { question }
+}
+
+/**
+ * The model answer read as the structured reply it was asked for, { prompt, questions }: the whole answer (or the whole content of one code fence) is a JSON object
+ * with a string "prompt". Anything else (prose around it, broken JSON, no string prompt) is undefined and goes through the shape rules.
+ */
+function jsonReply(raw) {
+  let text = raw.trim()
+  const fenced = /^```[^\n]*\n([\s\S]*?)\n?```$/.exec(text)
+  if (fenced) text = fenced[1].trim()
+  if (!text.startsWith('{') || !text.endsWith('}')) return undefined
+  let value
+  try { value = JSON.parse(text) } catch { return undefined }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.prompt !== 'string') return undefined
+  const list = Array.isArray(value.questions) ? value.questions : []
+  return { prompt: value.prompt, questions: list.map(jsonQuestionOf).filter(Boolean).slice(0, MAX_QUESTIONS) }
+}
+
+// Several questions on one line ("Which file? Suggested default: a.js. Which error?"): each "<question>?" with the default that may follow it.
+const INLINE_QUESTION = /([^?\n]+\?)(?:[ \t]*Suggested default:[ \t]*(.*?)(?:\.(?=[ \t]+[A-Z0-9])|\.?$))?/gm
+
+/** The questions of one line of a question list: a line with several question marks is split, any other line is one question. */
+function questionsOfLine(line) {
+  const body = line.replace(ITEM_BULLET, '')
+  if ((body.match(/\?/g) ?? []).length < 2) return [questionOf(line)].filter(Boolean)
+  const out = []
+  for (const m of body.matchAll(INLINE_QUESTION)) {
+    const question = m[1].trim().slice(0, MAX_QUESTION_CHARS)
+    const given = (m[2] ?? '').trim().replace(/\.$/, '').trim()
+    if (question) out.push(given ? { question, default: given.slice(0, MAX_QUESTION_CHARS) } : { question })
+  }
+  return out.length ? out : [questionOf(line)].filter(Boolean)
+}
+
+/** A first paragraph of nothing but questions, ahead of a prompt of its own, as { prompt, questions }; undefined for any other answer. */
+function leadingQuestions(cleaned) {
+  const paragraphs = cleaned.split(/\n[ \t]*\n/)
+  if (paragraphs.length < 2) return undefined
+  const head = paragraphs[0].replace(/\s*\n\s*/g, ' ').trim()
+  if (!head.endsWith('?')) return undefined
+  const pieces = head.split('?').map((p) => p.trim()).filter(Boolean)
+  if (!pieces.length || pieces.some((p) => /[.!:;]/.test(p))) return undefined
+  const rest = paragraphs.slice(1).join('\n\n').trim()
+  if (!rest) return undefined
+  return { prompt: rest, questions: pieces.map((p) => ({ question: (p + '?').slice(0, MAX_QUESTION_CHARS) })).slice(0, MAX_QUESTIONS) }
+}
+
 /**
  * The open questions of the model answer, apart from the prompt: { prompt, questions } (questions [] when there are none).
- * They come from a QUESTIONS: block after the prompt, or, failing that, from the "<question>? Suggested default: <X>." items of a Decide list inside
- * a prompt that has text of its own. An answer that is only such items comes back with an empty prompt and the questions; tune() then keeps the typed text (flag stripped).
+ * They come from a QUESTIONS: (or "Open/Clarifying questions") block after the prompt, on its own lines or on the heading's line, or, failing that, from the
+ * "<question>? Suggested default: <X>." items of a Decide list inside a prompt that has text of its own. When the typed prompt is not itself a question, bulleted or numbered
+ * lines that end in a question mark (no default) and a first paragraph of only questions go out too. An answer that is only such items comes back with an empty prompt and
+ * the questions (a lead-in line such as "I need to know:" goes with them); tune() then keeps the typed text (flag stripped).
  */
-function splitQuestions(raw) {
+function splitQuestions(raw, typedBody = '') {
+  const structured = jsonReply(raw)
+  if (structured) {
+    // Fields, not shapes: the prompt is the box text and the questions are the asked ones. Only a Decide list the model left inside the prompt is still moved out
+    // (the typed body is passed as a question so the loose shape rules stay off: nothing is guessed from how a JSON prompt reads).
+    const inside = splitQuestions(structured.prompt, '?')
+    return { prompt: inside.prompt, questions: [...structured.questions, ...inside.questions].slice(0, MAX_QUESTIONS), structured: true }
+  }
+  const typedAsks = typedBody.includes('?')
   const mark = QUESTIONS_LINE.exec(raw)
   if (mark) {
-    const items = withoutDefaultReasons(withoutTrailingNotes(raw.slice(mark.index + mark[0].length).trim())).split('\n').map(questionOf).filter(Boolean)
+    const inline = (mark[1] ?? '').replace(/[ \t*_]+$/, '')
+    const tail = raw.slice(mark.index + mark[0].length).trim()
+    const text = withoutDefaultReasons(withoutTrailingNotes([inline, tail].filter(Boolean).join('\n')))
+    const items = text.split('\n').flatMap(questionsOfLine)
     return { prompt: raw.slice(0, mark.index), questions: items.slice(0, MAX_QUESTIONS) }
   }
   const cleaned = cleanAnswer(raw)
   const lines = cleaned.split('\n')
-  const isItem = (line) => ITEM_BULLET.test(line) && line.includes('?') && line.includes(DEFAULT_MARK)
+  const endsAsking = (line) => /\?[ \t*_]*$/.test(line)
+  // Loose items (a bullet or number that only ends in a question mark) count only when EVERY list line is such a question: a task list with one question in it is a prompt.
+  const listLines = lines.filter((line) => ITEM_BULLET.test(line))
+  const looseOk = !typedAsks && listLines.length > 0 && listLines.every(endsAsking)
+  const isItem = (line) => ITEM_BULLET.test(line) && line.includes('?') && (line.includes(DEFAULT_MARK) || (looseOk && endsAsking(line)))
   const keep = lines.filter((line) => !isItem(line))
-  if (keep.length === lines.length) return { prompt: raw, questions: [] }
+  if (keep.length === lines.length) return (!typedAsks && leadingQuestions(cleaned)) || { prompt: raw, questions: [] }
   const first = lines.findIndex(isItem)
   let heading = first - 1
   while (heading >= 0 && !lines[heading].trim()) heading--
   const dropHeading = heading >= 0 && DECIDE_HEADING.test(lines[heading]) ? heading : -1
-  const rest = lines.filter((line, i) => !isItem(line) && i !== dropHeading).join('\n').trim()
+  let rest = lines.filter((line, i) => !isItem(line) && i !== dropHeading).join('\n').trim()
+  if (!rest.includes('\n') && rest.endsWith(':')) rest = '' // only a lead-in ("Before I rewrite this I need to know:") is left
   // No prompt of its own (only questions): the prompt is empty and tune() keeps what the user typed. Questions never replace the box text.
   return { prompt: rest, questions: lines.filter(isItem).map(questionOf).filter(Boolean).slice(0, MAX_QUESTIONS) }
 }
@@ -254,8 +330,8 @@ export function createTuner({ llm, rulesText, rulesPath, timeoutMs = 60000, maxT
     let error
     let logged
     try {
-      let { prompt, questions } = splitQuestions(await within(ask(parsed, ac.signal), timeoutMs, signal))
-      if (!questions.length) {
+      let { prompt, questions, structured } = splitQuestions(await within(ask(parsed, ac.signal), timeoutMs, signal), parsed.body)
+      if (!questions.length && !structured) {
         const plain = plainQuestions(prompt, parsed.body)
         if (plain.length) { questions = plain; prompt = '' }
       }
